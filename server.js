@@ -50,22 +50,44 @@ function sign(qs, secret) {
   return crypto.createHmac('sha256', secret).update(qs).digest('hex');
 }
 
-async function bReq(apiKey, apiSecret, method, path, params = {}) {
+async function bReq(apiKey, apiSecret, method, path, params = {}, useJson = false) {
   const ts  = Date.now();
   const obj = { ...params, timestamp: ts, recvWindow: 10000 };
-  const qs  = Object.entries(obj).map(([k,v]) => `${k}=${encodeURIComponent(v)}`).join('&');
-  const sig = sign(qs, apiSecret);
+  const sig = sign(
+    Object.entries(obj).map(([k,v]) => `${k}=${encodeURIComponent(v)}`).join('&'),
+    apiSecret
+  );
   const url = `${FAPI}${path}`;
-  const fullQs = `${qs}&signature=${sig}`;
-  const options = {
-    method: method.toUpperCase(),
-    headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
-  };
   const isGet = method.toUpperCase() === 'GET' || method.toUpperCase() === 'DELETE';
-  const finalUrl = isGet ? `${url}?${fullQs}` : url;
-  if (!isGet) options.body = fullQs;
+
+  let finalUrl, options;
+
+  if (useJson) {
+    // JSON body (algo endpoint için)
+    const bodyObj = { ...obj, signature: sig };
+    finalUrl = url;
+    options = {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyObj),
+    };
+  } else {
+    // Form-encoded (standart endpoint)
+    const qs = Object.entries(obj).map(([k,v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    const fullQs = `${qs}&signature=${sig}`;
+    finalUrl = isGet ? `${url}?${fullQs}` : url;
+    options = {
+      method: method.toUpperCase(),
+      headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' },
+    };
+    if (!isGet) options.body = fullQs;
+  }
+
   const res  = await fetch(finalUrl, options);
-  const data = await res.json();
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch(e) { throw new Error(`JSON parse hatası: ${text.substring(0,100)}`); }
   if (data.code && data.code < 0) throw new Error(`${data.msg} (${data.code})`);
   return data;
 }
@@ -672,16 +694,28 @@ app.post('/api/order', async (req, res) => {
 
       // ── B: Algo /fapi/v1/order/algo (-4120 aldıysak veya std başarısızsa) ─
       // Binance algo order formatı farklı - sadece gerekli parametreler
+      // Binance algo endpoint: TAKE_PROFIT veya STOP tipi, quantity zorunlu
+      // closePosition algo'da çalışmıyor, quantity + reduceOnly kullanmalı
       const algoFormats = [
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'},
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,closePosition:'true',positionSide:'BOTH'},
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH'},
+        // Format 1: quantity + reduceOnly + MARK_PRICE (en standart)
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
+          reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE',timeInForce:'GTE_GTC'},
+        // Format 2: quantity + reduceOnly + CONTRACT_PRICE
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
+          reduceOnly:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE',timeInForce:'GTE_GTC'},
+        // Format 3: quantity + reduceOnly, timeInForce yok
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
+          reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
+        // Format 4: quantity + reduceOnly, workingType yok
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
+          reduceOnly:'true',positionSide:'BOTH'},
+        // Format 5: closePosition boolean (bazı versiyonlar)
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,
+          closePosition:true,positionSide:'BOTH',workingType:'MARK_PRICE'},
       ];
       for(const p of algoFormats){
         try{
-          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order/algo',p);
+          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order/algo',p,true);
           const id=r.clientAlgoId||r.algoId||r.orderId;
           if(id){console.log(`${type} ALGO OK: ${id}`);return{orderId:id};}
         }catch(e){
