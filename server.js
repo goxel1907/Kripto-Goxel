@@ -289,12 +289,27 @@ app.post('/api/account', async (req, res) => {
   const { apiKey, apiSecret } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key gerekli' });
   try {
+    // v3/balance daha hızlı ve güvenilir
+    let walletBal = 0, availBal = 0, unrealized = 0;
+    try {
+      const balData = await bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance');
+      const usdtBal = Array.isArray(balData) ? balData.find(b => b.asset === 'USDT') : null;
+      if (usdtBal) {
+        walletBal = parseFloat(usdtBal.balance) || 0;
+        availBal  = parseFloat(usdtBal.availableBalance) || 0;
+      }
+    } catch(e) {}
+    
     const data = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account');
+    if (parseFloat(data.totalWalletBalance) > 0) walletBal = parseFloat(data.totalWalletBalance);
+    if (parseFloat(data.availableBalance)   > 0) availBal  = parseFloat(data.availableBalance);
+    unrealized = parseFloat(data.totalUnrealizedProfit) || 0;
+    
     res.json({
       ok: true,
-      totalWalletBalance:    parseFloat(data.totalWalletBalance)    || 0,
-      availableBalance:      parseFloat(data.availableBalance)      || 0,
-      totalUnrealizedProfit: parseFloat(data.totalUnrealizedProfit) || 0,
+      totalWalletBalance:    walletBal,
+      availableBalance:      availBal,
+      totalUnrealizedProfit: unrealized,
       positions: (data.positions || [])
         .filter(p => parseFloat(p.positionAmt) !== 0)
         .map(p => ({
@@ -397,17 +412,23 @@ app.post('/api/order', async (req, res) => {
       timeInForce: 'GTC', quantity: qty, price: rnd(ep), positionSide: 'BOTH'
     });
 
-    // 5. Take Profit
-    const tpOrder = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol: sym, side: closeSide, type: 'TAKE_PROFIT_MARKET',
-      stopPrice: rnd(targetPrice), closePosition: 'true', timeInForce: 'GTC', positionSide: 'BOTH'
-    });
+    // 5. Take Profit (hata olursa devam et)
+    let tpOrder = { orderId: null };
+    try {
+      tpOrder = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+        symbol: sym, side: closeSide, type: 'TAKE_PROFIT_MARKET',
+        stopPrice: rnd(targetPrice), closePosition: 'true', timeInForce: 'GTC', positionSide: 'BOTH'
+      });
+    } catch(e) { console.log('TP hata (devam):', e.message); }
 
-    // 6. Stop Loss
-    const slOrder = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol: sym, side: closeSide, type: 'STOP_MARKET',
-      stopPrice: rnd(stopPrice), closePosition: 'true', timeInForce: 'GTC', positionSide: 'BOTH'
-    });
+    // 6. Stop Loss (hata olursa devam et)
+    let slOrder = { orderId: null };
+    try {
+      slOrder = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+        symbol: sym, side: closeSide, type: 'STOP_MARKET',
+        stopPrice: rnd(stopPrice), closePosition: 'true', timeInForce: 'GTC', positionSide: 'BOTH'
+      });
+    } catch(e) { console.log('SL hata (devam):', e.message); }
 
     res.json({
       ok: true,
@@ -450,8 +471,9 @@ app.post('/api/close', async (req, res) => {
   const sym = symbol.toUpperCase().includes('USDT') ? symbol.toUpperCase() : symbol.toUpperCase() + 'USDT';
   try {
     await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', { symbol: sym });
-    const pos    = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
-    const openP  = pos.find(p => Math.abs(parseFloat(p.positionAmt)) > 0);
+    const posRaw = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
+    const posArr = Array.isArray(posRaw) ? posRaw : [];
+    const openP  = posArr.find(p => Math.abs(parseFloat(p.positionAmt)) > 0);
     if (!openP) return res.json({ ok: true, message: 'Açık pozisyon yok' });
     const qty    = Math.abs(parseFloat(openP.positionAmt));
     const isLong = parseFloat(openP.positionAmt) > 0;
