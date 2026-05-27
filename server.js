@@ -25,17 +25,33 @@ async function binanceRequest(apiKey, apiSecret, method, path, params = {}) {
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&');
   const signature = sign(queryString, apiSecret);
-  const url = `${BINANCE_BASE}${path}?${queryString}&signature=${signature}`;
-
-  const res = await fetch(url, {
+  
+  const options = {
     method,
     headers: {
       'X-MBX-APIKEY': apiKey,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/x-www-form-urlencoded'
     }
-  });
+  };
+
+  let url = `${BINANCE_BASE}${path}`;
+  
+  if (method === 'GET') {
+    // GET: signature ve parametreler URL'de
+    url += `?${queryString}&signature=${signature}`;
+  } else {
+    // POST/DELETE: parametreler ve signature body'de
+    options.body = `${queryString}&signature=${signature}`;
+  }
+
+  const res = await fetch(url, options);
   const data = await res.json();
-  if (data.code && data.code < 0) throw new Error(data.msg || 'Binance hatası');
+  
+  // Hata kontrolü
+  if (data.code && data.code < 0) {
+    throw new Error(`Binance Error ${data.code}: ${data.msg || 'Bilinmeyen hata'}`);
+  }
+  
   return data;
 }
 
@@ -51,7 +67,7 @@ app.post('/api/account', async (req, res) => {
 
   try {
     // Binance USD-M Futures /fapi/v2/account endpoint'i
-    const accountData = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account');
+    const accountData = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account', {});
     
     const totalWalletBalance = parseFloat(accountData.totalWalletBalance || 0) || 0;
     const availableBalance = parseFloat(accountData.availableBalance || 0) || 0;
@@ -83,11 +99,11 @@ app.post('/api/account-debug', async (req, res) => {
   const { apiKey, apiSecret } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key ve secret gerekli' });
   try {
-    const accountResult = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account');
+    const accountResult = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account', {});
     
     res.json({
       ok: true,
-      debug: 'URL encoded query string kullanılıyor',
+      debug: 'POST body yöntemi kullanılıyor',
       accountTotals: {
         totalWalletBalance: accountResult.totalWalletBalance,
         availableBalance: accountResult.availableBalance,
@@ -214,7 +230,7 @@ app.post('/api/positions', async (req, res) => {
   const { apiKey, apiSecret } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key gerekli' });
   try {
-    const data = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk');
+    const data = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', {});
     const open = data.filter(p => parseFloat(p.positionAmt) !== 0).map(p => ({
       symbol: p.symbol,
       positionAmt: parseFloat(p.positionAmt),
