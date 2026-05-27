@@ -8,8 +8,28 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 const PORT = process.env.PORT || 3000;
-const FAPI = 'https://fapi.binance.com';
-const VERSION = 'RISK_PROOF_SERVER_2026_05_27';
+const BINANCE_BASES = (process.env.BINANCE_FAPI_BASES || 'https://fapi.binance.com,https://fapi.binancefuture.com')
+  .split(',')
+  .map(x => x.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+let activeBaseIndex = 0;
+const VERSION = 'RISK_PROOF_GEO_FAILOVER_2026_05_27';
+
+function activeBase() {
+  return BINANCE_BASES[activeBaseIndex] || 'https://fapi.binance.com';
+}
+function isGeoBlockedMessage(msg) {
+  return String(msg || '').includes('HTTP 451') ||
+         String(msg || '').toLowerCase().includes('restricted location') ||
+         String(msg || '').toLowerCase().includes('service unavailable from a restricted location');
+}
+function geoHelp() {
+  return 'Railway sunucu bölgesi Binance Futures için kısıtlı görünüyor. Railway Settings/Deploy/Region kısmını US West yerine Europe/Asia gibi Binance Futures erişimi olan bir bölgeye taşı; bu paket ayrıca fapi.binancefuture.com fallback dener.';
+}
+function makeUrl(base, path, query) {
+  return `${base}${path}${query ? '?' + query : ''}`;
+}
+
 
 // =============================================================================
 // CACHE + HELPERS
@@ -125,17 +145,36 @@ async function fetchJson(url, options = {}, label = 'Binance') {
   return data;
 }
 
+async function publicGetNoCache(path, params = {}) {
+  const query = qs(params);
+  let lastErr = null;
+  for (let attempt = 0; attempt < BINANCE_BASES.length; attempt++) {
+    const idx = (activeBaseIndex + attempt) % BINANCE_BASES.length;
+    const base = BINANCE_BASES[idx];
+    try {
+      const data = await fetchJson(makeUrl(base, path, query), {}, `${path} @ ${base}`);
+      activeBaseIndex = idx;
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (isGeoBlockedMessage(errMsg(e)) && attempt < BINANCE_BASES.length - 1) continue;
+      if (isGeoBlockedMessage(errMsg(e))) throw new Error(`${errMsg(e)} | ${geoHelp()}`);
+      throw e;
+    }
+  }
+  throw lastErr || new Error(`${path}: Binance endpoint erişilemedi`);
+}
+
 async function publicGet(path, params = {}, ttlMs = 0) {
   const query = qs(params);
-  const url = `${FAPI}${path}${query ? '?' + query : ''}`;
-  if (ttlMs > 0) return cached(`PUB:${path}:${query}`, ttlMs, () => fetchJson(url, {}, path));
-  return fetchJson(url, {}, path);
+  if (ttlMs > 0) return cached(`PUB:${path}:${query}:BASES=${BINANCE_BASES.join('|')}`, ttlMs, () => publicGetNoCache(path, params));
+  return publicGetNoCache(path, params);
 }
 
 async function syncTime() {
   const now = Date.now();
   if (now < timeOffsetExp) return now + timeOffsetMs;
-  const data = await fetchJson(`${FAPI}/fapi/v1/time`, {}, 'serverTime');
+  const data = await publicGet('/fapi/v1/time', {}, 0);
   timeOffsetMs = n(data.serverTime, now) - now;
   timeOffsetExp = now + 30_000;
   return Date.now() + timeOffsetMs;
@@ -150,10 +189,26 @@ async function bReq(apiKey, apiSecret, method, path, params = {}) {
   const full = `${query}&signature=${signature}`;
   const upper = String(method).toUpperCase();
   const headers = { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' };
-  const finalUrl = (upper === 'GET' || upper === 'DELETE') ? `${FAPI}${path}?${full}` : `${FAPI}${path}`;
   const options = { method: upper, headers };
   if (upper !== 'GET' && upper !== 'DELETE') options.body = full;
-  return fetchJson(finalUrl, options, path);
+
+  let lastErr = null;
+  for (let attempt = 0; attempt < BINANCE_BASES.length; attempt++) {
+    const idx = (activeBaseIndex + attempt) % BINANCE_BASES.length;
+    const base = BINANCE_BASES[idx];
+    const finalUrl = (upper === 'GET' || upper === 'DELETE') ? `${base}${path}?${full}` : `${base}${path}`;
+    try {
+      const data = await fetchJson(finalUrl, options, `${path} @ ${base}`);
+      activeBaseIndex = idx;
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (isGeoBlockedMessage(errMsg(e)) && attempt < BINANCE_BASES.length - 1) continue;
+      if (isGeoBlockedMessage(errMsg(e))) throw new Error(`${errMsg(e)} | ${geoHelp()}`);
+      throw e;
+    }
+  }
+  throw lastErr || new Error(`${path}: Binance signed endpoint erişilemedi`);
 }
 
 // =============================================================================
@@ -447,13 +502,13 @@ async function analyzeOne(symbol) {
 // =============================================================================
 // ROUTES
 // =============================================================================
-app.get('/', (req, res) => res.json({ ok: true, status: 'ok', version: VERSION, time: new Date().toISOString() }));
+app.get('/', (req, res) => res.json({ ok: true, status: 'ok', version: VERSION, activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES, time: new Date().toISOString() }));
 app.get('/api/health', async (req, res) => {
   try {
     const st = await syncTime();
-    res.json({ ok: true, version: VERSION, localTime: Date.now(), binanceTimeApprox: st, timeOffsetMs });
+    res.json({ ok: true, version: VERSION, activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES, localTime: Date.now(), binanceTimeApprox: st, timeOffsetMs });
   } catch (e) {
-    res.status(502).json({ ok: false, error: errMsg(e), version: VERSION });
+    res.status(502).json({ ok: false, error: errMsg(e), help: geoHelp(), version: VERSION, activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES });
   }
 });
 
