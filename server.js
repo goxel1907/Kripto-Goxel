@@ -771,14 +771,38 @@ app.post('/api/order', async (req, res) => {
       symbol:sym,side:oSide,type:'MARKET',quantity:qty,positionSide:'BOTH'
     });
     let tp={orderId:null},sl={orderId:null};
-    try{tp=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-      symbol:sym,side:cSide,type:'TAKE_PROFIT_MARKET',
-      stopPrice:rnd(targetPrice),closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'
-    });}catch(e){console.log('TP:',e.message);}
-    try{sl=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-      symbol:sym,side:cSide,type:'STOP_MARKET',
-      stopPrice:rnd(stopPrice),closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'
-    });}catch(e){console.log('SL:',e.message);}
+
+    // TP/SL — önce MARK_PRICE dene, hata alırsa CONTRACT_PRICE ile tekrar dene
+    async function tryTPSL(type, stopPriceVal) {
+      const base = {
+        symbol:sym, side:cSide, type,
+        stopPrice:rnd(stopPriceVal), closePosition:'true', positionSide:'BOTH'
+      };
+      // Deneme 1: MARK_PRICE (normal crypto futures)
+      try {
+        return await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',
+          {...base, workingType:'MARK_PRICE'});
+      } catch(e1) {
+        console.log(type+' MARK_PRICE hata:', e1.message);
+        // Deneme 2: CONTRACT_PRICE (TradFi perps: XAUUSDT, BTCDOMUSDT vb.)
+        try {
+          return await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',
+            {...base, workingType:'CONTRACT_PRICE'});
+        } catch(e2) {
+          console.log(type+' CONTRACT_PRICE hata:', e2.message);
+          // Deneme 3: workingType olmadan
+          try {
+            return await bReq(apiKey,apiSecret,'POST','/fapi/v1/order', base);
+          } catch(e3) {
+            console.log(type+' son deneme hata:', e3.message);
+            return {orderId:null};
+          }
+        }
+      }
+    }
+
+    tp = await tryTPSL('TAKE_PROFIT_MARKET', targetPrice);
+    sl = await tryTPSL('STOP_MARKET', stopPrice);
     res.json({ ok:true, message:`${sym} ${side} açıldı ✅`,
       mainOrderId:main.orderId, tpOrderId:tp.orderId, slOrderId:sl.orderId,
       executedPrice:parseFloat(main.avgPrice||curPrice),
