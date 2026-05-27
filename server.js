@@ -16,6 +16,33 @@ const BINANCE_BASES = [
 ];
 const DEFAULT_RECV_WINDOW = 10000;
 
+const CACHE = new Map();
+const PENDING = new Map();
+function cacheGet(key) {
+  const v = CACHE.get(key);
+  if (!v) return null;
+  if (Date.now() > v.expires) { CACHE.delete(key); return null; }
+  return v.value;
+}
+function cacheSet(key, value, ttlMs) {
+  CACHE.set(key, { value, expires: Date.now() + ttlMs });
+  return value;
+}
+async function cached(key, ttlMs, fn) {
+  const hit = cacheGet(key);
+  if (hit) return hit;
+  if (PENDING.has(key)) return PENDING.get(key);
+  const pr = Promise.resolve().then(fn).then(v => cacheSet(key, v, ttlMs)).finally(() => PENDING.delete(key));
+  PENDING.set(key, pr);
+  return pr;
+}
+function friendlyBinanceError(e) {
+  const msg = String(e?.message || e || '');
+  if (msg.includes('429')) return 'Binance rate limit 429: Railway IP / API isteği fazla. 2-5 dakika bekle, tekrar tekrar Test Etme. Yeni sürüm istekleri cacheledi.';
+  if (msg.includes('418')) return 'Binance geçici IP ban 418: 15-30 dakika bekle. Çok sık public veri istenmiş.';
+  return msg || 'Bilinmeyen Binance hatası';
+}
+
 function sign(queryString, secret) {
   return crypto.createHmac('sha256', String(secret).trim()).update(queryString).digest('hex');
 }
@@ -111,13 +138,33 @@ function accountSummary(data) {
 }
 
 async function getExchangeSymbol(sym) {
-  const info = await fetchJsonWithBases('/fapi/v1/exchangeInfo', { method: 'GET' });
-  if (!Array.isArray(info?.symbols)) {
-    throw new Error('Binance exchangeInfo sembol listesi alınamadı. Railway logunu kontrol et; Binance public futures endpoint cevap vermedi.');
-  }
+  const info = await cached('exchangeInfo', 30 * 60 * 1000, async () => {
+    const x = await fetchJsonWithBases('/fapi/v1/exchangeInfo', { method: 'GET' });
+    if (!Array.isArray(x?.symbols)) throw new Error('exchangeInfo symbols boş geldi');
+    return x;
+  });
   const symbolInfo = info.symbols.find(s => s.symbol === sym);
   if (!symbolInfo) throw new Error(`${sym} Binance USD-M Futures içinde bulunamadı`);
   return symbolInfo;
+}
+
+async function getFuturesTradingSymbols() {
+  const info = await cached('futures:exchangeInfo:trading', 30 * 60 * 1000, async () => {
+    const x = await fetchJsonWithBases('/fapi/v1/exchangeInfo', { method: 'GET' });
+    if (!Array.isArray(x?.symbols)) throw new Error('exchangeInfo symbols boş geldi');
+    return x;
+  });
+  return info.symbols
+    .filter(s => s.status === 'TRADING' && s.contractType === 'PERPETUAL' && s.quoteAsset === 'USDT')
+    .map(s => s.symbol);
+}
+
+function opportunityScoreFromTicker(t) {
+  const ch = Math.abs(toNum(t.priceChangePercent, 0));
+  const vol = Math.log10(Math.max(1, toNum(t.quoteVolume, 0)));
+  const trades = Math.log10(Math.max(1, toNum(t.count, 0)));
+  const range = toNum(t.lowPrice, 0) > 0 ? ((toNum(t.highPrice, 0) - toNum(t.lowPrice, 0)) / toNum(t.lowPrice, 0)) * 100 : 0;
+  return Math.round((ch * 2.2) + (range * 1.4) + (vol * 8) + (trades * 3));
 }
 
 function ema(values, period) {
@@ -183,13 +230,7 @@ function tfSummary(klines) {
   const cvd = cvdFromKlines(klines);
   const atr = atrFromKlines(klines, 14);
   const trend = e9 && e21 && e50 ? (last > e9 && e9 > e21 && e21 > e50 ? 'BULL' : last < e9 && e9 < e21 && e21 < e50 ? 'BEAR' : 'MIXED') : 'UNKNOWN';
-  return {
-    last, changePct: first ? ((last - first) / first) * 100 : 0,
-    ema9: e9, ema21: e21, ema50: e50, vwap: vw, rsi, cvd, atr,
-    trend,
-    aboveVwap: vw ? last >= vw : null,
-    ema21DistancePct: e21 ? ((last - e21) / e21) * 100 : null
-  };
+  return { last, changePct: first ? ((last - first) / first) * 100 : 0, ema9: e9, ema21: e21, ema50: e50, vwap: vw, rsi, cvd, atr, trend, aboveVwap: vw ? last >= vw : null, ema21DistancePct: e21 ? ((last - e21) / e21) * 100 : null };
 }
 
 function depthImbalance(depth) {
@@ -201,7 +242,7 @@ function depthImbalance(depth) {
   return { bidNotional, askNotional, imbalance: total ? (bidNotional - askNotional) / total : 0 };
 }
 
-function smartMoneyScore({ tf15, tf1h, tf4h, depth, fundingRate, openInterest, topLongShortRatio, globalLongShortRatio }) {
+function smartMoneyScore({ tf15, tf1h, tf4h, depth, fundingRate, topLongShortRatio }) {
   let long = 0, short = 0, notes = [];
   if (tf4h.trend === 'BULL') { long += 18; notes.push('4s trend BULL'); }
   if (tf4h.trend === 'BEAR') { short += 18; notes.push('4s trend BEAR'); }
@@ -215,25 +256,24 @@ function smartMoneyScore({ tf15, tf1h, tf4h, depth, fundingRate, openInterest, t
   if (Number.isFinite(topLongShortRatio) && topLongShortRatio > 2.2 && tf15.cvd < 0) { short += 12; notes.push('crowded long + CVD zayıf'); }
   if (Number.isFinite(topLongShortRatio) && topLongShortRatio < 0.55 && tf15.cvd > 0) { long += 12; notes.push('crowded short + CVD güçlü'); }
   const side = long >= short ? 'LONG' : 'SHORT';
-  const score = Math.max(long, short);
-  return { side, longScore: long, shortScore: short, score, notes };
+  return { side, longScore: long, shortScore: short, score: Math.max(long, short), notes };
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Kripto Sinyal Backend çalışıyor', time: new Date().toISOString() });
+  res.json({ status: 'ok', message: 'Kripto Sinyal Backend çalışıyor', version: '80SEC_FUTURES', time: new Date().toISOString() });
 });
 
 app.post('/api/account', async (req, res) => {
   const { apiKey, apiSecret } = req.body || {};
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key ve secret gerekli' });
   try {
-    let data;
-    try { data = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v3/account'); }
-    catch { data = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account'); }
+    const key = `account:${String(apiKey).slice(0, 8)}`;
+    const data = await cached(key, 12 * 1000, async () => {
+      try { return await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v3/account'); }
+      catch { return await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account'); }
+    });
     res.json(accountSummary(data));
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.post('/api/leverage', async (req, res) => {
@@ -244,9 +284,7 @@ app.post('/api/leverage', async (req, res) => {
     const lev = Math.max(1, Math.min(125, parseInt(leverage, 10) || 1));
     const data = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
     res.json({ ok: true, leverage: data.leverage, symbol: data.symbol });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.post('/api/order', async (req, res) => {
@@ -256,72 +294,32 @@ app.post('/api/order', async (req, res) => {
   const entry = toNum(entryPrice), target = toNum(targetPrice), stop = toNum(stopPrice), margin = toNum(usdtAmount);
   if (!apiKey || !apiSecret || !sym || !lev || !entry || !target || !stop || !margin) return res.status(400).json({ error: 'Eksik veya geçersiz emir parametresi' });
   if (!(target > entry && stop < entry)) return res.status(400).json({ error: 'LONG için TP girişten büyük, SL girişten küçük olmalı' });
-
   try {
     await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: Math.max(1, Math.min(125, lev)) });
-
     const symbolInfo = await getExchangeSymbol(sym);
     const lotFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
     const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
     const minNotionalFilter = symbolInfo.filters.find(f => f.filterType === 'MIN_NOTIONAL' || f.filterType === 'NOTIONAL');
     if (!lotFilter || !priceFilter) throw new Error(`${sym} lot/tick filtreleri alınamadı`);
-
     const qty = formatStep((margin * lev) / entry, lotFilter.stepSize);
     if (toNum(qty) < toNum(lotFilter.minQty)) throw new Error(`Miktar minQty altında: ${qty} < ${lotFilter.minQty}`);
     const notional = toNum(qty) * entry;
     const minNotional = toNum(minNotionalFilter?.notional ?? minNotionalFilter?.minNotional, 0);
     if (minNotional && notional < minNotional) throw new Error(`Pozisyon nominali çok küçük: ${notional.toFixed(2)} USDT < ${minNotional} USDT`);
-
     const price = formatTick(entry, priceFilter.tickSize);
     const tp = formatTick(target, priceFilter.tickSize);
     const sl = formatTick(stop, priceFilter.tickSize);
-
-    const mainOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol: sym,
-      side: 'BUY',
-      type: 'LIMIT',
-      timeInForce: 'GTC',
-      quantity: qty,
-      price,
-      positionSide: 'BOTH'
-    });
-
+    const mainOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', { symbol: sym, side: 'BUY', type: 'LIMIT', timeInForce: 'GTC', quantity: qty, price, positionSide: 'BOTH' });
     let tpOrder = null, slOrder = null;
     try {
-      tpOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-        symbol: sym,
-        side: 'SELL',
-        type: 'TAKE_PROFIT_MARKET',
-        stopPrice: tp,
-        closePosition: 'true',
-        workingType: 'MARK_PRICE',
-        positionSide: 'BOTH'
-      });
-      slOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-        symbol: sym,
-        side: 'SELL',
-        type: 'STOP_MARKET',
-        stopPrice: sl,
-        closePosition: 'true',
-        workingType: 'MARK_PRICE',
-        positionSide: 'BOTH'
-      });
+      tpOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', { symbol: sym, side: 'SELL', type: 'TAKE_PROFIT_MARKET', stopPrice: tp, closePosition: 'true', workingType: 'MARK_PRICE', positionSide: 'BOTH' });
+      slOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', { symbol: sym, side: 'SELL', type: 'STOP_MARKET', stopPrice: sl, closePosition: 'true', workingType: 'MARK_PRICE', positionSide: 'BOTH' });
     } catch (protectError) {
       try { await binanceRequest(apiKey, apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: mainOrder.orderId }); } catch {}
       throw new Error(`TP/SL kurulamadı, ana emir iptal denendi: ${protectError.message}`);
     }
-
-    res.json({
-      ok: true,
-      message: `${sym} LONG emri açıldı`,
-      mainOrderId: mainOrder.orderId,
-      tpOrderId: tpOrder?.orderId,
-      slOrderId: slOrder?.orderId,
-      details: { symbol: sym, quantity: qty, leverage: lev, entry: price, target: tp, stop: sl, usdtAmount: margin }
-    });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+    res.json({ ok: true, message: `${sym} LONG emri açıldı`, mainOrderId: mainOrder.orderId, tpOrderId: tpOrder?.orderId, slOrderId: slOrder?.orderId, details: { symbol: sym, quantity: qty, leverage: lev, entry: price, target: tp, stop: sl, usdtAmount: margin } });
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.post('/api/positions', async (req, res) => {
@@ -331,27 +329,11 @@ app.post('/api/positions', async (req, res) => {
     const data = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk');
     const list = Array.isArray(data) ? data : [];
     const open = list.filter(p => Math.abs(toNum(p.positionAmt, 0)) > 0).map(p => {
-      const amt = toNum(p.positionAmt, 0);
-      const entry = toNum(p.entryPrice, 0);
-      const mark = toNum(p.markPrice, 0);
-      const lev = toNum(p.leverage, 1);
-      const dir = amt >= 0 ? 1 : -1;
-      return {
-        symbol: p.symbol,
-        positionAmt: amt,
-        side: amt >= 0 ? 'LONG' : 'SHORT',
-        entryPrice: entry,
-        markPrice: mark,
-        unrealizedProfit: toNum(p.unRealizedProfit ?? p.unrealizedProfit, 0),
-        percentage: entry > 0 ? (((mark - entry) / entry) * 100 * lev * dir).toFixed(2) : '0',
-        leverage: lev,
-        liquidationPrice: toNum(p.liquidationPrice, 0)
-      };
+      const amt = toNum(p.positionAmt, 0), entry = toNum(p.entryPrice, 0), mark = toNum(p.markPrice, 0), lev = toNum(p.leverage, 1), dir = amt >= 0 ? 1 : -1;
+      return { symbol: p.symbol, positionAmt: amt, side: amt >= 0 ? 'LONG' : 'SHORT', entryPrice: entry, markPrice: mark, unrealizedProfit: toNum(p.unRealizedProfit ?? p.unrealizedProfit, 0), percentage: entry > 0 ? (((mark - entry) / entry) * 100 * lev * dir).toFixed(2) : '0', leverage: lev, liquidationPrice: toNum(p.liquidationPrice, 0) };
     });
     res.json({ ok: true, positions: open });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.post('/api/close', async (req, res) => {
@@ -361,102 +343,80 @@ app.post('/api/close', async (req, res) => {
   try {
     try { await binanceRequest(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', { symbol: sym }); } catch {}
     const pos = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
-    const list = Array.isArray(pos) ? pos : [];
-    const openPos = list.find(p => Math.abs(toNum(p.positionAmt, 0)) > 0);
+    const openPos = (Array.isArray(pos) ? pos : []).find(p => Math.abs(toNum(p.positionAmt, 0)) > 0);
     if (!openPos) return res.json({ ok: true, message: 'Açık pozisyon yok' });
     const amt = toNum(openPos.positionAmt, 0);
     const side = amt > 0 ? 'SELL' : 'BUY';
-    const closeOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol: sym,
-      side,
-      type: 'MARKET',
-      quantity: formatStep(Math.abs(amt), '0.000001'),
-      reduceOnly: 'true',
-      positionSide: 'BOTH'
-    });
+    const closeOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', { symbol: sym, side, type: 'MARKET', quantity: formatStep(Math.abs(amt), '0.000001'), reduceOnly: 'true', positionSide: 'BOTH' });
     res.json({ ok: true, message: `${sym} pozisyonu kapatıldı`, orderId: closeOrder.orderId });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.get('/api/price/:symbol', async (req, res) => {
   try {
     const sym = normalizeSymbol(req.params.symbol);
-    const data = await fetchJsonWithBases(`/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(sym)}`, { method: 'GET' });
-    res.json({
-      symbol: sym,
-      price: toNum(data.lastPrice),
-      change24h: toNum(data.priceChangePercent),
-      volume: toNum(data.quoteVolume),
-      high: toNum(data.highPrice),
-      low: toNum(data.lowPrice)
-    });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+    const data = await cached(`price:${sym}`, 20 * 1000, () => fetchJsonWithBases(`/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(sym)}`, { method: 'GET' }));
+    res.json({ symbol: sym, price: toNum(data.lastPrice), change24h: toNum(data.priceChangePercent), volume: toNum(data.quoteVolume), high: toNum(data.highPrice), low: toNum(data.lowPrice) });
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.get('/api/market/:symbol', async (req, res) => {
   try {
     const sym = normalizeSymbol(req.params.symbol);
-    const [funding, oi] = await Promise.allSettled([
-      fetchJsonWithBases(`/fapi/v1/fundingRate?symbol=${encodeURIComponent(sym)}&limit=1`, { method: 'GET' }),
-      fetchJsonWithBases(`/fapi/v1/openInterest?symbol=${encodeURIComponent(sym)}`, { method: 'GET' })
-    ]);
-    res.json({
-      symbol: sym,
-      fundingRate: funding.status === 'fulfilled' && funding.value?.[0] ? toNum(funding.value[0].fundingRate) * 100 : null,
-      openInterest: oi.status === 'fulfilled' ? toNum(oi.value.openInterest) : null
+    const out = await cached(`market:${sym}`, 60 * 1000, async () => {
+      const [funding, oi] = await Promise.allSettled([
+        fetchJsonWithBases(`/fapi/v1/fundingRate?symbol=${encodeURIComponent(sym)}&limit=1`, { method: 'GET' }),
+        fetchJsonWithBases(`/fapi/v1/openInterest?symbol=${encodeURIComponent(sym)}`, { method: 'GET' })
+      ]);
+      return { symbol: sym, fundingRate: funding.status === 'fulfilled' && funding.value?.[0] ? toNum(funding.value[0].fundingRate) * 100 : null, openInterest: oi.status === 'fulfilled' ? toNum(oi.value.openInterest) : null };
     });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+    res.json(out);
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
+});
+
+app.get('/api/futures-tickers', async (req, res) => {
+  try {
+    const out = await cached('futures:tickers:opportunity:v2', 20 * 1000, async () => {
+      const [symbols, tickers] = await Promise.all([getFuturesTradingSymbols(), fetchJsonWithBases('/fapi/v1/ticker/24hr', { method: 'GET' })]);
+      const allowed = new Set(symbols);
+      const coins = (Array.isArray(tickers) ? tickers : [])
+        .filter(t => allowed.has(t.symbol) && String(t.symbol).endsWith('USDT'))
+        .map(t => ({ symbol: t.symbol, price: toNum(t.lastPrice, 0), change24h: toNum(t.priceChangePercent, 0), volume: toNum(t.quoteVolume, 0), trades: toNum(t.count, 0), high: toNum(t.highPrice, 0), low: toNum(t.lowPrice, 0), opportunityRank: opportunityScoreFromTicker(t) }))
+        .sort((a, b) => b.opportunityRank - a.opportunityRank);
+      return { ok: true, universe: 'BINANCE_USD_M_FUTURES_USDT_PERPETUAL', scanSeconds: 80, count: coins.length, coins };
+    });
+    res.json(out);
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.get('/api/market-intel/:symbol', async (req, res) => {
   try {
     const sym = normalizeSymbol(req.params.symbol);
-    const qsym = encodeURIComponent(sym);
-    const [k15, k1h, k4h, depth, premium, oi, topRatio, globalRatio] = await Promise.allSettled([
-      fetchJsonWithBases(`/fapi/v1/klines?symbol=${qsym}&interval=15m&limit=80`, { method: 'GET' }),
-      fetchJsonWithBases(`/fapi/v1/klines?symbol=${qsym}&interval=1h&limit=120`, { method: 'GET' }),
-      fetchJsonWithBases(`/fapi/v1/klines?symbol=${qsym}&interval=4h&limit=120`, { method: 'GET' }),
-      fetchJsonWithBases(`/fapi/v1/depth?symbol=${qsym}&limit=100`, { method: 'GET' }),
-      fetchJsonWithBases(`/fapi/v1/premiumIndex?symbol=${qsym}`, { method: 'GET' }),
-      fetchJsonWithBases(`/fapi/v1/openInterest?symbol=${qsym}`, { method: 'GET' }),
-      fetchJsonWithBases(`/futures/data/topLongShortAccountRatio?symbol=${qsym}&period=15m&limit=1`, { method: 'GET' }),
-      fetchJsonWithBases(`/futures/data/globalLongShortAccountRatio?symbol=${qsym}&period=15m&limit=1`, { method: 'GET' })
-    ]);
-    if (k15.status !== 'fulfilled' || k1h.status !== 'fulfilled' || k4h.status !== 'fulfilled') {
-      throw new Error('Kline verisi alınamadı');
-    }
-    const tf15 = tfSummary(k15.value);
-    const tf1h = tfSummary(k1h.value);
-    const tf4h = tfSummary(k4h.value);
-    const ob = depth.status === 'fulfilled' ? depthImbalance(depth.value) : { bidNotional: 0, askNotional: 0, imbalance: 0 };
-    const fundingRate = premium.status === 'fulfilled' ? toNum(premium.value.lastFundingRate) * 100 : null;
-    const markPrice = premium.status === 'fulfilled' ? toNum(premium.value.markPrice) : tf15.last;
-    const openInterest = oi.status === 'fulfilled' ? toNum(oi.value.openInterest) : null;
-    const topLongShort = topRatio.status === 'fulfilled' && Array.isArray(topRatio.value) && topRatio.value[0] ? toNum(topRatio.value[0].longShortRatio) : null;
-    const globalLongShort = globalRatio.status === 'fulfilled' && Array.isArray(globalRatio.value) && globalRatio.value[0] ? toNum(globalRatio.value[0].longShortRatio) : null;
-    const sm = smartMoneyScore({ tf15, tf1h, tf4h, depth: ob, fundingRate, openInterest, topLongShortRatio: topLongShort, globalLongShortRatio: globalLongShort });
-    res.json({
-      ok: true,
-      symbol: sym,
-      timeframes: { '15m': tf15, '1h': tf1h, '4h': tf4h },
-      orderBook: ob,
-      fundingRate,
-      openInterest,
-      topLongShortRatio: topLongShort,
-      globalLongShortRatio: globalLongShort,
-      markPrice,
-      smartMoney: sm,
-      usedForSignal: '4H ana trend + 1H giriş filtresi + 15M tetik + order book/CVD/funding/OI onayı'
+    const out = await cached(`market-intel:${sym}`, 90 * 1000, async () => {
+      const qsym = encodeURIComponent(sym);
+      const [k15, k1h, k4h, depth, premium, oi, topRatio, globalRatio] = await Promise.allSettled([
+        fetchJsonWithBases(`/fapi/v1/klines?symbol=${qsym}&interval=15m&limit=80`, { method: 'GET' }),
+        fetchJsonWithBases(`/fapi/v1/klines?symbol=${qsym}&interval=1h&limit=120`, { method: 'GET' }),
+        fetchJsonWithBases(`/fapi/v1/klines?symbol=${qsym}&interval=4h&limit=120`, { method: 'GET' }),
+        fetchJsonWithBases(`/fapi/v1/depth?symbol=${qsym}&limit=100`, { method: 'GET' }),
+        fetchJsonWithBases(`/fapi/v1/premiumIndex?symbol=${qsym}`, { method: 'GET' }),
+        fetchJsonWithBases(`/fapi/v1/openInterest?symbol=${qsym}`, { method: 'GET' }),
+        fetchJsonWithBases(`/futures/data/topLongShortAccountRatio?symbol=${qsym}&period=15m&limit=1`, { method: 'GET' }),
+        fetchJsonWithBases(`/futures/data/globalLongShortAccountRatio?symbol=${qsym}&period=15m&limit=1`, { method: 'GET' })
+      ]);
+      if (k15.status !== 'fulfilled' || k1h.status !== 'fulfilled' || k4h.status !== 'fulfilled') throw new Error('Kline verisi alınamadı');
+      const tf15 = tfSummary(k15.value), tf1h = tfSummary(k1h.value), tf4h = tfSummary(k4h.value);
+      const ob = depth.status === 'fulfilled' ? depthImbalance(depth.value) : { bidNotional: 0, askNotional: 0, imbalance: 0 };
+      const fundingRate = premium.status === 'fulfilled' ? toNum(premium.value.lastFundingRate) * 100 : null;
+      const markPrice = premium.status === 'fulfilled' ? toNum(premium.value.markPrice) : tf15.last;
+      const openInterest = oi.status === 'fulfilled' ? toNum(oi.value.openInterest) : null;
+      const topLongShort = topRatio.status === 'fulfilled' && Array.isArray(topRatio.value) && topRatio.value[0] ? toNum(topRatio.value[0].longShortRatio) : null;
+      const globalLongShort = globalRatio.status === 'fulfilled' && Array.isArray(globalRatio.value) && globalRatio.value[0] ? toNum(globalRatio.value[0].longShortRatio) : null;
+      const sm = smartMoneyScore({ tf15, tf1h, tf4h, depth: ob, fundingRate, openInterest, topLongShortRatio: topLongShort, globalLongShortRatio: globalLongShort });
+      return { ok: true, symbol: sym, timeframes: { '15m': tf15, '1h': tf1h, '4h': tf4h }, orderBook: ob, fundingRate, openInterest, topLongShortRatio: topLongShort, globalLongShortRatio: globalLongShort, markPrice, smartMoney: sm, cachedSeconds: 90, usedForSignal: '4H ana trend + 1H giriş filtresi + 15M tetik + order book/CVD/funding/OI onayı' };
     });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+    res.json(out);
+  } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
 
 app.listen(PORT, () => console.log(`Server ${PORT} portunda çalışıyor`));
