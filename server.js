@@ -806,26 +806,71 @@ app.post('/api/order', async (req, res) => {
     // 6. TP/SL — 4 farklı yöntem dene
     let tp={orderId:null}, sl={orderId:null};
 
+    // TP/SL tip dönüşümü: Binance yeni coinlerde ALGO order istiyor
+    // TAKE_PROFIT_MARKET → TAKE_PROFIT (algo)
+    // STOP_MARKET → STOP (algo)
+    function toAlgoType(t) {
+      if (t === 'TAKE_PROFIT_MARKET') return 'TAKE_PROFIT';
+      if (t === 'STOP_MARKET') return 'STOP';
+      return t;
+    }
+
     async function placeTPSL(type, price) {
-      const base = {
-        symbol:sym, side:cSide, type,
-        stopPrice:price, closePosition:'true', positionSide:'BOTH'
-      };
-      const methods = [
-        {...base, workingType:'MARK_PRICE'},
-        {...base, workingType:'CONTRACT_PRICE'},
-        {...base, workingType:'LAST_PRICE'},
-        base  // parametresiz
+      const algoType = toAlgoType(type);
+
+      // ── Yöntem A: Standart /fapi/v1/order (eski coinler) ──────────────────
+      const standardMethods = [
+        { symbol:sym, side:cSide, type, stopPrice:price,
+          closePosition:'true', positionSide:'BOTH', workingType:'MARK_PRICE' },
+        { symbol:sym, side:cSide, type, stopPrice:price,
+          closePosition:'true', positionSide:'BOTH', workingType:'CONTRACT_PRICE' },
+        { symbol:sym, side:cSide, type, stopPrice:price,
+          closePosition:'true', positionSide:'BOTH' },
+        { symbol:sym, side:cSide, type, stopPrice:price,
+          quantity:qty, reduceOnly:'true', positionSide:'BOTH', workingType:'MARK_PRICE' },
       ];
-      for (const params of methods) {
+      for (const params of standardMethods) {
         try {
-          const result = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order', params);
-          console.log(`${type} başarılı (${params.workingType||'no-type'}): ${result.orderId}`);
-          return result;
+          const r = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order', params);
+          if (r.orderId) {
+            console.log(`${type} STANDART BAŞARILI: ${r.orderId}`);
+            return r;
+          }
         } catch(e) {
-          console.log(`${type} hata (${params.workingType||'no-type'}): ${e.message}`);
+          // -4120 = algo endpoint gerekiyor, diğer hataları da geç
+          if (!e.message.includes('-4120')) {
+            console.log(`${type} standart hata: ${e.message}`);
+          }
         }
       }
+
+      // ── Yöntem B: Algo Order /fapi/v1/order/algo (yeni coinler) ───────────
+      // TAKE_PROFIT_MARKET → TAKE_PROFIT, STOP_MARKET → STOP
+      const algoMethods = [
+        { symbol:sym, side:cSide, type:algoType, stopPrice:price,
+          closePosition:'true', positionSide:'BOTH', workingType:'MARK_PRICE' },
+        { symbol:sym, side:cSide, type:algoType, stopPrice:price,
+          closePosition:'true', positionSide:'BOTH', workingType:'CONTRACT_PRICE' },
+        { symbol:sym, side:cSide, type:algoType, stopPrice:price,
+          closePosition:'true', positionSide:'BOTH' },
+        { symbol:sym, side:cSide, type:algoType, stopPrice:price,
+          quantity:qty, reduceOnly:'true', positionSide:'BOTH', workingType:'MARK_PRICE' },
+        { symbol:sym, side:cSide, type:algoType, stopPrice:price,
+          quantity:qty, reduceOnly:'true', positionSide:'BOTH' },
+      ];
+      for (const params of algoMethods) {
+        try {
+          const r = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order/algo', params);
+          if (r.clientAlgoId || r.orderId || r.algoId) {
+            console.log(`${type} ALGO BAŞARILI (${params.workingType||'no-type'}): ${r.clientAlgoId||r.orderId||r.algoId}`);
+            return { orderId: r.clientAlgoId||r.orderId||r.algoId };
+          }
+        } catch(e) {
+          console.log(`${type} algo hata (${params.workingType||'no-type'}): ${e.message}`);
+        }
+      }
+
+      console.log(`${type} TÜM YÖNTEMLER BAŞARISIZ`);
       return {orderId:null};
     }
 
