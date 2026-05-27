@@ -16,7 +16,7 @@ const BINANCE_BASES = [
 ];
 const DEFAULT_RECV_WINDOW = 10000;
 
-// Rate-limit korumasÄ±: Binance public endpointlerine aynÄ± sembol iÃ§in tekrar tekrar vurma.
+// Rate-limit koruması: Binance public endpointlerine aynı sembol için tekrar tekrar vurma.
 const CACHE = new Map();
 const PENDING = new Map();
 function cacheGet(key) {
@@ -39,9 +39,9 @@ async function cached(key, ttlMs, fn) {
 }
 function friendlyBinanceError(e) {
   const msg = String(e?.message || e || '');
-  if (msg.includes('429')) return 'Binance rate limit 429: Railway IP / API isteÄŸi fazla. 2-5 dakika bekle, tekrar tekrar Test Etme. Yeni sÃ¼rÃ¼m istekleri cacheledi.';
-  if (msg.includes('418')) return 'Binance geÃ§ici IP ban 418: 15-30 dakika bekle. Ã‡ok sÄ±k public veri istenmiÅŸ.';
-  return msg || 'Bilinmeyen Binance hatasÄ±';
+  if (msg.includes('429')) return 'Binance rate limit 429: Railway IP / API isteği fazla. 2-5 dakika bekle, tekrar tekrar Test Etme. Yeni sürüm istekleri cacheledi.';
+  if (msg.includes('418')) return 'Binance geçici IP ban 418: 15-30 dakika bekle. Çok sık public veri istenmiş.';
+  return msg || 'Bilinmeyen Binance hatası';
 }
 
 function sign(queryString, secret) {
@@ -96,7 +96,7 @@ async function fetchJsonWithBases(path, options = {}, bases = BINANCE_BASES) {
       lastError = e;
     }
   }
-  throw lastError || new Error('Binance baÄŸlantÄ±sÄ± baÅŸarÄ±sÄ±z');
+  throw lastError || new Error('Binance bağlantısı başarısız');
 }
 
 async function binanceRequest(apiKey, apiSecret, method, path, params = {}) {
@@ -122,7 +122,7 @@ async function binanceRequest(apiKey, apiSecret, method, path, params = {}) {
   };
 
   // Binance signed GET endpointleri query string ister. POST/DELETE emir endpointlerinde
-  // body daha stabil Ã§alÄ±ÅŸÄ±r; bazÄ± proxy/Railway durumlarÄ±nda query parametreleri sorun Ã§Ä±karabiliyor.
+  // body daha stabil çalışır; bazı proxy/Railway durumlarında query parametreleri sorun çıkarabiliyor.
   if (upper === 'GET') {
     return fetchJsonWithBases(`${path}?${signedPayload}`, options);
   }
@@ -233,14 +233,14 @@ async function getExchangeSymbol(sym) {
   const info = await cached('exchangeInfo', 30 * 60 * 1000, async () => {
     const x = await fetchJsonWithBases('/fapi/v1/exchangeInfo', { method: 'GET' });
     if (!x || !Array.isArray(x.symbols)) {
-      throw new Error('Binance exchangeInfo sembol listesi alÄ±namadÄ±. 2-5 dakika bekle veya Railway deploy/log kontrol et.');
+      throw new Error('Binance exchangeInfo sembol listesi alınamadı. 2-5 dakika bekle veya Railway deploy/log kontrol et.');
     }
     return x;
   });
   const symbols = Array.isArray(info?.symbols) ? info.symbols : [];
   const symbolInfo = symbols.find(s => s && s.symbol === sym);
-  if (!symbolInfo) throw new Error(`${sym} Binance USD-M Futures iÃ§inde bulunamadÄ± veya geÃ§ici olarak listede yok`);
-  if (!Array.isArray(symbolInfo.filters)) throw new Error(`${sym} Binance filtreleri alÄ±namadÄ±; exchangeInfo eksik dÃ¶ndÃ¼`);
+  if (!symbolInfo) throw new Error(`${sym} Binance USD-M Futures içinde bulunamadı veya geçici olarak listede yok`);
+  if (!Array.isArray(symbolInfo.filters)) throw new Error(`${sym} Binance filtreleri alınamadı; exchangeInfo eksik döndü`);
   return symbolInfo;
 }
 
@@ -248,7 +248,7 @@ async function getExchangeSymbol(sym) {
 async function getFuturesTradingSymbols() {
   const info = await cached('futures:exchangeInfo:trading', 30 * 60 * 1000, async () => {
     const x = await fetchJsonWithBases('/fapi/v1/exchangeInfo', { method: 'GET' });
-    if (!Array.isArray(x?.symbols)) throw new Error('exchangeInfo symbols boÅŸ geldi');
+    if (!Array.isArray(x?.symbols)) throw new Error('exchangeInfo symbols boş geldi');
     return x;
   });
   return info.symbols
@@ -355,10 +355,10 @@ function smartMoneyScore({ tf15, tf1h, tf4h, depth, fundingRate, openInterest, t
   if (tf15.cvd > 0) long += 10; else short += 10;
   if (depth.imbalance > 0.08) long += 10;
   if (depth.imbalance < -0.08) short += 10;
-  if (Number.isFinite(fundingRate) && fundingRate > 0.035 && tf15.trend !== 'BULL') { short += 12; notes.push('pozitif funding sÄ±kÄ±ÅŸma riski'); }
+  if (Number.isFinite(fundingRate) && fundingRate > 0.035 && tf15.trend !== 'BULL') { short += 12; notes.push('pozitif funding sıkışma riski'); }
   if (Number.isFinite(fundingRate) && fundingRate < -0.035 && tf15.trend !== 'BEAR') { long += 12; notes.push('negatif funding squeeze riski'); }
-  if (Number.isFinite(topLongShortRatio) && topLongShortRatio > 2.2 && tf15.cvd < 0) { short += 12; notes.push('crowded long + CVD zayÄ±f'); }
-  if (Number.isFinite(topLongShortRatio) && topLongShortRatio < 0.55 && tf15.cvd > 0) { long += 12; notes.push('crowded short + CVD gÃ¼Ã§lÃ¼'); }
+  if (Number.isFinite(topLongShortRatio) && topLongShortRatio > 2.2 && tf15.cvd < 0) { short += 12; notes.push('crowded long + CVD zayıf'); }
+  if (Number.isFinite(topLongShortRatio) && topLongShortRatio < 0.55 && tf15.cvd > 0) { long += 12; notes.push('crowded short + CVD güçlü'); }
   const side = long >= short ? 'LONG' : 'SHORT';
   const score = Math.max(long, short);
   return { side, longScore: long, shortScore: short, score, notes };
@@ -366,14 +366,14 @@ function smartMoneyScore({ tf15, tf1h, tf4h, depth, fundingRate, openInterest, t
 
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Kripto Sinyal Backend Ã§alÄ±ÅŸÄ±yor', time: new Date().toISOString() });
+  res.json({ status: 'ok', message: 'Kripto Sinyal Backend çalışıyor', time: new Date().toISOString() });
 });
 
 app.post('/api/account', async (req, res) => {
   const { apiKey, apiSecret } = req.body || {};
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key ve secret gerekli' });
   try {
-    // Bakiye endpointini cachelemiyoruz; kullanÄ±cÄ± Test Et/Bakiye Getir dediÄŸinde canlÄ± okur.
+    // Bakiye endpointini cachelemiyoruz; kullanıcı Test Et/Bakiye Getir dediğinde canlı okur.
     const data = await readFuturesAccount(apiKey, apiSecret);
     res.json(data);
   } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
@@ -384,7 +384,7 @@ app.post('/api/account-debug', async (req, res) => {
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key ve secret gerekli' });
   try {
     const data = await readFuturesAccount(apiKey, apiSecret);
-    // Secret/key dÃ¶ndÃ¼rmez. Mobilde doÄŸrudan API cevabÄ±nÄ± gÃ¶rmek iÃ§in.
+    // Secret/key döndürmez. Mobilde doğrudan API cevabını görmek için.
     res.json(data);
   } catch (e) { res.status(400).json({ error: friendlyBinanceError(e) }); }
 });
@@ -407,8 +407,8 @@ app.post('/api/order', async (req, res) => {
   const sym = normalizeSymbol(symbol);
   const lev = parseInt(leverage, 10);
   const entry = toNum(entryPrice), target = toNum(targetPrice), stop = toNum(stopPrice), margin = toNum(usdtAmount);
-  if (!apiKey || !apiSecret || !sym || !lev || !entry || !target || !stop || !margin) return res.status(400).json({ error: 'Eksik veya geÃ§ersiz emir parametresi' });
-  if (!(target > entry && stop < entry)) return res.status(400).json({ error: 'LONG iÃ§in TP giriÅŸten bÃ¼yÃ¼k, SL giriÅŸten kÃ¼Ã§Ã¼k olmalÄ±' });
+  if (!apiKey || !apiSecret || !sym || !lev || !entry || !target || !stop || !margin) return res.status(400).json({ error: 'Eksik veya geçersiz emir parametresi' });
+  if (!(target > entry && stop < entry)) return res.status(400).json({ error: 'LONG için TP girişten büyük, SL girişten küçük olmalı' });
 
   try {
     await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: Math.max(1, Math.min(125, lev)) });
@@ -418,13 +418,13 @@ app.post('/api/order', async (req, res) => {
     const lotFilter = filters.find(f => f && f.filterType === 'LOT_SIZE');
     const priceFilter = filters.find(f => f && f.filterType === 'PRICE_FILTER');
     const minNotionalFilter = filters.find(f => f && (f.filterType === 'MIN_NOTIONAL' || f.filterType === 'NOTIONAL'));
-    if (!lotFilter || !priceFilter) throw new Error(`${sym} lot/tick filtreleri alÄ±namadÄ±`);
+    if (!lotFilter || !priceFilter) throw new Error(`${sym} lot/tick filtreleri alınamadı`);
 
     const qty = formatStep((margin * lev) / entry, lotFilter.stepSize);
-    if (toNum(qty) < toNum(lotFilter.minQty)) throw new Error(`Miktar minQty altÄ±nda: ${qty} < ${lotFilter.minQty}`);
+    if (toNum(qty) < toNum(lotFilter.minQty)) throw new Error(`Miktar minQty altında: ${qty} < ${lotFilter.minQty}`);
     const notional = toNum(qty) * entry;
     const minNotional = toNum(minNotionalFilter?.notional ?? minNotionalFilter?.minNotional, 0);
-    if (minNotional && notional < minNotional) throw new Error(`Pozisyon nominali Ã§ok kÃ¼Ã§Ã¼k: ${notional.toFixed(2)} USDT < ${minNotional} USDT`);
+    if (minNotional && notional < minNotional) throw new Error(`Pozisyon nominali çok küçük: ${notional.toFixed(2)} USDT < ${minNotional} USDT`);
 
     const price = formatTick(entry, priceFilter.tickSize);
     const tp = formatTick(target, priceFilter.tickSize);
@@ -461,14 +461,14 @@ app.post('/api/order', async (req, res) => {
         positionSide: 'BOTH'
       });
     } catch (protectError) {
-      // Koruma emirleri kurulamazsa ana emri iptal etmeyi dene. KorumasÄ±z pozisyon riski bÄ±rakma.
+      // Koruma emirleri kurulamazsa ana emri iptal etmeyi dene. Korumasız pozisyon riski bırakma.
       try { await binanceRequest(apiKey, apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: mainOrder.orderId }); } catch {}
-      throw new Error(`TP/SL kurulamadÄ±, ana emir iptal denendi: ${protectError.message}`);
+      throw new Error(`TP/SL kurulamadı, ana emir iptal denendi: ${protectError.message}`);
     }
 
     res.json({
       ok: true,
-      message: `${sym} LONG emri aÃ§Ä±ldÄ±`,
+      message: `${sym} LONG emri açıldı`,
       mainOrderId: mainOrder.orderId,
       tpOrderId: tpOrder?.orderId,
       slOrderId: slOrder?.orderId,
@@ -518,7 +518,7 @@ app.post('/api/close', async (req, res) => {
     const pos = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', { symbol: sym });
     const list = Array.isArray(pos) ? pos : [];
     const openPos = list.find(p => Math.abs(toNum(p.positionAmt, 0)) > 0);
-    if (!openPos) return res.json({ ok: true, message: 'AÃ§Ä±k pozisyon yok' });
+    if (!openPos) return res.json({ ok: true, message: 'Açık pozisyon yok' });
     const amt = toNum(openPos.positionAmt, 0);
     const side = amt > 0 ? 'SELL' : 'BUY';
     const closeOrder = await binanceRequest(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
@@ -529,7 +529,7 @@ app.post('/api/close', async (req, res) => {
       reduceOnly: 'true',
       positionSide: 'BOTH'
     });
-    res.json({ ok: true, message: `${sym} pozisyonu kapatÄ±ldÄ±`, orderId: closeOrder.orderId });
+    res.json({ ok: true, message: `${sym} pozisyonu kapatıldı`, orderId: closeOrder.orderId });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -622,7 +622,7 @@ app.get('/api/market-intel/:symbol', async (req, res) => {
       fetchJsonWithBases(`/futures/data/globalLongShortAccountRatio?symbol=${qsym}&period=15m&limit=1`, { method: 'GET' })
     ]);
     if (k15.status !== 'fulfilled' || k1h.status !== 'fulfilled' || k4h.status !== 'fulfilled') {
-      throw new Error('Kline verisi alÄ±namadÄ±');
+      throw new Error('Kline verisi alınamadı');
     }
     const tf15 = tfSummary(k15.value);
     const tf1h = tfSummary(k1h.value);
@@ -646,7 +646,7 @@ app.get('/api/market-intel/:symbol', async (req, res) => {
       markPrice,
       smartMoney: sm,
       cachedSeconds: 90,
-      usedForSignal: '4H ana trend + 1H giriÅŸ filtresi + 15M tetik + order book/CVD/funding/OI onayÄ±'
+      usedForSignal: '4H ana trend + 1H giriş filtresi + 15M tetik + order book/CVD/funding/OI onayı'
     };
     });
     res.json(out);
@@ -655,4 +655,4 @@ app.get('/api/market-intel/:symbol', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Server ${PORT} portunda Ã§alÄ±ÅŸÄ±yor`));
+app.listen(PORT, () => console.log(`Server ${PORT} portunda çalışıyor`));
