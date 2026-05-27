@@ -8,12 +8,12 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 const PORT = process.env.PORT || 3000;
-const BINANCE_BASES = (process.env.BINANCE_FAPI_BASES || 'https://fapi.binance.com,https://fapi.binancefuture.com')
+const BINANCE_BASES = (process.env.BINANCE_FAPI_BASES || 'https://fapi.binance.com')
   .split(',')
   .map(x => x.trim().replace(/\/$/, ''))
   .filter(Boolean);
 let activeBaseIndex = 0;
-const VERSION = 'RISK_PROOF_GEO_FAILOVER_2026_05_27';
+const VERSION = 'RISK_PROOF_451_REGION_FIX_2026_05_27';
 
 function activeBase() {
   return BINANCE_BASES[activeBaseIndex] || 'https://fapi.binance.com';
@@ -24,7 +24,7 @@ function isGeoBlockedMessage(msg) {
          String(msg || '').toLowerCase().includes('service unavailable from a restricted location');
 }
 function geoHelp() {
-  return 'Railway sunucu bölgesi Binance Futures için kısıtlı görünüyor. Railway Settings/Deploy/Region kısmını US West yerine Europe/Asia gibi Binance Futures erişimi olan bir bölgeye taşı; bu paket ayrıca fapi.binancefuture.com fallback dener.';
+  return 'Binance USD-M Futures resmi REST endpointi yalnızca https://fapi.binance.com. Bu sunucu IP/bölge Binance tarafından HTTP 451 ile kısıtlanmış görünüyor. Railway Settings > Regions bölümünde US replikalarını 0 yapıp EU West veya Southeast Asia replikasını 1 yap, sonra redeploy et. Bu bir kod bugı değil; hosting bölgesi/IP erişim sorunu.';
 }
 function makeUrl(base, path, query) {
   return `${base}${path}${query ? '?' + query : ''}`;
@@ -118,7 +118,11 @@ async function fetchJson(url, options = {}, label = 'Binance') {
     res = await fetch(url, options);
     text = await res.text();
   } catch (e) {
-    throw new Error(`${label}: ağ hatası: ${errMsg(e)}`);
+    const m = errMsg(e);
+    if (m.includes('ENOTFOUND') || m.includes('getaddrinfo')) {
+      throw new Error(`${label}: DNS çözülemedi. BINANCE_FAPI_BASES içinde geçersiz domain olabilir. Resmi USD-M Futures REST base: https://fapi.binance.com. Orijinal hata: ${m}`);
+    }
+    throw new Error(`${label}: ağ hatası: ${m}`);
   }
   try {
     data = text ? JSON.parse(text) : null;
@@ -506,9 +510,9 @@ app.get('/', (req, res) => res.json({ ok: true, status: 'ok', version: VERSION, 
 app.get('/api/health', async (req, res) => {
   try {
     const st = await syncTime();
-    res.json({ ok: true, version: VERSION, activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES, localTime: Date.now(), binanceTimeApprox: st, timeOffsetMs });
+    res.json({ ok: true, version: VERSION, officialBinanceFuturesRestBase: 'https://fapi.binance.com', activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES, localTime: Date.now(), binanceTimeApprox: st, timeOffsetMs });
   } catch (e) {
-    res.status(502).json({ ok: false, error: errMsg(e), help: geoHelp(), version: VERSION, activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES });
+    res.status(502).json({ ok: false, error: errMsg(e), help: geoHelp(), officialBinanceFuturesRestBase: 'https://fapi.binance.com', version: VERSION, activeBinanceBase: activeBase(), binanceBases: BINANCE_BASES });
   }
 });
 
