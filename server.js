@@ -664,70 +664,48 @@ app.post('/api/order', async (req, res) => {
 
     let tp={orderId:null},sl={orderId:null};
 
-    // TP/SL tipi dönüşümü (algo endpoint için)
-    const algoType = t => t==='TAKE_PROFIT_MARKET'?'TAKE_PROFIT':t==='STOP_MARKET'?'STOP':t;
-
+    // ── TP/SL YERLEŞTIR ──────────────────────────────────────────────────────
     async function placeSLTP(type, price) {
       const ps = price.toString();
       const qs = qty.toString();
-      const at = algoType(type);
-      let got4120 = false;
 
-      // ── A: Standart /fapi/v1/order ────────────────────────────────────────
-      const stdFormats = [
-        {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'},
-        {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH'},
-        {symbol:sym,side:cSide,type,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        {symbol:sym,side:cSide,type,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH'},
+      // Standart formatlar - form encoded
+      const formats = [
+        // 1. closePosition + MARK_PRICE
+        ['/fapi/v1/order', {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'}, false],
+        // 2. closePosition + CONTRACT_PRICE  
+        ['/fapi/v1/order', {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'}, false],
+        // 3. closePosition, workingType yok
+        ['/fapi/v1/order', {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH'}, false],
+        // 4. quantity + reduceOnly + MARK_PRICE
+        ['/fapi/v1/order', {symbol:sym,side:cSide,type,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'}, false],
+        // 5. quantity + reduceOnly
+        ['/fapi/v1/order', {symbol:sym,side:cSide,type,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH'}, false],
       ];
-      for(const p of stdFormats){
-        try{
-          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',p);
-          if(r.orderId){console.log(`${type} STD OK: ${r.orderId}`);return r;}
-        }catch(e){
-          const m=e.message||'';
-          if(m.includes('-4120')){got4120=true;break;}
-          console.log(`${type} std hata: ${m.substring(0,60)}`);
+
+      for (const [path, params, isJson] of formats) {
+        try {
+          const r = await bReq(apiKey, apiSecret, 'POST', path, params, isJson);
+          if (r.orderId) {
+            console.log(`${type} BAŞARILI orderId:${r.orderId}`);
+            return r;
+          }
+        } catch(e) {
+          const m = e.message || '';
+          // -4120: bu coin algo endpoint gerektiriyor
+          if (m.includes('-4120')) {
+            console.log(`${type} -4120 alındı: coin algo order gerekiyor, IP erişimi yok`);
+            break;
+          }
+          console.log(`${type} hata: ${m.substring(0,80)}`);
         }
       }
 
-      // ── B: Algo /fapi/v1/order/algo (-4120 aldıysak veya std başarısızsa) ─
-      // Binance algo order formatı farklı - sadece gerekli parametreler
-      // Binance algo endpoint: TAKE_PROFIT veya STOP tipi, quantity zorunlu
-      // closePosition algo'da çalışmıyor, quantity + reduceOnly kullanmalı
-      const algoFormats = [
-        // Format 1: quantity + reduceOnly + MARK_PRICE (en standart)
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
-          reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE',timeInForce:'GTE_GTC'},
-        // Format 2: quantity + reduceOnly + CONTRACT_PRICE
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
-          reduceOnly:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE',timeInForce:'GTE_GTC'},
-        // Format 3: quantity + reduceOnly, timeInForce yok
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
-          reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        // Format 4: quantity + reduceOnly, workingType yok
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,
-          reduceOnly:'true',positionSide:'BOTH'},
-        // Format 5: closePosition boolean (bazı versiyonlar)
-        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,
-          closePosition:true,positionSide:'BOTH',workingType:'MARK_PRICE'},
-      ];
-      for(const p of algoFormats){
-        try{
-          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order/algo',p,true);
-          const id=r.clientAlgoId||r.algoId||r.orderId;
-          if(id){console.log(`${type} ALGO OK: ${id}`);return{orderId:id};}
-        }catch(e){
-          console.log(`${type} algo hata: ${(e.message||'').substring(0,60)}`);
-        }
-      }
-
-      console.log(`${type} TÜM YÖNTEMLER BAŞARISIZ`);
-      return {orderId:null};
+      console.log(`${type} BAŞARISIZ - manuel ekle`);
+      return {orderId: null};
     }
 
-    tp=await placeSLTP('TAKE_PROFIT_MARKET',realTP);
+    tp = await placeSLTP('TAKE_PROFIT_MARKET', realTP);
     await new Promise(r=>setTimeout(r,400));
     sl=await placeSLTP('STOP_MARKET',realSL);
 
