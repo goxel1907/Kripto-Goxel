@@ -642,44 +642,54 @@ app.post('/api/order', async (req, res) => {
 
     let tp={orderId:null},sl={orderId:null};
 
+    // TP/SL tipi dönüşümü (algo endpoint için)
+    const algoType = t => t==='TAKE_PROFIT_MARKET'?'TAKE_PROFIT':t==='STOP_MARKET'?'STOP':t;
+
     async function placeSLTP(type, price) {
-      const price_str = price.toString();
+      const ps = price.toString();
+      const qs = qty.toString();
+      const at = algoType(type);
+      let got4120 = false;
 
-      // Format 1: TAKE_PROFIT_MARKET / STOP_MARKET + closePosition
-      const formats = [
-        // Standart crypto futures
-        {path:'/fapi/v1/order', params:{symbol:sym,side:cSide,type,
-          stopPrice:price_str,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'}},
-        {path:'/fapi/v1/order', params:{symbol:sym,side:cSide,type,
-          stopPrice:price_str,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'}},
-        {path:'/fapi/v1/order', params:{symbol:sym,side:cSide,type,
-          stopPrice:price_str,closePosition:'true',positionSide:'BOTH'}},
-        // Quantity ile (closePosition yerine)
-        {path:'/fapi/v1/order', params:{symbol:sym,side:cSide,type,
-          stopPrice:price_str,quantity:qty.toString(),reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'}},
-        {path:'/fapi/v1/order', params:{symbol:sym,side:cSide,type,
-          stopPrice:price_str,quantity:qty.toString(),reduceOnly:'true',positionSide:'BOTH'}},
+      // ── A: Standart /fapi/v1/order ────────────────────────────────────────
+      const stdFormats = [
+        {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
+        {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'},
+        {symbol:sym,side:cSide,type,stopPrice:ps,closePosition:'true',positionSide:'BOTH'},
+        {symbol:sym,side:cSide,type,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
+        {symbol:sym,side:cSide,type,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH'},
       ];
-
-      for(const {path, params} of formats) {
+      for(const p of stdFormats){
         try{
-          const r=await bReq(apiKey,apiSecret,'POST',path,params);
-          if(r.orderId){
-            console.log(`${type} BAŞARILI orderId:${r.orderId}`);
-            return r;
-          }
+          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',p);
+          if(r.orderId){console.log(`${type} STD OK: ${r.orderId}`);return r;}
         }catch(e){
-          const msg=e.message||'';
-          // -4120 = algo endpoint gerekiyor → skip tüm /fapi/v1/order denemeleri
-          if(msg.includes('-4120'))break;
-          console.log(`${type} hata: ${msg.substring(0,80)}`);
+          const m=e.message||'';
+          if(m.includes('-4120')){got4120=true;break;}
+          console.log(`${type} std hata: ${m.substring(0,60)}`);
         }
       }
 
-      // -4120 aldıysak veya hiçbiri çalışmadıysa: Algo order API
-      // Yeni Binance coinleri için - bu endpoint farklı auth gerektirebilir,
-      // şimdilik pas geç ve kullanıcıya bilgi ver
-      console.log(`${type} standart başarısız, coin yeni nesil olabilir`);
+      // ── B: Algo /fapi/v1/order/algo (-4120 aldıysak veya std başarısızsa) ─
+      // Binance algo order formatı farklı - sadece gerekli parametreler
+      const algoFormats = [
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'},
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,closePosition:'true',positionSide:'BOTH'},
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
+        {symbol:sym,side:cSide,orderType:at,stopPrice:ps,quantity:qs,reduceOnly:'true',positionSide:'BOTH'},
+      ];
+      for(const p of algoFormats){
+        try{
+          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order/algo',p);
+          const id=r.clientAlgoId||r.algoId||r.orderId;
+          if(id){console.log(`${type} ALGO OK: ${id}`);return{orderId:id};}
+        }catch(e){
+          console.log(`${type} algo hata: ${(e.message||'').substring(0,60)}`);
+        }
+      }
+
+      console.log(`${type} TÜM YÖNTEMLER BAŞARISIZ`);
       return {orderId:null};
     }
 
