@@ -681,40 +681,62 @@ app.post('/api/order', async (req, res) => {
     const ps=realTP.toString(),ss=realSL.toString(),qs=qty.toString();
     console.log(`${sym} giriş:${execPrice} TP:${realTP} SL:${realSL} lev:${leverage}`);
 
-    // ── TP/SL — tüm formatlar sırayla ───────────────────────────────────────
+    // ── TP/SL ────────────────────────────────────────────────────────────────
+    // "Target strategy invalid" = fiyat yanlış yönde
+    // LONG: TP > execPrice, SL < execPrice
+    // SHORT: TP < execPrice, SL > execPrice
+    // Fiyatları doğrula ve düzelt
+    let finalTP = realTP, finalSL = realSL;
+    if (isLong) {
+      if (finalTP <= execPrice) finalTP = execPrice * 1.05; // TP en az %5 yukarı
+      if (finalSL >= execPrice) finalSL = execPrice * 0.95; // SL en az %5 aşağı
+    } else {
+      if (finalTP >= execPrice) finalTP = execPrice * 0.95;
+      if (finalSL <= execPrice) finalSL = execPrice * 1.05;
+    }
+    finalTP = rnd(finalTP);
+    finalSL = rnd(finalSL);
+    console.log(`${sym} lev:${leverage} giriş:${execPrice} TP:${finalTP} SL:${finalSL} (isLong:${isLong})`);
+
     async function placeSLTP(marketType, price) {
-      const p = price.toString();
-      const q = qty.toString();
-      const limitType = marketType==='TAKE_PROFIT_MARKET'?'TAKE_PROFIT':'STOP';
+      const p  = price.toString();
+      const q  = qty.toString();
+      // Binance kuralı:
+      // LONG TP: stopPrice > markPrice → TAKE_PROFIT_MARKET SELL
+      // LONG SL: stopPrice < markPrice → STOP_MARKET SELL
+      // SHORT TP: stopPrice < markPrice → TAKE_PROFIT_MARKET BUY
+      // SHORT SL: stopPrice > markPrice → STOP_MARKET BUY
       const formats = [
-        // Market tipler
-        {type:marketType,stopPrice:p,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        {type:marketType,stopPrice:p,closePosition:'true',positionSide:'BOTH',workingType:'CONTRACT_PRICE'},
-        {type:marketType,stopPrice:p,closePosition:'true',positionSide:'BOTH'},
-        {type:marketType,stopPrice:p,quantity:q,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE'},
-        {type:marketType,stopPrice:p,quantity:q,reduceOnly:'true',positionSide:'BOTH'},
-        // Limit tipler (yeni coinler için)
-        {type:limitType,stopPrice:p,price:p,closePosition:'true',positionSide:'BOTH',workingType:'MARK_PRICE',timeInForce:'GTC'},
-        {type:limitType,stopPrice:p,price:p,closePosition:'true',positionSide:'BOTH',timeInForce:'GTC'},
-        {type:limitType,stopPrice:p,price:p,quantity:q,reduceOnly:'true',positionSide:'BOTH',workingType:'MARK_PRICE',timeInForce:'GTC'},
-        {type:limitType,stopPrice:p,price:p,quantity:q,reduceOnly:'true',positionSide:'BOTH',timeInForce:'GTC'},
+        // Format 1: closePosition (en standart)
+        {type:marketType, stopPrice:p, closePosition:'true', positionSide:'BOTH', workingType:'MARK_PRICE'},
+        {type:marketType, stopPrice:p, closePosition:'true', positionSide:'BOTH', workingType:'CONTRACT_PRICE'},
+        {type:marketType, stopPrice:p, closePosition:'true', positionSide:'BOTH'},
+        // Format 2: quantity + reduceOnly
+        {type:marketType, stopPrice:p, quantity:q, reduceOnly:'true', positionSide:'BOTH', workingType:'MARK_PRICE'},
+        {type:marketType, stopPrice:p, quantity:q, reduceOnly:'true', positionSide:'BOTH'},
       ];
-      for(const params of formats){
-        try{
-          const r=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{symbol:sym,side:cSide,...params});
-          if(r.orderId){console.log(`${marketType} OK (${params.type} ${params.workingType||''}): ${r.orderId}`);return r;}
-        }catch(e){
-          const m=e.message||'';
-          console.log(`${params.type} hata: ${m.substring(0,60)}`);
-          if(m.includes('-2021')||m.includes('-2013'))break; // Fiyat geçersiz, devam etme
+      for (const params of formats) {
+        try {
+          const r = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',
+            {symbol:sym, side:cSide, ...params});
+          if (r.orderId) {
+            console.log(`${marketType} BAŞARILI (${params.workingType||'no-wt'}): ${r.orderId}`);
+            return r;
+          }
+        } catch(e) {
+          const m = e.message||'';
+          console.log(`${marketType} hata (${params.workingType||'no-wt'}): ${m.substring(0,80)}`);
+          // -4120: algo gerekiyor → tüm formatları atla
+          if (m.includes('-4120')) break;
+          // -1111/-2021/-2013: fiyat sorunu → devam et
         }
       }
-      return{orderId:null};
+      return {orderId:null};
     }
 
-    const tp=await placeSLTP('TAKE_PROFIT_MARKET',realTP);
-    await new Promise(r=>setTimeout(r,400));
-    const sl=await placeSLTP('STOP_MARKET',realSL);
+    const tp = await placeSLTP('TAKE_PROFIT_MARKET', finalTP);
+    await new Promise(r=>setTimeout(r,500));
+    const sl = await placeSLTP('STOP_MARKET', finalSL);
     const tpOk=!!tp.orderId,slOk=!!sl.orderId;
 
     res.json({ok:true,
