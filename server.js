@@ -22,7 +22,7 @@ async function binanceRequest(apiKey, apiSecret, method, path, params = {}) {
   const timestamp = Date.now();
   const queryObj = { ...params, timestamp };
   const queryString = Object.entries(queryObj)
-    .map(([k, v]) => `${k}=${v}`)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&');
   const signature = sign(queryString, apiSecret);
   const url = `${BINANCE_BASE}${path}?${queryString}&signature=${signature}`;
@@ -50,33 +50,21 @@ app.post('/api/account', async (req, res) => {
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key ve secret gerekli' });
 
   try {
-    // Binance bazen /fapi/v2/account içinde bakiye alanlarını 0/boş döndürebiliyor.
-    // Bu yüzden asıl bakiye için /fapi/v2/balance endpointini de okuyoruz.
-    const [accountResult, balanceResult] = await Promise.allSettled([
-      binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account'),
-      binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/balance')
-    ]);
-
-    const account = accountResult.status === 'fulfilled' ? accountResult.value : {};
-    const balances = balanceResult.status === 'fulfilled' && Array.isArray(balanceResult.value) ? balanceResult.value : [];
-    const usdt = balances.find(b => b.asset === 'USDT') || {};
-
-    const totalWalletBalance =
-      parseFloat(usdt.balance ?? usdt.walletBalance ?? account.totalWalletBalance ?? 0) || 0;
-    const availableBalance =
-      parseFloat(usdt.availableBalance ?? account.availableBalance ?? 0) || 0;
-    const totalUnrealizedProfit =
-      parseFloat(usdt.crossUnPnl ?? account.totalUnrealizedProfit ?? 0) || 0;
+    // Binance USD-M Futures /fapi/v2/account endpoint'i
+    const accountData = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account');
+    
+    const totalWalletBalance = parseFloat(accountData.totalWalletBalance || 0) || 0;
+    const availableBalance = parseFloat(accountData.availableBalance || 0) || 0;
+    const totalUnrealizedProfit = parseFloat(accountData.totalUnrealizedProfit || 0) || 0;
 
     res.json({
       ok: true,
-      source: balanceResult.status === 'fulfilled' ? 'fapi/v2/balance + fapi/v2/account' : 'fapi/v2/account',
+      source: 'fapi/v2/account',
       asset: 'USDT',
       totalWalletBalance,
       availableBalance,
       totalUnrealizedProfit,
-      rawBalanceCount: balances.length,
-      positions: (account.positions || []).filter(p => parseFloat(p.positionAmt) !== 0).map(p => ({
+      positions: (accountData.positions || []).filter(p => parseFloat(p.positionAmt) !== 0).map(p => ({
         symbol: p.symbol,
         positionAmt: p.positionAmt,
         entryPrice: p.entryPrice,
@@ -90,37 +78,32 @@ app.post('/api/account', async (req, res) => {
   }
 });
 
-// Bakiye teşhis endpointi: Secret göstermez, sadece hangi endpoint ne döndürüyor onu görürsün.
+// Bakiye teşhis endpointi
 app.post('/api/account-debug', async (req, res) => {
   const { apiKey, apiSecret } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'API key ve secret gerekli' });
   try {
-    const [accountResult, balanceResult] = await Promise.allSettled([
-      binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account'),
-      binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/balance')
-    ]);
-
-    const account = accountResult.status === 'fulfilled' ? accountResult.value : { error: accountResult.reason?.message };
-    const balances = balanceResult.status === 'fulfilled' ? balanceResult.value : { error: balanceResult.reason?.message };
-    const usdt = Array.isArray(balances) ? balances.find(b => b.asset === 'USDT') : null;
-
+    const accountResult = await binanceRequest(apiKey, apiSecret, 'GET', '/fapi/v2/account');
+    
     res.json({
       ok: true,
+      debug: 'URL encoded query string kullanılıyor',
       accountTotals: {
-        totalWalletBalance: account.totalWalletBalance,
-        availableBalance: account.availableBalance,
-        totalUnrealizedProfit: account.totalUnrealizedProfit
+        totalWalletBalance: accountResult.totalWalletBalance,
+        availableBalance: accountResult.availableBalance,
+        totalUnrealizedProfit: accountResult.totalUnrealizedProfit,
+        makerCommission: accountResult.makerCommission,
+        takerCommission: accountResult.takerCommission
       },
-      usdtBalanceEndpoint: usdt,
-      balanceEndpointType: Array.isArray(balances) ? 'array' : 'error',
-      accountEndpointType: account.error ? 'error' : 'ok'
+      positionCount: (accountResult.positions || []).length,
+      apiKeyValid: true
     });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// ── KALDIRAÇ AYARLA ───────────────────────────────────────────────────────────
+// ── KALDIRAÇ AYARLA ────────────────────────────────────────────────────────────
 app.post('/api/leverage', async (req, res) => {
   const { apiKey, apiSecret, symbol, leverage } = req.body;
   if (!apiKey || !apiSecret || !symbol || !leverage)
