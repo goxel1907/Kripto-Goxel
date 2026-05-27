@@ -737,78 +737,112 @@ app.post('/api/order', async (req, res) => {
   const { apiKey, apiSecret, symbol, side, leverage, marginType, targetPrice, stopPrice, usdtAmount } = req.body;
   if (!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!usdtAmount)
     return res.status(400).json({ error:'Eksik parametre' });
-  const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
-  const isLong=side.toUpperCase()==='LONG';
+
+  const sym    = symbol.toUpperCase().includes('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
+  const isLong = side.toUpperCase()==='LONG';
+  const oSide  = isLong ? 'BUY'  : 'SELL';
+  const cSide  = isLong ? 'SELL' : 'BUY';
+
   try {
-    if(marginType){
-      try{await bReq(apiKey,apiSecret,'POST','/fapi/v1/marginType',{symbol:sym,marginType:marginType.toUpperCase()});}
-      catch(e){if(!e.message.includes('No need'))console.log('MarginType:',e.message);}
+    // 1. Marjin tipi
+    if (marginType) {
+      try { await bReq(apiKey,apiSecret,'POST','/fapi/v1/marginType',
+        {symbol:sym, marginType:marginType.toUpperCase()}); }
+      catch(e) { if(!e.message.includes('No need')) console.log('MarginType:',e.message); }
     }
-    await bReq(apiKey,apiSecret,'POST','/fapi/v1/leverage',{symbol:sym,leverage:parseInt(leverage)});
-    let stepSize=0.001,tickSize=0.01,minNot=5;
+
+    // 2. Kaldıraç
+    await bReq(apiKey,apiSecret,'POST','/fapi/v1/leverage',
+      {symbol:sym, leverage:parseInt(leverage)});
+
+    // 3. Sembol bilgisi (stepSize, tickSize)
+    let stepSize=0.001, tickSize=0.01, minNot=5;
     try {
-      const si=await bPub('/fapi/v1/exchangeInfo','symbol='+sym);
-      const s=Array.isArray(si.symbols)?si.symbols.find(x=>x.symbol===sym):null;
-      if(s){
+      const si = await bPub('/fapi/v1/exchangeInfo','symbol='+sym);
+      const s  = Array.isArray(si.symbols) ? si.symbols.find(x=>x.symbol===sym) : null;
+      if (s) {
         const lf=s.filters.find(f=>f.filterType==='LOT_SIZE');
         const pf=s.filters.find(f=>f.filterType==='PRICE_FILTER');
         const mf=s.filters.find(f=>f.filterType==='MIN_NOTIONAL');
-        if(lf)stepSize=parseFloat(lf.stepSize);
-        if(pf)tickSize=parseFloat(pf.tickSize);
-        if(mf)minNot=parseFloat(mf.notional||mf.minNotional||5);
+        if (lf) stepSize=parseFloat(lf.stepSize);
+        if (pf) tickSize=parseFloat(pf.tickSize);
+        if (mf) minNot=parseFloat(mf.notional||mf.minNotional||5);
       }
-    }catch(e){}
-    const pr=await bPub('/fapi/v1/ticker/price','symbol='+sym);
-    const curPrice=parseFloat(pr.price)||0;
-    if(!curPrice)throw new Error('Fiyat alınamadı');
-    const qp=stepSize<1?-Math.floor(Math.log10(stepSize)):0;
-    const pp=tickSize<1?-Math.floor(Math.log10(tickSize)):0;
-    const qty=parseFloat(((parseFloat(usdtAmount)*parseInt(leverage))/curPrice).toFixed(qp));
-    const rnd=p=>parseFloat(parseFloat(p).toFixed(pp));
-    if(qty*curPrice<minNot)throw new Error(`Min işlem $${minNot}. Miktarı artır.`);
-    const oSide=isLong?'BUY':'SELL',cSide=isLong?'SELL':'BUY';
-    const main=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-      symbol:sym,side:oSide,type:'MARKET',quantity:qty,positionSide:'BOTH'
-    });
-    let tp={orderId:null},sl={orderId:null};
+    } catch(e) { console.log('ExchangeInfo:', e.message); }
 
-    // TP/SL — önce MARK_PRICE dene, hata alırsa CONTRACT_PRICE ile tekrar dene
-    async function tryTPSL(type, stopPriceVal) {
+    // 4. Anlık fiyat
+    const pr = await bPub('/fapi/v1/ticker/price','symbol='+sym);
+    const curPrice = parseFloat(pr.price)||0;
+    if (!curPrice) throw new Error('Fiyat alınamadı');
+
+    const qp  = stepSize<1 ? -Math.floor(Math.log10(stepSize)) : 0;
+    const pp  = tickSize<1 ? -Math.floor(Math.log10(tickSize)) : 0;
+    const qty = parseFloat(((parseFloat(usdtAmount)*parseInt(leverage))/curPrice).toFixed(qp));
+    const rnd = p => parseFloat(parseFloat(p).toFixed(pp));
+
+    if (qty*curPrice < minNot) throw new Error(`Min işlem $${minNot}. Miktarı artır.`);
+
+    // 5. MARKET ana emir
+    const main = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
+      symbol:sym, side:oSide, type:'MARKET', quantity:qty, positionSide:'BOTH'
+    });
+
+    // Ana emir açıldıktan sonra gerçek giriş fiyatını al
+    await new Promise(r=>setTimeout(r,500)); // Binance'ın pozisyonu kaydetmesi için bekle
+    let execPrice = parseFloat(main.avgPrice||main.price||curPrice);
+    try {
+      const pos = await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{symbol:sym});
+      const p   = Array.isArray(pos) ? pos.find(x=>x.symbol===sym&&Math.abs(parseFloat(x.positionAmt))>0) : null;
+      if (p) execPrice = parseFloat(p.entryPrice)||execPrice;
+    } catch(e) {}
+
+    // TP/SL fiyatlarını gerçek giriş fiyatına göre yeniden hesapla
+    const ratio = execPrice / curPrice;
+    const realTP = rnd(parseFloat(targetPrice) * ratio);
+    const realSL = rnd(parseFloat(stopPrice)   * ratio);
+
+    console.log(`${sym} giriş: ${execPrice}, TP: ${realTP}, SL: ${realSL}`);
+
+    // 6. TP/SL — 4 farklı yöntem dene
+    let tp={orderId:null}, sl={orderId:null};
+
+    async function placeTPSL(type, price) {
       const base = {
         symbol:sym, side:cSide, type,
-        stopPrice:rnd(stopPriceVal), closePosition:'true', positionSide:'BOTH'
+        stopPrice:price, closePosition:'true', positionSide:'BOTH'
       };
-      // Deneme 1: MARK_PRICE (normal crypto futures)
-      try {
-        return await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',
-          {...base, workingType:'MARK_PRICE'});
-      } catch(e1) {
-        console.log(type+' MARK_PRICE hata:', e1.message);
-        // Deneme 2: CONTRACT_PRICE (TradFi perps: XAUUSDT, BTCDOMUSDT vb.)
+      const methods = [
+        {...base, workingType:'MARK_PRICE'},
+        {...base, workingType:'CONTRACT_PRICE'},
+        {...base, workingType:'LAST_PRICE'},
+        base  // parametresiz
+      ];
+      for (const params of methods) {
         try {
-          return await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',
-            {...base, workingType:'CONTRACT_PRICE'});
-        } catch(e2) {
-          console.log(type+' CONTRACT_PRICE hata:', e2.message);
-          // Deneme 3: workingType olmadan
-          try {
-            return await bReq(apiKey,apiSecret,'POST','/fapi/v1/order', base);
-          } catch(e3) {
-            console.log(type+' son deneme hata:', e3.message);
-            return {orderId:null};
-          }
+          const result = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order', params);
+          console.log(`${type} başarılı (${params.workingType||'no-type'}): ${result.orderId}`);
+          return result;
+        } catch(e) {
+          console.log(`${type} hata (${params.workingType||'no-type'}): ${e.message}`);
         }
       }
+      return {orderId:null};
     }
 
-    tp = await tryTPSL('TAKE_PROFIT_MARKET', targetPrice);
-    sl = await tryTPSL('STOP_MARKET', stopPrice);
-    res.json({ ok:true, message:`${sym} ${side} açıldı ✅`,
-      mainOrderId:main.orderId, tpOrderId:tp.orderId, slOrderId:sl.orderId,
-      executedPrice:parseFloat(main.avgPrice||curPrice),
-      details:{symbol:sym,side,quantity:qty,leverage,entry:curPrice,target:rnd(targetPrice),stop:rnd(stopPrice)}
+    tp = await placeTPSL('TAKE_PROFIT_MARKET', realTP);
+    await new Promise(r=>setTimeout(r,300));
+    sl = await placeTPSL('STOP_MARKET', realSL);
+
+    res.json({
+      ok: true,
+      message: `${sym} ${side} açıldı ✅${tp.orderId?' TP:'+tp.orderId:'❌ TP hata'}${sl.orderId?' SL:'+sl.orderId:' ❌ SL hata'}`,
+      mainOrderId:  main.orderId,
+      tpOrderId:    tp.orderId,
+      slOrderId:    sl.orderId,
+      executedPrice:execPrice,
+      details: {symbol:sym, side, quantity:qty, leverage, entry:execPrice, target:realTP, stop:realSL}
     });
-  }catch(e){res.status(400).json({error:e.message});}
+  } catch(e) { res.status(400).json({ error:e.message }); }
 });
 
 // ── POZİSYONLAR ──────────────────────────────────────────────────────────────
