@@ -64,7 +64,7 @@ async function bPub(path, qs = '') {
     reqCount = 0; reqWindow = Date.now();
   }
   // İstekler arası min 50ms boşluk
-  await new Promise(r => setTimeout(r, 50));
+  await new Promise(r => setTimeout(r, 200));
   const url = `${FAPI}${path}${qs ? '?' + qs : ''}`;
   const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
   if (r.status === 429 || r.status === 418) {
@@ -81,7 +81,7 @@ app.get('/', (req, res) => res.json({ status: 'ok', time: new Date().toISOString
 // ── FUTURES COİN LİSTESİ ─────────────────────────────────────────────────────
 app.get('/api/futures-coins', async (req, res) => {
   try {
-    const data = await cached('futures_tickers', 10*60*1000, () => bPub('/fapi/v1/ticker/24hr'));
+    const data = await cached('futures_tickers', 15*60*1000, () => bPub('/fapi/v1/ticker/24hr'));
     if (!Array.isArray(data)) return res.json({ coins: [] });
     const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT',
       'ADAUSDT','DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT',
@@ -116,18 +116,18 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       rFunding, rOIHist, rLS_global, rLS_top,
       rTakerRatio, rTrades, rDepth
     ] = await Promise.allSettled([
-      cached(`k4h_${full}`,   15*60*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=4h&limit=200`)),
-      cached(`k1h_${full}`,   5*60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1h&limit=200`)),
-      cached(`k15m_${full}`,  2*60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=200`)),
-      cached(`k5m_${full}`,   60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=100`)),
-      cached(`k1m_${full}`,   45*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1m&limit=60`)),
-      cached(`fund_${full}`,  15*60*1000, () => bPub('/fapi/v1/fundingRate', `symbol=${full}&limit=10`)),
-      cached(`oih_${full}`,   8*60*1000, () => bPub('/futures/data/openInterestHist', `symbol=${full}&period=1h&limit=24`)),
-      cached(`lsg_${full}`,   8*60*1000, () => bPub('/futures/data/globalLongShortAccountRatio', `symbol=${full}&period=1h&limit=12`)),
-      cached(`lst_${full}`,   8*60*1000, () => bPub('/futures/data/topLongShortPositionRatio', `symbol=${full}&period=1h&limit=12`)),
-      cached(`tkr_${full}`,   3*60*1000,   () => bPub('/futures/data/takerlongshortRatio', `symbol=${full}&period=5m&limit=48`)),
-      cached(`trd_${full}`,   90*1000,   () => bPub('/fapi/v1/aggTrades', `symbol=${full}&limit=1000`)),
-      cached(`dep_${full}`,   60*1000,   () => bPub('/fapi/v1/depth', `symbol=${full}&limit=100`)),
+      cached(`k4h_${full}`,   30*60*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=4h&limit=200`)),
+      cached(`k1h_${full}`,   10*60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1h&limit=200`)),
+      cached(`k15m_${full}`,  5*60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=200`)),
+      cached(`k5m_${full}`,   3*60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=100`)),
+      cached(`k1m_${full}`,   2*60*1000,   () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1m&limit=60`)),
+      cached(`fund_${full}`,  30*60*1000, () => bPub('/fapi/v1/fundingRate', `symbol=${full}&limit=10`)),
+      cached(`oih_${full}`,   15*60*1000, () => bPub('/futures/data/openInterestHist', `symbol=${full}&period=1h&limit=24`)),
+      cached(`lsg_${full}`,   15*60*1000, () => bPub('/futures/data/globalLongShortAccountRatio', `symbol=${full}&period=1h&limit=12`)),
+      cached(`lst_${full}`,   15*60*1000, () => bPub('/futures/data/topLongShortPositionRatio', `symbol=${full}&period=1h&limit=12`)),
+      cached(`tkr_${full}`,   5*60*1000,   () => bPub('/futures/data/takerlongshortRatio', `symbol=${full}&period=5m&limit=48`)),
+      cached(`trd_${full}`,   3*60*1000,   () => bPub('/fapi/v1/aggTrades', `symbol=${full}&limit=1000`)),
+      cached(`dep_${full}`,   2*60*1000,   () => bPub('/fapi/v1/depth', `symbol=${full}&limit=100`)),
     ]);
 
     const k4h  = r4h.status  ==='fulfilled'&&Array.isArray(r4h.value)  ? r4h.value  : [];
