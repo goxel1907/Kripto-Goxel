@@ -161,6 +161,7 @@ function startGlobalLiqStream() {
   });
   ws.on('error', () => {});
   console.log('✅ Global likidasyon stream başlatıldı');
+  console.log('✅ V3 UI/API/TAB FIX aktif');
 }
 
 // Sunucu başladığında likidasyon stream'ini aç
@@ -381,6 +382,18 @@ async function getCoinglass(symbol) {
     return null;
   }
 }
+
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'kripto-sinyal-backend',
+    version: 'SIGNAL_QUALITY_FIX_V3_UI_API_TAB_FIX',
+    time: new Date().toISOString(),
+    port: PORT,
+    features: ['account', 'analyze', 'auto', 'positions', 'liquidation-stream']
+  });
+});
 
 // ── FEAR & GREED INDEX ────────────────────────────────────────────────────────
 app.get('/api/market-mood', async (req, res) => {
