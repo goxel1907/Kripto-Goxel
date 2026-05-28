@@ -436,7 +436,7 @@ app.get('/api/calendar', async (req, res) => {
 // ── COIN LİSTESİ ──────────────────────────────────────────────────────────────
 app.get('/api/futures-coins', async (req, res) => {
   try {
-    const data = await cached('futures_tickers', 15*60*1000, () => bPub('/fapi/v1/ticker/24hr'));
+    const data = await cached('futures_tickers', 45*1000, () => bPub('/fapi/v1/ticker/24hr')); // 5m scalping için hızlı havuz
     if (!Array.isArray(data)) return res.json({ coins:[] });
     const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
       'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
@@ -445,7 +445,9 @@ app.get('/api/futures-coins', async (req, res) => {
         price:parseFloat(t.lastPrice)||0, change24h:parseFloat(t.priceChangePercent)||0,
         volume:parseFloat(t.quoteVolume)||0, high:parseFloat(t.highPrice)||0,
         low:parseFloat(t.lowPrice)||0, trades:parseInt(t.count)||0 }))
-      .filter(c=>c.volume>20000000);
+      .filter(c=>c.volume>20000000)
+      .map(c=>({...c, rangePct:c.low>0?+((c.high-c.low)/c.low*100).toFixed(2):0, hotRankScore:+(Math.abs(c.change24h)*2 + Math.log10(Math.max(c.volume,1))*3 + Math.log10(Math.max(c.trades,1))).toFixed(2)}))
+      .sort((a,b)=>b.change24h-a.change24h);
     res.json({ ok:true, count:coins.length, coins });
   } catch(e) { res.status(400).json({ error:e.message }); }
 });
@@ -483,8 +485,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const lsTop    = rLS_top.status==='fulfilled'&&Array.isArray(rLS_top.value)      ?rLS_top.value   :[];
     const depth    = rDepth.status==='fulfilled'?rDepth.value:{bids:[],asks:[]};
 
-    const lastPrice = k15m.length?parseFloat(k15m[k15m.length-1][4]):0;
-    const lastTime  = k15m.length?parseInt(k15m[k15m.length-1][6]):Date.now();
+    let liveTicker=null;
+    try { liveTicker = await cached(`px_${full}`, 15*1000, ()=>bPub('/fapi/v1/ticker/price',`symbol=${full}`)); } catch(e) {}
+    const livePrice = liveTicker?.price ? parseFloat(liveTicker.price) : 0;
+    const lastPrice = livePrice || (k5m.length?parseFloat(k5m[k5m.length-1][4]):(k15m.length?parseFloat(k15m[k15m.length-1][4]):0));
+    const lastTime  = k5m.length?parseInt(k5m[k5m.length-1][6]):(k15m.length?parseInt(k15m[k15m.length-1][6]):Date.now());
+    const dataQuality = {
+      k5mOk:k5m.length>=60, k15mOk:k15m.length>=80, k1hOk:k1h.length>=80,
+      depthOk:Array.isArray(depth.bids)&&depth.bids.length>=20&&Array.isArray(depth.asks)&&depth.asks.length>=20,
+      priceOk:lastPrice>0,
+    };
+    dataQuality.ok = dataQuality.k5mOk && dataQuality.k15mOk && dataQuality.k1hOk && dataQuality.depthOk && dataQuality.priceOk;
 
     // ── TEKNİK FONKSİYONLAR ──────────────────────────────────────────────────
     function rsi(kl,p=14){
@@ -522,9 +533,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const rsi4h=rsi(k4h),rsi1h=rsi(k1h),rsi15m=rsi(k15m),rsi5m=rsi(k5m);
     const ema20_4h=ema(k4h,20),ema50_4h=ema(k4h,50),ema200_4h=ema(k4h,200);
     const ema20_1h=ema(k1h,20),ema50_1h=ema(k1h,50),ema200_1h=ema(k1h,200);
-    const atr4h=atr(k4h),atr1h=atr(k1h),atr15m_=atr(k15m);
-    const vwap1h=vwap(k1h),vwap4h=vwap(k4h);
+    const atr4h=atr(k4h),atr1h=atr(k1h),atr15m_=atr(k15m),atr5m=atr(k5m);
+    const vwap1h=vwap(k1h),vwap4h=vwap(k4h),vwap5m=vwap(k5m);
     const bb1h=bollinger(k1h),bb15m_=bollinger(k15m);
+    const ema9_5m=ema(k5m,9), ema21_5m=ema(k5m,21), ema50_5m=ema(k5m,50);
+    const last5=k5m[k5m.length-1]||null, prev5=k5m[k5m.length-2]||null;
+    const priceChg5m=last5&&prev5?+((parseFloat(last5[4])-parseFloat(prev5[4]))/parseFloat(prev5[4])*100).toFixed(2):0;
+    const vol20=k5m.length>=21?k5m.slice(-21,-1).reduce((a,k)=>a+parseFloat(k[5]),0)/20:0;
+    const volRatio5m=last5&&vol20>0?+(parseFloat(last5[5])/vol20).toFixed(2):0;
+    const takerBuyRatio5m=last5&&parseFloat(last5[5])>0?+(parseFloat(last5[9])/parseFloat(last5[5])*100).toFixed(1):50;
+    const candleBody5m=last5?+((parseFloat(last5[4])-parseFloat(last5[1]))/parseFloat(last5[1])*100).toFixed(2):0;
 
     // ── SİNYAL YAŞI ──────────────────────────────────────────────────────────
     const signalAgeMs=Date.now()-lastTime;
@@ -826,7 +844,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         riskPct:+riskPct.toFixed(2),rewardPct:+reward1.toFixed(2),reward2Pct:+reward2.toFixed(2),
         rr1:+(reward1/riskPct).toFixed(2),rr2:+(reward2/riskPct).toFixed(2),reasons};
     }
-    const proTPSL=calcProTPSL(
+    let proTPSL=calcProTPSL(
       mmTarget==='GENUINE_DOWN'||mmTarget==='DOWN_SWEEP'?'SHORT':'LONG',
       lastPrice,atr1h,atr4h,liq1h,liq4h,ob1h,ob4h,k1h
     );
@@ -891,8 +909,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // 1. MM YÖN — en yüksek ağırlık
     if(mmTarget==='GENUINE_UP')    {longScore+=28;signals.long.push('🎯 MM Gerçek ↑');}
     if(mmTarget==='GENUINE_DOWN')  {shortScore+=28;signals.short.push('🎯 MM Gerçek ↓');}
-    if(mmTarget==='UP_SWEEP')      {longScore+=12;signals.long.push('🪤 MM Üst Liq');}
-    if(mmTarget==='DOWN_SWEEP')    {shortScore+=12;signals.short.push('🪤 MM Alt Liq');}
+    // Sweep hedefi tek başına giriş yönü değildir; teyit gelmeden puanı şişirme.
+    if(mmTarget==='UP_SWEEP')      {longScore+=4;signals.long.push('🪤 Üst liq mıknatıs — teyit bekle');}
+    if(mmTarget==='DOWN_SWEEP')    {shortScore+=4;signals.short.push('🪤 Alt liq mıknatıs — teyit bekle');}
     // 2. STOP HUNT
     if(hunt1h.hunted&&hunt1h.direction==='BULL_HUNT'){longScore+=14;signals.long.push('🎣 Stop Hunt ↑');}
     if(hunt1h.hunted&&hunt1h.direction==='BEAR_HUNT'){shortScore+=14;signals.short.push('🎣 Stop Hunt ↓');}
@@ -937,6 +956,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     if(rsi4h>65){shortScore+=8;signals.short.push(`RSI4h ${rsi4h}`);}
     if(lastPrice<bb1h.lower*1.005){longScore+=6;signals.long.push('BB alt');}
     if(lastPrice>bb1h.upper*0.995){shortScore+=6;signals.short.push('BB üst');}
+    // 11. 5m scalper katmanı — sadece canlı momentum + hacim + EMA9/21 uyumu puan alır
+    const emaBull5=ema9_5m>ema21_5m && lastPrice>ema21_5m;
+    const emaBear5=ema9_5m<ema21_5m && lastPrice<ema21_5m;
+    if(emaBull5 && takerBuyRatio5m>=54 && volRatio5m>=1.15 && priceChg5m>0){longScore+=12;signals.long.push(`⚡ 5m EMA9/21 + CVD ${takerBuyRatio5m}%`);}
+    if(emaBear5 && takerBuyRatio5m<=46 && volRatio5m>=1.15 && priceChg5m<0){shortScore+=12;signals.short.push(`⚡ 5m EMA9/21 + satış ${takerBuyRatio5m}%`);}
+    if(lastPrice>vwap5m && candleBody5m>0.25 && volRatio5m>=1.3){longScore+=6;signals.long.push('📍 5m VWAP üstü impuls');}
+    if(lastPrice<vwap5m && candleBody5m<-0.25 && volRatio5m>=1.3){shortScore+=6;signals.short.push('📍 5m VWAP altı impuls');}
+
+    if(!dataQuality.ok){ longScore=Math.max(0,longScore-18); shortScore=Math.max(0,shortScore-18); }
+    if(!dataQuality.depthOk){ longScore=Math.max(0,longScore-6); shortScore=Math.max(0,shortScore-6); }
 
     longScore =Math.min(Math.round(longScore*freshnessMult),100);
     shortScore=Math.min(Math.round(shortScore*freshnessMult),100);
@@ -948,6 +977,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
       function evalDecision(side){
         if(side==='WAIT')return{pass:false,tier:'WAIT',score:0,reasons:[],blocks:[],autoOk:false};
+        if(!dataQuality.ok)return{pass:false,tier:'WAIT',score:0,reasons:[],blocks:['Veri eksik/bayat'],autoOk:false,reason:'Veri kalitesi düşük: mum/depth eksik'};
         const isL=side==='LONG';
         const sw1=sweep1h,sw4=sweep4h,wy1=wyckoff1h,wy4=wyckoff4h;
         const cvdD=getCVD(full);
@@ -960,8 +990,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const wyckoffOk=isL
           ?wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS')||wy4?.recentEvents?.some(e=>e.type==='SPRING')
           :wy1?.recentEvents?.some(e=>e.type==='UTAD')||wy4?.recentEvents?.some(e=>e.type==='UTAD');
-        const mmOk=isL?mmTarget==='GENUINE_UP'||mmTarget==='UP_SWEEP':mmTarget==='GENUINE_DOWN'||mmTarget==='DOWN_SWEEP';
-        const cvdOk=isL?cvdD.ratio>48:cvdD.ratio<52;
+        // UP_SWEEP/DOWN_SWEEP hedefi tersine giriş için ancak sweep+teyit sonrası geçerlidir.
+        const mmOk=isL ? (mmTarget==='GENUINE_UP'||(mmTarget==='DOWN_SWEEP'&&sweepOk))
+                       : (mmTarget==='GENUINE_DOWN'||(mmTarget==='UP_SWEEP'&&sweepOk));
+        const cvdWarm=(cvdD.historyLen||0)>0 || Math.abs(cvdD.delta||0)>1000;
+        const cvdOk=cvdWarm && (isL?cvdD.ratio>52:cvdD.ratio<48);
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
         const oiOk=isL?oiDiv!=='CONFIRMED_BEAR'&&oiDiv!=='LONG_LIQUIDATION':oiDiv!=='CONFIRMED_BULL'&&oiDiv!=='SHORT_SQUEEZE';
         const cascOk=liqD?.cascade?(isL&&liqD.cascade.direction==='SHORT_CASCADE')||(!isL&&liqD.cascade.direction==='LONG_CASCADE'):true;
@@ -1007,6 +1040,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         decisionChain=evalDecision(rawRec);
         recommendation=decisionChain.pass?rawRec:'WAIT';
       }
+      if(recommendation==='LONG' || recommendation==='SHORT') {
+        proTPSL = calcProTPSL(recommendation, lastPrice, atr1h, atr4h, liq1h, liq4h, ob1h, ob4h, k1h);
+      }
     const score=recommendation==='LONG'?longScore:shortScore;
 
     let suggestedLev=3;
@@ -1037,11 +1073,13 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       coinglass: cgData,
       proTPSL,
       leverage:{suggested:suggestedLev,min:3,max:50,atrPct:+atrPct.toFixed(2)},
+      dataQuality,
+      scalp5m:{priceChg5m,volRatio5m,takerBuyRatio5m,ema9:+ema9_5m.toFixed(8),ema21:+ema21_5m.toFixed(8),ema50:+ema50_5m.toFixed(8),vwap:+vwap5m.toFixed(8),atr:+atr5m.toFixed(8)},
       timeframes:{
         '4h':{rsi:rsi4h,ema20:+ema20_4h.toFixed(4),ema50:+ema50_4h.toFixed(4),ema200:+ema200_4h.toFixed(4),trend:t4up?'UP':t4dn?'DOWN':'RANGE',atr:+atr4h.toFixed(4)},
         '1h':{rsi:rsi1h,ema20:+ema20_1h.toFixed(4),ema50:+ema50_1h.toFixed(4),ema200:+ema200_1h.toFixed(4),trend:ema20_1h>ema50_1h?'UP':'DOWN',vwap:+vwap1h.toFixed(4),atr:+atr1h.toFixed(4),bb:bb1h},
         '15m':{rsi:rsi15m,atr:+atr15m_.toFixed(4),bb:bb15m_},
-        '5m':{rsi:rsi5m},
+        '5m':{rsi:rsi5m,ema9:+ema9_5m.toFixed(8),ema21:+ema21_5m.toFixed(8),ema50:+ema50_5m.toFixed(8),vwap:+vwap5m.toFixed(8),atr:+atr5m.toFixed(8),volRatio:volRatio5m,takerBuyRatio:takerBuyRatio5m,priceChg:priceChg5m},
       },
       funding:{current:+curFund.toFixed(4),signal:fundSig},
       openInterest:{change1h:+oiChg1h.toFixed(2),change4h:+oiChg4h.toFixed(2),divergence:oiDiv},
@@ -1253,19 +1291,11 @@ app.post('/api/update-sl', async (req, res) => {
     const cSide  = isLong ? 'SELL' : 'BUY';
     const qty    = Math.abs(parseFloat(p.positionAmt)).toString();
 
-    // Mevcut açık emirleri iptal et
-    if (cancelExisting) {
-      try { await bReq(apiKey,apiSecret,'DELETE','/fapi/v1/allOpenOrders',{symbol:sym}); }
-      catch(e) {}
-    }
+    // Mevcut TP korunur; sadece eski STOP/STOP_MARKET emirleri temizlenir.
+    if (cancelExisting) await cancelStopOrdersOnly(apiKey, apiSecret, sym);
 
     // Yeni SL yerleştir
-    const sl = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-      symbol:sym, side:cSide, type:'STOP_MARKET',
-      stopPrice:parseFloat(newSL).toString(),
-      quantity:qty, reduceOnly:'true', positionSide:'BOTH',
-      workingType:'MARK_PRICE'
-    });
+    const sl = await placeProtectiveStop(apiKey, apiSecret, sym, cSide, qty, newSL);
 
     res.json({ ok:true, message:`${sym} SL güncellendi → $${newSL}`, orderId:sl.orderId });
   } catch(e) { res.status(400).json({ error:e.message }); }
@@ -1273,8 +1303,50 @@ app.post('/api/update-sl', async (req, res) => {
 
 // ── OTOMATİK TRAILING SL ──────────────────────────────────────────────────────
 // Pozisyon açıldıktan sonra fiyat hareket ettikçe SL'yi takip ettirir
-// Her /api/positions çağrısında otomatik kontrol edilir
+// TP emrini silmeden sadece eski SL emirlerini yeniler.
 const trailingState = new Map(); // symbol → {entryPrice, highWater, slOrderId, config}
+
+async function cancelStopOrdersOnly(apiKey, apiSecret, sym) {
+  try {
+    const open = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
+    if (!Array.isArray(open)) return 0;
+    let n = 0;
+    for (const o of open) {
+      const t = String(o.type || '').toUpperCase();
+      // TAKE_PROFIT emirlerini koru; sadece STOP / STOP_MARKET / trailing stop iptal edilir.
+      const isStopOnly = (t === 'STOP' || t === 'STOP_MARKET' || t === 'TRAILING_STOP_MARKET');
+      if (!isStopOnly) continue;
+      try {
+        await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: o.orderId });
+        n++;
+      } catch(e) {}
+    }
+    return n;
+  } catch(e) { return 0; }
+}
+
+async function placeProtectiveStop(apiKey, apiSecret, sym, side, qty, newSL) {
+  const p = parseFloat(newSL).toString();
+  const q = parseFloat(qty).toString();
+  try {
+    const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+      symbol: sym, side, type: 'STOP_MARKET', stopPrice: p,
+      quantity: q, reduceOnly: 'true', positionSide: 'BOTH', workingType: 'MARK_PRICE'
+    });
+    return { ok:true, orderId:r.orderId };
+  } catch(e1) {
+    // Bazı yeni kontratlarda klasik STOP_MARKET yerine algo endpoint gerekir.
+    try {
+      const r2 = await bAlgo(apiKey, apiSecret, {
+        symbol: sym, side, orderType: 'STOP', stopPrice: p,
+        quantity: q, positionSide: 'BOTH', workingType: 'MARK_PRICE', timeInForce: 'GTE_GTC'
+      });
+      return { ok:true, orderId:r2.clientAlgoId || r2.algoId || r2.orderId };
+    } catch(e2) {
+      throw new Error(`SL yerleştirilemedi: ${e1.message}; algo: ${e2.message}`);
+    }
+  }
+}
 
 async function checkTrailingSL(apiKey, apiSecret, positions) {
   for (const pos of positions) {
@@ -1318,19 +1390,14 @@ async function checkTrailingSL(apiKey, apiSecret, positions) {
 
     if (newSL) {
       try {
-        // Mevcut SL iptal et
-        await bReq(apiKey,apiSecret,'DELETE','/fapi/v1/allOpenOrders',{symbol:sym});
-        // Yeni SL yerleştir
+        // TP emrini silmeden yalnızca eski SL'leri iptal et ve yeni SL yaz.
+        await cancelStopOrdersOnly(apiKey, apiSecret, sym);
         const qty = pos.positionAmt.toString();
         const cSide = isLong ? 'SELL' : 'BUY';
-        const r = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-          symbol:sym, side:cSide, type:'STOP_MARKET',
-          stopPrice:newSL.toString(), quantity:qty,
-          reduceOnly:'true', positionSide:'BOTH', workingType:'MARK_PRICE'
-        });
+        const r = await placeProtectiveStop(apiKey, apiSecret, sym, cSide, qty, newSL);
         ts.currentSL = newSL;
         ts.slOrderId = r.orderId;
-        console.log(`${sym} Trailing SL → $${newSL} (orderId:${r.orderId})`);
+        console.log(`${sym} Trailing/BE SL → $${newSL} (orderId:${r.orderId})`);
       } catch(e) {
         console.log(`${sym} Trailing SL hata: ${e.message}`);
       }
@@ -1363,13 +1430,42 @@ app.post('/api/close', async (req, res) => {
 //   maxPositions, minScore, allowLong, allowShort,
 //   trailingPct, breakEvenPct, symbols:[] }
 
+function nNum(v, def, min, max) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return def;
+  return Math.max(min, Math.min(max, x));
+}
+function normalizeAutoConfig(raw={}) {
+  return {
+    enabled: !!raw.enabled,
+    apiKey: raw.apiKey,
+    apiSecret: raw.apiSecret,
+    usdtAmount: nNum(raw.usdtAmount, 15, 5, 100000),
+    leverage: Math.round(nNum(raw.leverage, 15, 1, 50)),
+    marginType: String(raw.marginType || 'ISOLATED').toUpperCase() === 'CROSSED' ? 'CROSSED' : 'ISOLATED',
+    maxPositions: Math.round(nNum(raw.maxPositions, 1, 1, 10)),
+    minScore: Math.round(nNum(raw.minScore, 72, 50, 95)),
+    allowLong: raw.allowLong !== false,
+    allowShort: raw.allowShort !== false,
+    sweepOnly: raw.sweepOnly !== false,
+    stopLossPct: nNum(raw.stopLossPct, 2, 0.2, 10),
+    takeProfitPct: nNum(raw.takeProfitPct, 10, 0.5, 50),
+    trailingPct: nNum(raw.trailingPct, 2, 0.2, 10),
+    breakEvenPct: nNum(raw.breakEvenPct, 1, 0.2, 10),
+    symbols: Array.isArray(raw.symbols) ? raw.symbols : []
+  };
+}
+
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
+let lastAutoEntryScanAt = 0;
+const AUTO_ENTRY_SCAN_MS = 3 * 60 * 1000;
 const autoLog = []; // Son 50 otomatik işlem logu
 
 app.post('/api/auto/config', (req, res) => {
-  autoConfig = req.body;
+  autoConfig = normalizeAutoConfig(req.body);
+  if (!autoConfig.apiKey || !autoConfig.apiSecret) return res.status(400).json({ error:'API key gerekli' });
   if (autoConfig.enabled) {
     startAutoTrader();
     res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:autoConfig });
@@ -1404,7 +1500,8 @@ async function runAutoScan() {
   try {
     const cfg = autoConfig;
     const { apiKey, apiSecret, usdtAmount, leverage, marginType,
-      maxPositions=3, minScore=70, allowLong=true, allowShort=true,
+      maxPositions=1, minScore=72, allowLong=true, allowShort=true,
+      sweepOnly=true, stopLossPct=2, takeProfitPct=10,
       trailingPct=2, breakEvenPct=1, symbols=[] } = cfg;
 
     // 1. Mevcut pozisyonları kontrol et
@@ -1427,7 +1524,7 @@ async function runAutoScan() {
           trailingState.set(pos.symbol, {
             entryPrice:pos.entryPrice, highWater:pos.markPrice,
             breakEvenSet:false, currentSL:null,
-            config:{ trailing:true, trailPct, breakEvenPct, entryPrice:pos.entryPrice }
+            config:{ trailing:true, trailPct:trailingPct, breakEvenPct, entryPrice:pos.entryPrice }
           });
         }
       }
@@ -1440,6 +1537,11 @@ async function runAutoScan() {
       return;
     }
 
+    // Açık pozisyon yönetimi 30 sn'de bir yapılır; yeni giriş taraması 3 dk'da bir yapılır.
+    const nowScan = Date.now();
+    if (lastAutoEntryScanAt && nowScan - lastAutoEntryScanAt < AUTO_ENTRY_SCAN_MS) return;
+    lastAutoEntryScanAt = nowScan;
+
     // 2. Coin listesi al
     const coinsResp = await fetch(`http://localhost:${PORT}/api/futures-coins`).then(r=>r.json());
     if (!coinsResp.ok || !coinsResp.coins) return;
@@ -1447,7 +1549,7 @@ async function runAutoScan() {
     // Taranacak coinler: belirlenmişse onlar, yoksa hacimli top 20
     let scanList = symbols.length > 0
       ? coinsResp.coins.filter(c=>symbols.includes(c.symbol))
-      : coinsResp.coins.sort((a,b)=>b.volume-a.volume).slice(0,20);
+      : coinsResp.coins.sort((a,b)=>(b.hotRankScore||0)-(a.hotRankScore||0)).slice(0,12); // kalite: sıcak/hacimli ilk 12
 
     // Haber kontrolü — tehlikeli saatlerde işlem açma
     try {
@@ -1497,6 +1599,7 @@ async function runAutoScan() {
         if (isLong  && !allowLong)  continue;
         if (isShort && !allowShort) continue;
         if (recommendation==='WAIT') continue;
+        const decisionChain = analysis.decisionChain || { autoOk:false, tier:'WAIT', reason:'Karar zinciri yok' };
 
         // Kural 1: Wyckoff Spring VEYA Sweep+Teyit ZORUNLU
         // Bu olmadan giriş yok — MM henüz oyununu bitirmedi
@@ -1519,8 +1622,8 @@ async function runAutoScan() {
           wy4h?.recentEvents?.some(e=>e.type==='UTAD')
         );
 
-        if (isLong  && !hasBullSetup) { logAuto(`${coin.symbol} LONG ama setup yok — atlandı`); continue; }
-        if (isShort && !hasBearSetup) { logAuto(`${coin.symbol} SHORT ama setup yok — atlandı`); continue; }
+        if (sweepOnly && isLong  && !hasBullSetup) { logAuto(`${coin.symbol} LONG ama setup yok — atlandı`); continue; }
+        if (sweepOnly && isShort && !hasBearSetup) { logAuto(`${coin.symbol} SHORT ama setup yok — atlandı`); continue; }
 
         // Kural 2: MM yönü uyumlu mu?
         const mm = analysis.marketMaker;
@@ -1569,13 +1672,26 @@ async function runAutoScan() {
         }
         logAuto(`🔥 ${coin.symbol} A-Tier! ${decisionChain?.reason}`);
 
-        // TP/SL
-        const proTPSL = analysis.proTPSL;
-        if (!proTPSL) continue;
-        const targetPrice = recommendation==='LONG' ? proTPSL.tp : proTPSL.tp;
-        const stopPrice   = recommendation==='LONG' ? proTPSL.sl : proTPSL.sl;
+        // TP/SL: kullanıcının otomatik işlem panelindeki coin-hareketi yüzdeleri önceliklidir.
+        const basePrice = Number(analysis.price || coin.price);
+        let targetPrice, stopPrice;
+        if (Number.isFinite(basePrice) && basePrice > 0) {
+          if (recommendation === 'LONG') {
+            targetPrice = +(basePrice * (1 + takeProfitPct / 100)).toFixed(8);
+            stopPrice   = +(basePrice * (1 - stopLossPct / 100)).toFixed(8);
+          } else {
+            targetPrice = +(basePrice * (1 - takeProfitPct / 100)).toFixed(8);
+            stopPrice   = +(basePrice * (1 + stopLossPct / 100)).toFixed(8);
+          }
+        } else if (analysis.proTPSL) {
+          targetPrice = analysis.proTPSL.tp;
+          stopPrice   = analysis.proTPSL.sl;
+        } else {
+          logAuto(`${coin.symbol} TP/SL hesaplanamadı — atlandı`);
+          continue;
+        }
 
-        logAuto(`🎯 Sinyal: ${coin.symbol} ${recommendation} skor:${score} — emir açılıyor`);
+        logAuto(`🎯 Sinyal: ${coin.symbol} ${recommendation} skor:${score} marj:${usdtAmount}$ lev:${leverage}x SL:${stopLossPct}% TP:${takeProfitPct}% — emir açılıyor`);
 
         // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -1598,7 +1714,7 @@ async function runAutoScan() {
             entryPrice: orderResp.executedPrice||analysis.price,
             highWater: orderResp.executedPrice||analysis.price,
             breakEvenSet:false, currentSL:null,
-            config:{ trailing:true, trailPct, breakEvenPct,
+            config:{ trailing:true, trailPct:trailingPct, breakEvenPct,
               entryPrice:orderResp.executedPrice||analysis.price }
           });
           // Bir sonraki coin için bekle
@@ -1630,8 +1746,8 @@ async function getNewPosCount() {
 function startAutoTrader() {
   stopAutoTrader();
   logAuto('Otomatik işlem başlatıldı');
-  // Her 3 dakikada bir tara
-  autoTimer = setInterval(runAutoScan, 3*60*1000);
+  // Pozisyon yönetimi 30 sn, yeni giriş taraması 3 dk throttled.
+  autoTimer = setInterval(runAutoScan, 30*1000);
   runAutoScan(); // Hemen başlat
 }
 
