@@ -83,22 +83,72 @@ async function placeAlgoTP(apiKey, apiSecret, symbol, closeSide, triggerPrice, _
 
 // ── SLTP PROOF — Lazarus verify_live_sltp_visible mantığı ────────────────────
 // SL/TP yazıldıktan sonra Binance'te gerçekten görünüyor mu diye kontrol et
+async function liveOpenAlgoOrders(apiKey, apiSecret, symbol) {
+  try {
+    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/openAlgoOrders', {symbol});
+    return Array.isArray(rows) ? rows : [];
+  } catch(e) {
+    console.log(`${symbol} openAlgoOrders okunamadı: ${e.message}`);
+    return [];
+  }
+}
+
+async function liveOpenStandardOrders(apiKey, apiSecret, symbol) {
+  try {
+    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/openOrders', {symbol});
+    return Array.isArray(rows) ? rows : [];
+  } catch(e) {
+    console.log(`${symbol} openOrders okunamadı: ${e.message}`);
+    return [];
+  }
+}
+
+async function liveOpenBracketOrders(apiKey, apiSecret, symbol) {
+  const [algo, standard] = await Promise.all([
+    liveOpenAlgoOrders(apiKey, apiSecret, symbol),
+    liveOpenStandardOrders(apiKey, apiSecret, symbol),
+  ]);
+  return [...algo, ...standard];
+}
+
+function orderKind(o) {
+  const typ = String(o.orderType || o.type || '').toUpperCase();
+  const cid = String(o.clientAlgoId || o.clientOrderId || o.origClientOrderId || '').toUpperCase();
+  if (typ.includes('TAKE_PROFIT') || cid.startsWith('TP_') || cid.startsWith('TPSTD_')) return 'TP';
+  if (typ.includes('STOP') && !typ.includes('TAKE')) return 'SL';
+  return '';
+}
+
+function orderTriggerPrice(o) {
+  for (const k of ['triggerPrice','stopPrice','activatePrice','price']) {
+    const v = parseFloat(o?.[k]);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return 0;
+}
+
+function priceCloseEnough(expected, actual) {
+  expected = parseFloat(expected); actual = parseFloat(actual);
+  if (!Number.isFinite(expected) || !Number.isFinite(actual) || expected <= 0 || actual <= 0) return false;
+  return Math.abs(expected - actual) / expected < 0.005; // %0.5 tolerans, tick farklarını absorbe eder
+}
+
+// ── SLTP PROOF — Lazarus verify_live_sltp_visible mantığı ────────────────────
+// SL/TP yazıldıktan sonra Binance'te gerçekten görünüyor mu diye kontrol et.
+// Kritik düzeltme: sadece openAlgoOrders değil, standart openOrders da kontrol edilir.
 async function verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, expectedSL, expectedTP) {
   try {
-    const algoOrders = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/openAlgoOrders', {symbol});
-    const orders = Array.isArray(algoOrders) ? algoOrders : [];
+    const orders = await liveOpenBracketOrders(apiKey, apiSecret, symbol);
     let foundSL = false, foundTP = false;
+    const preview = [];
     for (const o of orders) {
-      const typ = (o.orderType || o.type || '').toUpperCase();
-      const trig = parseFloat(o.triggerPrice || o.stopPrice || 0);
-      if (typ.includes('STOP') && !typ.includes('TAKE')) {
-        if (Math.abs(trig - expectedSL) / expectedSL < 0.005) foundSL = true;
-      }
-      if (typ.includes('TAKE_PROFIT')) {
-        if (Math.abs(trig - expectedTP) / expectedTP < 0.005) foundTP = true;
-      }
+      const kind = orderKind(o);
+      const trig = orderTriggerPrice(o);
+      preview.push({kind, type:o.orderType||o.type, trigger:trig, client:o.clientAlgoId||o.clientOrderId||o.origClientOrderId});
+      if (kind === 'SL' && priceCloseEnough(expectedSL, trig)) foundSL = true;
+      if (kind === 'TP' && priceCloseEnough(expectedTP, trig)) foundTP = true;
     }
-    return { ok: foundSL && foundTP, foundSL, foundTP, orderCount: orders.length };
+    return { ok: foundSL && foundTP, foundSL, foundTP, orderCount: orders.length, ordersPreview: preview.slice(0,8) };
   } catch(e) {
     return { ok: false, error: e.message };
   }
@@ -152,26 +202,71 @@ async function bPub(path, qs='') {
   try{return JSON.parse(text);}catch(e){throw new Error(`JSON hatası: ${text.substring(0,80)}`);}
 }
 
-// ── İMZA ─────────────────────────────────────────────────────────────────────
+// ── İMZA + BINANCE SAAT SENKRON ───────────────────────────────────────────────
 function sign(qs,secret){return crypto.createHmac('sha256',secret).update(qs).digest('hex');}
-async function bReq(apiKey,apiSecret,method,path,params={}) {
-  const ts=Date.now();
+
+let binanceTimeOffset = 0;
+let lastTimeSync = 0;
+async function syncBinanceTime(force=false) {
+  const now = Date.now();
+  if (!force && now - lastTimeSync < 10*60*1000) return binanceTimeOffset;
+  try {
+    const r = await fetch(`${FAPI}/fapi/v1/time`, { signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    if (d && d.serverTime) {
+      binanceTimeOffset = Number(d.serverTime) - Date.now();
+      lastTimeSync = Date.now();
+      console.log(`Binance time sync offset=${binanceTimeOffset}ms`);
+    }
+  } catch(e) {
+    console.log('Binance time sync hata:', e.message);
+  }
+  return binanceTimeOffset;
+}
+
+function formatBinanceError(path, data) {
+  const code = data && data.code != null ? data.code : 'NO_CODE';
+  const msg  = data && data.msg ? data.msg : JSON.stringify(data).slice(0,120);
+  return `${path}: ${msg} (${code})`;
+}
+
+async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
+  if (!lastTimeSync) await syncBinanceTime(false);
+  const ts=Date.now()+binanceTimeOffset;
   const obj={...params,timestamp:ts,recvWindow:10000};
-  const qs=Object.entries(obj).map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
+  const qs=Object.entries(obj)
+    .filter(([,v])=>v!==undefined&&v!==null&&v!=='')
+    .map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
   const sig=sign(qs,apiSecret);
   const url=`${FAPI}${path}`;
   const fullQs=`${qs}&signature=${sig}`;
   const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
-  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':apiKey,'Content-Type':'application/x-www-form-urlencoded'}};
+  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':apiKey,'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
   const finalUrl=isGet?`${url}?${fullQs}`:url;
   if(!isGet)options.body=fullQs;
   const res=await fetch(finalUrl,options);
   const text=await res.text();
   let data;
-  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatasi: ${text.substring(0,80)}`);}
-  if(data.code&&data.code<0)throw new Error(`${data.msg} (${data.code})`);
+  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatası: ${text.substring(0,120)}`);}
+  if(data.code&&data.code<0){
+    // -1021 timestamp; bir kere Binance saatine senkronlayıp tekrar dene
+    if (Number(data.code) === -1021 && !_retry) {
+      await syncBinanceTime(true);
+      return bReq(apiKey,apiSecret,method,path,params,timeout,true);
+    }
+    throw new Error(formatBinanceError(path, data));
+  }
   return data;
 }
+
+async function getPositionRisk(apiKey, apiSecret, params={}) {
+  try {
+    return await bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk', params);
+  } catch(e1) {
+    return await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', params);
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. WEBSOCKET CVD — Sürekli bağlı, gerçek zamanlı Cumulative Volume Delta
@@ -1925,33 +2020,123 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 });
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
-app.post('/api/account', async (req, res) => {
-  const { apiKey, apiSecret } = req.body;
-  if (!apiKey||!apiSecret) return res.status(400).json({ error:'API key gerekli' });
-  try {
-    let walletBal=0, availBal=0, unrealized=0;
-    // v3/balance — hızlı ön okuma
+// ── RAILWAY IP — Binance IP whitelist için ────────────────────────────────────
+app.get('/api/my-ip', async (_req, res) => {
+  const providers = [
+    'https://api.ipify.org?format=json',
+    'https://ifconfig.me/all.json'
+  ];
+  for (const u of providers) {
     try {
+      const r = await fetch(u, { signal: AbortSignal.timeout(8000) });
+      const txt = await r.text();
+      let ip = '';
+      try {
+        const j = JSON.parse(txt);
+        ip = j.ip || j.ip_addr || j.remote_addr || '';
+      } catch(e) {
+        ip = txt.trim();
+      }
+      if (ip) return res.json({ ok:true, ip });
+    } catch(e) {}
+  }
+  res.status(500).json({ ok:false, error:'Railway dış IP alınamadı' });
+});
+
+// ── HESAP ─────────────────────────────────────────────────────────────────────
+app.post('/api/account', async (req, res) => {
+  const{apiKey,apiSecret}=req.body;
+  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
+
+  const errors = [];
+  const sources = [];
+  let w=0,a=0,u=0,positions=[];
+
+  const setBalances = (obj, source) => {
+    if (!obj || typeof obj !== 'object') return;
+    const tw = parseFloat(obj.totalWalletBalance);
+    const av = parseFloat(obj.availableBalance);
+    const up = parseFloat(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl);
+    if (!Number.isNaN(tw)) w = tw;
+    if (!Number.isNaN(av)) a = av;
+    if (!Number.isNaN(up)) u = up;
+    sources.push(source);
+  };
+
+  const setPositions = (arr, source) => {
+    if (!Array.isArray(arr)) return;
+    const mapped = arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
+      symbol:p.symbol,
+      side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
+      positionAmt:Math.abs(parseFloat(p.positionAmt)),
+      entryPrice:parseFloat(p.entryPrice),
+      markPrice:parseFloat(p.markPrice),
+      unrealizedProfit:parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? 0),
+      leverage:parseInt(p.leverage)||0,
+      liquidationPrice:parseFloat(p.liquidationPrice||0),
+    }));
+    if (mapped.length || !positions.length) positions = mapped;
+    sources.push(source);
+  };
+
+  try{
+    // 1) Resmi güncel bakiye endpoint'i: /fapi/v3/balance
+    try{
       const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
-      const u=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
-      if(u){walletBal=parseFloat(u.balance)||0;availBal=parseFloat(u.availableBalance)||0;}
-    }catch(e){}
-    // v2/account — HER ZAMAN çağrılır (pozisyonlar + bakiye override)
-    const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-    if(parseFloat(data.totalWalletBalance)>0)walletBal=parseFloat(data.totalWalletBalance);
-    if(parseFloat(data.availableBalance)>0)availBal=parseFloat(data.availableBalance);
-    unrealized=parseFloat(data.totalUnrealizedProfit)||0;
-    res.json({ ok:true, totalWalletBalance:walletBal, availableBalance:availBal,
-      totalUnrealizedProfit:unrealized,
-      positions:(data.positions||[]).filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
-        symbol:p.symbol, side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
-        positionAmt:Math.abs(parseFloat(p.positionAmt)), entryPrice:parseFloat(p.entryPrice),
-        markPrice:parseFloat(p.markPrice), unrealizedProfit:parseFloat(p.unRealizedProfit),
-        leverage:parseInt(p.leverage), liquidationPrice:parseFloat(p.liquidationPrice),
-      }))
+      const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
+      if(ub){
+        w=parseFloat(ub.balance ?? ub.walletBalance ?? 0)||0;
+        a=parseFloat(ub.availableBalance ?? ub.maxWithdrawAmount ?? 0)||0;
+        u=parseFloat(ub.crossUnPnl ?? ub.unrealizedProfit ?? 0)||0;
+        sources.push('v3/balance');
+      }
+    }catch(e){errors.push(e.message);}
+
+    // 2) Resmi güncel hesap endpoint'i: /fapi/v3/account
+    try{
+      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v3/account');
+      setBalances(data, 'v3/account');
+      setPositions(data.positions || [], 'v3/account.positions');
+    }catch(e){errors.push(e.message);}
+
+    // 3) Eski ama bazı hesaplarda daha geniş veri döndüren endpoint: /fapi/v2/account
+    try{
+      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
+      setBalances(data, 'v2/account');
+      setPositions(data.positions || [], 'v2/account.positions');
+    }catch(e){errors.push(e.message);}
+
+    // 4) Pozisyonlar için v3, olmazsa v2
+    try{
+      const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk');
+      setPositions(pr, 'v3/positionRisk');
+    }catch(e1){
+      errors.push(e1.message);
+      try{
+        const pr2=await getPositionRisk(apiKey,apiSecret);
+        setPositions(pr2, 'v2/positionRisk');
+      }catch(e2){errors.push(e2.message);}
+    }
+
+    if (!sources.length) {
+      return res.status(400).json({
+        ok:false,
+        error:'Binance hesap okunamadı. API izinleri, Futures yetkisi ve IP whitelist kontrol edilmeli. Detay: '+errors.slice(-3).join(' | ')
+      });
+    }
+
+    res.json({
+      ok:true,
+      source:[...new Set(sources)].join(' + '),
+      totalWalletBalance:w,
+      availableBalance:a,
+      totalUnrealizedProfit:u,
+      positions,
+      warning: errors.length ? errors.slice(-2).join(' | ') : undefined
     });
   }catch(e){res.status(400).json({error:e.message});}
 });
+
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
   const{apiKey,apiSecret,symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount}=req.body;
@@ -1990,7 +2175,7 @@ app.post('/api/order', async (req, res) => {
     await new Promise(r=>setTimeout(r,800));
     let execPrice=parseFloat(main.avgPrice||curPrice);
     try{
-      const pos=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{symbol:sym});
+      const pos=await getPositionRisk(apiKey,apiSecret,{symbol:sym});
       const p=Array.isArray(pos)?pos.find(x=>x.symbol===sym&&Math.abs(parseFloat(x.positionAmt))>0):null;
       if(p&&parseFloat(p.entryPrice)>0)execPrice=parseFloat(p.entryPrice);
     }catch(e){}
@@ -2086,15 +2271,36 @@ app.post('/api/order', async (req, res) => {
     const slResult = await installSLTPWithProof(
       apiKey, apiSecret, sym, cSide, finalSL, finalTP, sym
     );
-    const tpOk = slResult.ok;
-    const slOk = slResult.ok;
+
+    // ÇALIŞAN PYTHON ÇEKİRDEĞİ İLE AYNI GÜVENLİK:
+    // SL/TP Binance üzerinde doğrulanmadan pozisyonu 'başarılı' sayma.
+    // Korumasız pozisyon kalırsa acil reduce-only market kapat.
+    if (!slResult.ok) {
+      let emergencyClose = null;
+      try {
+        await cancelAlgoOrders(apiKey, apiSecret, sym);
+        emergencyClose = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+          symbol:sym, side:cSide, type:'MARKET', quantity:qty, reduceOnly:'true', positionSide:'BOTH'
+        });
+      } catch(closeErr) {
+        emergencyClose = { error: closeErr.message };
+      }
+      return res.status(400).json({
+        ok:false,
+        error:`${sym} SL/TP Binance üzerinde doğrulanamadı; korumasız pozisyon bırakılmadı, acil kapatma denendi`,
+        mainOrderId:main.orderId,
+        emergencyClose,
+        sltpProof:slResult.proof,
+        sltpError:slResult.error
+      });
+    }
 
     res.json({ok:true,
-      message:`${sym} ${side} açıldı ✅ SL/TP ${slResult.ok?'Binance doğrulandı ✅':`doğrulanamadı ⚠️ ${slResult.error||''}`}`,
+      message:`${sym} ${side} açıldı ✅ SL/TP Binance doğrulandı ✅`,
       mainOrderId:main.orderId,
       slAlgoId:slResult.slOrder?.algoId||slResult.slOrder?.clientAlgoId,
       tpAlgoId:slResult.tpOrder?.algoId||slResult.tpOrder?.clientAlgoId,
-      tpSuccess:tpOk,slSuccess:slOk,
+      tpSuccess:true,slSuccess:true,
       slProof:slResult.proof,
       executedPrice:execPrice,
       details:{symbol:sym,side,quantity:qty,leverage,entry:execPrice,target:finalTP,stop:finalSL}
@@ -2107,7 +2313,7 @@ app.post('/api/positions', async (req, res) => {
   const{apiKey,apiSecret}=req.body;
   if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
   try{
-    const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk');
+    const data=await getPositionRisk(apiKey,apiSecret);
     const open=Array.isArray(data)?data.filter(p=>parseFloat(p.positionAmt)!==0).map(p=>{
       const amt=parseFloat(p.positionAmt),ep=parseFloat(p.entryPrice),mp=parseFloat(p.markPrice),lev=parseInt(p.leverage);
       const side=amt>0?'LONG':'SHORT';
@@ -2128,7 +2334,7 @@ app.post('/api/update-sl', async (req, res) => {
   const sym = symbol.toUpperCase().includes('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
   try {
     // Mevcut pozisyonu al
-    const pos = await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{symbol:sym});
+    const pos = await getPositionRisk(apiKey,apiSecret,{symbol:sym});
     const p = Array.isArray(pos) ? pos.find(x=>x.symbol===sym&&Math.abs(parseFloat(x.positionAmt))>0) : null;
     if (!p) return res.status(400).json({ error:'Açık pozisyon yok' });
 
@@ -2137,7 +2343,8 @@ app.post('/api/update-sl', async (req, res) => {
     const qty    = Math.abs(parseFloat(p.positionAmt)).toString();
 
     // Lazarus cancel_symbol_brackets + install_live_sltp_pair_with_proof
-    const tp_price = fnum(p.tp) || (isLong ? parseFloat(newSL) * 1.05 : parseFloat(newSL) * 0.95);
+    const state = trailingState.get(sym) || {};
+    const tp_price = await currentBracketTP(apiKey, apiSecret, sym, isLong, parseFloat(p.entryPrice||newSL), (autoConfig||{}).tpPct, state);
     const mark = parseFloat(p.markPrice||0) || parseFloat(newSL);
     const safeNewSL = isLong ? Math.min(parseFloat(newSL), mark * 0.9997) : Math.max(parseFloat(newSL), mark * 1.0003);
     const result = await installSLTPWithProof(apiKey, apiSecret, sym, cSide, safeNewSL, tp_price, sym);
@@ -2157,6 +2364,62 @@ app.post('/api/update-sl', async (req, res) => {
 // 5. Momentum kaybı — CVD yavaşlıyor, TP genişletme iptal
 // ══════════════════════════════════════════════════════════════════════════════
 const trailingState = new Map(); // symbol → pozisyon durumu
+
+
+function calcFallbackTP(entryPrice, isLong, tpPct) {
+  const pct = Math.max(0.05, parseFloat(tpPct || 10));
+  return isLong
+    ? +(entryPrice * (1 + pct/100)).toFixed(8)
+    : +(entryPrice * (1 - pct/100)).toFixed(8);
+}
+
+async function currentBracketTP(apiKey, apiSecret, symbol, isLong, entryPrice, fallbackTpPct, state) {
+  if (state && Number.isFinite(parseFloat(state.targetTP)) && parseFloat(state.targetTP) > 0) {
+    return parseFloat(state.targetTP);
+  }
+  const orders = await liveOpenBracketOrders(apiKey, apiSecret, symbol);
+  for (const o of orders) {
+    if (orderKind(o) !== 'TP') continue;
+    const trig = orderTriggerPrice(o);
+    if (!trig) continue;
+    // LONG TP entry üstünde, SHORT TP entry altında olmalı.
+    if (isLong && trig > entryPrice) return trig;
+    if (!isLong && trig < entryPrice) return trig;
+  }
+  return calcFallbackTP(entryPrice, isLong, fallbackTpPct);
+}
+
+async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) {
+  const sym = pos.symbol;
+  const isLong = pos.side === 'LONG';
+  const closeSide = isLong ? 'SELL' : 'BUY';
+  const cfg = autoConfig || {};
+  const state = trailingState.get(sym) || {};
+  const mark = parseFloat(pos.markPrice || pos.entryPrice || 0);
+  const entry = parseFloat(pos.entryPrice || mark || 0);
+  const safeSL = isLong
+    ? Math.min(parseFloat(newSL), mark * 0.9997)
+    : Math.max(parseFloat(newSL), mark * 1.0003);
+  let tpPrice = await currentBracketTP(apiKey, apiSecret, sym, isLong, entry, cfg.tpPct, state);
+  // TP mark'a yanlış tarafta kalmışsa emri anında tetikletmemek için panel TP'sinden yeniden hesapla.
+  if (isLong && tpPrice <= mark) tpPrice = calcFallbackTP(entry, true, cfg.tpPct);
+  if (!isLong && tpPrice >= mark) tpPrice = calcFallbackTP(entry, false, cfg.tpPct);
+
+  const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, safeSL, tpPrice, sym);
+  if (!proof.ok) {
+    logAuto(`❌ ${sym} ${reason} SL/TP çifti doğrulanamadı; yerel BE/trailing aktif sayılmadı`);
+    return { ok:false, proof, safeSL, tpPrice };
+  }
+  state.currentSL = safeSL;
+  state.targetTP = tpPrice;
+  state.currentSLAlgoId = proof.slOrder?.algoId || proof.slOrder?.clientAlgoId || proof.slOrder?.orderId || null;
+  state.tpAlgoId = proof.tpOrder?.algoId || proof.tpOrder?.clientAlgoId || proof.tpOrder?.orderId || null;
+  state.sltpVerified = true;
+  state.lastSltpUpdate = Date.now();
+  trailingState.set(sym, state);
+  logAuto(`✅ ${sym} ${reason}: SL ${safeSL} + TP ${tpPrice} Binance doğrulandı`);
+  return { ok:true, proof, safeSL, tpPrice };
+}
 
 // CVD + Tick delta flip tespiti — en kritik çıkış sinyali
 function detectCVDFlip(symbol, side) {
@@ -2339,31 +2602,31 @@ async function managePosition(apiKey, apiSecret, pos) {
       type:'BREAK_EVEN',
       reason:`Fiyat %${realProfitPct.toFixed(2)} hareket etti (kaldıraçsız) → SL giriş fiyatına`,
       urgency:'LOW',
-      newSL: +(entryPrice * (isLong ? 1.001 : 0.999)).toFixed(8)
+      newSL: +(entryPrice * (isLong ? 1.001 : 0.999)).toFixed(8),
+      stateUpdates:{ breakEvenSet:true }
     };
-    state.breakEvenSet = true;
     logAuto(`${sym} Break-even: Gerçek hareket %${realProfitPct.toFixed(2)}, Kaldıraçlı PnL: %${pnlPct.toFixed(1)}, Lev:${leverage}x`);
   }
 
   // ── 4b. KÂR TAŞIMA ADIMLARI ─────────────────────────────────────────────────
   if (!action && state.breakEvenSet) {
-    let stepSL = null, stepReason = null;
+    let stepSL = null, stepReason = null, stepUpdate = null;
     if (realProfitPct >= karTasima3 && !state.step3Set) {
       stepSL = isLong ? +(entryPrice*(1+0.015)).toFixed(8) : +(entryPrice*(1-0.015)).toFixed(8);
       stepReason = `Kâr taşıma 3: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
-      state.step3Set = true;
+      stepUpdate = { step3Set:true };
     } else if (realProfitPct >= karTasima2 && !state.step2Set) {
       stepSL = isLong ? +(entryPrice*(1+0.008)).toFixed(8) : +(entryPrice*(1-0.008)).toFixed(8);
       stepReason = `Kâr taşıma 2: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
-      state.step2Set = true;
+      stepUpdate = { step2Set:true };
     } else if (realProfitPct >= karTasima1 && !state.step1Set) {
       stepSL = isLong ? +(entryPrice*(1+0.003)).toFixed(8) : +(entryPrice*(1-0.003)).toFixed(8);
       stepReason = `Kâr taşıma 1: %${realProfitPct.toFixed(2)} → SL giriş üstü +%0.3`;
-      state.step1Set = true;
+      stepUpdate = { step1Set:true };
     }
     if (stepSL) {
       const better = isLong ? (!state.currentSL||stepSL>state.currentSL) : (!state.currentSL||stepSL<state.currentSL);
-      if (better) action = { type:'KAR_TASIMA', reason:stepReason, urgency:'LOW', newSL:stepSL };
+      if (better) action = { type:'KAR_TASIMA', reason:stepReason, urgency:'LOW', newSL:stepSL, stateUpdates:stepUpdate };
     }
   }
 
@@ -2376,24 +2639,24 @@ async function managePosition(apiKey, apiSecret, pos) {
     const movedPct = state.highWater
       ? Math.abs(newHW-state.highWater)/state.highWater*100 : 0;
     if (movedPct >= trailStep) {
-      state.highWater = newHW;
       const newSL = isLong
-        ? +(state.highWater*(1-trailPct/100)).toFixed(8)
-        : +(state.highWater*(1+trailPct/100)).toFixed(8);
+        ? +(newHW*(1-trailPct/100)).toFixed(8)
+        : +(newHW*(1+trailPct/100)).toFixed(8);
       const better = isLong
         ? (!state.currentSL||newSL>state.currentSL)
         : (!state.currentSL||newSL<state.currentSL);
       if (better) action = {
         type:'TRAIL_SL',
-        reason:`Trailing (%${trailStep} adım): HW=$${state.highWater.toFixed(4)} → SL=$${newSL}`,
-        urgency:'LOW', newSL
+        reason:`Trailing (%${trailStep} adım): HW=$${newHW.toFixed(4)} → SL=$${newSL}`,
+        urgency:'LOW', newSL,
+        stateUpdates:{ highWater:newHW }
       };
     }
   }
 
   // ── 6. TP GENİŞLETME — Momentum devam ediyorsa TP'yi yukarı taşı ────────
   // TP genişletme: kaldıraçsız fiyat hedefin %70'ini geçti mi?
-  const tpRealTarget = tpPct / leverage; // Kaldıraçsız hedef %
+  const tpRealTarget = tpPct; // Kaldıraçsız hedef %
   if (!action && !state.tpExtended && realProfitPct > tpRealTarget * 0.7) {
     const cvd = getCVD(sym);
     const momentumStrong = isLong
@@ -2435,26 +2698,19 @@ async function managePosition(apiKey, apiSecret, pos) {
       || action.type === 'KAR_TASIMA') {
     const newSL = action.newSL;
     if (!newSL) return null;
-    try {
-      // Önce mevcut algo SL'yi iptal et
-      await cancelAlgoOrders(apiKey, apiSecret, sym);
-      // Lazarus trigger_buffered_price: mark'a çok yakınsa -4117 hatası
-      // LONG SL mark'ın altında, SHORT SL mark'ın üstünde olmalı
-      const mark = curPrice;
-      const buffered = isLong
-        ? Math.min(newSL, mark * 0.9997)   // LONG: SL en az %0.03 mark altında
-        : Math.max(newSL, mark * 1.0003);  // SHORT: SL en az %0.03 mark üstünde
-      const r = await placeAlgoSL(
-        apiKey, apiSecret, sym,
-        isLong ? 'SELL' : 'BUY',
-        buffered, pos.positionAmt
-      );
-      const oid = r.algoId || r.clientAlgoId || r.orderId;
-      state.currentSL = buffered;
-      state.currentSLAlgoId = oid;
-      logAuto(`✅ ${sym} SL güncellendi → $${buffered} (algoId:${oid})`);
-    } catch(e) {
-      logAuto(`❌ ${sym} SL güncelleme hatası: ${e.message}`);
+    const upd = await updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, action.type);
+    if (upd.ok) {
+      Object.assign(state, action.stateUpdates || {});
+      state.currentSL = upd.safeSL;
+      state.targetTP = upd.tpPrice;
+      state.sltpVerified = true;
+      trailingState.set(sym, state);
+      logAuto(`✅ ${sym} ${action.type} uygulandı: SL ${upd.safeSL} / TP ${upd.tpPrice}`);
+    } else {
+      // Çalışan python çekirdeği gibi: doğrulanmadıysa yerel state'i başarılı sayma.
+      state.sltpVerified = false;
+      trailingState.set(sym, state);
+      return null;
     }
   }
 
@@ -2477,7 +2733,7 @@ app.post('/api/close', async (req, res) => {
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   try{
     try{await cancelAlgoOrders(apiKey,apiSecret,sym);}catch(e){}
-    const pos=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{symbol:sym});
+    const pos=await getPositionRisk(apiKey,apiSecret,{symbol:sym});
     const arr=Array.isArray(pos)?pos:[];
     const p=arr.find(x=>Math.abs(parseFloat(x.positionAmt))>0);
     if(!p)return res.json({ok:true,message:'Açık pozisyon yok'});
@@ -2538,29 +2794,41 @@ async function runAutoScan() {
     const { apiKey, apiSecret, usdtAmount, leverage, marginType,
       maxPositions=3, minScore=70, allowLong=true, allowShort=true,
       sweepOnly=true,
-      trailingPct=2, breakEvenPct=1, symbols=[] } = cfg;
+      trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[] } = cfg;
 
     // 1. Mevcut pozisyonları kontrol et
-    const posData = await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk');
+    const posData = await getPositionRisk(apiKey,apiSecret);
     const openPos = Array.isArray(posData)
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
 
     // Trailing SL kontrol
     if (openPos.length > 0) {
-      const mapped = openPos.map(p=>({
-        symbol:p.symbol, side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
-        positionAmt:Math.abs(parseFloat(p.positionAmt)),
-        entryPrice:parseFloat(p.entryPrice), markPrice:parseFloat(p.markPrice),
-        unrealizedProfit:parseFloat(p.unRealizedProfit)
-      }));
+      const mapped = openPos.map(p=>{
+        const amt = parseFloat(p.positionAmt);
+        const ep  = parseFloat(p.entryPrice);
+        const mp  = parseFloat(p.markPrice);
+        const lev = parseInt(p.leverage)||1;
+        const side = amt>0?'LONG':'SHORT';
+        const pnlPct = ep>0 ? ((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)) : 0;
+        return {
+          symbol:p.symbol, side,
+          positionAmt:Math.abs(amt),
+          entryPrice:ep, markPrice:mp,
+          unrealizedProfit:parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? 0),
+          leverage:lev,
+          pnlPct
+        };
+      });
       // Her açık pozisyon için trailing state oluştur
       for (const pos of mapped) {
         if (!trailingState.has(pos.symbol)) {
           trailingState.set(pos.symbol, {
             entryPrice:pos.entryPrice, highWater:pos.markPrice,
             breakEvenSet:false, currentSL:null,
-            config:{ trailing:true, trailPct, breakEvenPct, entryPrice:pos.entryPrice }
+            targetTP:calcFallbackTP(pos.entryPrice, pos.side==='LONG', cfg.tpPct),
+            leverage:pos.leverage||parseInt(leverage)||1,
+            config:{ trailing:true, trailingPct, trailStep, breakEvenPct, entryPrice:pos.entryPrice, targetTP:calcFallbackTP(pos.entryPrice, pos.side==='LONG', cfg.tpPct) }
           });
         }
       }
@@ -2626,7 +2894,7 @@ async function runAutoScan() {
 
     // 3. Her coini analiz et
     for (const coin of scanList) {
-      if (openPos.length + (await getNewPosCount()) >= maxPositions) break;
+      if ((await getNewPosCount()) >= maxPositions) break;
 
       // Zaten pozisyon var mı?
       const alreadyOpen = openPos.some(p=>p.symbol===coin.fullSymbol);
@@ -2638,110 +2906,105 @@ async function runAutoScan() {
         if (!analysis.ok) continue;
 
         const { longScore, shortScore, recommendation, isExpired, freshness } = analysis;
+        const decisionChain = analysis.decisionChain || {};
         if (isExpired || freshness === 'EXPIRED') continue;
 
-        // ── BEYİN KARAR ZİNCİRİ — 5 KURAL, SIRAYLA ──────────────────────────────
-        // Hepsi geçmezse işlem açılmaz. Basit. Net.
+        // ── PRO TRADER KARAR ZİNCİRİ — A-Tier ana karar, toksik filtreler veto ──
+        // Skor kafadan üretilmez: /api/analyze içindeki MM + CVD + OI + Funding + Tick + Sweep + Wyckoff katmanlarından gelir.
+        // Otomatik işlemde tekrar tekrar aynı şeyi sert kapı yapıp botu boğma; A-Tier karar zaten hasEntry + delta + funding + skor kontrolü yapar.
 
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
 
-        // Kural 0: Yön izni
+        // Yön izni
         if (isLong  && !allowLong)  continue;
         if (isShort && !allowShort) continue;
         if (recommendation==='WAIT') continue;
 
-        // Kural 1: Wyckoff Spring VEYA Sweep+Teyit ZORUNLU
-        // Bu olmadan giriş yok — MM henüz oyununu bitirmedi
-        const sw1h = analysis.sweepConfirm?.['1h'];
-        const sw4h = analysis.sweepConfirm?.['4h'];
-        const wy1h = analysis.wyckoff?.['1h'];
-        const wy4h = analysis.wyckoff?.['4h'];
-
-        const hasBullSetup = (
-          (sw1h?.confirmed && sw1h.direction==='BULL_SWEEP') ||
-          (sw4h?.confirmed && sw4h.direction==='BULL_SWEEP') ||
-          wy1h?.recentEvents?.some(e=>e.type==='SPRING') ||
-          wy4h?.recentEvents?.some(e=>e.type==='SPRING') ||
-          wy1h?.recentEvents?.some(e=>e.type==='SOS')
-        );
-        const hasBearSetup = (
-          (sw1h?.confirmed && sw1h.direction==='BEAR_SWEEP') ||
-          (sw4h?.confirmed && sw4h.direction==='BEAR_SWEEP') ||
-          wy1h?.recentEvents?.some(e=>e.type==='UTAD') ||
-          wy4h?.recentEvents?.some(e=>e.type==='UTAD')
-        );
-
-        // sweepOnly=true (varsayılan): sweep/wyckoff zorunlu
-        // sweepOnly=false: bu kural bypass edilir, sadece skor filtresi geçerlir
-        if (sweepOnly) {
-          if (isLong  && !hasBullSetup) { logAuto(`${coin.symbol} LONG sweep/wyckoff yok — atlandı`); continue; }
-          if (isShort && !hasBearSetup) { logAuto(`${coin.symbol} SHORT sweep/wyckoff yok — atlandı`); continue; }
+        // Sadece A-Tier otomatik açılır. B-Tier panelde görünür ama otomatik emir açmaz.
+        const tierOk = decisionChain?.autoOk === true && decisionChain?.tier === 'A';
+        if (!tierOk) {
+          logAuto(`📊 ${coin.symbol} B/WAIT-Tier (${decisionChain?.reason||'A-Tier değil'}) — otomatik açılmıyor`);
+          continue;
         }
 
-        // Kural 2: MM yönü uyumlu mu?
-        const mm = analysis.marketMaker;
-        const mmOk = isLong
-          ? mm?.target==='GENUINE_UP' || mm?.target==='UP_SWEEP'
-          : mm?.target==='GENUINE_DOWN' || mm?.target==='DOWN_SWEEP';
-        if (!mmOk) { logAuto(`${coin.symbol} MM yönü uyumsuz (${mm?.target}) — atlandı`); continue; }
+        // MM yönü: sadece yüksek güvenli doğrudan ters MM hedefi veto eder. Nötr/likidite hedefleri skorda kalır, bot boğulmaz.
+        const mm = analysis.marketMaker || {};
+        const mmConf = parseFloat(mm.confidence || 0);
+        const mmTarget = String(mm.target || 'UNKNOWN');
+        const mmHardOpposite = isLong
+          ? (mmTarget === 'GENUINE_DOWN' && mmConf >= 65)
+          : (mmTarget === 'GENUINE_UP'   && mmConf >= 65);
+        if (mmHardOpposite) {
+          logAuto(`${coin.symbol} yüksek güvenli MM ters (${mmTarget}/${mmConf}) — atlandı`);
+          continue;
+        }
 
-        // Kural 3: CVD teyit ediyor mu?
-        const cvd = analysis.cvd;
-        const cvdOk = isLong
-          ? cvd?.ratio > 45  // Alımlar baskın ya da nötr
-          : cvd?.ratio < 55; // Satışlar baskın ya da nötr
-        if (!cvdOk) { logAuto(`${coin.symbol} CVD ters (${cvd?.ratio}%) — atlandı`); continue; }
+        // CVD/Tick delta: sadece net toksik ters akış veto eder. Nötr akış fırsatı öldürmez.
+        const cvd = analysis.cvd || {};
+        const tick = analysis.tickData || {};
+        const cvdRatio = parseFloat(cvd.ratio ?? 50);
+        const tickTrend = String(tick.deltaTrend || 'UNKNOWN');
+        const cvdToxic = isLong
+          ? (cvdRatio < 35 && tickTrend === 'BEAR')
+          : (cvdRatio > 65 && tickTrend === 'BULL');
+        if (cvdToxic) {
+          logAuto(`${coin.symbol} CVD+Tick net ters (${cvdRatio}%/${tickTrend}) — atlandı`);
+          continue;
+        }
 
-        // Kural 4: Funding aşırı karşı yönde değil mi?
-        const fund = analysis.funding;
+        // Funding: sadece aşırı ters funding veto eder.
+        const fund = analysis.funding || {};
         const fundOk = isLong
-          ? fund?.signal !== 'EXTREME_POSITIVE'  // Aşırı pozitif funding → long tehlikeli
-          : fund?.signal !== 'EXTREME_NEGATIVE'; // Aşırı negatif funding → short tehlikeli
+          ? fund?.signal !== 'EXTREME_POSITIVE'
+          : fund?.signal !== 'EXTREME_NEGATIVE';
         if (!fundOk) { logAuto(`${coin.symbol} Funding aşırı karşı (${fund?.current}) — atlandı`); continue; }
 
-        // Kural 5: Skor yeterli mi?
+        // Skor ve seans filtresi
         if (score < effectiveMinScore) { logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore}(kz:${kz.zone}) — atlandı`); continue; }
 
         // F&G: Extreme durumlarda ters yön yasak
         if (fgSignal==='EXTREME_GREED' && isLong)  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); continue; }
         if (fgSignal==='EXTREME_FEAR'  && isShort) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); continue; }
 
-        // Likidasyon cascade var mı? Varsa ters yönde git (cascade yönünün tersi karlı)
+        // Likidasyon cascade: sadece pozisyon yönüne direkt ters kaskad veto eder.
         const liq = analysis.liquidations;
         if (liq?.cascade) {
-          const cascadeOk = isLong
-            ? liq.cascade.direction==='SHORT_CASCADE'   // Shortlar patladı → long iyi
-            : liq.cascade.direction==='LONG_CASCADE';   // Longlar patladı → short iyi
-          if (!cascadeOk) { logAuto(`${coin.symbol} Cascade yönü ters — atlandı`); continue; }
+          const adverseCascade = isLong
+            ? liq.cascade.direction==='LONG_CASCADE'
+            : liq.cascade.direction==='SHORT_CASCADE';
+          if (adverseCascade) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); continue; }
         }
 
-        // ── R/R KONTROLÜ ─────────────────────────────────────────────────────
-        // Minimum R/R sağlanmıyorsa işlem açma
-        const proTP = analysis.proTPSL;
-        if (proTP && proTP.rr1 != null && !isNaN(proTP.rr1) && proTP.rr1 < (cfg.minRR||1.0)) {
-          logAuto(`${coin.symbol} R/R ${proTP.rr1?.toFixed(2)} < min ${cfg.minRR||1.0} — atlandı`);
+        // ── KULLANICI RİSK AYARLARI ───────────────────────────────────────────────
+        // Otomatik emir gerçek panel değerlerini kullanır:
+        // usdtAmount = kullanıcının marjı, leverage = kullanıcının kaldıracı,
+        // slPct/tpPct = kaldıraçsız coin hareketi yüzdesi.
+        const entryRef = parseFloat(analysis.price || coin.price || 0);
+        if (!entryRef) { logAuto(`${coin.symbol} fiyat alınamadı — atlandı`); continue; }
+
+        const userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));
+        const userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
+        const userRR    = userTPPct / userSLPct;
+        const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
+
+        if (userRR < minRR) {
+          logAuto(`${coin.symbol} panel R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
           continue;
         }
 
-        // ── KATMAN KONTROLÜ ──────────────────────────────────────────────────
-        // Otomatik işlem sadece A-Tier için açılır
-        // B-Tier sinyaller gösterilir ama otomatik açılmaz
-        const tierOk = decisionChain?.autoOk; // sadece A-tier
-        if (!tierOk) {
-          logAuto(`📊 ${coin.symbol} B-Tier sinyal (${decisionChain?.reason}) — otomatik açılmıyor`);
-          continue;
-        }
-        logAuto(`🔥 ${coin.symbol} A-Tier! ${decisionChain?.reason}`);
+        logAuto(`🔥 ${coin.symbol} A-Tier PRO! ${decisionChain?.reason||'A-Tier decisionChain'} — hard-gate değil, ağırlıklı karar geçti.`);
 
-        // TP/SL
-        const proTPSL = analysis.proTPSL;
-        if (!proTPSL) continue;
-        const targetPrice = recommendation==='LONG' ? proTPSL.tp : proTPSL.tp;
-        const stopPrice   = recommendation==='LONG' ? proTPSL.sl : proTPSL.sl;
+        // TP/SL: Paneldeki değerler kesin uygulanır; proTPSL sadece analiz kalitesine katkı verir.
+        const targetPrice = isLong
+          ? +(entryRef * (1 + userTPPct/100)).toFixed(8)
+          : +(entryRef * (1 - userTPPct/100)).toFixed(8);
+        const stopPrice = isLong
+          ? +(entryRef * (1 - userSLPct/100)).toFixed(8)
+          : +(entryRef * (1 + userSLPct/100)).toFixed(8);
 
-        logAuto(`🎯 Sinyal: ${coin.symbol} ${recommendation} skor:${score} — emir açılıyor`);
+        logAuto(`🎯 Sinyal: ${coin.symbol} ${recommendation} skor:${score} — marj:${usdtAmount} USDT lev:${leverage}x SL:%${userSLPct} TP:%${userTPPct} RR:${userRR.toFixed(2)} — emir açılıyor`);
 
         // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -2763,9 +3026,12 @@ async function runAutoScan() {
           trailingState.set(coin.fullSymbol, {
             entryPrice: orderResp.executedPrice||analysis.price,
             highWater: orderResp.executedPrice||analysis.price,
-            breakEvenSet:false, currentSL:null,
-            config:{ trailing:true, trailPct, breakEvenPct,
-              entryPrice:orderResp.executedPrice||analysis.price }
+            breakEvenSet:false, currentSL:orderResp.details?.stop||stopPrice,
+            targetTP:orderResp.details?.target||targetPrice,
+            leverage:parseInt(leverage)||1,
+            sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
+            config:{ trailing:true, trailingPct, trailStep, breakEvenPct,
+              entryPrice:orderResp.executedPrice||analysis.price, targetTP:orderResp.details?.target||targetPrice }
           });
           // Bir sonraki coin için bekle
           await new Promise(r=>setTimeout(r,2000));
@@ -2788,7 +3054,7 @@ async function getNewPosCount() {
   try {
     const cfg = autoConfig;
     if (!cfg?.apiKey) return 0;
-    const d = await bReq(cfg.apiKey,cfg.apiSecret,'GET','/fapi/v2/positionRisk');
+    const d = await getPositionRisk(cfg.apiKey,cfg.apiSecret);
     return Array.isArray(d) ? d.filter(p=>Math.abs(parseFloat(p.positionAmt))>0).length : 0;
   } catch(e) { return 0; }
 }
@@ -2800,22 +3066,5 @@ function startAutoTrader() {
   autoTimer = setInterval(runAutoScan, 3*60*1000);
   runAutoScan(); // Hemen başlat
 }
-
-
-// ── SUNUCU IP — Railway'in dışarıya bakan IP'si (Binance whitelist için) ─────
-app.get('/api/my-ip', async (req, res) => {
-  try {
-    // ipify ile Railway'in gerçek dışarıya bakan IP'sini al
-    const r = await fetch('https://api.ipify.org?format=json', {signal:AbortSignal.timeout(5000)});
-    const d = await r.json();
-    res.json({ ok:true, ip: d.ip, note:"Bu IP'yi Binance API whitelist'ine ekle" });
-  } catch(e) {
-    // Fallback: request header'dan al
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-             || req.socket?.remoteAddress
-             || 'Alınamadı';
-    res.json({ ok:true, ip, note:"Header'dan alindi (Railway NAT IP farkli olabilir)", fallback:true });
-  }
-});
 
 app.listen(PORT, ()=>console.log(`✅ Server ${PORT}`));
