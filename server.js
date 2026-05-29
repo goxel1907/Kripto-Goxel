@@ -66,7 +66,7 @@ async function bAlgo(apiKey, apiSecret, params) {
   const url = `${FAPI}/fapi/v1/algoOrder?${fullQs}`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
+    headers: { 'X-MBX-APIKEY': sanitizeKey(apiKey) },
     signal: AbortSignal.timeout(10000),
   });
   const text = await res.text();
@@ -250,7 +250,7 @@ function signedQueryString(params, apiSecret) {
     .sort(([a],[b]) => a.localeCompare(b))
     .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
-  const sig = sign(qs, String(apiSecret || '').trim());
+  const sig = sign(qs, sanitizeKey(apiSecret));
   return `${qs}&signature=${sig}`;
 }
 
@@ -288,8 +288,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   const finalUrl = `${url}?${fullQs}`;
   const options = {
     method: method.toUpperCase(),
-    headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
-    signal: AbortSignal.timeout(timeout),
+    headers: { 'X-MBX-APIKEY': sanitizeKey(apiKey) },
   };
   const res = await fetch(finalUrl, options);
   const text = await res.text();
@@ -1252,7 +1251,16 @@ app.get('/api/futures-coins', async (req, res) => {
   } catch(e) { res.status(400).json({ error:e.message }); }
 });
 
-// ── PRO ANALİZ ────────────────────────────────────────────────────────────────
+// ── API KEY SANITIZE — telefon klavyesinden kopyalamada gelen invisible karakterleri temizler ──
+// trim() sadece baş-sondaki boşluğu atar; unicode sıfır-genişlik karakterleri (\u200b, \u200c,
+// \u00a0, \ufeff vb.) API imzasını bozar ve bakiye $0.00 gösterir.
+function sanitizeKey(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/[\u200b\u200c\u200d\u200e\u200f\u00a0\ufeff\u2028\u2029\u202f\u205f\u3000]/g, '') // invisible unicode
+    .replace(/[^\x20-\x7E]/g, '') // ASCII dışı her şeyi at
+    .trim();
+}
 app.get('/api/analyze/:symbol', async (req, res) => {
   const sym  = req.params.symbol.toUpperCase();
   const full = sym.endsWith('USDT') ? sym : sym+'USDT';
