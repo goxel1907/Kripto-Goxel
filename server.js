@@ -154,7 +154,7 @@ async function bPub(path, qs='') {
 
 // ── İMZA ─────────────────────────────────────────────────────────────────────
 function sign(qs,secret){return crypto.createHmac('sha256',secret).update(qs).digest('hex');}
-async function bReq(apiKey,apiSecret,method,path,params={}) {
+async function bReq(apiKey,apiSecret,method,path,params={},timeout=8000) {
   const ts=Date.now();
   const obj={...params,timestamp:ts,recvWindow:10000};
   const qs=Object.entries(obj).map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
@@ -162,7 +162,7 @@ async function bReq(apiKey,apiSecret,method,path,params={}) {
   const url=`${FAPI}${path}`;
   const fullQs=`${qs}&signature=${sig}`;
   const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
-  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':apiKey,'Content-Type':'application/x-www-form-urlencoded'}};
+  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':apiKey,'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
   const finalUrl=isGet?`${url}?${fullQs}`:url;
   if(!isGet)options.body=fullQs;
   const res=await fetch(finalUrl,options);
@@ -1930,44 +1930,25 @@ app.post('/api/account', async (req, res) => {
   if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
   try{
     let w=0,a=0,u=0,positions=[];
-
-    // v3/balance + v2/positionRisk paralel çalıştır — ikisi birbirini beklemiyor
-    const [balResult, posResult] = await Promise.allSettled([
-      bReq(apiKey,apiSecret,'GET','/fapi/v3/balance'),
-      bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk'),
-    ]);
-
-    // Bakiye
-    if(balResult.status==='fulfilled'){
-      const b=balResult.value;
+    // v3/balance önce dene (hızlı, sadece USDT satırı)
+    try{
+      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
       const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
-      if(ub){w=parseFloat(ub.balance)||0;a=parseFloat(ub.availableBalance)||0;u=parseFloat(ub.crossUnPnl)||0;}
-    } else { console.log('v3/balance hata:',balResult.reason?.message); }
-
-    // v3/balance başarısız veya 0 ise v2/account fallback
-    if(w===0){
-      try{
-        const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-        if(parseFloat(data.totalWalletBalance)>0)w=parseFloat(data.totalWalletBalance);
-        if(parseFloat(data.availableBalance)>0)a=parseFloat(data.availableBalance);
-        u=parseFloat(data.totalUnrealizedProfit)||0;
-      }catch(e){console.log('v2/account hata:',e.message);}
-    }
-
-    // Pozisyonlar
-    if(posResult.status==='fulfilled'){
-      const pr=posResult.value;
-      if(Array.isArray(pr)){
-        positions=pr.filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
-          symbol:p.symbol,side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
-          positionAmt:Math.abs(parseFloat(p.positionAmt)),entryPrice:parseFloat(p.entryPrice),
-          markPrice:parseFloat(p.markPrice),unrealizedProfit:parseFloat(p.unRealizedProfit),
-          leverage:parseInt(p.leverage),liquidationPrice:parseFloat(p.liquidationPrice),
-        }));
-        if(positions.length>0)u=positions.reduce((s,p)=>s+p.unrealizedProfit,0);
-      }
-    } else { console.log('positionRisk hata:',posResult.reason?.message); }
-
+      if(ub){w=parseFloat(ub.balance)||0;a=parseFloat(ub.availableBalance)||0;}
+    }catch(e){}
+    // v2/account — bakiye fallback + pozisyonlar tek istekte (eski çalışan mantık)
+    try{
+      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
+      if(parseFloat(data.totalWalletBalance)>0)w=parseFloat(data.totalWalletBalance);
+      if(parseFloat(data.availableBalance)>0)a=parseFloat(data.availableBalance);
+      u=parseFloat(data.totalUnrealizedProfit)||0;
+      positions=(data.positions||[]).filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
+        symbol:p.symbol,side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
+        positionAmt:Math.abs(parseFloat(p.positionAmt)),entryPrice:parseFloat(p.entryPrice),
+        markPrice:parseFloat(p.markPrice),unrealizedProfit:parseFloat(p.unRealizedProfit),
+        leverage:parseInt(p.leverage),liquidationPrice:parseFloat(p.liquidationPrice),
+      }));
+    }catch(e){console.log('v2/account hata:',e.message);}
     res.json({ok:true,totalWalletBalance:w,availableBalance:a,totalUnrealizedProfit:u,positions});
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2820,5 +2801,22 @@ function startAutoTrader() {
   autoTimer = setInterval(runAutoScan, 3*60*1000);
   runAutoScan(); // Hemen başlat
 }
+
+
+// ── SUNUCU IP — Railway'in dışarıya bakan IP'si (Binance whitelist için) ─────
+app.get('/api/my-ip', async (req, res) => {
+  try {
+    // ipify ile Railway'in gerçek dışarıya bakan IP'sini al
+    const r = await fetch('https://api.ipify.org?format=json', {signal:AbortSignal.timeout(5000)});
+    const d = await r.json();
+    res.json({ ok:true, ip: d.ip, note:'Bu IP'yi Binance API whitelist'ine ekle' });
+  } catch(e) {
+    // Fallback: request header'dan al
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+             || req.socket?.remoteAddress
+             || 'Alınamadı';
+    res.json({ ok:true, ip, note:'Header'dan alındı (Railway NAT IP farklı olabilir)', fallback:true });
+  }
+});
 
 app.listen(PORT, ()=>console.log(`✅ Server ${PORT}`));
