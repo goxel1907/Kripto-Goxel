@@ -280,26 +280,36 @@ function formatBinanceError(path, data) {
 }
 
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
+  // R9: Ana Binance signed request tekrar çalışan eski gövdeye alındı.
+  // GET/DELETE query string, POST form body. AlgoOrder ayrı bAlgo ile query-string çalışır.
   if (!lastTimeSync) await syncBinanceTime(false);
   const ts = Date.now() + binanceTimeOffset;
   const obj = { ...params, timestamp: ts, recvWindow: 10000 };
-  const fullQs = signedQueryString(obj, apiSecret);
+  const qs = Object.entries(obj)
+    .filter(([,v]) => v !== undefined && v !== null && v !== '')
+    .map(([k,v]) => `${k}=${encodeURIComponent(v)}`)
+    .join('&');
+  const sig = sign(qs, apiSecret);
   const url = `${FAPI}${path}`;
-  const finalUrl = `${url}?${fullQs}`;
+  const fullQs = `${qs}&signature=${sig}`;
+  const m = method.toUpperCase();
+  const isGet = m === 'GET' || m === 'DELETE';
   const options = {
-    method: method.toUpperCase(),
-    headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
-    signal: AbortSignal.timeout(timeout),
+    method: m,
+    headers: {
+      'X-MBX-APIKEY': String(apiKey || '').trim(),
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    signal: AbortSignal.timeout(timeout)
   };
+  const finalUrl = isGet ? `${url}?${fullQs}` : url;
+  if (!isGet) options.body = fullQs;
   const res = await fetch(finalUrl, options);
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); }
   catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
   if (data.code && data.code < 0) {
-    // -1021 timestamp; bir kere Binance saatine senkronlayıp tekrar dene.
-    // -1022 imza hatasında query-string signed format kullanıldığı için tekrar denemek yerine
-    // açık hata gösterilir; böylece korumasız pozisyon varsayımı yapılmaz.
     if (Number(data.code) === -1021 && !_retry) {
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
@@ -2599,61 +2609,108 @@ app.get('/api/my-ip', async (_req, res) => {
 // - v3/v2 account.assets içindeki USDT satırı da okunur
 // - İmzalı bağlantı başarılı ama USDT satırı yoksa bunu açık diagnostik olarak döndürür
 app.post('/api/account', async (req, res) => {
-  let {apiKey,apiSecret}=req.body || {};
-  apiKey = String(apiKey||'').trim();
-  apiSecret = String(apiSecret||'').trim();
-  if(!apiKey||!apiSecret)return res.status(400).json({ok:false,error:'API key gerekli'});
+  let { apiKey, apiSecret } = req.body || {};
+  apiKey = String(apiKey || '').trim();
+  apiSecret = String(apiSecret || '').trim();
+  if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'API key gerekli' });
 
   const errors = [];
   const sources = [];
   const balanceSources = [];
   const positionSources = [];
+  const debug = [];
   let signedOk = false;
-  let w=0,a=0,u=0,positions=[];
   let sawUsdtAsset = false;
+  let w = null, a = null, u = null, positions = [];
 
   const num = (v) => {
+    if (v === undefined || v === null || v === '') return null;
     const n = parseFloat(v);
     return Number.isFinite(n) ? n : null;
   };
-  const addErr = (e) => errors.push(safeErrMsg(e));
+  const uniqPush = (arr, v) => { if (v && !arr.includes(v)) arr.push(v); };
+  const addErr = (label, e) => errors.push(`${label}: ${safeErrMsg(e)}`);
 
-  const setBalanceNumbers = (obj, source) => {
+  function debugOk(label, data) {
+    try {
+      const item = { label, ok:true, type:Array.isArray(data)?'array':typeof data };
+      if (Array.isArray(data)) {
+        item.len = data.length;
+        item.assets = data.slice(0,8).map(x => String(x.asset || x.marginAsset || x.accountAlias || '?')).join(',');
+        const usdt = data.find(x => String(x.asset || x.marginAsset || '').toUpperCase() === 'USDT');
+        if (usdt) item.usdtKeys = Object.keys(usdt).slice(0,18).join(',');
+      } else if (data && typeof data === 'object') {
+        item.keys = Object.keys(data).slice(0,24).join(',');
+        if (Array.isArray(data.assets)) {
+          item.assetsLen = data.assets.length;
+          item.assets = data.assets.slice(0,8).map(x => String(x.asset || x.marginAsset || '?')).join(',');
+          const usdt = data.assets.find(x => String(x.asset || x.marginAsset || '').toUpperCase() === 'USDT');
+          if (usdt) item.usdtKeys = Object.keys(usdt).slice(0,18).join(',');
+        }
+      }
+      debug.push(item);
+      while (debug.length > 14) debug.shift();
+    } catch(_) {}
+  }
+  function debugFail(label, e) {
+    debug.push({ label, ok:false, error:safeErrMsg(e) });
+    while (debug.length > 14) debug.shift();
+  }
+
+  function setBalanceNumbers(obj, source) {
     if (!obj || typeof obj !== 'object') return false;
-    let okBal = false;
-    const tw = num(obj.totalWalletBalance ?? obj.walletBalance ?? obj.balance ?? obj.crossWalletBalance ?? obj.marginBalance);
-    const av = num(obj.availableBalance ?? obj.maxWithdrawAmount ?? obj.withdrawAvailable ?? obj.availableBalanceOfCross ?? obj.crossWalletBalance);
-    const up = num(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl ?? obj.crossUnPnl ?? obj.unrealizedProfit ?? obj.unRealizedProfit);
-    if (tw !== null) { w = tw; okBal = true; }
-    if (av !== null) { a = av; okBal = true; }
-    if (up !== null) { u = up; okBal = true; }
-    if (okBal) {
-      sources.push(source);
-      balanceSources.push(source);
+    // R9: Binance Futures hesap varyasyonları için alan listesi genişletildi.
+    // Eski çalışan sürüm sadece totalWalletBalance / availableBalance okuyordu;
+    // yeni sürüm USDT satırı yok diye hata basmamalı, account-level toplamı da okuyabilmeli.
+    const tw = num(
+      obj.totalWalletBalance ?? obj.walletBalance ?? obj.balance ??
+      obj.crossWalletBalance ?? obj.totalCrossWalletBalance ?? obj.marginBalance ??
+      obj.totalMarginBalance ?? obj.maxWithdrawAmount
+    );
+    const av = num(
+      obj.availableBalance ?? obj.maxWithdrawAmount ?? obj.withdrawAvailable ??
+      obj.availableBalanceOfCross ?? obj.crossWalletBalance ?? obj.totalCrossWalletBalance
+    );
+    const up = num(
+      obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl ??
+      obj.crossUnPnl ?? obj.unrealizedProfit ?? obj.unRealizedProfit
+    );
+    let ok = false;
+    if (tw !== null) { w = tw; ok = true; }
+    if (av !== null) { a = av; ok = true; }
+    if (up !== null) { u = up; ok = true; }
+    if (ok) {
+      uniqPush(sources, source);
+      uniqPush(balanceSources, source);
     }
-    return okBal;
-  };
+    return ok;
+  }
 
-  const pickUsdt = (arr) => Array.isArray(arr) ? arr.find(x => String(x.asset||'').toUpperCase()==='USDT') : null;
+  function pickStable(arr) {
+    if (!Array.isArray(arr)) return null;
+    return arr.find(x => String(x.asset || x.marginAsset || '').toUpperCase() === 'USDT') ||
+           arr.find(x => ['FDUSD','USDC','BUSD'].includes(String(x.asset || x.marginAsset || '').toUpperCase())) ||
+           null;
+  }
 
-  const setBalanceArray = (arr, source) => {
-    const ub = pickUsdt(arr);
+  function setBalanceArray(arr, source) {
+    const ub = pickStable(arr);
     if (!ub) return false;
-    sawUsdtAsset = true;
-    return setBalanceNumbers(ub, source + '.USDT');
-  };
+    if (String(ub.asset || ub.marginAsset || '').toUpperCase() === 'USDT') sawUsdtAsset = true;
+    return setBalanceNumbers(ub, `${source}.${String(ub.asset || ub.marginAsset || 'ASSET').toUpperCase()}`);
+  }
 
-  const setAccount = (data, source) => {
+  function setAccount(data, source) {
     if (!data || typeof data !== 'object') return false;
     let ok = false;
     ok = setBalanceNumbers(data, source) || ok;
-    if (Array.isArray(data.assets)) ok = setBalanceArray(data.assets, source + '.assets') || ok;
+    if (Array.isArray(data.assets)) ok = setBalanceArray(data.assets, `${source}.assets`) || ok;
     return ok;
-  };
+  }
 
-  const setPositions = (arr, source) => {
+  function setPositions(arr, source) {
     if (!Array.isArray(arr)) return false;
-    const mapped = arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
+    const mapped = arr.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).map(p => ({
       symbol:p.symbol,
       side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
       positionAmt:Math.abs(parseFloat(p.positionAmt)),
@@ -2664,61 +2721,58 @@ app.post('/api/account', async (req, res) => {
       liquidationPrice:parseFloat(p.liquidationPrice||0),
     }));
     if (mapped.length || !positions.length) positions = mapped;
-    sources.push(source);
-    positionSources.push(source);
+    uniqPush(sources, source);
+    uniqPush(positionSources, source);
     return true;
-  };
+  }
 
   async function trySigned(label, fn) {
     try {
       const data = await fn();
       signedOk = true;
+      debugOk(label, data);
       return data;
     } catch(e) {
-      addErr(`${label}: ${e.message || e}`);
+      addErr(label, e);
+      debugFail(label, e);
       return null;
     }
   }
 
-  try{
-    // 1) Hatasız eski davranışa en yakın: önce v2/account.
-    // Bazı hesaplarda v3/balance USDT satırı vermese bile v2/account toplamı doğru döndürüyor.
-    const acc2 = await trySigned('v2/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/account'));
-    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+  try {
+    // Çalışan hatasız sürüme en yakın sıra: önce balance/account, sonra positionRisk.
+    const bal3 = await trySigned('v3/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance'));
+    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
 
-    // 2) v2/balance geri eklendi: hatasız sürümün okuduğu hesaplarda en güvenli fallback.
-    const bal2 = await trySigned('v2/balance', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/balance'));
-    if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT satırı yok');
-
-    // 3) Güncel v3/account + assets parse.
-    const acc3 = await trySigned('v3/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/account'));
+    const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
     if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
 
-    // 4) Güncel v3/balance.
-    const bal3 = await trySigned('v3/balance', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/balance'));
-    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT satırı yok');
+    const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
+    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
 
-    // 5) En eski fallback. Bazı hesaplarda hala döner; dönmezse sadece diagnostik olur.
-    const acc1 = await trySigned('v1/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v1/account'));
+    const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
+    if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
+
+    const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
     if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
 
-    // 6) Pozisyonlar için ayrı oku; bakiye başarısızsa bile POS sekmesi boş kalmasın.
-    const pr3 = await trySigned('v3/positionRisk', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk'));
+    const pr3 = await trySigned('v3/positionRisk', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk'));
     if (pr3) setPositions(pr3, 'v3/positionRisk');
     else {
-      const pr2 = await trySigned('v2/positionRisk', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk'));
+      const pr2 = await trySigned('v2/positionRisk', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk'));
       if (pr2) setPositions(pr2, 'v2/positionRisk');
     }
 
-    // Eğer available geldi ama wallet 0 kaldıysa panelde sıfır görünmesin diye available'ı toplam olarak da göster.
     if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
+    if (!Number.isFinite(u)) u = 0;
 
     if (!signedOk) {
       return res.status(400).json({
         ok:false,
-        error:'Binance Futures imzalı bağlantı kurulamadı. API key/secret eşleşmesi, Futures yetkisi ve IP whitelist kontrol edilmeli.',
+        error:'Binance Futures imzalı bağlantı kurulamadı. API key/secret, Futures yetkisi ve IP whitelist kontrol edilmeli.',
         errors: errors.slice(-12),
-        hint:'Dashboardda Sıfırla yapıp API Key + API Secretı yeniden yapıştır. Telefonda kopyala/yapıştır sonuna boşluk gelirse imza bozulur.'
+        debug,
+        hint:'Sıfırla yapıp API Key + gerçek API Secretı yeniden yapıştır. Binance tarafında görünen Railway IP whitelistte olmalı.'
       });
     }
 
@@ -2726,15 +2780,16 @@ app.post('/api/account', async (req, res) => {
       return res.status(400).json({
         ok:false,
         signedOk:true,
-        error:'Binance Futures bağlantısı var ama USDT Futures bakiyesi okunamadı.',
-        errors: errors.slice(-12),
+        error:'Binance imzalı bağlantı var ama balance/account endpointlerinden bakiye alanı parse edilemedi.',
+        errors: errors.slice(-14),
+        debug,
         hint:sawUsdtAsset
-          ? 'USDT satırı bulundu ama bakiye alanları parse edilemedi. Railway logundaki /api/account debugSource bilgisini kontrol et.'
-          : 'Bu API key Futures hesabında USDT satırı göstermiyor. Binance USDⓈ-M Futures cüzdanında USDT olduğundan ve keyde Enable Futures açık olduğundan emin ol.'
+          ? 'USDT asset satırı geldi ama balance/wallet alan adı beklenenden farklı. Debug içindeki usdtKeys gerekli.'
+          : 'Balance/account endpointleri USDT/stable satırı veya account-level toplam döndürmedi. Debug satırındaki endpoint hataları gerekli.'
       });
     }
 
-    res.json({
+    return res.json({
       ok:true,
       signedOk:true,
       balanceOk:true,
@@ -2745,9 +2800,12 @@ app.post('/api/account', async (req, res) => {
       availableBalance:Number.isFinite(a)?a:0,
       totalUnrealizedProfit:Number.isFinite(u)?u:0,
       positions,
-      warning: errors.length ? errors.slice(-4).join(' | ') : undefined
+      warning: errors.length ? errors.slice(-4).join(' | ') : undefined,
+      debug
     });
-  }catch(e){res.status(400).json({ok:false,error:safeErrMsg(e),errors:[safeErrMsg(e)]});}
+  } catch(e) {
+    return res.status(400).json({ ok:false, error:safeErrMsg(e), errors:[safeErrMsg(e)], debug });
+  }
 });
 
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
