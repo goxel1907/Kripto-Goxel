@@ -2809,13 +2809,13 @@ app.get('/api/my-ip', async (req, res) => {
     // ipify ile Railway'in gerçek dışarıya bakan IP'sini al
     const r = await fetch('https://api.ipify.org?format=json', {signal:AbortSignal.timeout(5000)});
     const d = await r.json();
-    res.json({ ok:true, ip: d.ip, note:'Bu IP'yi Binance API whitelist'ine ekle' });
+    res.json({ ok:true, ip: d.ip, note:"Bu IP'yi Binance API whitelist'ine ekle" });
   } catch(e) {
     // Fallback: request header'dan al
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
              || req.socket?.remoteAddress
              || 'Alınamadı';
-    res.json({ ok:true, ip, note:'Header'dan alındı (Railway NAT IP farklı olabilir)', fallback:true });
+    res.json({ ok:true, ip, note:"Header'dan alindi (Railway NAT IP farkli olabilir)", fallback:true });
   }
 });
 
