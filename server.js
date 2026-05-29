@@ -2101,26 +2101,49 @@ app.get('/api/my-ip', async (_req, res) => {
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
 app.post('/api/account', async (req, res) => {
-  const{apiKey,apiSecret}=req.body;
-  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
+  const apiKey = String(req.body?.apiKey || '').trim();
+  const apiSecret = String(req.body?.apiSecret || '').trim();
+  if(!apiKey || !apiSecret) return res.status(400).json({ok:false,error:'API key gerekli'});
 
   const errors = [];
-  const sources = [];
-  let w=0,a=0,u=0,positions=[];
+  const balanceSources = [];
+  const positionSources = [];
+  let w = null, a = null, u = 0, positions = [];
 
-  const setBalances = (obj, source) => {
-    if (!obj || typeof obj !== 'object') return;
-    const tw = parseFloat(obj.totalWalletBalance);
-    const av = parseFloat(obj.availableBalance);
-    const up = parseFloat(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl);
-    if (!Number.isNaN(tw)) w = tw;
-    if (!Number.isNaN(av)) a = av;
-    if (!Number.isNaN(up)) u = up;
-    sources.push(source);
+  const num = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const addErr = (where, e) => errors.push(`${where}: ${safeErrMsg(e)}`);
+
+  const setBalanceValues = (wallet, avail, upnl, source) => {
+    let changed = false;
+    if (wallet !== null && wallet !== undefined && Number.isFinite(parseFloat(wallet))) { w = parseFloat(wallet); changed = true; }
+    if (avail  !== null && avail  !== undefined && Number.isFinite(parseFloat(avail)))  { a = parseFloat(avail);  changed = true; }
+    if (upnl   !== null && upnl   !== undefined && Number.isFinite(parseFloat(upnl)))   { u = parseFloat(upnl); }
+    if (changed) balanceSources.push(source);
+    return changed;
+  };
+
+  const setBalancesFromObject = (obj, source) => {
+    if (!obj || typeof obj !== 'object') return false;
+    return setBalanceValues(
+      obj.totalWalletBalance ?? obj.walletBalance ?? obj.balance ?? obj.crossWalletBalance,
+      obj.availableBalance ?? obj.maxWithdrawAmount ?? obj.withdrawAvailable ?? obj.crossWalletBalance,
+      obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl ?? obj.crossUnPnl ?? obj.unrealizedProfit,
+      source
+    );
+  };
+
+  const setBalancesFromBalanceArray = (arr, source) => {
+    if (!Array.isArray(arr)) return false;
+    const usdt = arr.find(x => String(x.asset || '').toUpperCase() === 'USDT');
+    if (!usdt) return false;
+    return setBalancesFromObject(usdt, source + '.USDT');
   };
 
   const setPositions = (arr, source) => {
-    if (!Array.isArray(arr)) return;
+    if (!Array.isArray(arr)) return false;
     const mapped = arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
       symbol:p.symbol,
       side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
@@ -2131,66 +2154,87 @@ app.post('/api/account', async (req, res) => {
       leverage:parseInt(p.leverage)||0,
       liquidationPrice:parseFloat(p.liquidationPrice||0),
     }));
-    if (mapped.length || !positions.length) positions = mapped;
-    sources.push(source);
+    positions = mapped;
+    positionSources.push(source);
+    return true;
   };
 
   try{
-    // 1) Resmi güncel bakiye endpoint'i: /fapi/v3/balance
-    try{
-      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
-      const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
-      if(ub){
-        w=parseFloat(ub.balance ?? ub.walletBalance ?? 0)||0;
-        a=parseFloat(ub.availableBalance ?? ub.maxWithdrawAmount ?? 0)||0;
-        u=parseFloat(ub.crossUnPnl ?? ub.unrealizedProfit ?? 0)||0;
-        sources.push('v3/balance');
-      }
-    }catch(e){errors.push(e.message);}
+    // KRİTİK: positionRisk pozisyon endpointidir; bakiye başarı kaynağı SAYILMAZ.
+    // Önceki çalışan gibi görünen sürüm burada positionRisk'i source'a eklediği için
+    // balance/account hata verince bile ok:true + $0 dönebiliyordu.
 
-    // 2) Resmi güncel hesap endpoint'i: /fapi/v3/account
+    // 1) Geniş hesap endpointleri — bazı hesaplarda en sağlam kaynak bunlar.
     try{
       const data=await bReq(apiKey,apiSecret,'GET','/fapi/v3/account');
-      setBalances(data, 'v3/account');
+      setBalancesFromObject(data, 'v3/account');
+      if(Array.isArray(data?.assets)){
+        const usdt=data.assets.find(x=>String(x.asset||'').toUpperCase()==='USDT');
+        if(usdt) setBalancesFromObject(usdt, 'v3/account.assets.USDT');
+      }
       setPositions(data.positions || [], 'v3/account.positions');
-    }catch(e){errors.push(e.message);}
+    }catch(e){addErr('v3/account', e);}
 
-    // 3) Eski ama bazı hesaplarda daha geniş veri döndüren endpoint: /fapi/v2/account
     try{
       const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-      setBalances(data, 'v2/account');
+      setBalancesFromObject(data, 'v2/account');
+      if(Array.isArray(data?.assets)){
+        const usdt=data.assets.find(x=>String(x.asset||'').toUpperCase()==='USDT');
+        if(usdt) setBalancesFromObject(usdt, 'v2/account.assets.USDT');
+      }
       setPositions(data.positions || [], 'v2/account.positions');
-    }catch(e){errors.push(e.message);}
+    }catch(e){addErr('v2/account', e);}
 
-    // 4) Pozisyonlar için v3, olmazsa v2
+    // 2) Balance endpointleri — gerçek bakiye kaynağı.
     try{
-      const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk');
-      setPositions(pr, 'v3/positionRisk');
-    }catch(e1){
-      errors.push(e1.message);
-      try{
-        const pr2=await getPositionRisk(apiKey,apiSecret);
-        setPositions(pr2, 'v2/positionRisk');
-      }catch(e2){errors.push(e2.message);}
-    }
+      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
+      setBalancesFromBalanceArray(b, 'v3/balance');
+    }catch(e){addErr('v3/balance', e);}
 
-    if (!sources.length) {
+    try{
+      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v2/balance');
+      setBalancesFromBalanceArray(b, 'v2/balance');
+    }catch(e){addErr('v2/balance', e);}
+
+    // 3) Pozisyon ayrı okunur; balance başarısı yerine geçmez.
+    try{
+      const pr=await getPositionRisk(apiKey,apiSecret);
+      setPositions(pr, 'positionRisk');
+    }catch(e){addErr('positionRisk', e);}
+
+    if (!balanceSources.length) {
+      pushCritical('ACCOUNT_BALANCE_READ_FAIL', new Error(errors.slice(-5).join(' | ') || 'Bakiye endpointleri cevap vermedi'), {route:'/api/account'});
       return res.status(400).json({
         ok:false,
-        error:'Binance hesap okunamadı. API izinleri, Futures yetkisi ve IP whitelist kontrol edilmeli. Detay: '+errors.slice(-3).join(' | ')
+        code:'BALANCE_READ_FAILED',
+        error:'Binance bakiye okunamadı; $0 olarak gösterilmedi. API izinleri, Futures yetkisi, doğru secret ve IP whitelist kontrol edilmeli. Detay: '+errors.slice(-5).join(' | '),
+        errors: errors.slice(-10),
+        positionSources:[...new Set(positionSources)],
+      });
+    }
+
+    // Gerçek kaynak döndü ama alanlardan biri eksikse $0 basma; kırmızı göster.
+    if (w === null || a === null) {
+      pushCritical('ACCOUNT_BALANCE_PARTIAL', new Error('Bakiye kaynağı var ama wallet/available alanı eksik'), {sources:balanceSources});
+      return res.status(400).json({
+        ok:false,
+        code:'BALANCE_PARTIAL',
+        error:'Binance bakiye cevabı eksik geldi; $0 gibi gösterilmedi. Kaynak: '+[...new Set(balanceSources)].join(' + '),
+        errors: errors.slice(-8),
       });
     }
 
     res.json({
       ok:true,
-      source:[...new Set(sources)].join(' + '),
+      source:[...new Set(balanceSources)].join(' + '),
+      positionSource:[...new Set(positionSources)].join(' + '),
       totalWalletBalance:w,
       availableBalance:a,
-      totalUnrealizedProfit:u,
+      totalUnrealizedProfit:u || 0,
       positions,
-      warning: errors.length ? errors.slice(-2).join(' | ') : undefined
+      warning: errors.length ? errors.slice(-3).join(' | ') : undefined
     });
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){res.status(400).json({ok:false,error:e.message});}
 });
 
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
