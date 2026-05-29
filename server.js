@@ -1,3 +1,4 @@
+// LAZARUS MERGED SAFE PATCH R2 — SLTP/cooldown/MM + Futures bakiye bağlantı restore
 const express = require('express');
 const cors    = require('cors');
 const crypto  = require('crypto');
@@ -2264,32 +2265,67 @@ app.get('/api/my-ip', async (_req, res) => {
 });
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
+// FUTURES BALANCE SAFE RESTORE v2
+// Amaç: hatasız sürümün hesabı okuyabilen davranışını geri getirirken yeni SL/TP patch'ini bozmaz.
+// - API key/secret her yerde trimlenir (telefonda kopyala/yapıştır boşluk/newline bırakabiliyor)
+// - v2/account + v2/balance geri eklendi
+// - v3/v2 account.assets içindeki USDT satırı da okunur
+// - İmzalı bağlantı başarılı ama USDT satırı yoksa bunu açık diagnostik olarak döndürür
 app.post('/api/account', async (req, res) => {
-  let {apiKey,apiSecret}=req.body;
+  let {apiKey,apiSecret}=req.body || {};
   apiKey = String(apiKey||'').trim();
   apiSecret = String(apiSecret||'').trim();
-  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
+  if(!apiKey||!apiSecret)return res.status(400).json({ok:false,error:'API key gerekli'});
 
   const errors = [];
   const sources = [];
+  const balanceSources = [];
   const positionSources = [];
+  let signedOk = false;
   let w=0,a=0,u=0,positions=[];
+  let sawUsdtAsset = false;
 
-  const setBalances = (obj, source) => {
+  const num = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const addErr = (e) => errors.push(safeErrMsg(e));
+
+  const setBalanceNumbers = (obj, source) => {
     if (!obj || typeof obj !== 'object') return false;
-    const tw = parseFloat(obj.totalWalletBalance);
-    const av = parseFloat(obj.availableBalance);
-    const up = parseFloat(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl);
     let okBal = false;
-    if (!Number.isNaN(tw)) { w = tw; okBal = true; }
-    if (!Number.isNaN(av)) { a = av; okBal = true; }
-    if (!Number.isNaN(up)) { u = up; okBal = true; }
-    if (okBal) sources.push(source);
+    const tw = num(obj.totalWalletBalance ?? obj.walletBalance ?? obj.balance ?? obj.crossWalletBalance ?? obj.marginBalance);
+    const av = num(obj.availableBalance ?? obj.maxWithdrawAmount ?? obj.withdrawAvailable ?? obj.availableBalanceOfCross ?? obj.crossWalletBalance);
+    const up = num(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl ?? obj.crossUnPnl ?? obj.unrealizedProfit ?? obj.unRealizedProfit);
+    if (tw !== null) { w = tw; okBal = true; }
+    if (av !== null) { a = av; okBal = true; }
+    if (up !== null) { u = up; okBal = true; }
+    if (okBal) {
+      sources.push(source);
+      balanceSources.push(source);
+    }
     return okBal;
   };
 
+  const pickUsdt = (arr) => Array.isArray(arr) ? arr.find(x => String(x.asset||'').toUpperCase()==='USDT') : null;
+
+  const setBalanceArray = (arr, source) => {
+    const ub = pickUsdt(arr);
+    if (!ub) return false;
+    sawUsdtAsset = true;
+    return setBalanceNumbers(ub, source + '.USDT');
+  };
+
+  const setAccount = (data, source) => {
+    if (!data || typeof data !== 'object') return false;
+    let ok = false;
+    ok = setBalanceNumbers(data, source) || ok;
+    if (Array.isArray(data.assets)) ok = setBalanceArray(data.assets, source + '.assets') || ok;
+    return ok;
+  };
+
   const setPositions = (arr, source) => {
-    if (!Array.isArray(arr)) return;
+    if (!Array.isArray(arr)) return false;
     const mapped = arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
       symbol:p.symbol,
       side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
@@ -2301,79 +2337,88 @@ app.post('/api/account', async (req, res) => {
       liquidationPrice:parseFloat(p.liquidationPrice||0),
     }));
     if (mapped.length || !positions.length) positions = mapped;
+    sources.push(source);
     positionSources.push(source);
+    return true;
   };
 
+  async function trySigned(label, fn) {
+    try {
+      const data = await fn();
+      signedOk = true;
+      return data;
+    } catch(e) {
+      addErr(`${label}: ${e.message || e}`);
+      return null;
+    }
+  }
+
   try{
-    // 1) Resmi güncel bakiye endpoint'i: /fapi/v3/balance
-    try{
-      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
-      const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
-      if(ub){
-        w=parseFloat(ub.balance ?? ub.walletBalance ?? 0)||0;
-        a=parseFloat(ub.availableBalance ?? ub.maxWithdrawAmount ?? 0)||0;
-        u=parseFloat(ub.crossUnPnl ?? ub.unrealizedProfit ?? 0)||0;
-        sources.push('v3/balance');
-      } else errors.push('v3/balance: USDT satırı bulunamadı');
-    }catch(e){errors.push(e.message);}
+    // 1) Hatasız eski davranışa en yakın: önce v2/account.
+    // Bazı hesaplarda v3/balance USDT satırı vermese bile v2/account toplamı doğru döndürüyor.
+    const acc2 = await trySigned('v2/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/account'));
+    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
 
-    // 1b) Eski balance endpoint'i: bazı hesaplarda v2 daha tutarlı döner
-    try{
-      const b2=await bReq(apiKey,apiSecret,'GET','/fapi/v2/balance');
-      const ub2=Array.isArray(b2)?b2.find(x=>x.asset==='USDT'):null;
-      if(ub2){
-        w=parseFloat(ub2.balance ?? ub2.walletBalance ?? 0)||0;
-        a=parseFloat(ub2.availableBalance ?? ub2.maxWithdrawAmount ?? 0)||0;
-        u=parseFloat(ub2.crossUnPnl ?? ub2.unrealizedProfit ?? 0)||0;
-        sources.push('v2/balance');
-      } else errors.push('v2/balance: USDT satırı bulunamadı');
-    }catch(e){errors.push(e.message);}
+    // 2) v2/balance geri eklendi: hatasız sürümün okuduğu hesaplarda en güvenli fallback.
+    const bal2 = await trySigned('v2/balance', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/balance'));
+    if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT satırı yok');
 
-    // 2) Resmi güncel hesap endpoint'i: /fapi/v3/account
-    try{
-      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v3/account');
-      setBalances(data, 'v3/account');
-      setPositions(data.positions || [], 'v3/account.positions');
-    }catch(e){errors.push(e.message);}
+    // 3) Güncel v3/account + assets parse.
+    const acc3 = await trySigned('v3/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/account'));
+    if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
 
-    // 3) Eski ama bazı hesaplarda daha geniş veri döndüren endpoint: /fapi/v2/account
-    try{
-      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-      setBalances(data, 'v2/account');
-      setPositions(data.positions || [], 'v2/account.positions');
-    }catch(e){errors.push(e.message);}
+    // 4) Güncel v3/balance.
+    const bal3 = await trySigned('v3/balance', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/balance'));
+    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT satırı yok');
 
-    // 4) Pozisyonlar için v3, olmazsa v2
-    try{
-      const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk');
-      setPositions(pr, 'v3/positionRisk');
-    }catch(e1){
-      errors.push(e1.message);
-      try{
-        const pr2=await getPositionRisk(apiKey,apiSecret);
-        setPositions(pr2, 'v2/positionRisk');
-      }catch(e2){errors.push(e2.message);}
+    // 5) En eski fallback. Bazı hesaplarda hala döner; dönmezse sadece diagnostik olur.
+    const acc1 = await trySigned('v1/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v1/account'));
+    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
+
+    // 6) Pozisyonlar için ayrı oku; bakiye başarısızsa bile POS sekmesi boş kalmasın.
+    const pr3 = await trySigned('v3/positionRisk', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk'));
+    if (pr3) setPositions(pr3, 'v3/positionRisk');
+    else {
+      const pr2 = await trySigned('v2/positionRisk', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk'));
+      if (pr2) setPositions(pr2, 'v2/positionRisk');
     }
 
-    if (!sources.length) {
-      const detail = errors.slice(-8).filter(Boolean).join(' | ') || 'Bakiye endpointleri boş döndü';
+    // Eğer available geldi ama wallet 0 kaldıysa panelde sıfır görünmesin diye available'ı toplam olarak da göster.
+    if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
+
+    if (!signedOk) {
       return res.status(400).json({
         ok:false,
-        error:'Binance bakiye okunamadı. API izinleri, Futures yetkisi, doğru API key/secret eşleşmesi ve IP whitelist kontrol edilmeli. Detay: '+detail,
+        error:'Binance Futures imzalı bağlantı kurulamadı. API key/secret eşleşmesi, Futures yetkisi ve IP whitelist kontrol edilmeli.',
         errors: errors.slice(-12),
-        hint:'API key değiştiyse dashboardda Sıfırla yapıp API Secretı yeniden yapıştır. Maskeli secret eski key ile kalırsa Binance hesap okuyamaz.'
+        hint:'Dashboardda Sıfırla yapıp API Key + API Secretı yeniden yapıştır. Telefonda kopyala/yapıştır sonuna boşluk gelirse imza bozulur.'
+      });
+    }
+
+    if (!balanceSources.length) {
+      return res.status(400).json({
+        ok:false,
+        signedOk:true,
+        error:'Binance Futures bağlantısı var ama USDT Futures bakiyesi okunamadı.',
+        errors: errors.slice(-12),
+        hint:sawUsdtAsset
+          ? 'USDT satırı bulundu ama bakiye alanları parse edilemedi. Railway logundaki /api/account debugSource bilgisini kontrol et.'
+          : 'Bu API key Futures hesabında USDT satırı göstermiyor. Binance USDⓈ-M Futures cüzdanında USDT olduğundan ve keyde Enable Futures açık olduğundan emin ol.'
       });
     }
 
     res.json({
       ok:true,
+      signedOk:true,
+      balanceOk:true,
       source:[...new Set(sources)].join(' + '),
+      balanceSource:[...new Set(balanceSources)].join(' + '),
       positionSource:[...new Set(positionSources)].join(' + '),
-      totalWalletBalance:w,
-      availableBalance:a,
-      totalUnrealizedProfit:u,
+      totalWalletBalance:Number.isFinite(w)?w:0,
+      availableBalance:Number.isFinite(a)?a:0,
+      totalUnrealizedProfit:Number.isFinite(u)?u:0,
       positions,
-      warning: errors.length ? errors.slice(-2).join(' | ') : undefined
+      warning: errors.length ? errors.slice(-4).join(' | ') : undefined
     });
   }catch(e){res.status(400).json({ok:false,error:safeErrMsg(e),errors:[safeErrMsg(e)]});}
 });
@@ -3088,6 +3133,74 @@ function syncClosedPositionsFromBinance(openPositions, source='SYNC'){
   }
   autoScanState.cooldowns = cooldownSnapshot();
 }
+
+// ── SL/TP EKSİK KURTARMA — açık pozisyonda bracket yoksa yeniden kur ─────
+// Hafif watcher içinde çalışır; 60 sn throttle ile Binance'i boğmaz.
+async function ensureOpenPositionSLTP(apiKey, apiSecret, pos) {
+  const sym = normFullSymbol(pos.symbol);
+  if (!sym) return null;
+  const now = Date.now();
+  const amt = parseFloat(pos.positionAmt || 0);
+  if (!Number.isFinite(amt) || amt === 0) return null;
+
+  const isLong = amt > 0;
+  const closeSide = isLong ? 'SELL' : 'BUY';
+  const entry = parseFloat(pos.entryPrice || 0);
+  const mark  = parseFloat(pos.markPrice || entry || 0);
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(mark) || mark <= 0) return null;
+
+  const state = trailingState.get(sym) || {};
+  if (state.lastSltpRepairCheck && now - state.lastSltpRepairCheck < 60*1000) return null;
+  state.lastSltpRepairCheck = now;
+  trailingState.set(sym, state);
+
+  let orders = [];
+  try { orders = await liveOpenBracketOrders(apiKey, apiSecret, sym); }
+  catch(e) { pushCritical('SLTP_REPAIR_READ', e, {symbol:sym}, 'WARNING'); return null; }
+
+  const hasSL = orders.some(o => orderKind(o) === 'SL');
+  const hasTP = orders.some(o => orderKind(o) === 'TP');
+  if (hasSL && hasTP) {
+    state.sltpVerified = true;
+    trailingState.set(sym, state);
+    return {ok:true, skipped:true, reason:'SL/TP zaten var'};
+  }
+
+  const cfg = autoConfig || {};
+  const slPct = Math.max(0.05, parseFloat(cfg.slPct || 2));
+  const tpPct = Math.max(0.05, parseFloat(cfg.tpPct || 10));
+
+  let slPrice = Number.isFinite(parseFloat(state.currentSL)) && parseFloat(state.currentSL) > 0
+    ? parseFloat(state.currentSL)
+    : (isLong ? entry * (1 - slPct/100) : entry * (1 + slPct/100));
+
+  let tpPrice = await currentBracketTP(apiKey, apiSecret, sym, isLong, entry, tpPct, state).catch(() => 0);
+  if (!Number.isFinite(parseFloat(tpPrice)) || parseFloat(tpPrice) <= 0) {
+    tpPrice = calcFallbackTP(entry, isLong, tpPct);
+  }
+
+  // Emirlerin yanlış tarafta kalıp anında tetiklenmesini engelle.
+  slPrice = isLong ? Math.min(slPrice, mark * 0.9997) : Math.max(slPrice, mark * 1.0003);
+  if (isLong && tpPrice <= mark) tpPrice = Math.max(calcFallbackTP(entry, true, tpPct), mark * 1.002);
+  if (!isLong && tpPrice >= mark) tpPrice = Math.min(calcFallbackTP(entry, false, tpPct), mark * 0.998);
+
+  logAuto(`🛟 ${sym} SL/TP kurtarma: SL var=${hasSL?'E':'H'} TP var=${hasTP?'E':'H'} → yeniden kuruluyor`);
+  const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, +slPrice.toFixed(8), +tpPrice.toFixed(8), sym);
+  if (proof.ok) {
+    state.currentSL = +slPrice.toFixed(8);
+    state.targetTP = +tpPrice.toFixed(8);
+    state.sltpVerified = true;
+    state.lastSltpUpdate = Date.now();
+    trailingState.set(sym, state);
+    logAuto(`✅ ${sym} SL/TP kurtarma doğrulandı: SL ${state.currentSL} / TP ${state.targetTP}`);
+    return {ok:true, repaired:true};
+  }
+  state.sltpVerified = false;
+  trailingState.set(sym, state);
+  pushCritical('SLTP_REPAIR_FAILED', `${sym}: SL/TP kurtarma doğrulanamadı`, {symbol:sym, proof}, 'CRITICAL');
+  return {ok:false, proof};
+}
+
 async function lightweightPositionWatch(){
   if(positionWatchRunning || !autoConfig?.enabled || !autoConfig?.apiKey || !autoConfig?.apiSecret) return;
   positionWatchRunning = true;
@@ -3103,6 +3216,9 @@ async function lightweightPositionWatch(){
         const pnlPct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)):0;
         return {symbol:p.symbol, side, positionAmt:Math.abs(amt), entryPrice:ep, markPrice:mp, unrealizedProfit:parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? 0), leverage:lev, pnlPct};
       });
+      for (const p of openPos) await ensureOpenPositionSLTP(autoConfig.apiKey, autoConfig.apiSecret, p).catch(e =>
+        logAuto(`${p.symbol} SL/TP kurtarma hatası: ${e.message}`)
+      );
       await checkTrailingSL(autoConfig.apiKey, autoConfig.apiSecret, mapped);
     }
     if(openPos.length < Number(autoConfig.maxPositions||1) && autoScanState.phase==='MAX_POZİSYON_DOLU') autoScanState.phase='BEKLİYOR';
