@@ -55,10 +55,9 @@ let reqCount=0, reqWindow=Date.now();
 // ── ALGO ORDER (yeni coinler için: OPG, PENDLE, HUSDT vb.) ──────────────────
 // Signature query string'de, body JSON — Binance algo endpoint zorunluluğu
 async function bAlgo(apiKey, apiSecret, params) {
-  // Binance SIGNED endpoint kuralı: imza, gönderilen TÜM parametrelerin
-  // query string hali üzerinden üretilmelidir. Önceki sürüm sadece
-  // timestamp/recvWindow imzalayıp algo parametrelerini JSON body'de yolluyordu;
-  // bu da /fapi/v1/algoOrder üzerinde -1022 INVALID_SIGNATURE üretebiliyordu.
+  // BINANCE SIGNED KURALI: Algo parametrelerinin tamamı imzaya dahil edilir.
+  // Eski çalışan bazda sadece timestamp/recvWindow imzalanıp parametreler JSON body'de gidiyordu;
+  // bu HYPE gibi A-Tier emirlerde -1022 INVALID_SIGNATURE ve SL/TP eksikliği üretebiliyordu.
   if (!lastTimeSync) await syncBinanceTime(false);
   const ts = Date.now() + binanceTimeOffset;
   const obj = { ...params, timestamp: ts, recvWindow: 10000 };
@@ -74,9 +73,7 @@ async function bAlgo(apiKey, apiSecret, params) {
   try { data = JSON.parse(text); }
   catch(e) { throw new Error(`Algo JSON hatası: ${text.substring(0,100)}`); }
   if (data.code && data.code < 0) {
-    if (Number(data.code) === -1021) {
-      await syncBinanceTime(true);
-    }
+    if (Number(data.code) === -1021) await syncBinanceTime(true);
     throw new Error(formatBinanceError('/fapi/v1/algoOrder', data));
   }
   return data;
@@ -195,37 +192,42 @@ async function verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, expectedSL, expe
 // ── SL/TP ÇİFTİ YAZ + İSPAT AL — install_live_sltp_pair_with_proof ──────────
 // Lazarus'un en önemli pattern'i: yaz, 250ms bekle, Binance'te gözle
 async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPrice, tpPrice, sym) {
-  // Çalışan Python çekirdeği kuralı:
+  // Çalışan Python SL/TP çekirdeğinin kuralı:
   // cancel-first → SL+TP çiftini yaz → Binance'te görünür proof al → proof yoksa başarılı sayma.
+  const tag = sym || symbol;
+  let firstProof = null;
   try {
     await cancelAlgoOrders(apiKey, apiSecret, symbol);
-
     const slOrder = await placeAlgoSL(apiKey, apiSecret, symbol, closeSide, slPrice, null);
     const tpOrder = await placeAlgoTP(apiKey, apiSecret, symbol, closeSide, tpPrice, null);
+    await new Promise(r => setTimeout(r, 400));
+    firstProof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
+    if (firstProof.ok) return { ok: true, slOrder, tpOrder, proof: firstProof, mode:'algo_closePosition' };
+  } catch(e) {
+    firstProof = { ok:false, error:e.message };
+    pushCritical('SLTP_ALGO_ERROR', `${tag}: ${e.message}`, {symbol:tag}, 'CRITICAL');
+  }
 
-    await new Promise(r => setTimeout(r, 300));
-    const proof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
-    if (proof.ok) return { ok: true, slOrder, tpOrder, proof };
-
-    console.log(`${symbol} algo SLTP doğrulanamadı, standart fallback deneniyor...`);
+  // Algo yazıldı ama proof eksikse veya TP/SL'den biri hata verdiyse standart closePosition fallback dene.
+  try {
+    console.log(`${symbol} algo SLTP doğrulanamadı; standart closePosition fallback deneniyor...`);
     await cancelAlgoOrders(apiKey, apiSecret, symbol);
-
-    await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+    const slOrder = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
       symbol, side:closeSide, type:'STOP_MARKET',
       stopPrice: slPrice.toString(), closePosition:'true', workingType:'MARK_PRICE'
     });
-    await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+    const tpOrder = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
       symbol, side:closeSide, type:'TAKE_PROFIT_MARKET',
       stopPrice: tpPrice.toString(), closePosition:'true', workingType:'MARK_PRICE'
     });
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 400));
     const proof2 = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
-    return { ok: proof2.ok, proof: proof2, fallback: 'standard_closePosition', error: proof2.ok ? undefined : 'SL/TP proof başarısız' };
+    if (proof2.ok) return { ok:true, slOrder, tpOrder, proof:proof2, fallback:'standard_closePosition' };
+    pushCritical('SLTP_PROOF_FAILED', `${tag}: SL/TP proof başarısız`, {symbol:tag, proof:proof2, firstProof}, 'CRITICAL');
+    return { ok:false, error:'SL/TP proof başarısız', proof:proof2, firstProof };
   } catch(e) {
-    // Önceki sürümde bAlgo burada exception atarsa /api/order dış catch'e düşebiliyor,
-    // acil kapatma yolu çalışmadan pozisyon korumasız kalma riski doğuyordu.
-    pushCritical('SLTP_WRITE_ERROR', `${symbol}: ${e.message}`);
-    return { ok: false, error: e.message, proof: null };
+    pushCritical('SLTP_FALLBACK_ERROR', `${tag}: ${e.message}`, {symbol:tag, firstProof}, 'CRITICAL');
+    return { ok:false, error:e.message, proof:firstProof };
   }
 }
 
@@ -247,11 +249,9 @@ function sign(qs,secret){return crypto.createHmac('sha256',String(secret||'').tr
 function signedQueryString(params, apiSecret) {
   const qs = Object.entries(params || {})
     .filter(([,v]) => v !== undefined && v !== null && v !== '')
-    .sort(([a],[b]) => a.localeCompare(b))
     .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
-  const sig = sign(qs, String(apiSecret || '').trim());
-  return `${qs}&signature=${sig}`;
+  return `${qs}&signature=${sign(qs, apiSecret)}`;
 }
 
 let binanceTimeOffset = 0;
@@ -281,25 +281,24 @@ function formatBinanceError(path, data) {
 
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
   if (!lastTimeSync) await syncBinanceTime(false);
-  const ts = Date.now() + binanceTimeOffset;
-  const obj = { ...params, timestamp: ts, recvWindow: 10000 };
-  const fullQs = signedQueryString(obj, apiSecret);
-  const url = `${FAPI}${path}`;
-  const finalUrl = `${url}?${fullQs}`;
-  const options = {
-    method: method.toUpperCase(),
-    headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
-    signal: AbortSignal.timeout(timeout),
-  };
-  const res = await fetch(finalUrl, options);
-  const text = await res.text();
+  const ts=Date.now()+binanceTimeOffset;
+  const obj={...params,timestamp:ts,recvWindow:10000};
+  const qs=Object.entries(obj)
+    .filter(([,v])=>v!==undefined&&v!==null&&v!=='')
+    .map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
+  const sig=sign(qs,apiSecret);
+  const url=`${FAPI}${path}`;
+  const fullQs=`${qs}&signature=${sig}`;
+  const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
+  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':String(apiKey||'').trim(),'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
+  const finalUrl=isGet?`${url}?${fullQs}`:url;
+  if(!isGet)options.body=fullQs;
+  const res=await fetch(finalUrl,options);
+  const text=await res.text();
   let data;
-  try { data = JSON.parse(text); }
-  catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
-  if (data.code && data.code < 0) {
-    // -1021 timestamp; bir kere Binance saatine senkronlayıp tekrar dene.
-    // -1022 imza hatasında query-string signed format kullanıldığı için tekrar denemek yerine
-    // açık hata gösterilir; böylece korumasız pozisyon varsayımı yapılmaz.
+  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatası: ${text.substring(0,120)}`);}
+  if(data.code&&data.code<0){
+    // -1021 timestamp; bir kere Binance saatine senkronlayıp tekrar dene
     if (Number(data.code) === -1021 && !_retry) {
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
@@ -2101,49 +2100,27 @@ app.get('/api/my-ip', async (_req, res) => {
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
 app.post('/api/account', async (req, res) => {
-  const apiKey = String(req.body?.apiKey || '').trim();
-  const apiSecret = String(req.body?.apiSecret || '').trim();
-  if(!apiKey || !apiSecret) return res.status(400).json({ok:false,error:'API key gerekli'});
+  const{apiKey,apiSecret}=req.body;
+  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
 
   const errors = [];
-  const balanceSources = [];
+  const sources = [];
   const positionSources = [];
-  let w = null, a = null, u = 0, positions = [];
+  let w=0,a=0,u=0,positions=[];
 
-  const num = (v) => {
-    const n = parseFloat(v);
-    return Number.isFinite(n) ? n : null;
-  };
-  const addErr = (where, e) => errors.push(`${where}: ${safeErrMsg(e)}`);
-
-  const setBalanceValues = (wallet, avail, upnl, source) => {
-    let changed = false;
-    if (wallet !== null && wallet !== undefined && Number.isFinite(parseFloat(wallet))) { w = parseFloat(wallet); changed = true; }
-    if (avail  !== null && avail  !== undefined && Number.isFinite(parseFloat(avail)))  { a = parseFloat(avail);  changed = true; }
-    if (upnl   !== null && upnl   !== undefined && Number.isFinite(parseFloat(upnl)))   { u = parseFloat(upnl); }
-    if (changed) balanceSources.push(source);
-    return changed;
-  };
-
-  const setBalancesFromObject = (obj, source) => {
-    if (!obj || typeof obj !== 'object') return false;
-    return setBalanceValues(
-      obj.totalWalletBalance ?? obj.walletBalance ?? obj.balance ?? obj.crossWalletBalance,
-      obj.availableBalance ?? obj.maxWithdrawAmount ?? obj.withdrawAvailable ?? obj.crossWalletBalance,
-      obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl ?? obj.crossUnPnl ?? obj.unrealizedProfit,
-      source
-    );
-  };
-
-  const setBalancesFromBalanceArray = (arr, source) => {
-    if (!Array.isArray(arr)) return false;
-    const usdt = arr.find(x => String(x.asset || '').toUpperCase() === 'USDT');
-    if (!usdt) return false;
-    return setBalancesFromObject(usdt, source + '.USDT');
+  const setBalances = (obj, source) => {
+    if (!obj || typeof obj !== 'object') return;
+    const tw = parseFloat(obj.totalWalletBalance);
+    const av = parseFloat(obj.availableBalance);
+    const up = parseFloat(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl);
+    if (!Number.isNaN(tw)) w = tw;
+    if (!Number.isNaN(av)) a = av;
+    if (!Number.isNaN(up)) u = up;
+    sources.push(source);
   };
 
   const setPositions = (arr, source) => {
-    if (!Array.isArray(arr)) return false;
+    if (!Array.isArray(arr)) return;
     const mapped = arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
       symbol:p.symbol,
       side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
@@ -2154,87 +2131,79 @@ app.post('/api/account', async (req, res) => {
       leverage:parseInt(p.leverage)||0,
       liquidationPrice:parseFloat(p.liquidationPrice||0),
     }));
-    positions = mapped;
+    if (mapped.length || !positions.length) positions = mapped;
     positionSources.push(source);
-    return true;
   };
 
   try{
-    // KRİTİK: positionRisk pozisyon endpointidir; bakiye başarı kaynağı SAYILMAZ.
-    // Önceki çalışan gibi görünen sürüm burada positionRisk'i source'a eklediği için
-    // balance/account hata verince bile ok:true + $0 dönebiliyordu.
-
-    // 1) Geniş hesap endpointleri — bazı hesaplarda en sağlam kaynak bunlar.
-    try{
-      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v3/account');
-      setBalancesFromObject(data, 'v3/account');
-      if(Array.isArray(data?.assets)){
-        const usdt=data.assets.find(x=>String(x.asset||'').toUpperCase()==='USDT');
-        if(usdt) setBalancesFromObject(usdt, 'v3/account.assets.USDT');
-      }
-      setPositions(data.positions || [], 'v3/account.positions');
-    }catch(e){addErr('v3/account', e);}
-
-    try{
-      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-      setBalancesFromObject(data, 'v2/account');
-      if(Array.isArray(data?.assets)){
-        const usdt=data.assets.find(x=>String(x.asset||'').toUpperCase()==='USDT');
-        if(usdt) setBalancesFromObject(usdt, 'v2/account.assets.USDT');
-      }
-      setPositions(data.positions || [], 'v2/account.positions');
-    }catch(e){addErr('v2/account', e);}
-
-    // 2) Balance endpointleri — gerçek bakiye kaynağı.
+    // 1) Resmi güncel bakiye endpoint'i: /fapi/v3/balance
     try{
       const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
-      setBalancesFromBalanceArray(b, 'v3/balance');
-    }catch(e){addErr('v3/balance', e);}
+      const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
+      if(ub){
+        w=parseFloat(ub.balance ?? ub.walletBalance ?? 0)||0;
+        a=parseFloat(ub.availableBalance ?? ub.maxWithdrawAmount ?? 0)||0;
+        u=parseFloat(ub.crossUnPnl ?? ub.unrealizedProfit ?? 0)||0;
+        sources.push('v3/balance');
+      } else errors.push('v3/balance: USDT satırı bulunamadı');
+    }catch(e){errors.push(e.message);}
 
+    // 1b) Eski balance endpoint'i: bazı hesaplarda v2 daha tutarlı döner
     try{
-      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v2/balance');
-      setBalancesFromBalanceArray(b, 'v2/balance');
-    }catch(e){addErr('v2/balance', e);}
+      const b2=await bReq(apiKey,apiSecret,'GET','/fapi/v2/balance');
+      const ub2=Array.isArray(b2)?b2.find(x=>x.asset==='USDT'):null;
+      if(ub2){
+        w=parseFloat(ub2.balance ?? ub2.walletBalance ?? 0)||0;
+        a=parseFloat(ub2.availableBalance ?? ub2.maxWithdrawAmount ?? 0)||0;
+        u=parseFloat(ub2.crossUnPnl ?? ub2.unrealizedProfit ?? 0)||0;
+        sources.push('v2/balance');
+      } else errors.push('v2/balance: USDT satırı bulunamadı');
+    }catch(e){errors.push(e.message);}
 
-    // 3) Pozisyon ayrı okunur; balance başarısı yerine geçmez.
+    // 2) Resmi güncel hesap endpoint'i: /fapi/v3/account
     try{
-      const pr=await getPositionRisk(apiKey,apiSecret);
-      setPositions(pr, 'positionRisk');
-    }catch(e){addErr('positionRisk', e);}
+      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v3/account');
+      setBalances(data, 'v3/account');
+      setPositions(data.positions || [], 'v3/account.positions');
+    }catch(e){errors.push(e.message);}
 
-    if (!balanceSources.length) {
-      pushCritical('ACCOUNT_BALANCE_READ_FAIL', new Error(errors.slice(-5).join(' | ') || 'Bakiye endpointleri cevap vermedi'), {route:'/api/account'});
-      return res.status(400).json({
-        ok:false,
-        code:'BALANCE_READ_FAILED',
-        error:'Binance bakiye okunamadı; $0 olarak gösterilmedi. API izinleri, Futures yetkisi, doğru secret ve IP whitelist kontrol edilmeli. Detay: '+errors.slice(-5).join(' | '),
-        errors: errors.slice(-10),
-        positionSources:[...new Set(positionSources)],
-      });
+    // 3) Eski ama bazı hesaplarda daha geniş veri döndüren endpoint: /fapi/v2/account
+    try{
+      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
+      setBalances(data, 'v2/account');
+      setPositions(data.positions || [], 'v2/account.positions');
+    }catch(e){errors.push(e.message);}
+
+    // 4) Pozisyonlar için v3, olmazsa v2
+    try{
+      const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk');
+      setPositions(pr, 'v3/positionRisk');
+    }catch(e1){
+      errors.push(e1.message);
+      try{
+        const pr2=await getPositionRisk(apiKey,apiSecret);
+        setPositions(pr2, 'v2/positionRisk');
+      }catch(e2){errors.push(e2.message);}
     }
 
-    // Gerçek kaynak döndü ama alanlardan biri eksikse $0 basma; kırmızı göster.
-    if (w === null || a === null) {
-      pushCritical('ACCOUNT_BALANCE_PARTIAL', new Error('Bakiye kaynağı var ama wallet/available alanı eksik'), {sources:balanceSources});
+    if (!sources.length) {
       return res.status(400).json({
         ok:false,
-        code:'BALANCE_PARTIAL',
-        error:'Binance bakiye cevabı eksik geldi; $0 gibi gösterilmedi. Kaynak: '+[...new Set(balanceSources)].join(' + '),
-        errors: errors.slice(-8),
+        error:'Binance bakiye okunamadı. API izinleri, Futures yetkisi, doğru secret ve IP whitelist kontrol edilmeli. Detay: '+(errors.slice(-5).join(' | ') || 'Bakiye endpointleri boş döndü')
       });
     }
 
     res.json({
       ok:true,
-      source:[...new Set(balanceSources)].join(' + '),
+      source:[...new Set(sources)].join(' + '),
       positionSource:[...new Set(positionSources)].join(' + '),
       totalWalletBalance:w,
       availableBalance:a,
-      totalUnrealizedProfit:u || 0,
+      totalUnrealizedProfit:u,
       positions,
-      warning: errors.length ? errors.slice(-3).join(' | ') : undefined
+      warning: errors.length ? errors.slice(-2).join(' | ') : undefined
     });
-  }catch(e){res.status(400).json({ok:false,error:e.message});}
+  }catch(e){res.status(400).json({error:e.message});}
 });
 
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
@@ -2385,7 +2354,6 @@ app.post('/api/order', async (req, res) => {
       } catch(closeErr) {
         emergencyClose = { error: closeErr.message };
       }
-      setSymbolCooldown(sym, 'SL/TP doğrulanamadı; acil kapatma/manuel kontrol sonrası tekrar giriş kilidi', 30);
       return res.status(400).json({
         ok:false,
         error:`${sym} SL/TP Binance üzerinde doğrulanamadı; korumasız pozisyon bırakılmadı, acil kapatma denendi`,
@@ -2406,10 +2374,7 @@ app.post('/api/order', async (req, res) => {
       executedPrice:execPrice,
       details:{symbol:sym,side,quantity:qty,leverage,entry:execPrice,target:finalTP,stop:finalSL}
     });
-  }catch(e){
-    pushCritical('ORDER_ROUTE_ERROR', `${sym}: ${e.message}`);
-    res.status(400).json({error:e.message});
-  }
+  }catch(e){res.status(400).json({error:e.message});}
 });
 
 // ── POZİSYONLAR ──────────────────────────────────────────────────────────────
@@ -2840,17 +2805,11 @@ app.post('/api/close', async (req, res) => {
     const pos=await getPositionRisk(apiKey,apiSecret,{symbol:sym});
     const arr=Array.isArray(pos)?pos:[];
     const p=arr.find(x=>Math.abs(parseFloat(x.positionAmt))>0);
-    if(!p){
-      trailingState.delete(sym);
-      setSymbolCooldown(sym, 'Kapatma isteği: açık pozisyon yok / Binance zaten kapalı', 20);
-      return res.json({ok:true,message:'Açık pozisyon yok'});
-    }
+    if(!p)return res.json({ok:true,message:'Açık pozisyon yok'});
     const order=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
       symbol:sym,side:parseFloat(p.positionAmt)>0?'SELL':'BUY',
       type:'MARKET',quantity:Math.abs(parseFloat(p.positionAmt)),reduceOnly:'true',positionSide:'BOTH'
     });
-    trailingState.delete(sym);
-    setSymbolCooldown(sym, 'Bot/manuel kapatma sonrası tekrar giriş kilidi', 30);
     res.json({ok:true,message:`${sym} kapatıldı`,orderId:order.orderId});
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2864,41 +2823,7 @@ app.post('/api/close', async (req, res) => {
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
-let positionWatchTimer = null;
-let positionWatchRunning = false;
 const autoLog = []; // Son 50 otomatik işlem logu
-
-// ── SEMBOL COOLDOWN / YENİDEN GİRİŞ KİLİDİ ───────────────────────────────────
-// Amaç: aynı coine manuel kapanış/SL/TP/emir hatası sonrası tekrar tekrar girmeyi engellemek.
-// Binance tarafında pozisyon kapanırsa bot bunu sonraki taramada görür, state'i temizler ve cooldown koyar.
-const symbolCooldowns = new Map(); // SYMBOLUSDT -> {until, reason, ts}
-function setSymbolCooldown(symbol, reason='COOLDOWN', minutes=20) {
-  const sym = String(symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-  if (!sym) return;
-  const full = sym.endsWith('USDT') ? sym : sym + 'USDT';
-  const min = Math.max(1, Number(minutes)||20);
-  const until = Date.now() + min*60*1000;
-  symbolCooldowns.set(full, { until, reason:String(reason||'COOLDOWN').slice(0,120), ts:Date.now(), minutes:min });
-  try { logAuto(`⏳ ${full.replace('USDT','')} cooldown: ${min}dk — ${reason}`); } catch(_) {}
-}
-function cooldownLeftMs(symbol) {
-  const full = String(symbol||'').toUpperCase().endsWith('USDT') ? String(symbol).toUpperCase() : String(symbol||'').toUpperCase()+'USDT';
-  const cd = symbolCooldowns.get(full);
-  if (!cd) return 0;
-  const left = cd.until - Date.now();
-  if (left <= 0) { symbolCooldowns.delete(full); return 0; }
-  return left;
-}
-function cooldownInfo(symbol) {
-  const full = String(symbol||'').toUpperCase().endsWith('USDT') ? String(symbol).toUpperCase() : String(symbol||'').toUpperCase()+'USDT';
-  const cd = symbolCooldowns.get(full);
-  const left = cooldownLeftMs(full);
-  if (!cd || left <= 0) return null;
-  return { symbol:full, reason:cd.reason, leftMs:left, leftMin:Math.ceil(left/60000), until:cd.until };
-}
-function listCooldowns() {
-  return Array.from(symbolCooldowns.keys()).map(k=>cooldownInfo(k)).filter(Boolean).sort((a,b)=>b.leftMs-a.leftMs).slice(0,20);
-}
 
 // ── CANLI TARAMA TELEMETRİSİ ────────────────────────────────────────────────
 // Ek Binance çağrısı yapmaz; runAutoScan içinde zaten alınan analizleri hafızada tutar.
@@ -2938,6 +2863,76 @@ function markAutoSkip(symbol, reason, row={}) {
   if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
 }
 
+// ── SAME SYMBOL COOLDOWN + MANUEL/SL/TP KAPANIŞ SENKRONU ────────────────
+// Aynı coine tekrar tekrar dalmayı engeller. Binance uygulamasından manuel kapatma,
+// SL/TP ile kapanma veya sync kapanışı yakalanınca sembol geçici yasaklanır.
+const symbolCooldowns = new Map(); // FULLSYMBOL -> {until, reason, ts}
+let positionWatchTimer = null;
+let positionWatchRunning = false;
+
+function normFullSymbol(symbol){
+  const x = String(symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!x) return '';
+  return x.endsWith('USDT') ? x : x + 'USDT';
+}
+function setSymbolCooldown(symbol, minutes, reason){
+  const sym = normFullSymbol(symbol);
+  if(!sym) return;
+  const until = Date.now() + Math.max(1, Number(minutes||1)) * 60000;
+  symbolCooldowns.set(sym, {until, reason:String(reason||'cooldown').slice(0,120), ts:Date.now()});
+  logAuto(`⏳ ${sym.replace('USDT','')} cooldown ${Math.ceil((until-Date.now())/60000)}dk — ${reason}`);
+}
+function getSymbolCooldown(symbol){
+  const sym = normFullSymbol(symbol);
+  const cd = symbolCooldowns.get(sym);
+  if(!cd) return null;
+  if(Date.now() >= cd.until){ symbolCooldowns.delete(sym); return null; }
+  return {...cd, symbol:sym, remainingMs:cd.until-Date.now(), remainingMin:Math.ceil((cd.until-Date.now())/60000)};
+}
+function cooldownSnapshot(){
+  const out=[];
+  for(const [sym, cd] of symbolCooldowns.entries()){
+    if(Date.now() >= cd.until){ symbolCooldowns.delete(sym); continue; }
+    out.push({symbol:sym.replace('USDT',''), reason:cd.reason, remainingMin:Math.ceil((cd.until-Date.now())/60000), until:cd.until});
+  }
+  return out.sort((a,b)=>a.remainingMin-b.remainingMin).slice(0,20);
+}
+function syncClosedPositionsFromBinance(openPositions, source='SYNC'){
+  const openSet = new Set((openPositions||[]).map(p=>normFullSymbol(p.symbol)));
+  for(const sym of Array.from(trailingState.keys())){
+    const full = normFullSymbol(sym);
+    if(!full) continue;
+    if(!openSet.has(full)){
+      trailingState.delete(sym);
+      trailingState.delete(full);
+      setSymbolCooldown(full, 30, `${source}: Binance'te pozisyon kapalı göründü (manuel/SL/TP/sync)`);
+    }
+  }
+  autoScanState.cooldowns = cooldownSnapshot();
+}
+async function lightweightPositionWatch(){
+  if(positionWatchRunning || !autoConfig?.enabled || !autoConfig?.apiKey || !autoConfig?.apiSecret) return;
+  positionWatchRunning = true;
+  try{
+    const posData = await getPositionRisk(autoConfig.apiKey, autoConfig.apiSecret);
+    const openPos = Array.isArray(posData) ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0) : [];
+    autoScanState.livePositions = openPos.length;
+    syncClosedPositionsFromBinance(openPos, '30sn_watch');
+    if(openPos.length && autoConfig.enabled){
+      const mapped = openPos.map(p=>{
+        const amt=parseFloat(p.positionAmt), ep=parseFloat(p.entryPrice), mp=parseFloat(p.markPrice), lev=parseInt(p.leverage)||1;
+        const side=amt>0?'LONG':'SHORT';
+        const pnlPct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)):0;
+        return {symbol:p.symbol, side, positionAmt:Math.abs(amt), entryPrice:ep, markPrice:mp, unrealizedProfit:parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? 0), leverage:lev, pnlPct};
+      });
+      await checkTrailingSL(autoConfig.apiKey, autoConfig.apiSecret, mapped);
+    }
+    if(openPos.length < Number(autoConfig.maxPositions||1) && autoScanState.phase==='MAX_POZİSYON_DOLU') autoScanState.phase='BEKLİYOR';
+  }catch(e){
+    pushCritical('POSITION_WATCH', e, {}, 'WARNING');
+  }finally{ positionWatchRunning=false; }
+}
+
 
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
 app.get('/api/diagnostics/status', (_req, res) => {
@@ -2972,9 +2967,8 @@ app.post('/api/auto/config', (req, res) => {
 });
 
 app.get('/api/auto/status', (req, res) => {
-  autoScanState.cooldowns = listCooldowns();
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
-    config:autoConfig, scanState:autoScanState, cooldowns:listCooldowns(), recentLogs:autoLog.slice(-40) });
+    config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40) });
 });
 
 function logAuto(msg) {
@@ -2983,125 +2977,6 @@ function logAuto(msg) {
   if (autoLog.length > 80) autoLog.shift();
   autoScanState.lastAction = entry;
   console.log('[AUTO]', entry);
-}
-
-async function syncManualClosedPositions(apiKey, apiSecret, openPos) {
-  const liveSet = new Set((openPos||[]).map(p=>String(p.symbol||'').toUpperCase()));
-  const tracked = Array.from(trailingState.keys());
-  for (const sym of tracked) {
-    if (liveSet.has(sym)) continue;
-    const st = trailingState.get(sym) || {};
-    trailingState.delete(sym);
-    setSymbolCooldown(sym, 'Binance üzerinde pozisyon kapandı: manuel / SL / TP / liquidation sync', 30);
-    try { await cancelAlgoOrders(apiKey, apiSecret, sym); } catch(_) {}
-    logAuto(`🔁 ${sym.replace('USDT','')} Binance kapanışı algılandı; state temizlendi, yeni fırsat taramaya devam`);
-    pushCritical('POSITION_SYNC_CLOSE', `${sym} pozisyonu Binance tarafında kapandı; bot state temizledi ve cooldown koydu`, {symbol:sym, entry:st.entryPrice, lastSL:st.currentSL}, 'INFO');
-  }
-}
-
-async function ensurePositionProtected(apiKey, apiSecret, pos, cfg={}) {
-  const sym = String(pos.symbol||'').toUpperCase();
-  if (!sym) return;
-  const state = trailingState.get(sym) || {};
-  // Koruma kontrolünü çok sık yapma; açık pozisyon başına yaklaşık 60 sn yeterli.
-  if (state.lastProtectionCheck && Date.now() - state.lastProtectionCheck < 60_000) return;
-  state.lastProtectionCheck = Date.now();
-  trailingState.set(sym, state);
-
-  let orders = [];
-  try { orders = await liveOpenBracketOrders(apiKey, apiSecret, sym); } catch(e) {
-    logAuto(`⚠️ ${sym.replace('USDT','')} SL/TP kontrolü okunamadı: ${safeErrMsg(e)}`);
-    return;
-  }
-  const hasSL = orders.some(o => orderKind(o) === 'SL');
-  const hasTP = orders.some(o => orderKind(o) === 'TP');
-  if (hasSL && hasTP) {
-    state.sltpVerified = true;
-    state.lastProtectionOk = Date.now();
-    trailingState.set(sym, state);
-    return;
-  }
-
-  const isLong = pos.side === 'LONG';
-  const closeSide = isLong ? 'SELL' : 'BUY';
-  const entry = Number(pos.entryPrice || pos.markPrice || 0);
-  const mark = Number(pos.markPrice || entry || 0);
-  if (!entry || !mark) return;
-  const slPct = Math.max(0.05, Number(String(cfg.slPct ?? 2).replace(',', '.')) || 2);
-  const tpPct = Math.max(0.05, Number(String(cfg.tpPct ?? 10).replace(',', '.')) || 10);
-  let sl = isLong ? entry*(1-slPct/100) : entry*(1+slPct/100);
-  let tp = isLong ? entry*(1+tpPct/100) : entry*(1-tpPct/100);
-  // Tetik fiyatı mark price'ın yanlış tarafındaysa anında tetik/ret yememek için güvenli tarafa tamponla.
-  if (isLong && sl >= mark) sl = mark * 0.9997;
-  if (!isLong && sl <= mark) sl = mark * 1.0003;
-  if (isLong && tp <= mark) tp = Math.max(entry*(1+tpPct/100), mark*1.0005);
-  if (!isLong && tp >= mark) tp = Math.min(entry*(1-tpPct/100), mark*0.9995);
-  sl = +sl.toFixed(8); tp = +tp.toFixed(8);
-
-  logAuto(`🛡️ ${sym.replace('USDT','')} koruma eksik: SL=${hasSL?'var':'yok'} TP=${hasTP?'var':'yok'} → SL/TP çifti kuruluyor`);
-  const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, sl, tp, sym);
-  if (proof.ok) {
-    state.currentSL = sl; state.targetTP = tp; state.sltpVerified = true; state.lastProtectionOk = Date.now();
-    trailingState.set(sym, state);
-    logAuto(`✅ ${sym.replace('USDT','')} SL/TP koruması doğrulandı: SL ${sl} / TP ${tp}`);
-  } else {
-    state.sltpVerified = false; state.lastProtectionFail = Date.now();
-    trailingState.set(sym, state);
-    pushCritical('LIVE_POSITION_UNPROTECTED', `${sym} açık pozisyonda SL/TP eksik ve otomatik kurulum doğrulanamadı: ${proof.error||'proof failed'}`, {symbol:sym, hasSL, hasTP, sl, tp}, 'CRITICAL');
-    logAuto(`❌ ${sym.replace('USDT','')} SL/TP koruma doğrulanamadı: ${proof.error||'proof failed'}`);
-  }
-}
-
-async function runAutoPositionWatch() {
-  if (!autoConfig?.enabled || positionWatchRunning) return;
-  positionWatchRunning = true;
-  try {
-    const { apiKey, apiSecret } = autoConfig || {};
-    if (!apiKey || !apiSecret) return;
-    const posData = await getPositionRisk(apiKey, apiSecret);
-    const openPos = Array.isArray(posData) ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0) : [];
-    const beforeTracked = trailingState.size;
-    autoScanState.livePositions = openPos.length;
-    await syncManualClosedPositions(apiKey, apiSecret, openPos);
-
-    if (openPos.length > 0) {
-      const mapped = openPos.map(p=>{
-        const amt = parseFloat(p.positionAmt);
-        const ep  = parseFloat(p.entryPrice);
-        const mp  = parseFloat(p.markPrice);
-        const lev = parseInt(p.leverage)||1;
-        const side = amt>0?'LONG':'SHORT';
-        const pnlPct = ep>0 ? ((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)) : 0;
-        return {
-          symbol:p.symbol, side, positionAmt:Math.abs(amt), entryPrice:ep, markPrice:mp,
-          unrealizedProfit:parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? 0), leverage:lev, pnlPct
-        };
-      });
-      for (const pos of mapped) {
-        if (!trailingState.has(pos.symbol)) {
-          trailingState.set(pos.symbol, {
-            entryPrice:pos.entryPrice, highWater:pos.markPrice, breakEvenSet:false, currentSL:null,
-            targetTP:calcFallbackTP(pos.entryPrice, pos.side==='LONG', autoConfig.tpPct),
-            leverage:pos.leverage||parseInt(autoConfig.leverage)||1,
-            config:{ trailing:true, trailingPct:autoConfig.trailingPct, trailStep:autoConfig.trailStep, breakEvenPct:autoConfig.breakEvenPct, entryPrice:pos.entryPrice, targetTP:calcFallbackTP(pos.entryPrice, pos.side==='LONG', autoConfig.tpPct) }
-          });
-          logAuto(`🔗 ${pos.symbol.replace('USDT','')} canlı pozisyon adopt edildi; yönetim devralındı`);
-        }
-        await ensurePositionProtected(apiKey, apiSecret, pos, autoConfig).catch(e => logAuto(`${pos.symbol} koruma watch hatası: ${safeErrMsg(e)}`));
-      }
-      await checkTrailingSL(apiKey, apiSecret, mapped);
-    } else if (beforeTracked > 0) {
-      // Pozisyon yeni kapanmışsa 3dk bekletmeden yeni taramayı tetikle.
-      autoScanState.phase = 'POZİSYON_KAPANDI_TARAMA';
-      autoScanState.nextScanDue = Date.now() + 5000;
-      setTimeout(() => runAutoScan().catch(()=>{}), 5000);
-    }
-  } catch(e) {
-    pushCritical('POSITION_WATCH', e, {}, 'CRITICAL');
-    logAuto(`Pozisyon watch hata: ${safeErrMsg(e)}`);
-  } finally {
-    positionWatchRunning = false;
-  }
 }
 
 function stopAutoTrader(silent=false) {
@@ -3122,7 +2997,7 @@ async function runAutoScan() {
   resetAutoScanState({
     enabled:true, running:true, phase:'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
     currentSymbol:null, scanList:[], checked:0, opened:0, skipped:0, livePositions:0,
-    topCandidates:[], skipReasons:{}, lastAction:'Tarama başlıyor'
+    topCandidates:[], skipReasons:{}, cooldowns:cooldownSnapshot(), lastAction:'Tarama başlıyor'
   });
 
   try {
@@ -3142,9 +3017,7 @@ async function runAutoScan() {
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
     autoScanState.livePositions = openPos.length;
-
-    // Binance üzerinden manuel/SL/TP kapanan pozisyonları algıla, state'i temizle ve aynı coine cooldown koy.
-    await syncManualClosedPositions(apiKey, apiSecret, openPos);
+    syncClosedPositionsFromBinance(openPos, 'scan_start');
 
     // Trailing SL kontrol
     if (openPos.length > 0) {
@@ -3175,11 +3048,6 @@ async function runAutoScan() {
             config:{ trailing:true, trailingPct, trailStep, breakEvenPct, entryPrice:pos.entryPrice, targetTP:calcFallbackTP(pos.entryPrice, pos.side==='LONG', cfg.tpPct) }
           });
         }
-      }
-      for (const pos of mapped) {
-        await ensurePositionProtected(apiKey, apiSecret, pos, cfg).catch(e =>
-          logAuto(`${pos.symbol} koruma kontrol hatası: ${safeErrMsg(e)}`)
-        );
       }
       await checkTrailingSL(apiKey, apiSecret, mapped);
     }
@@ -3252,15 +3120,11 @@ async function runAutoScan() {
       autoScanState.currentSymbol = String(coin.symbol||coin.fullSymbol||'').replace('USDT','');
       autoScanState.checked = (autoScanState.checked||0) + 1;
 
-      // Aynı coine tekrar tekrar giriş kilidi: manuel kapanış, SL/TP, emir hatası veya yeni açılan işlem sonrası bekle.
-      const cd = cooldownInfo(coin.fullSymbol || coin.symbol);
-      if (cd) {
-        markAutoSkip(coin.symbol, `Cooldown ${cd.leftMin}dk: ${cd.reason}`, {rec:'WAIT', tier:'COOLDOWN', reason:cd.reason});
-        continue;
-      }
-
-      // Zaten pozisyon var mı?
-      const alreadyOpen = openPos.some(p=>p.symbol===coin.fullSymbol);
+      // Zaten pozisyon var mı? / Aynı sembol cooldown var mı?
+      const fullSymbol = normFullSymbol(coin.fullSymbol || coin.symbol);
+      const cd = getSymbolCooldown(fullSymbol);
+      if (cd) { markAutoSkip(coin.symbol, `Cooldown ${cd.remainingMin}dk: ${cd.reason}`, {rec:'WAIT', tier:'WAIT'}); continue; }
+      const alreadyOpen = openPos.some(p=>normFullSymbol(p.symbol)===fullSymbol);
       if (alreadyOpen) { markAutoSkip(coin.symbol, 'Zaten açık pozisyon var'); continue; }
 
       try {
@@ -3398,7 +3262,8 @@ async function runAutoScan() {
           autoScanState.opened = (autoScanState.opened||0) + 1;
           autoScanState.phase = 'EMİR_AÇILDI';
           logAuto(`✅ ${coin.symbol} ${recommendation} açıldı — ${orderResp.message}`);
-          setSymbolCooldown(coin.fullSymbol, 'Pozisyon açıldı; aynı coine tekrar giriş kilidi', 25);
+          // Pozisyon açıldıktan sonra aynı coine tekrar tekrar dalmayı engelle.
+          setSymbolCooldown(coin.fullSymbol, 25, 'Yeni pozisyon giriş kilidi');
           // Trailing state başlat
           trailingState.set(coin.fullSymbol, {
             entryPrice: orderResp.executedPrice||analysis.price,
@@ -3414,13 +3279,14 @@ async function runAutoScan() {
           await new Promise(r=>setTimeout(r,2000));
         } else {
           logAuto(`❌ ${coin.symbol} hata: ${orderResp.error}`);
-          setSymbolCooldown(coin.fullSymbol, `Emir hata/koruma hatası: ${String(orderResp.error||'').slice(0,80)}`, 20);
+          setSymbolCooldown(coin.fullSymbol, 20, `Emir/SLTP hata: ${String(orderResp.error||'').slice(0,80)}`);
           markAutoSkip(coin.symbol, `Emir hata: ${orderResp.error}`, {rec:recommendation, score});
         }
       } catch(e) {
         const msg = e.message?.substring(0,120) || 'bilinmeyen';
         pushCritical('AUTO_COIN_' + (coin.fullSymbol || coin.symbol), e, { symbol: coin.fullSymbol || coin.symbol }, 'CRITICAL');
         logAuto(`${coin.symbol} analiz hata: ${msg}`);
+        if(/order|emir|SL|TP|signature|reduce|position/i.test(msg)) setSymbolCooldown(coin.fullSymbol || coin.symbol, 20, `Teknik hata: ${msg}`);
         markAutoSkip(coin.symbol, `Analiz hata: ${msg}`, {rec:'ERR', tier:'ERR', reason:msg});
       }
     }
@@ -3435,18 +3301,7 @@ async function runAutoScan() {
     autoScanState.currentSymbol = null;
     autoScanState.lastScanEnd = Date.now();
     autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + 3*60*1000 : null;
-
-    // Görünürlük düzeltmesi: emir denemesi hata verdikten sonra eski MAX_POZİSYON_DOLU
-    // fazı ekranda takılı kalmasın. Binance pozisyonu tekrar okunur; 0/1 ise BEKLİYOR gösterilir.
-    if (autoScanState.phase === 'MAX_POZİSYON_DOLU') {
-      try {
-        const cnt = await getNewPosCount();
-        const maxP = parseInt(autoConfig?.maxPositions || autoScanState?.settings?.maxPositions || 1) || 1;
-        autoScanState.positionCount = cnt;
-        if (cnt < maxP) autoScanState.phase = autoScanState.opened>0 ? 'EMİR_AÇILDI' : 'BEKLİYOR';
-      } catch(e) {}
-    }
-
+    autoScanState.cooldowns = cooldownSnapshot();
     if (!['MAX_POZİSYON_DOLU','EMİR_AÇILDI','TARAMA_HATA'].includes(autoScanState.phase)) {
       autoScanState.phase = autoScanState.opened>0 ? 'EMİR_AÇILDI' : 'BEKLİYOR';
     }
@@ -3466,11 +3321,12 @@ function startAutoTrader() {
   stopAutoTrader(true);
   resetAutoScanState({enabled:true, running:false, phase:'BEKLİYOR', nextScanDue:Date.now(), settings:autoConfig||{}});
   logAuto('Otomatik işlem başlatıldı');
-  // Her 3 dakikada bir fırsat tara. Pozisyon yönetimi ise hafif account sync ile 30 sn'de bir çalışır.
+  // Her 3 dakikada bir tara. Telemetri ek yük bindirmez; aynı tarama içinde üretilir.
   autoTimer = setInterval(runAutoScan, 3*60*1000);
-  positionWatchTimer = setInterval(runAutoPositionWatch, 30*1000);
+  if (positionWatchTimer) clearInterval(positionWatchTimer);
+  positionWatchTimer = setInterval(lightweightPositionWatch, 30*1000);
+  lightweightPositionWatch();
   runAutoScan(); // Hemen başlat
-  setTimeout(() => runAutoPositionWatch().catch(()=>{}), 5000);
 }
 
 app.listen(PORT, ()=>console.log(`✅ Server ${PORT}`));
