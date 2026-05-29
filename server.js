@@ -2561,25 +2561,34 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 // ── HESAP ─────────────────────────────────────────────────────────────────────
 // ── RAILWAY IP — Binance IP whitelist için ────────────────────────────────────
 app.get('/api/my-ip', async (_req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   const providers = [
     'https://api.ipify.org?format=json',
-    'https://ifconfig.me/all.json'
+    'https://api64.ipify.org?format=json',
+    'https://ifconfig.me/all.json',
+    'https://ifconfig.co/json',
+    'https://icanhazip.com'
   ];
+  const errors = [];
   for (const u of providers) {
     try {
-      const r = await fetch(u, { signal: AbortSignal.timeout(8000) });
+      const r = await fetch(u, { headers:{'User-Agent':'lazarus-bot'}, signal:AbortSignal.timeout(8000) });
       const txt = await r.text();
       let ip = '';
       try {
         const j = JSON.parse(txt);
-        ip = j.ip || j.ip_addr || j.remote_addr || '';
+        ip = j.ip || j.ip_addr || j.remote_addr || j.query || '';
       } catch(e) {
-        ip = txt.trim();
+        ip = txt.trim().split(/\s+/)[0];
       }
-      if (ip) return res.json({ ok:true, ip });
-    } catch(e) {}
+      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) || /^[a-f0-9:]{8,}$/i.test(ip)) {
+        return res.json({ ok:true, ip, provider:u });
+      }
+    } catch(e) {
+      errors.push(`${u}: ${e.message}`);
+    }
   }
-  res.status(500).json({ ok:false, error:'Railway dış IP alınamadı' });
+  res.status(500).json({ ok:false, error:'Railway dış IP alınamadı', detail:errors.slice(0,3) });
 });
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
