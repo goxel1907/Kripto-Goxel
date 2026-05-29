@@ -1930,13 +1930,21 @@ app.post('/api/account', async (req, res) => {
   if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
   try{
     let w=0,a=0,u=0,positions=[];
-    // 1. Bakiye: v3/balance (hizli, sadece USDT satiri)
-    try{
-      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
+
+    // v3/balance + v2/positionRisk paralel çalıştır — ikisi birbirini beklemiyor
+    const [balResult, posResult] = await Promise.allSettled([
+      bReq(apiKey,apiSecret,'GET','/fapi/v3/balance'),
+      bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk'),
+    ]);
+
+    // Bakiye
+    if(balResult.status==='fulfilled'){
+      const b=balResult.value;
       const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
       if(ub){w=parseFloat(ub.balance)||0;a=parseFloat(ub.availableBalance)||0;u=parseFloat(ub.crossUnPnl)||0;}
-    }catch(e){console.log('v3/balance hata:',e.message);}
-    // 2. Bakiye hala 0 ise v2/account fallback
+    } else { console.log('v3/balance hata:',balResult.reason?.message); }
+
+    // v3/balance başarısız veya 0 ise v2/account fallback
     if(w===0){
       try{
         const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
@@ -1945,9 +1953,10 @@ app.post('/api/account', async (req, res) => {
         u=parseFloat(data.totalUnrealizedProfit)||0;
       }catch(e){console.log('v2/account hata:',e.message);}
     }
-    // 3. Pozisyonlar: positionRisk (kucuk, timeout riski yok)
-    try{
-      const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk');
+
+    // Pozisyonlar
+    if(posResult.status==='fulfilled'){
+      const pr=posResult.value;
       if(Array.isArray(pr)){
         positions=pr.filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
           symbol:p.symbol,side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
@@ -1957,7 +1966,8 @@ app.post('/api/account', async (req, res) => {
         }));
         if(positions.length>0)u=positions.reduce((s,p)=>s+p.unrealizedProfit,0);
       }
-    }catch(e){console.log('positionRisk hata:',e.message);}
+    } else { console.log('positionRisk hata:',posResult.reason?.message); }
+
     res.json({ok:true,totalWalletBalance:w,availableBalance:a,totalUnrealizedProfit:u,positions});
   }catch(e){res.status(400).json({error:e.message});}
 });
