@@ -11,6 +11,35 @@ const PORT = process.env.PORT || 3000;
 const FAPI = 'https://fapi.binance.com';
 const FAPI_WS = 'wss://fstream.binance.com/stream';
 
+
+// ── KRİTİK HATA GÖSTERİM MERKEZİ ─────────────────────────────────────────────
+// Amaç: analiz motoru kırıldığında sessizce WAIT/boş ekran üretmemek.
+// Dashboard /api/diagnostics/status üzerinden bunları gösterir.
+const criticalEvents = [];
+function safeErrMsg(err) {
+  const raw = (err && (err.message || String(err))) || 'Bilinmeyen hata';
+  // API secret, signature, uzun query parçaları ekrana/loga taşınmasın.
+  return String(raw)
+    .replace(/signature=[a-f0-9]+/ig, 'signature=***')
+    .replace(/apiSecret[^,&\s]*/ig, 'apiSecret=***')
+    .slice(0, 240);
+}
+function pushCritical(scope, err, meta = {}, level = 'CRITICAL') {
+  const ev = {
+    ts: Date.now(),
+    level,
+    scope: String(scope || 'GENEL').slice(0, 60),
+    message: safeErrMsg(err),
+    meta,
+  };
+  criticalEvents.push(ev);
+  while (criticalEvents.length > 80) criticalEvents.shift();
+  try { console.error(`[${level}] ${ev.scope}: ${ev.message}`, meta || ''); } catch (_) {}
+  return ev;
+}
+process.on('uncaughtException', e => pushCritical('UNCAUGHT_EXCEPTION', e));
+process.on('unhandledRejection', e => pushCritical('UNHANDLED_REJECTION', e));
+
 // ── CACHE ─────────────────────────────────────────────────────────────────────
 const cache = new Map();
 async function cached(key, ttl, fn) {
@@ -1619,6 +1648,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // ── WS VERİLERİ ───────────────────────────────────────────────────────────
     const cvd     = getCVD(full);
     const iceberg = getIceberg(full);
+    // /api/analyze içinde aşağıdaki skor/response blokları liqData kullanıyor.
+    // Önceki build'de bu değişken tanımlanmadığı için tüm analizler ReferenceError ile ERR oluyordu.
+    const liqData = getLiqData(full);
 
     // ── COINGLASS LİKİDATE (async, cache 15dk) ────────────────────────────────
     const cgData = await cached(`cg_${full}`, 15*60*1000, ()=>getCoinglass(full));
@@ -2016,7 +2048,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       longScore, shortScore, recommendation, decisionChain,
       signals:recommendation==='LONG'?signals.long.slice(0,6):signals.short.slice(0,6),
     });
-  } catch(e) { res.status(400).json({ error:e.message }); }
+  } catch(e) {
+    const ev = pushCritical('ANALYZE_' + full, e, { symbol: full, route:'/api/analyze' });
+    res.status(400).json({ ok:false, code:'ANALYZE_EXCEPTION', symbol:full, error:ev.message, scope:ev.scope, ts:ev.ts });
+  }
 });
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
@@ -2794,6 +2829,28 @@ function markAutoSkip(symbol, reason, row={}) {
   if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
 }
 
+
+// ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
+app.get('/api/diagnostics/status', (_req, res) => {
+  const lastCritical = criticalEvents[criticalEvents.length - 1] || null;
+  const recent = criticalEvents.slice(-20).reverse();
+  res.json({
+    ok: true,
+    hasCritical: recent.some(e => e.level === 'CRITICAL'),
+    count: criticalEvents.length,
+    lastCritical,
+    recent,
+    autoPhase: autoScanState?.phase,
+    autoLastAction: autoScanState?.lastAction,
+    autoErrors: autoScanState?.skipReasons || {},
+    serverTime: Date.now(),
+  });
+});
+app.post('/api/diagnostics/clear', (_req, res) => {
+  criticalEvents.length = 0;
+  res.json({ ok:true, message:'Kritik hata ekran kayıtları temizlendi' });
+});
+
 app.post('/api/auto/config', (req, res) => {
   autoConfig = req.body;
   if (autoConfig.enabled) {
@@ -2964,7 +3021,12 @@ async function runAutoScan() {
       try {
         const analysis = await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`)
           .then(r=>r.json());
-        if (!analysis.ok) { markAutoSkip(coin.symbol, 'Analiz OK değil'); continue; }
+        if (!analysis.ok) {
+          const emsg = String(analysis.error || analysis.code || 'Analiz OK değil').slice(0,90);
+          pushCritical('AUTO_ANALYZE_' + (coin.fullSymbol || coin.symbol), emsg, { symbol: coin.fullSymbol || coin.symbol, code:analysis.code || 'ANALYZE_NOT_OK' }, 'CRITICAL');
+          markAutoSkip(coin.symbol, `Analiz OK değil: ${emsg}`, {rec:'ERR', tier:'ERR', longScore:0, shortScore:0, reason:emsg});
+          continue;
+        }
 
         const { longScore, shortScore, recommendation, isExpired, freshness } = analysis;
         const decisionChain = analysis.decisionChain || {};
@@ -3109,15 +3171,17 @@ async function runAutoScan() {
           markAutoSkip(coin.symbol, `Emir hata: ${orderResp.error}`, {rec:recommendation, score});
         }
       } catch(e) {
-        const msg = e.message?.substring(0,80) || 'bilinmeyen';
+        const msg = e.message?.substring(0,120) || 'bilinmeyen';
+        pushCritical('AUTO_COIN_' + (coin.fullSymbol || coin.symbol), e, { symbol: coin.fullSymbol || coin.symbol }, 'CRITICAL');
         logAuto(`${coin.symbol} analiz hata: ${msg}`);
-        markAutoSkip(coin.symbol, `Analiz hata: ${msg}`);
+        markAutoSkip(coin.symbol, `Analiz hata: ${msg}`, {rec:'ERR', tier:'ERR', reason:msg});
       }
     }
 
   } catch(e) {
     autoScanState.phase = 'TARAMA_HATA';
-    logAuto(`Tarama hatası: ${e.message?.substring(0,80)}`);
+    pushCritical('AUTO_SCAN', e, { phase:autoScanState.phase }, 'CRITICAL');
+    logAuto(`Tarama hatası: ${e.message?.substring(0,120)}`);
   } finally {
     autoRunning = false;
     autoScanState.running = false;
