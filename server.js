@@ -2756,6 +2756,44 @@ let autoRunning = false;
 let autoTimer = null;
 const autoLog = []; // Son 50 otomatik işlem logu
 
+// ── CANLI TARAMA TELEMETRİSİ ────────────────────────────────────────────────
+// Ek Binance çağrısı yapmaz; runAutoScan içinde zaten alınan analizleri hafızada tutar.
+// Amaç: Dashboard'da "bot ne tarıyor, neyi bekliyor, neden işlem açmadı" sorusunu göstermek.
+let autoScanState = {
+  enabled:false, running:false, phase:'KAPALI',
+  lastScanStart:null, lastScanEnd:null, nextScanDue:null, currentSymbol:null,
+  scanList:[], checked:0, opened:0, skipped:0, livePositions:0, maxPositions:0,
+  effectiveMinScore:0, killZone:null, settings:{},
+  topCandidates:[], skipReasons:{}, lastAction:'Henüz tarama yok'
+};
+function resetAutoScanState(patch={}) {
+  autoScanState = {
+    ...autoScanState, ...patch,
+    topCandidates: patch.topCandidates || [],
+    skipReasons: patch.skipReasons || {},
+  };
+}
+function pushAutoCandidate(row) {
+  const r = {
+    ts:Date.now(),
+    symbol:String(row.symbol||'').replace('USDT',''),
+    rec:row.rec||'WAIT', tier:row.tier||'WAIT', score:Number(row.score||0),
+    longScore:Number(row.longScore||0), shortScore:Number(row.shortScore||0),
+    reason:String(row.reason||row.block||'—').slice(0,140),
+    action:String(row.action||'İzle').slice(0,80)
+  };
+  autoScanState.topCandidates.push(r);
+  autoScanState.topCandidates = autoScanState.topCandidates
+    .sort((a,b)=>(b.tier==='A')-(a.tier==='A') || b.score-a.score || b.ts-a.ts)
+    .slice(0,12);
+}
+function markAutoSkip(symbol, reason, row={}) {
+  const key = String(reason||'Bilinmeyen').slice(0,60);
+  autoScanState.skipped = (autoScanState.skipped||0) + 1;
+  autoScanState.skipReasons[key] = (autoScanState.skipReasons[key]||0) + 1;
+  if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
+}
+
 app.post('/api/auto/config', (req, res) => {
   autoConfig = req.body;
   if (autoConfig.enabled) {
@@ -2769,25 +2807,36 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
-    config:autoConfig, recentLogs:autoLog.slice(-20) });
+    config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40) });
 });
 
 function logAuto(msg) {
   const entry = `${new Date().toLocaleTimeString('tr-TR')} ${msg}`;
   autoLog.push(entry);
-  if (autoLog.length > 50) autoLog.shift();
+  if (autoLog.length > 80) autoLog.shift();
+  autoScanState.lastAction = entry;
   console.log('[AUTO]', entry);
 }
 
-function stopAutoTrader() {
+function stopAutoTrader(silent=false) {
   if (autoTimer) { clearInterval(autoTimer); autoTimer=null; }
   autoRunning = false;
-  logAuto('Otomatik işlem durduruldu');
+  if (!silent) {
+    resetAutoScanState({enabled:false, running:false, phase:'KAPALI', currentSymbol:null, nextScanDue:null});
+    logAuto('Otomatik işlem durduruldu');
+  } else {
+    resetAutoScanState({running:false, currentSymbol:null});
+  }
 }
 
 async function runAutoScan() {
   if (autoRunning || !autoConfig?.enabled) return;
   autoRunning = true;
+  resetAutoScanState({
+    enabled:true, running:true, phase:'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
+    currentSymbol:null, scanList:[], checked:0, opened:0, skipped:0, livePositions:0,
+    topCandidates:[], skipReasons:{}, lastAction:'Tarama başlıyor'
+  });
 
   try {
     const cfg = autoConfig;
@@ -2796,11 +2845,16 @@ async function runAutoScan() {
       sweepOnly=true,
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[] } = cfg;
 
+    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR};
+    autoScanState.maxPositions = Number(maxPositions||0);
+    autoScanState.phase = 'POZİSYON_KONTROL';
+
     // 1. Mevcut pozisyonları kontrol et
     const posData = await getPositionRisk(apiKey,apiSecret);
     const openPos = Array.isArray(posData)
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
+    autoScanState.livePositions = openPos.length;
 
     // Trailing SL kontrol
     if (openPos.length > 0) {
@@ -2837,6 +2891,7 @@ async function runAutoScan() {
 
     // Max pozisyon kontrolü
     if (openPos.length >= maxPositions) {
+      autoScanState.phase = 'MAX_POZİSYON_DOLU';
       logAuto(`Max pozisyon (${maxPositions}) doldu, yeni sinyal taranmıyor`);
       return;
     }
@@ -2869,6 +2924,8 @@ async function runAutoScan() {
     // Kill Zone bazlı min skor ayarı
     const effectiveMinScore = kz.zone === 'DEAD' ? Math.max(minScore + 10, 80) :
                               kz.strength < 1.0   ? minScore + 5 : minScore;
+    autoScanState.killZone = kz;
+    autoScanState.effectiveMinScore = effectiveMinScore;
     if (kz.zone === 'DEAD') logAuto(`💤 Ölü saat — min skor ${effectiveMinScore}'e yükseltildi`);
 
     // Haber kontrolü — tehlikeli saatlerde işlem açma
@@ -2890,24 +2947,28 @@ async function runAutoScan() {
       }
     } catch(e) {}
 
+    autoScanState.phase = 'TARIYOR';
+    autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,30);
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
     // 3. Her coini analiz et
     for (const coin of scanList) {
-      if ((await getNewPosCount()) >= maxPositions) break;
+      if ((await getNewPosCount()) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
+      autoScanState.currentSymbol = String(coin.symbol||coin.fullSymbol||'').replace('USDT','');
+      autoScanState.checked = (autoScanState.checked||0) + 1;
 
       // Zaten pozisyon var mı?
       const alreadyOpen = openPos.some(p=>p.symbol===coin.fullSymbol);
-      if (alreadyOpen) continue;
+      if (alreadyOpen) { markAutoSkip(coin.symbol, 'Zaten açık pozisyon var'); continue; }
 
       try {
         const analysis = await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`)
           .then(r=>r.json());
-        if (!analysis.ok) continue;
+        if (!analysis.ok) { markAutoSkip(coin.symbol, 'Analiz OK değil'); continue; }
 
         const { longScore, shortScore, recommendation, isExpired, freshness } = analysis;
         const decisionChain = analysis.decisionChain || {};
-        if (isExpired || freshness === 'EXPIRED') continue;
+        if (isExpired || freshness === 'EXPIRED') { markAutoSkip(coin.symbol, 'Sinyal süresi geçmiş'); continue; }
 
         // ── PRO TRADER KARAR ZİNCİRİ — A-Tier ana karar, toksik filtreler veto ──
         // Skor kafadan üretilmez: /api/analyze içindeki MM + CVD + OI + Funding + Tick + Sweep + Wyckoff katmanlarından gelir.
@@ -2916,16 +2977,19 @@ async function runAutoScan() {
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
+        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?'Aday':'İzle'});
 
         // Yön izni
-        if (isLong  && !allowLong)  continue;
-        if (isShort && !allowShort) continue;
-        if (recommendation==='WAIT') continue;
+        if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
+        if (isShort && !allowShort) { markAutoSkip(coin.symbol, 'Short kapalı', {rec:recommendation, score}); continue; }
+        if (recommendation==='WAIT') { markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, longScore, shortScore, reason:decisionChain?.reason}); continue; }
 
         // Sadece A-Tier otomatik açılır. B-Tier panelde görünür ama otomatik emir açmaz.
         const tierOk = decisionChain?.autoOk === true && decisionChain?.tier === 'A';
         if (!tierOk) {
-          logAuto(`📊 ${coin.symbol} B/WAIT-Tier (${decisionChain?.reason||'A-Tier değil'}) — otomatik açılmıyor`);
+          const why = `B/WAIT-Tier: ${decisionChain?.reason||'A-Tier değil'}`;
+          logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason});
           continue;
         }
 
@@ -2938,6 +3002,7 @@ async function runAutoScan() {
           : (mmTarget === 'GENUINE_UP'   && mmConf >= 65);
         if (mmHardOpposite) {
           logAuto(`${coin.symbol} yüksek güvenli MM ters (${mmTarget}/${mmConf}) — atlandı`);
+          markAutoSkip(coin.symbol, `MM ters ${mmTarget}/${mmConf}`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
         }
 
@@ -2951,6 +3016,7 @@ async function runAutoScan() {
           : (cvdRatio > 65 && tickTrend === 'BULL');
         if (cvdToxic) {
           logAuto(`${coin.symbol} CVD+Tick net ters (${cvdRatio}%/${tickTrend}) — atlandı`);
+          markAutoSkip(coin.symbol, `CVD+Tick ters ${cvdRatio}%/${tickTrend}`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
         }
 
@@ -2959,14 +3025,14 @@ async function runAutoScan() {
         const fundOk = isLong
           ? fund?.signal !== 'EXTREME_POSITIVE'
           : fund?.signal !== 'EXTREME_NEGATIVE';
-        if (!fundOk) { logAuto(`${coin.symbol} Funding aşırı karşı (${fund?.current}) — atlandı`); continue; }
+        if (!fundOk) { logAuto(`${coin.symbol} Funding aşırı karşı (${fund?.current}) — atlandı`); markAutoSkip(coin.symbol, `Funding aşırı karşı ${fund?.current}`, {rec:recommendation, score}); continue; }
 
         // Skor ve seans filtresi
-        if (score < effectiveMinScore) { logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore}(kz:${kz.zone}) — atlandı`); continue; }
+        if (score < effectiveMinScore) { logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore}(kz:${kz.zone}) — atlandı`); markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason}); continue; }
 
         // F&G: Extreme durumlarda ters yön yasak
-        if (fgSignal==='EXTREME_GREED' && isLong)  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); continue; }
-        if (fgSignal==='EXTREME_FEAR'  && isShort) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); continue; }
+        if (fgSignal==='EXTREME_GREED' && isLong)  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
+        if (fgSignal==='EXTREME_FEAR'  && isShort) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
 
         // Likidasyon cascade: sadece pozisyon yönüne direkt ters kaskad veto eder.
         const liq = analysis.liquidations;
@@ -2974,7 +3040,7 @@ async function runAutoScan() {
           const adverseCascade = isLong
             ? liq.cascade.direction==='LONG_CASCADE'
             : liq.cascade.direction==='SHORT_CASCADE';
-          if (adverseCascade) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); continue; }
+          if (adverseCascade) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); markAutoSkip(coin.symbol, `Adverse cascade ${liq.cascade.direction}`, {rec:recommendation, score}); continue; }
         }
 
         // ── KULLANICI RİSK AYARLARI ───────────────────────────────────────────────
@@ -2982,7 +3048,7 @@ async function runAutoScan() {
         // usdtAmount = kullanıcının marjı, leverage = kullanıcının kaldıracı,
         // slPct/tpPct = kaldıraçsız coin hareketi yüzdesi.
         const entryRef = parseFloat(analysis.price || coin.price || 0);
-        if (!entryRef) { logAuto(`${coin.symbol} fiyat alınamadı — atlandı`); continue; }
+        if (!entryRef) { logAuto(`${coin.symbol} fiyat alınamadı — atlandı`); markAutoSkip(coin.symbol, 'Fiyat alınamadı'); continue; }
 
         const userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));
         const userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
@@ -2991,6 +3057,7 @@ async function runAutoScan() {
 
         if (userRR < minRR) {
           logAuto(`${coin.symbol} panel R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
+          markAutoSkip(coin.symbol, `Panel RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
           continue;
         }
 
@@ -3021,6 +3088,8 @@ async function runAutoScan() {
         }).then(r=>r.json());
 
         if (orderResp.ok) {
+          autoScanState.opened = (autoScanState.opened||0) + 1;
+          autoScanState.phase = 'EMİR_AÇILDI';
           logAuto(`✅ ${coin.symbol} ${recommendation} açıldı — ${orderResp.message}`);
           // Trailing state başlat
           trailingState.set(coin.fullSymbol, {
@@ -3037,16 +3106,27 @@ async function runAutoScan() {
           await new Promise(r=>setTimeout(r,2000));
         } else {
           logAuto(`❌ ${coin.symbol} hata: ${orderResp.error}`);
+          markAutoSkip(coin.symbol, `Emir hata: ${orderResp.error}`, {rec:recommendation, score});
         }
       } catch(e) {
-        logAuto(`${coin.symbol} analiz hata: ${e.message?.substring(0,50)}`);
+        const msg = e.message?.substring(0,80) || 'bilinmeyen';
+        logAuto(`${coin.symbol} analiz hata: ${msg}`);
+        markAutoSkip(coin.symbol, `Analiz hata: ${msg}`);
       }
     }
 
   } catch(e) {
+    autoScanState.phase = 'TARAMA_HATA';
     logAuto(`Tarama hatası: ${e.message?.substring(0,80)}`);
   } finally {
     autoRunning = false;
+    autoScanState.running = false;
+    autoScanState.currentSymbol = null;
+    autoScanState.lastScanEnd = Date.now();
+    autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + 3*60*1000 : null;
+    if (!['MAX_POZİSYON_DOLU','EMİR_AÇILDI','TARAMA_HATA'].includes(autoScanState.phase)) {
+      autoScanState.phase = autoScanState.opened>0 ? 'EMİR_AÇILDI' : 'BEKLİYOR';
+    }
   }
 }
 
@@ -3060,9 +3140,10 @@ async function getNewPosCount() {
 }
 
 function startAutoTrader() {
-  stopAutoTrader();
+  stopAutoTrader(true);
+  resetAutoScanState({enabled:true, running:false, phase:'BEKLİYOR', nextScanDue:Date.now(), settings:autoConfig||{}});
   logAuto('Otomatik işlem başlatıldı');
-  // Her 3 dakikada bir tara
+  // Her 3 dakikada bir tara. Telemetri ek yük bindirmez; aynı tarama içinde üretilir.
   autoTimer = setInterval(runAutoScan, 3*60*1000);
   runAutoScan(); // Hemen başlat
 }
