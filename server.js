@@ -23,35 +23,13 @@ async function cached(key, ttl, fn) {
 
 // ── RATE LIMIT ────────────────────────────────────────────────────────────────
 let reqCount=0, reqWindow=Date.now();
-// ── ALGO ORDER (TP/SL için yeni coinlerde) ───────────────────────────────────
-// Binance /fapi/v1/order/algo:
-// - Signature ve timestamp URL query string'de
-// - Diğer parametreler JSON body'de
-async function bAlgo(apiKey, apiSecret, params) {
-  const ts  = Date.now();
-  const qs  = `timestamp=${ts}&recvWindow=10000&signature=`;
-  const sig = sign(`timestamp=${ts}&recvWindow=10000`, apiSecret);
-  const url = `${FAPI}/fapi/v1/order/algo?timestamp=${ts}&recvWindow=10000&signature=${sig}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-    signal: AbortSignal.timeout(10000),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch(e) { throw new Error(`Algo JSON hatası: ${text.substring(0,100)}`); }
-  if (data.code && data.code < 0) throw new Error(`${data.msg} (${data.code})`);
-  return data;
-}
-
 // ── ALGO ORDER (yeni coinler için: OPG, PENDLE, HUSDT vb.) ──────────────────
 // Signature query string'de, body JSON — Binance algo endpoint zorunluluğu
 async function bAlgo(apiKey, apiSecret, params) {
   const ts  = Date.now();
   const sigStr = `timestamp=${ts}&recvWindow=10000`;
   const sig = sign(sigStr, apiSecret);
-  const url = `${FAPI}/fapi/v1/order/algo?timestamp=${ts}&recvWindow=10000&signature=${sig}`;
+  const url = `${FAPI}/fapi/v1/algoOrder?timestamp=${ts}&recvWindow=10000&signature=${sig}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json' },
@@ -64,6 +42,101 @@ async function bAlgo(apiKey, apiSecret, params) {
   catch(e) { throw new Error(`Algo JSON hatası: ${text.substring(0,100)}`); }
   if (data.code && data.code < 0) throw new Error(`${data.msg} (${data.code})`);
   return data;
+}
+
+// ── ALGO CANCEL — tüm algo emirlerini iptal et (2025-12-09 sonrası zorunlu) ──
+async function cancelAlgoOrders(apiKey, apiSecret, symbol) {
+  // 1. Normal emirleri iptal et (MARKET vs.)
+  try { await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', {symbol}); } catch(e) {}
+  // 2. Algo emirlerini de iptal et (STOP_MARKET, TP artık algo)
+  try { await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/algoOpenOrders', {symbol}); } catch(e) {}
+}
+
+// ── ALGO SL/TP — Lazarus V8.10.72 kanıtlanmış format ───────────────────────
+// DOĞRU: algoType=CONDITIONAL + type=STOP_MARKET/TAKE_PROFIT_MARKET
+//        + triggerPrice (stopPrice DEĞİL) + closePosition=true
+//        quantity ve reduceOnly GÖNDERİLMEZ — Lazarus V8.10.72 notunda açıkça belirtilmiş
+// YANLIŞ olan: orderType=STOP, stopPrice, quantity, reduceOnly (bizim eski kod)
+async function buildAlgoCloseParams(symbol, closeSide, orderType, triggerPrice, clientAlgoId) {
+  return {
+    algoType: 'CONDITIONAL',
+    symbol,
+    side: closeSide,
+    type: orderType,           // "STOP_MARKET" veya "TAKE_PROFIT_MARKET"
+    triggerPrice: triggerPrice.toString(),
+    closePosition: 'true',     // quantity/reduceOnly YOK — tüm pozisyonu kapatır
+    workingType: 'MARK_PRICE',
+    priceProtect: 'false',
+    clientAlgoId: clientAlgoId || `SL_${symbol}_${Date.now()}`,
+  };
+}
+
+async function placeAlgoSL(apiKey, apiSecret, symbol, closeSide, triggerPrice, _unused) {
+  const params = await buildAlgoCloseParams(symbol, closeSide, 'STOP_MARKET', triggerPrice, `SL_${symbol}_${Date.now()}`);
+  return bAlgo(apiKey, apiSecret, params);
+}
+
+async function placeAlgoTP(apiKey, apiSecret, symbol, closeSide, triggerPrice, _unused) {
+  const params = await buildAlgoCloseParams(symbol, closeSide, 'TAKE_PROFIT_MARKET', triggerPrice, `TP_${symbol}_${Date.now()}`);
+  return bAlgo(apiKey, apiSecret, params);
+}
+
+// ── SLTP PROOF — Lazarus verify_live_sltp_visible mantığı ────────────────────
+// SL/TP yazıldıktan sonra Binance'te gerçekten görünüyor mu diye kontrol et
+async function verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, expectedSL, expectedTP) {
+  try {
+    const algoOrders = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/openAlgoOrders', {symbol});
+    const orders = Array.isArray(algoOrders) ? algoOrders : [];
+    let foundSL = false, foundTP = false;
+    for (const o of orders) {
+      const typ = (o.orderType || o.type || '').toUpperCase();
+      const trig = parseFloat(o.triggerPrice || o.stopPrice || 0);
+      if (typ.includes('STOP') && !typ.includes('TAKE')) {
+        if (Math.abs(trig - expectedSL) / expectedSL < 0.005) foundSL = true;
+      }
+      if (typ.includes('TAKE_PROFIT')) {
+        if (Math.abs(trig - expectedTP) / expectedTP < 0.005) foundTP = true;
+      }
+    }
+    return { ok: foundSL && foundTP, foundSL, foundTP, orderCount: orders.length };
+  } catch(e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ── SL/TP ÇİFTİ YAZ + İSPAT AL — install_live_sltp_pair_with_proof ──────────
+// Lazarus'un en önemli pattern'i: yaz, 250ms bekle, Binance'te gözle
+async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPrice, tpPrice, sym) {
+  // Önce tüm bracketları temizle
+  await cancelAlgoOrders(apiKey, apiSecret, symbol);
+  // SL + TP yaz
+  const slOrder = await placeAlgoSL(apiKey, apiSecret, symbol, closeSide, slPrice, null);
+  const tpOrder = await placeAlgoTP(apiKey, apiSecret, symbol, closeSide, tpPrice, null);
+  // 300ms bekle (Binance propagation)
+  await new Promise(r => setTimeout(r, 300));
+  // İspat al
+  const proof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
+  if (proof.ok) return { ok: true, slOrder, tpOrder, proof };
+
+  // Fallback: standart closePosition (algo endpoint çalışmadıysa)
+  console.log(`${symbol} algo SLTP doğrulanamadı, standart fallback deneniyor...`);
+  await cancelAlgoOrders(apiKey, apiSecret, symbol);
+  try {
+    // /fapi/v1/order closePosition=true — eski ama bazı hesaplarda hala çalışır
+    await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+      symbol, side:closeSide, type:'STOP_MARKET',
+      stopPrice: slPrice.toString(), closePosition:'true', workingType:'MARK_PRICE'
+    });
+    await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+      symbol, side:closeSide, type:'TAKE_PROFIT_MARKET',
+      stopPrice: tpPrice.toString(), closePosition:'true', workingType:'MARK_PRICE'
+    });
+    await new Promise(r => setTimeout(r, 300));
+    const proof2 = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
+    return { ok: proof2.ok, proof: proof2, fallback: 'standard_closePosition' };
+  } catch(e) {
+    return { ok: false, error: e.message, proof };
+  }
 }
 
 async function bPub(path, qs='') {
@@ -955,6 +1028,35 @@ async function scanVolatility() {
 setInterval(scanVolatility, 3 * 60 * 1000);
 scanVolatility(); // Hemen başlat
 
+// ── WEBSOCKET BELLEK TEMİZLEME — aktif olmayan streamler kapat ───────────────
+// Sürekli çalışan WS'ler bellek dolduruyor; 1 saatte 1 temizle
+setInterval(() => {
+  const activeSyms = new Set(
+    [...(volatilityStore.coins||[]).map(c=>c.fullSymbol),
+     ...(autoConfig?.symbols||[]),
+    ]
+  );
+  for (const [sym, eng] of tickStore.entries()) {
+    if (!activeSyms.has(sym)) {
+      try { eng.ws?.terminate(); } catch(e) {}
+      tickStore.delete(sym);
+    }
+  }
+  for (const [sym, store] of cvdStore.entries()) {
+    if (!activeSyms.has(sym)) {
+      try { store.ws?.terminate(); } catch(e) {}
+      cvdStore.delete(sym);
+    }
+  }
+  for (const [sym, store] of icebergStore.entries()) {
+    if (!activeSyms.has(sym)) {
+      try { store.ws?.terminate(); } catch(e) {}
+      icebergStore.delete(sym);
+    }
+  }
+  console.log(`[MEM] WS temizlendi. tick:${tickStore.size} cvd:${cvdStore.size} iceberg:${icebergStore.size}`);
+}, 60 * 60 * 1000);
+
 app.get('/api/volatile-coins', (req, res) => {
   res.json({ ok:true, coins: volatilityStore.coins,
     lastUpdate: volatilityStore.lastUpdate });
@@ -1827,20 +1929,36 @@ app.post('/api/account', async (req, res) => {
   const{apiKey,apiSecret}=req.body;
   if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
   try{
-    let w=0,a=0,u=0;
-    try{const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;if(ub){w=parseFloat(ub.balance)||0;a=parseFloat(ub.availableBalance)||0;}}catch(e){}
-    const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-    if(parseFloat(data.totalWalletBalance)>0)w=parseFloat(data.totalWalletBalance);
-    if(parseFloat(data.availableBalance)>0)a=parseFloat(data.availableBalance);
-    u=parseFloat(data.totalUnrealizedProfit)||0;
-    res.json({ok:true,totalWalletBalance:w,availableBalance:a,totalUnrealizedProfit:u,
-      positions:(data.positions||[]).filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
-        symbol:p.symbol,side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
-        positionAmt:Math.abs(parseFloat(p.positionAmt)),entryPrice:parseFloat(p.entryPrice),
-        markPrice:parseFloat(p.markPrice),unrealizedProfit:parseFloat(p.unRealizedProfit),
-        leverage:parseInt(p.leverage),liquidationPrice:parseFloat(p.liquidationPrice),
-      }))
-    });
+    let w=0,a=0,u=0,positions=[];
+    // 1. Bakiye: v3/balance (hizli, sadece USDT satiri)
+    try{
+      const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
+      const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
+      if(ub){w=parseFloat(ub.balance)||0;a=parseFloat(ub.availableBalance)||0;u=parseFloat(ub.crossUnPnl)||0;}
+    }catch(e){console.log('v3/balance hata:',e.message);}
+    // 2. Bakiye hala 0 ise v2/account fallback
+    if(w===0){
+      try{
+        const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
+        if(parseFloat(data.totalWalletBalance)>0)w=parseFloat(data.totalWalletBalance);
+        if(parseFloat(data.availableBalance)>0)a=parseFloat(data.availableBalance);
+        u=parseFloat(data.totalUnrealizedProfit)||0;
+      }catch(e){console.log('v2/account hata:',e.message);}
+    }
+    // 3. Pozisyonlar: positionRisk (kucuk, timeout riski yok)
+    try{
+      const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk');
+      if(Array.isArray(pr)){
+        positions=pr.filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
+          symbol:p.symbol,side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
+          positionAmt:Math.abs(parseFloat(p.positionAmt)),entryPrice:parseFloat(p.entryPrice),
+          markPrice:parseFloat(p.markPrice),unrealizedProfit:parseFloat(p.unRealizedProfit),
+          leverage:parseInt(p.leverage),liquidationPrice:parseFloat(p.liquidationPrice),
+        }));
+        if(positions.length>0)u=positions.reduce((s,p)=>s+p.unrealizedProfit,0);
+      }
+    }catch(e){console.log('positionRisk hata:',e.message);}
+    res.json({ok:true,totalWalletBalance:w,availableBalance:a,totalUnrealizedProfit:u,positions});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
@@ -1974,16 +2092,22 @@ app.post('/api/order', async (req, res) => {
       return {orderId:null};
     }
 
-    const tp = await placeSLTP('TAKE_PROFIT_MARKET', finalTP);
-    await new Promise(r=>setTimeout(r,500));
-    const sl = await placeSLTP('STOP_MARKET', finalSL);
-    const tpOk=!!tp.orderId,slOk=!!sl.orderId;
+    // Lazarus install_live_sltp_pair_with_proof: yaz + kanıtla + fallback
+    const slResult = await installSLTPWithProof(
+      apiKey, apiSecret, sym, cSide, finalSL, finalTP, sym
+    );
+    const tpOk = slResult.ok;
+    const slOk = slResult.ok;
 
     res.json({ok:true,
-      message:`${sym} ${side} açıldı ✅${tpOk?` TP#${tp.orderId}`:'❌ TP manuel'}${slOk?` SL#${sl.orderId}`:'❌ SL manuel'}`,
-      mainOrderId:main.orderId,tpOrderId:tp.orderId,slOrderId:sl.orderId,
-      tpSuccess:tpOk,slSuccess:slOk,executedPrice:execPrice,
-      details:{symbol:sym,side,quantity:qty,leverage,entry:execPrice,target:realTP,stop:realSL}
+      message:`${sym} ${side} açıldı ✅ SL/TP ${slResult.ok?'Binance doğrulandı ✅':`doğrulanamadı ⚠️ ${slResult.error||''}`}`,
+      mainOrderId:main.orderId,
+      slAlgoId:slResult.slOrder?.algoId||slResult.slOrder?.clientAlgoId,
+      tpAlgoId:slResult.tpOrder?.algoId||slResult.tpOrder?.clientAlgoId,
+      tpSuccess:tpOk,slSuccess:slOk,
+      slProof:slResult.proof,
+      executedPrice:execPrice,
+      details:{symbol:sym,side,quantity:qty,leverage,entry:execPrice,target:finalTP,stop:finalSL}
     });
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2022,21 +2146,14 @@ app.post('/api/update-sl', async (req, res) => {
     const cSide  = isLong ? 'SELL' : 'BUY';
     const qty    = Math.abs(parseFloat(p.positionAmt)).toString();
 
-    // Mevcut açık emirleri iptal et
-    if (cancelExisting) {
-      try { await bReq(apiKey,apiSecret,'DELETE','/fapi/v1/allOpenOrders',{symbol:sym}); }
-      catch(e) {}
-    }
+    // Lazarus cancel_symbol_brackets + install_live_sltp_pair_with_proof
+    const tp_price = fnum(p.tp) || (isLong ? parseFloat(newSL) * 1.05 : parseFloat(newSL) * 0.95);
+    const mark = parseFloat(p.markPrice||0) || parseFloat(newSL);
+    const safeNewSL = isLong ? Math.min(parseFloat(newSL), mark * 0.9997) : Math.max(parseFloat(newSL), mark * 1.0003);
+    const result = await installSLTPWithProof(apiKey, apiSecret, sym, cSide, safeNewSL, tp_price, sym);
+    const oid = result.slOrder?.algoId || result.slOrder?.clientAlgoId;
 
-    // Yeni SL yerleştir
-    const sl = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-      symbol:sym, side:cSide, type:'STOP_MARKET',
-      stopPrice:parseFloat(newSL).toString(),
-      quantity:qty, reduceOnly:'true', positionSide:'BOTH',
-      workingType:'MARK_PRICE'
-    });
-
-    res.json({ ok:true, message:`${sym} SL güncellendi → $${newSL}`, orderId:sl.orderId });
+    res.json({ ok:result.ok, message:`${sym} SL güncellendi → $${safeNewSL} ${result.ok?'✅':'⚠️'}`, orderId:oid, proof:result.proof });
   } catch(e) { res.status(400).json({ error:e.message }); }
 });
 
@@ -2147,7 +2264,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   // State al veya oluştur
   if (!trailingState.has(sym)) {
     trailingState.set(sym, {
-      entryPrice, highWater:curPrice, currentSL:null,
+      entryPrice, highWater:curPrice, currentSL:null, currentSLAlgoId:null,
       breakEvenSet:false, tpExtended:false,
       step1Set:false, step2Set:false, step3Set:false,
       peakPnl:0, peakRealPct:0, lastCheck:Date.now()
@@ -2306,10 +2423,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
   if (action.type === 'EMERGENCY_EXIT') {
-    // Tüm açık emirleri iptal et ve pozisyonu kapat
+    // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
-      await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', {symbol:sym});
+      await cancelAlgoOrders(apiKey, apiSecret, sym);
       const qty = pos.positionAmt.toString();
+      // MARKET emri eski endpoint'te çalışmaya devam eder
       const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
         symbol:sym, side:isLong?'SELL':'BUY',
         type:'MARKET', quantity:qty,
@@ -2323,19 +2441,28 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
   }
 
-  if (action.type === 'BREAK_EVEN' || action.type === 'TRAIL_SL' || action.type === 'TIGHTEN_SL') {
+  if (action.type === 'BREAK_EVEN' || action.type === 'TRAIL_SL' || action.type === 'TIGHTEN_SL'
+      || action.type === 'KAR_TASIMA') {
     const newSL = action.newSL;
     if (!newSL) return null;
     try {
-      await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', {symbol:sym});
-      const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-        symbol:sym, side:isLong?'SELL':'BUY',
-        type:'STOP_MARKET', stopPrice:newSL.toString(),
-        quantity:pos.positionAmt.toString(),
-        reduceOnly:'true', positionSide:'BOTH', workingType:'MARK_PRICE'
-      });
-      state.currentSL = newSL;
-      logAuto(`✅ ${sym} SL güncellendi → $${newSL} (${r.orderId})`);
+      // Önce mevcut algo SL'yi iptal et
+      await cancelAlgoOrders(apiKey, apiSecret, sym);
+      // Lazarus trigger_buffered_price: mark'a çok yakınsa -4117 hatası
+      // LONG SL mark'ın altında, SHORT SL mark'ın üstünde olmalı
+      const mark = curPrice;
+      const buffered = isLong
+        ? Math.min(newSL, mark * 0.9997)   // LONG: SL en az %0.03 mark altında
+        : Math.max(newSL, mark * 1.0003);  // SHORT: SL en az %0.03 mark üstünde
+      const r = await placeAlgoSL(
+        apiKey, apiSecret, sym,
+        isLong ? 'SELL' : 'BUY',
+        buffered, pos.positionAmt
+      );
+      const oid = r.algoId || r.clientAlgoId || r.orderId;
+      state.currentSL = buffered;
+      state.currentSLAlgoId = oid;
+      logAuto(`✅ ${sym} SL güncellendi → $${buffered} (algoId:${oid})`);
     } catch(e) {
       logAuto(`❌ ${sym} SL güncelleme hatası: ${e.message}`);
     }
@@ -2353,75 +2480,13 @@ async function checkTrailingSL(apiKey, apiSecret, positions) {
   }
 }
 
-async function checkTrailingSL(apiKey, apiSecret, positions) {
-  for (const pos of positions) {
-    const sym = pos.symbol;
-    const ts = trailingState.get(sym);
-    if (!ts || !ts.config?.trailing) continue;
-
-    const { entryPrice, trailPct, breakEvenPct } = ts.config;
-    const curPrice = pos.markPrice;
-    const isLong = pos.side === 'LONG';
-    const pnlPct = Math.abs(curPrice - entryPrice) / entryPrice * 100;
-    const inProfit = isLong ? curPrice > entryPrice : curPrice < entryPrice;
-
-    let newSL = null;
-
-    // Break-even: pozisyon breakEvenPct kâra geçince SL giriş fiyatına çek
-    if (inProfit && pnlPct >= breakEvenPct && !ts.breakEvenSet) {
-      newSL = entryPrice;
-      ts.breakEvenSet = true;
-      ts.highWater = curPrice;
-      console.log(`${sym} Break-even SL: $${newSL}`);
-    }
-
-    // Trailing: highWater'ı güncelle, SL'yi takip ettir
-    if (inProfit && ts.breakEvenSet) {
-      const newHigh = isLong ? Math.max(ts.highWater||curPrice, curPrice)
-                             : Math.min(ts.highWater||curPrice, curPrice);
-      if (newHigh !== ts.highWater) {
-        ts.highWater = newHigh;
-        // SL = highWater'dan trailPct% geri
-        newSL = isLong
-          ? +(ts.highWater * (1 - trailPct/100)).toFixed(8)
-          : +(ts.highWater * (1 + trailPct/100)).toFixed(8);
-        // Önceki SL'den daha iyi mi?
-        if (ts.currentSL) {
-          const better = isLong ? newSL > ts.currentSL : newSL < ts.currentSL;
-          if (!better) newSL = null;
-        }
-      }
-    }
-
-    if (newSL) {
-      try {
-        // Mevcut SL iptal et
-        await bReq(apiKey,apiSecret,'DELETE','/fapi/v1/allOpenOrders',{symbol:sym});
-        // Yeni SL yerleştir
-        const qty = pos.positionAmt.toString();
-        const cSide = isLong ? 'SELL' : 'BUY';
-        const r = await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
-          symbol:sym, side:cSide, type:'STOP_MARKET',
-          stopPrice:newSL.toString(), quantity:qty,
-          reduceOnly:'true', positionSide:'BOTH', workingType:'MARK_PRICE'
-        });
-        ts.currentSL = newSL;
-        ts.slOrderId = r.orderId;
-        console.log(`${sym} Trailing SL → $${newSL} (orderId:${r.orderId})`);
-      } catch(e) {
-        console.log(`${sym} Trailing SL hata: ${e.message}`);
-      }
-    }
-  }
-}
-
 // ── KAPAT ─────────────────────────────────────────────────────────────────────
 app.post('/api/close', async (req, res) => {
   const{apiKey,apiSecret,symbol}=req.body;
   if(!apiKey||!apiSecret||!symbol)return res.status(400).json({error:'Eksik parametre'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   try{
-    try{await bReq(apiKey,apiSecret,'DELETE','/fapi/v1/allOpenOrders',{symbol:sym});}catch(e){}
+    try{await cancelAlgoOrders(apiKey,apiSecret,sym);}catch(e){}
     const pos=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{symbol:sym});
     const arr=Array.isArray(pos)?pos:[];
     const p=arr.find(x=>Math.abs(parseFloat(x.positionAmt))>0);
@@ -2482,6 +2547,7 @@ async function runAutoScan() {
     const cfg = autoConfig;
     const { apiKey, apiSecret, usdtAmount, leverage, marginType,
       maxPositions=3, minScore=70, allowLong=true, allowShort=true,
+      sweepOnly=true,
       trailingPct=2, breakEvenPct=1, symbols=[] } = cfg;
 
     // 1. Mevcut pozisyonları kontrol et
@@ -2617,8 +2683,12 @@ async function runAutoScan() {
           wy4h?.recentEvents?.some(e=>e.type==='UTAD')
         );
 
-        if (isLong  && !hasBullSetup) { logAuto(`${coin.symbol} LONG ama setup yok — atlandı`); continue; }
-        if (isShort && !hasBearSetup) { logAuto(`${coin.symbol} SHORT ama setup yok — atlandı`); continue; }
+        // sweepOnly=true (varsayılan): sweep/wyckoff zorunlu
+        // sweepOnly=false: bu kural bypass edilir, sadece skor filtresi geçerlir
+        if (sweepOnly) {
+          if (isLong  && !hasBullSetup) { logAuto(`${coin.symbol} LONG sweep/wyckoff yok — atlandı`); continue; }
+          if (isShort && !hasBearSetup) { logAuto(`${coin.symbol} SHORT sweep/wyckoff yok — atlandı`); continue; }
+        }
 
         // Kural 2: MM yönü uyumlu mu?
         const mm = analysis.marketMaker;
