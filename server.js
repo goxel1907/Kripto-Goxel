@@ -281,24 +281,23 @@ function formatBinanceError(path, data) {
 
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
   if (!lastTimeSync) await syncBinanceTime(false);
-  const ts = Date.now() + binanceTimeOffset;
-  const obj = { ...params, timestamp: ts, recvWindow: 10000 };
-  const fullQs = signedQueryString(obj, apiSecret);
-  const url = `${FAPI}${path}`;
-  const finalUrl = `${url}?${fullQs}`;
-  const options = {
-    method: method.toUpperCase(),
-    headers: { 'X-MBX-APIKEY': sanitizeKey(apiKey) },
-  };
-  const res = await fetch(finalUrl, options);
-  const text = await res.text();
+  const ts=Date.now()+binanceTimeOffset;
+  const obj={...params,timestamp:ts,recvWindow:10000};
+  const qs=Object.entries(obj)
+    .filter(([,v])=>v!==undefined&&v!==null&&v!=='')
+    .map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
+  const sig=sign(qs,sanitizeKey(apiSecret));
+  const url=`${FAPI}${path}`;
+  const fullQs=`${qs}&signature=${sig}`;
+  const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
+  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':sanitizeKey(apiKey),'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
+  const finalUrl=isGet?`${url}?${fullQs}`:url;
+  if(!isGet)options.body=fullQs;
+  const res=await fetch(finalUrl,options);
+  const text=await res.text();
   let data;
-  try { data = JSON.parse(text); }
-  catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
-  if (data.code && data.code < 0) {
-    // -1021 timestamp; bir kere Binance saatine senkronlayıp tekrar dene.
-    // -1022 imza hatasında query-string signed format kullanıldığı için tekrar denemek yerine
-    // açık hata gösterilir; böylece korumasız pozisyon varsayımı yapılmaz.
+  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatası: ${text.substring(0,120)}`);}
+  if(data.code&&data.code<0){
     if (Number(data.code) === -1021 && !_retry) {
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
