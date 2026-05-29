@@ -154,7 +154,7 @@ async function bPub(path, qs='') {
 
 // ── İMZA ─────────────────────────────────────────────────────────────────────
 function sign(qs,secret){return crypto.createHmac('sha256',secret).update(qs).digest('hex');}
-async function bReq(apiKey,apiSecret,method,path,params={},timeout=8000) {
+async function bReq(apiKey,apiSecret,method,path,params={}) {
   const ts=Date.now();
   const obj={...params,timestamp:ts,recvWindow:10000};
   const qs=Object.entries(obj).map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
@@ -162,13 +162,13 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=8000) {
   const url=`${FAPI}${path}`;
   const fullQs=`${qs}&signature=${sig}`;
   const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
-  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':apiKey,'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
+  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':apiKey,'Content-Type':'application/x-www-form-urlencoded'}};
   const finalUrl=isGet?`${url}?${fullQs}`:url;
   if(!isGet)options.body=fullQs;
   const res=await fetch(finalUrl,options);
   const text=await res.text();
   let data;
-  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatası: ${text.substring(0,80)}`);}
+  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatasi: ${text.substring(0,80)}`);}
   if(data.code&&data.code<0)throw new Error(`${data.msg} (${data.code})`);
   return data;
 }
@@ -1926,33 +1926,32 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
 app.post('/api/account', async (req, res) => {
-  const{apiKey,apiSecret}=req.body;
-  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
-  try{
-    let w=0,a=0,u=0,positions=[];
-    // v3/balance önce dene (hızlı, sadece USDT satırı)
-    try{
+  const { apiKey, apiSecret } = req.body;
+  if (!apiKey||!apiSecret) return res.status(400).json({ error:'API key gerekli' });
+  try {
+    let walletBal=0, availBal=0, unrealized=0;
+    // v3/balance — hızlı ön okuma
+    try {
       const b=await bReq(apiKey,apiSecret,'GET','/fapi/v3/balance');
-      const ub=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
-      if(ub){w=parseFloat(ub.balance)||0;a=parseFloat(ub.availableBalance)||0;}
+      const u=Array.isArray(b)?b.find(x=>x.asset==='USDT'):null;
+      if(u){walletBal=parseFloat(u.balance)||0;availBal=parseFloat(u.availableBalance)||0;}
     }catch(e){}
-    // v2/account — bakiye fallback + pozisyonlar tek istekte (eski çalışan mantık)
-    try{
-      const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
-      if(parseFloat(data.totalWalletBalance)>0)w=parseFloat(data.totalWalletBalance);
-      if(parseFloat(data.availableBalance)>0)a=parseFloat(data.availableBalance);
-      u=parseFloat(data.totalUnrealizedProfit)||0;
-      positions=(data.positions||[]).filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
-        symbol:p.symbol,side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
-        positionAmt:Math.abs(parseFloat(p.positionAmt)),entryPrice:parseFloat(p.entryPrice),
-        markPrice:parseFloat(p.markPrice),unrealizedProfit:parseFloat(p.unRealizedProfit),
-        leverage:parseInt(p.leverage),liquidationPrice:parseFloat(p.liquidationPrice),
-      }));
-    }catch(e){console.log('v2/account hata:',e.message);}
-    res.json({ok:true,totalWalletBalance:w,availableBalance:a,totalUnrealizedProfit:u,positions});
+    // v2/account — HER ZAMAN çağrılır (pozisyonlar + bakiye override)
+    const data=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account');
+    if(parseFloat(data.totalWalletBalance)>0)walletBal=parseFloat(data.totalWalletBalance);
+    if(parseFloat(data.availableBalance)>0)availBal=parseFloat(data.availableBalance);
+    unrealized=parseFloat(data.totalUnrealizedProfit)||0;
+    res.json({ ok:true, totalWalletBalance:walletBal, availableBalance:availBal,
+      totalUnrealizedProfit:unrealized,
+      positions:(data.positions||[]).filter(p=>parseFloat(p.positionAmt)!==0).map(p=>({
+        symbol:p.symbol, side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
+        positionAmt:Math.abs(parseFloat(p.positionAmt)), entryPrice:parseFloat(p.entryPrice),
+        markPrice:parseFloat(p.markPrice), unrealizedProfit:parseFloat(p.unRealizedProfit),
+        leverage:parseInt(p.leverage), liquidationPrice:parseFloat(p.liquidationPrice),
+      }))
+    });
   }catch(e){res.status(400).json({error:e.message});}
 });
-
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
   const{apiKey,apiSecret,symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount}=req.body;
