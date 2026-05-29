@@ -66,7 +66,7 @@ async function bAlgo(apiKey, apiSecret, params) {
   const url = `${FAPI}/fapi/v1/algoOrder?${fullQs}`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'X-MBX-APIKEY': sanitizeKey(apiKey) },
+    headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
     signal: AbortSignal.timeout(10000),
   });
   const text = await res.text();
@@ -247,11 +247,9 @@ function sign(qs,secret){return crypto.createHmac('sha256',String(secret||'').tr
 function signedQueryString(params, apiSecret) {
   const qs = Object.entries(params || {})
     .filter(([,v]) => v !== undefined && v !== null && v !== '')
-    .sort(([a],[b]) => a.localeCompare(b))
     .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
-  const sig = sign(qs, sanitizeKey(apiSecret));
-  return `${qs}&signature=${sig}`;
+  return `${qs}&signature=${sign(qs, apiSecret)}`;
 }
 
 let binanceTimeOffset = 0;
@@ -286,11 +284,11 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   const qs=Object.entries(obj)
     .filter(([,v])=>v!==undefined&&v!==null&&v!=='')
     .map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
-  const sig=sign(qs,sanitizeKey(apiSecret));
+  const sig=sign(qs,apiSecret);
   const url=`${FAPI}${path}`;
   const fullQs=`${qs}&signature=${sig}`;
   const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
-  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':sanitizeKey(apiKey),'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
+  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':String(apiKey||'').trim(),'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
   const finalUrl=isGet?`${url}?${fullQs}`:url;
   if(!isGet)options.body=fullQs;
   const res=await fetch(finalUrl,options);
@@ -2564,8 +2562,8 @@ app.get('/api/my-ip', async (_req, res) => {
 // hangisi USDT bakiyesi verirse kullanılır.
 app.post('/api/account', async (req, res) => {
   let {apiKey,apiSecret}=req.body||{};
-  apiKey    = sanitizeKey(apiKey);
-  apiSecret = sanitizeKey(apiSecret);
+  apiKey    = String(apiKey||'').trim();
+  apiSecret = String(apiSecret||'').trim();
   if(!apiKey||!apiSecret)return res.status(400).json({ok:false,error:'API key gerekli'});
 
   const errors=[],sources=[],balanceSources=[],positionSources=[];
