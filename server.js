@@ -247,9 +247,11 @@ function sign(qs,secret){return crypto.createHmac('sha256',String(secret||'').tr
 function signedQueryString(params, apiSecret) {
   const qs = Object.entries(params || {})
     .filter(([,v]) => v !== undefined && v !== null && v !== '')
+    .sort(([a],[b]) => a.localeCompare(b))
     .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
-  return `${qs}&signature=${sign(qs, apiSecret)}`;
+  const sig = sign(qs, String(apiSecret || '').trim());
+  return `${qs}&signature=${sig}`;
 }
 
 let binanceTimeOffset = 0;
@@ -279,23 +281,25 @@ function formatBinanceError(path, data) {
 
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
   if (!lastTimeSync) await syncBinanceTime(false);
-  const ts=Date.now()+binanceTimeOffset;
-  const obj={...params,timestamp:ts,recvWindow:10000};
-  const qs=Object.entries(obj)
-    .filter(([,v])=>v!==undefined&&v!==null&&v!=='')
-    .map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
-  const sig=sign(qs,apiSecret);
-  const url=`${FAPI}${path}`;
-  const fullQs=`${qs}&signature=${sig}`;
-  const isGet=method.toUpperCase()==='GET'||method.toUpperCase()==='DELETE';
-  const options={method:method.toUpperCase(),headers:{'X-MBX-APIKEY':String(apiKey||'').trim(),'Content-Type':'application/x-www-form-urlencoded'},signal:AbortSignal.timeout(timeout)};
-  const finalUrl=isGet?`${url}?${fullQs}`:url;
-  if(!isGet)options.body=fullQs;
-  const res=await fetch(finalUrl,options);
-  const text=await res.text();
+  const ts = Date.now() + binanceTimeOffset;
+  const obj = { ...params, timestamp: ts, recvWindow: 10000 };
+  const fullQs = signedQueryString(obj, apiSecret);
+  const url = `${FAPI}${path}`;
+  const finalUrl = `${url}?${fullQs}`;
+  const options = {
+    method: method.toUpperCase(),
+    headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
+    signal: AbortSignal.timeout(timeout),
+  };
+  const res = await fetch(finalUrl, options);
+  const text = await res.text();
   let data;
-  try{data=JSON.parse(text);}catch(e){throw new Error(`JSON hatası: ${text.substring(0,120)}`);}
-  if(data.code&&data.code<0){
+  try { data = JSON.parse(text); }
+  catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
+  if (data.code && data.code < 0) {
+    // -1021 timestamp; bir kere Binance saatine senkronlayıp tekrar dene.
+    // -1022 imza hatasında query-string signed format kullanıldığı için tekrar denemek yerine
+    // açık hata gösterilir; böylece korumasız pozisyon varsayımı yapılmaz.
     if (Number(data.code) === -1021 && !_retry) {
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
@@ -449,7 +453,7 @@ function getCVD(symbol) {
   const full = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
   startCVDStream(full); // yoksa başlat
   const store = cvdStore.get(full);
-  if (!store) return { buy:0, sell:0, ratio:50, momentum:'UNKNOWN', trend:'UNKNOWN', historyLen:0 };
+  if (!store) return { buy:0, sell:0, ratio:50, momentum:'UNKNOWN', trend:'UNKNOWN', historyLen:0, valid:false };
 
   const buy=store.buy, sell=store.sell;
   const total=buy+sell;
@@ -469,8 +473,7 @@ function getCVD(symbol) {
   const momentum = acceleration !== 'NONE' ? acceleration : ratio > 60 ? 'POSITIVE' : ratio < 40 ? 'NEGATIVE' : 'NEUTRAL';
 
   return { buy:+buy.toFixed(0), sell:+sell.toFixed(0), ratio:+ratio.toFixed(1),
-    delta:+delta.toFixed(0), momentum, trend, historyLen:store.history.length,
-    valid: total > 0, reason: total > 0 ? 'OK' : 'CVD_NO_TRADES_YET' };
+    delta:+delta.toFixed(0), momentum, trend, historyLen:store.history.length, valid: total > 0 };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1248,16 +1251,7 @@ app.get('/api/futures-coins', async (req, res) => {
   } catch(e) { res.status(400).json({ error:e.message }); }
 });
 
-// ── API KEY SANITIZE — telefon klavyesinden kopyalamada gelen invisible karakterleri temizler ──
-// trim() sadece baş-sondaki boşluğu atar; unicode sıfır-genişlik karakterleri (\u200b, \u200c,
-// \u00a0, \ufeff vb.) API imzasını bozar ve bakiye $0.00 gösterir.
-function sanitizeKey(raw) {
-  if (!raw) return '';
-  return String(raw)
-    .replace(/[\u200b\u200c\u200d\u200e\u200f\u00a0\ufeff\u2028\u2029\u202f\u205f\u3000]/g, '') // invisible unicode
-    .replace(/[^\x20-\x7E]/g, '') // ASCII dışı her şeyi at
-    .trim();
-}
+// ── PRO ANALİZ ────────────────────────────────────────────────────────────────
 app.get('/api/analyze/:symbol', async (req, res) => {
   const sym  = req.params.symbol.toUpperCase();
   const full = sym.endsWith('USDT') ? sym : sym+'USDT';
@@ -2321,62 +2315,93 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       if(inBearVoid){shortScore+=8;signals.short.push(`⚡ Bearish Void %${inBearVoid.size} dolduruluyor`);}
     }
 
-    // ── MM, RSI, OI, CVD cezaları artık riskCap sistemi tarafından uygulanıyor ──
-    // (Aşağıdaki blok riskCap öncesinde çalışır, ek ceza olarak korunur)
-    // MM DOWN_SWEEP ek multiplier cezası (riskCap tavanın üstüne)
-    if(mmTarget==='GENUINE_DOWN'&&mmConf>=50){longScore=Math.round(longScore*0.55);signals.long.push(`⚠️ MM GENUINE_DOWN (%${mmConf}) — long tehlikeli`);}
-    else if(mmTarget==='DOWN_SWEEP'&&mmConf>=40){longScore=Math.round(longScore*0.70);signals.long.push(`⚠️ MM DOWN_SWEEP (%${mmConf}) — dikkat`);}
-    if(mmTarget==='GENUINE_UP'&&mmConf>=50){shortScore=Math.round(shortScore*0.55);}
-    else if(mmTarget==='UP_SWEEP'&&mmConf>=40){shortScore=Math.round(shortScore*0.70);}
-    if(rsi4h>75){longScore=Math.round(longScore*0.75);signals.long.push(`⚠️ RSI4h ${rsi4h} aşırı alım`);}
-    if(rsi4h<25){shortScore=Math.round(shortScore*0.75);}
-    if(rsi1h>70){longScore=Math.round(longScore*0.90);}
-    if(rsi1h<30){shortScore=Math.round(shortScore*0.90);}
-    if(oiDiv==='CONFIRMED_BEAR'){longScore=Math.round(longScore*0.82);signals.long.push(`⚠️ OI+Fiyat↓ CONFIRMED_BEAR`);}
-    if(oiDiv==='CONFIRMED_BULL'){shortScore=Math.round(shortScore*0.82);}
-    const cvdForCheck=getCVD(full);
-    if(!cvdForCheck.valid||(cvdForCheck.buy===0&&cvdForCheck.sell===0)){
-      longScore=Math.round(longScore*0.85);shortScore=Math.round(shortScore*0.85);}
-
-    longScore =Math.min(Math.round(longScore*freshnessMult),100);
-    shortScore=Math.min(Math.round(shortScore*freshnessMult),100);
-
-    // ── FİNAL RİSK TAVANI — çok fazla ters sinyal varsa 100/100 engelle ───────
-    // Her olumsuz faktör hem çarpan cezası hem de skor tavanı uygular.
-    // Böylece çarpanlar yetersiz kaldığında bile 100/A-Tier üretilmez.
-    let longRiskCap=100, shortRiskCap=100;
-    const longAdverse=[], shortAdverse=[];
-    if(mmTarget==='GENUINE_DOWN'&&mmConf>=50){longRiskCap=Math.min(longRiskCap,55);longAdverse.push('MM_GENUINE_DOWN');}
-    else if(mmTarget==='DOWN_SWEEP'&&mmConf>=40){longRiskCap=Math.min(longRiskCap,70);longAdverse.push('MM_DOWN_SWEEP');}
-    if(mmTarget==='GENUINE_UP'&&mmConf>=50){shortRiskCap=Math.min(shortRiskCap,55);shortAdverse.push('MM_GENUINE_UP');}
-    else if(mmTarget==='UP_SWEEP'&&mmConf>=40){shortRiskCap=Math.min(shortRiskCap,70);shortAdverse.push('MM_UP_SWEEP');}
-    if(rsi4h>78){longRiskCap=Math.min(longRiskCap,62);longAdverse.push('RSI4H_OVERHEAT');}
-    else if(rsi4h>75){longRiskCap=Math.min(longRiskCap,75);longAdverse.push('RSI4H_HIGH');}
-    if(rsi4h<22){shortRiskCap=Math.min(shortRiskCap,62);shortAdverse.push('RSI4H_OVERSOLD');}
-    else if(rsi4h<25){shortRiskCap=Math.min(shortRiskCap,75);shortAdverse.push('RSI4H_LOW');}
-    if(oiDiv==='CONFIRMED_BEAR'){longRiskCap=Math.min(longRiskCap,70);longAdverse.push('OI_CONFIRMED_BEAR');}
-    if(oiDiv==='CONFIRMED_BULL'){shortRiskCap=Math.min(shortRiskCap,70);shortAdverse.push('OI_CONFIRMED_BULL');}
-    const cvdCheck=getCVD(full);
-    if(!cvdCheck.valid||(cvdCheck.buy===0&&cvdCheck.sell===0)){
-      longRiskCap=Math.min(longRiskCap,72);shortRiskCap=Math.min(shortRiskCap,72);
-      longAdverse.push('CVD_NOT_READY');shortAdverse.push('CVD_NOT_READY');
+    // ── MM HEDEF CEZALARI — DOWN_SWEEP/GENUINE_DOWN longScore'u keser ──────────
+    // MM aşağı sweep yapmak istiyorsa long girmek tuzağa girmek demektir
+    if(mmTarget==='GENUINE_DOWN'&&mmConf>=50) {
+      longScore=Math.round(longScore*0.55);
+      signals.long.push(`⚠️ MM GENUINE_DOWN (%${mmConf}) — long tehlikeli`);
+    } else if(mmTarget==='DOWN_SWEEP'&&mmConf>=40) {
+      longScore=Math.round(longScore*0.70);
+      signals.long.push(`⚠️ MM DOWN_SWEEP (%${mmConf}) — dikkat`);
     }
-    // Çok sayıda olumsuz faktör birikmişse tavan daha da düşer
-    if(longAdverse.length>=3)longRiskCap=Math.min(longRiskCap,55);
-    if(longAdverse.length>=4)longRiskCap=Math.min(longRiskCap,50);
-    if(shortAdverse.length>=3)shortRiskCap=Math.min(shortRiskCap,55);
-    if(shortAdverse.length>=4)shortRiskCap=Math.min(shortRiskCap,50);
+    if(mmTarget==='GENUINE_UP'&&mmConf>=50) {
+      shortScore=Math.round(shortScore*0.55);
+    } else if(mmTarget==='UP_SWEEP'&&mmConf>=40) {
+      shortScore=Math.round(shortScore*0.70);
+    }
+
+    // ── RSI AŞIRI ALIM/SATIM CEZASI ──────────────────────────────────────────
+    // RSI 4h > 75 = aşırı alım, long için tehlike bölgesi
+    if(rsi4h>75) {
+      longScore=Math.round(longScore*0.75);
+      signals.long.push(`⚠️ RSI4h ${rsi4h} aşırı alım — long zayıflıyor`);
+    }
+    if(rsi4h<25) {
+      shortScore=Math.round(shortScore*0.75);
+    }
+    // RSI 1h > 70 veya < 30 ek ceza
+    if(rsi1h>70) { longScore=Math.round(longScore*0.90); }
+    if(rsi1h<30) { shortScore=Math.round(shortScore*0.90); }
+
+    // ── OI CONFIRMED_BEAR longScore cezası ───────────────────────────────────
+    // OI artıyor + fiyat düşüyor = yeni short pozisyonlar açılıyor = bearish baskı
+    if(oiDiv==='CONFIRMED_BEAR') {
+      longScore=Math.round(longScore*0.82);
+      signals.long.push(`⚠️ OI+Fiyat↓ CONFIRMED_BEAR — long baskı altında`);
+    }
+    if(oiDiv==='CONFIRMED_BULL') {
+      shortScore=Math.round(shortScore*0.82);
+    }
+
+    // ── CVD VERİ YOK CEZASI ──────────────────────────────────────────────────
+    // CVD $0 / UNKNOWN ise teyitsiz sinyal — score güvenilmez
+    const cvdForCheck=getCVD(full);
+    if(!cvdForCheck.valid || (cvdForCheck.buy===0 && cvdForCheck.sell===0)) {
+      longScore=Math.round(longScore*0.85);
+      shortScore=Math.round(shortScore*0.85);
+      // CVD veri yokken A-Tier'a çıkmayı güçleştir
+    }
+
+    // ── FİNAL RİSK TAVANI — çelişkili/verisiz teyit 100/100 kart üretemez ─────
+    // Multiplier tek başına yetmez; ham skor çok şişerse yine 100'e vurabilir.
+    // Bu tavanlar ALLO tipi senaryoda (DOWN_SWEEP + RSI aşırı alım + CVD yok + OI bear)
+    // long'u A-Tier/100 yapmayı engeller.
+    const cvdInvalidForScore = (!cvdForCheck.valid || ((cvdForCheck.buy||0)===0 && (cvdForCheck.sell||0)===0));
+    let longRiskCap=100, shortRiskCap=100;
+    const longAdverse = [];
+    const shortAdverse = [];
+    if(mmTarget==='GENUINE_DOWN'&&mmConf>=50){ longRiskCap=Math.min(longRiskCap,55); longAdverse.push('MM_GENUINE_DOWN'); }
+    else if(mmTarget==='DOWN_SWEEP'&&mmConf>=40){ longRiskCap=Math.min(longRiskCap,70); longAdverse.push('MM_DOWN_SWEEP'); }
+    if(mmTarget==='GENUINE_UP'&&mmConf>=50){ shortRiskCap=Math.min(shortRiskCap,55); shortAdverse.push('MM_GENUINE_UP'); }
+    else if(mmTarget==='UP_SWEEP'&&mmConf>=40){ shortRiskCap=Math.min(shortRiskCap,70); shortAdverse.push('MM_UP_SWEEP'); }
+    if(rsi4h>78){ longRiskCap=Math.min(longRiskCap,62); longAdverse.push('RSI4H_OVERHEAT'); }
+    else if(rsi4h>75){ longRiskCap=Math.min(longRiskCap,75); longAdverse.push('RSI4H_HIGH'); }
+    if(rsi4h<22){ shortRiskCap=Math.min(shortRiskCap,62); shortAdverse.push('RSI4H_OVERSOLD'); }
+    else if(rsi4h<25){ shortRiskCap=Math.min(shortRiskCap,75); shortAdverse.push('RSI4H_LOW'); }
+    if(oiDiv==='CONFIRMED_BEAR'){ longRiskCap=Math.min(longRiskCap,70); longAdverse.push('OI_CONFIRMED_BEAR'); }
+    if(oiDiv==='CONFIRMED_BULL'){ shortRiskCap=Math.min(shortRiskCap,70); shortAdverse.push('OI_CONFIRMED_BULL'); }
+    if(cvdInvalidForScore){
+      longRiskCap=Math.min(longRiskCap,72); shortRiskCap=Math.min(shortRiskCap,72);
+      longAdverse.push('CVD_NOT_READY'); shortAdverse.push('CVD_NOT_READY');
+    }
+    if(longAdverse.length>=3) longRiskCap=Math.min(longRiskCap,55);
+    if(longAdverse.length>=4) longRiskCap=Math.min(longRiskCap,50);
+    if(shortAdverse.length>=3) shortRiskCap=Math.min(shortRiskCap,55);
+    if(shortAdverse.length>=4) shortRiskCap=Math.min(shortRiskCap,50);
     longScore=Math.min(longScore,longRiskCap);
     shortScore=Math.min(shortScore,shortRiskCap);
 
+    longScore =Math.min(Math.round(longScore*freshnessMult),100);
+    shortScore=Math.min(Math.round(shortScore*freshnessMult),100);
     // ── İKİ KATMANLI KARAR MEKANİZMASI ─────────────────────────────────────────
       // A-Tier: Yüksek güven → otomatik işlem açılır
       // B-Tier: Orta güven  → sinyal gösterilir, elle karar ver
       const rawRec=longScore>shortScore&&longScore>=50?'LONG':
                    shortScore>longScore&&shortScore>=50?'SHORT':'WAIT';
 
-      // ── PRO TP/SL — rawRec tanımlandıktan SONRA hesapla ───────────────────
-      // rawRec öncesinde hesaplamak ReferenceError riski yaratır.
+      // ── PRO TP/SL — SİNYAL YÖNÜNE GÖRE HESAPLA ──────────────────────────────
+      // UYARI: calcProTPSL'e her zaman gerçek sinyal yönünü ver.
+      // MM hedefi SL/TP side'ını belirlemez; aksi halde LONG sinyale SHORT TP/SL yazılır.
       const proTPSLSide = rawRec==='SHORT' ? 'SHORT' : 'LONG';
       const proTPSL=calcProTPSL(proTPSLSide,lastPrice,atr1h,atr4h,liq1h,liq4h,ob1h,ob4h,k1h);
 
@@ -2409,11 +2434,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // KURAL 2: Delta (CVD) ters değil — CVD valid olmasa tick zorunlu
         const cvdRatio=cvdD?.ratio||50;
         const cvdValid=!!(cvdD?.valid && ((cvdD.buy||0)+(cvdD.sell||0)>0));
-        const tickDeltaKnown=!!(tickData?.deltaTrend && tickData.deltaTrend!=='UNKNOWN');
-        const tickDeltaOk=tickData
-          ?(isL?tickData.deltaTrend==='BULL'||tickData.deltaTrend==='UNKNOWN'
-               :tickData.deltaTrend==='BEAR'||tickData.deltaTrend==='UNKNOWN')
-          :false;
+        const deltaTrend=String(tickData?.deltaTrend||'UNKNOWN').toUpperCase();
+        const tickDeltaKnown=!!(deltaTrend && deltaTrend!=='UNKNOWN');
+        const tickDeltaOk=tickDeltaKnown ? (isL?deltaTrend==='BULL':deltaTrend==='BEAR') : false;
         const cvdSideOk=cvdValid?(isL?cvdRatio>40:cvdRatio<60):false;
         // CVD yoksa tick delta bilinen ve doğru yönde OLMALIDIR — her ikisi UNKNOWN ise A-Tier vermez
         const deltaOk=cvdSideOk||(tickDeltaKnown&&tickDeltaOk);
@@ -2510,6 +2533,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       },
       funding:{current:+curFund.toFixed(4),signal:fundSig},
       openInterest:{change1h:+oiChg1h.toFixed(2),change4h:+oiChg4h.toFixed(2),divergence:oiDiv},
+      scoreGuards:{
+        cvdValid:!!(cvdForCheck.valid && ((cvdForCheck.buy||0)+(cvdForCheck.sell||0)>0)),
+        longRiskCap, shortRiskCap, longAdverse, shortAdverse,
+        rsi4h, mmTarget, mmConf, oiDiv
+      },
       smartMoney:{topLongPct:+topLong.toFixed(1),globalLongPct:+globalLong.toFixed(1),divergence:smDiv},
       orderBook:{imbalance:+bookImb.toFixed(1)},
       // ── YENİ ANALİZ KATMANLARI ──────────────────────────────────────────────
@@ -2521,7 +2549,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       rsiDivergence: { '1h':rsiDiv1h, '4h':rsiDiv4h },
       mtfBias,
       liquidityVoids: liqVoids1h,
-      riskCap: { longCap:longRiskCap, shortCap:shortRiskCap, longAdverse, shortAdverse },
       longScore, shortScore, recommendation, decisionChain,
       signals:recommendation==='LONG'?signals.long.slice(0,8):signals.short.slice(0,8),
     });
@@ -2556,139 +2583,163 @@ app.get('/api/my-ip', async (_req, res) => {
 });
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
-// ── HESAP — R2 RESTORE: tüm Binance endpoint'leri denenir, USDT satırı hepsinden okunur ──
-// Telefon kopyala/yapıştır boşlukları sanitizeKey() ile temizlenir.
-// v2/account, v2/balance, v3/account, v3/balance, v1/account hepsi denenir —
-// hangisi USDT bakiyesi verirse kullanılır.
+// FUTURES BALANCE SAFE RESTORE v2
+// Amaç: hatasız sürümün hesabı okuyabilen davranışını geri getirirken yeni SL/TP patch'ini bozmaz.
+// - API key/secret her yerde trimlenir (telefonda kopyala/yapıştır boşluk/newline bırakabiliyor)
+// - v2/account + v2/balance geri eklendi
+// - v3/v2 account.assets içindeki USDT satırı da okunur
+// - İmzalı bağlantı başarılı ama USDT satırı yoksa bunu açık diagnostik olarak döndürür
 app.post('/api/account', async (req, res) => {
-  let {apiKey,apiSecret}=req.body||{};
-  apiKey    = String(apiKey||'').trim();
+  let {apiKey,apiSecret}=req.body || {};
+  apiKey = String(apiKey||'').trim();
   apiSecret = String(apiSecret||'').trim();
   if(!apiKey||!apiSecret)return res.status(400).json({ok:false,error:'API key gerekli'});
 
-  const errors=[],sources=[],balanceSources=[],positionSources=[];
-  let signedOk=false, w=0, a=0, u=0, positions=[], sawUsdtAsset=false;
+  const errors = [];
+  const sources = [];
+  const balanceSources = [];
+  const positionSources = [];
+  let signedOk = false;
+  let w=0,a=0,u=0,positions=[];
+  let sawUsdtAsset = false;
 
-  const num=(v)=>{const n=parseFloat(v);return Number.isFinite(n)?n:null;};
-  const addErr=(e)=>errors.push(safeErrMsg(e));
+  const num = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const addErr = (e) => errors.push(safeErrMsg(e));
 
-  const setBalanceNumbers=(obj,source)=>{
-    if(!obj||typeof obj!=='object')return false;
-    let ok=false;
-    const tw=num(obj.totalWalletBalance??obj.walletBalance??obj.balance??obj.crossWalletBalance??obj.marginBalance);
-    const av=num(obj.availableBalance??obj.maxWithdrawAmount??obj.withdrawAvailable??obj.availableBalanceOfCross??obj.crossWalletBalance);
-    const up=num(obj.totalUnrealizedProfit??obj.totalUnrealizedPnL??obj.totalCrossUnPnl??obj.crossUnPnl??obj.unrealizedProfit??obj.unRealizedProfit);
-    if(tw!==null){w=tw;ok=true;}
-    if(av!==null){a=av;ok=true;}
-    if(up!==null){u=up;ok=true;}
-    if(ok){sources.push(source);balanceSources.push(source);}
+  const setBalanceNumbers = (obj, source) => {
+    if (!obj || typeof obj !== 'object') return false;
+    let okBal = false;
+    const tw = num(obj.totalWalletBalance ?? obj.walletBalance ?? obj.balance ?? obj.crossWalletBalance ?? obj.marginBalance);
+    const av = num(obj.availableBalance ?? obj.maxWithdrawAmount ?? obj.withdrawAvailable ?? obj.availableBalanceOfCross ?? obj.crossWalletBalance);
+    const up = num(obj.totalUnrealizedProfit ?? obj.totalUnrealizedPnL ?? obj.totalCrossUnPnl ?? obj.crossUnPnl ?? obj.unrealizedProfit ?? obj.unRealizedProfit);
+    if (tw !== null) { w = tw; okBal = true; }
+    if (av !== null) { a = av; okBal = true; }
+    if (up !== null) { u = up; okBal = true; }
+    if (okBal) {
+      sources.push(source);
+      balanceSources.push(source);
+    }
+    return okBal;
+  };
+
+  const pickUsdt = (arr) => Array.isArray(arr) ? arr.find(x => String(x.asset||'').toUpperCase()==='USDT') : null;
+
+  const setBalanceArray = (arr, source) => {
+    const ub = pickUsdt(arr);
+    if (!ub) return false;
+    sawUsdtAsset = true;
+    return setBalanceNumbers(ub, source + '.USDT');
+  };
+
+  const setAccount = (data, source) => {
+    if (!data || typeof data !== 'object') return false;
+    let ok = false;
+    ok = setBalanceNumbers(data, source) || ok;
+    if (Array.isArray(data.assets)) ok = setBalanceArray(data.assets, source + '.assets') || ok;
     return ok;
   };
 
-  const pickUsdt=(arr)=>Array.isArray(arr)?arr.find(x=>String(x.asset||'').toUpperCase()==='USDT'):null;
-
-  const setBalanceArray=(arr,source)=>{
-    const ub=pickUsdt(arr);
-    if(!ub)return false;
-    sawUsdtAsset=true;
-    return setBalanceNumbers(ub,source+'.USDT');
-  };
-
-  const setAccount=(data,source)=>{
-    if(!data||typeof data!=='object')return false;
-    let ok=false;
-    ok=setBalanceNumbers(data,source)||ok;
-    if(Array.isArray(data.assets))ok=setBalanceArray(data.assets,source+'.assets')||ok;
-    return ok;
-  };
-
-  const setPositions=(arr,source)=>{
-    if(!Array.isArray(arr))return false;
-    const mapped=arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
+  const setPositions = (arr, source) => {
+    if (!Array.isArray(arr)) return false;
+    const mapped = arr.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).map(p=>({
       symbol:p.symbol,
       side:parseFloat(p.positionAmt)>0?'LONG':'SHORT',
       positionAmt:Math.abs(parseFloat(p.positionAmt)),
       entryPrice:parseFloat(p.entryPrice),
       markPrice:parseFloat(p.markPrice),
-      unrealizedProfit:parseFloat(p.unRealizedProfit??p.unrealizedProfit??0),
+      unrealizedProfit:parseFloat(p.unRealizedProfit ?? p.unrealizedProfit ?? 0),
       leverage:parseInt(p.leverage)||0,
       liquidationPrice:parseFloat(p.liquidationPrice||0),
     }));
-    if(mapped.length||!positions.length)positions=mapped;
-    sources.push(source);positionSources.push(source);
+    if (mapped.length || !positions.length) positions = mapped;
+    sources.push(source);
+    positionSources.push(source);
     return true;
   };
 
-  async function trySigned(label,fn){
-    try{const data=await fn();signedOk=true;return data;}
-    catch(e){addErr(`${label}: ${e.message||e}`);return null;}
+  async function trySigned(label, fn) {
+    try {
+      const data = await fn();
+      signedOk = true;
+      return data;
+    } catch(e) {
+      addErr(`${label}: ${e.message || e}`);
+      return null;
+    }
   }
 
   try{
-    // 1. v2/account — eski ama çoğu hesapta çalışır
-    const acc2=await trySigned('v2/account',()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/account'));
-    if(acc2){setAccount(acc2,'v2/account');setPositions(acc2.positions||[],'v2/account.positions');}
+    // 1) Hatasız eski davranışa en yakın: önce v2/account.
+    // Bazı hesaplarda v3/balance USDT satırı vermese bile v2/account toplamı doğru döndürüyor.
+    const acc2 = await trySigned('v2/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/account'));
+    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
 
-    // 2. v2/balance — hatasız eski sürümün kullandığı endpoint
-    const bal2=await trySigned('v2/balance',()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/balance'));
-    if(Array.isArray(bal2)&&!setBalanceArray(bal2,'v2/balance'))errors.push('v2/balance: USDT satırı yok');
+    // 2) v2/balance geri eklendi: hatasız sürümün okuduğu hesaplarda en güvenli fallback.
+    const bal2 = await trySigned('v2/balance', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/balance'));
+    if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT satırı yok');
 
-    // 3. v3/account + assets parse
-    const acc3=await trySigned('v3/account',()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/account'));
-    if(acc3){setAccount(acc3,'v3/account');setPositions(acc3.positions||[],'v3/account.positions');}
+    // 3) Güncel v3/account + assets parse.
+    const acc3 = await trySigned('v3/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/account'));
+    if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
 
-    // 4. v3/balance
-    const bal3=await trySigned('v3/balance',()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/balance'));
-    if(Array.isArray(bal3)&&!setBalanceArray(bal3,'v3/balance'))errors.push('v3/balance: USDT satırı yok');
+    // 4) Güncel v3/balance.
+    const bal3 = await trySigned('v3/balance', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/balance'));
+    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT satırı yok');
 
-    // 5. v1/account — en eski fallback
-    const acc1=await trySigned('v1/account',()=>bReq(apiKey,apiSecret,'GET','/fapi/v1/account'));
-    if(acc1){setAccount(acc1,'v1/account');setPositions(acc1.positions||[],'v1/account.positions');}
+    // 5) En eski fallback. Bazı hesaplarda hala döner; dönmezse sadece diagnostik olur.
+    const acc1 = await trySigned('v1/account', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v1/account'));
+    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
 
-    // 6. Pozisyonlar için ayrı oku
-    const pr3=await trySigned('v3/positionRisk',()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk'));
-    if(pr3)setPositions(pr3,'v3/positionRisk');
-    else{
-      const pr2=await trySigned('v2/positionRisk',()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk'));
-      if(pr2)setPositions(pr2,'v2/positionRisk');
+    // 6) Pozisyonlar için ayrı oku; bakiye başarısızsa bile POS sekmesi boş kalmasın.
+    const pr3 = await trySigned('v3/positionRisk', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk'));
+    if (pr3) setPositions(pr3, 'v3/positionRisk');
+    else {
+      const pr2 = await trySigned('v2/positionRisk', ()=>bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk'));
+      if (pr2) setPositions(pr2, 'v2/positionRisk');
     }
 
-    // available geldi ama wallet 0 kaldıysa düzelt
-    if((!Number.isFinite(w)||w===0)&&Number.isFinite(a)&&a>0)w=a;
+    // Eğer available geldi ama wallet 0 kaldıysa panelde sıfır görünmesin diye available'ı toplam olarak da göster.
+    if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
 
-    if(!signedOk){
+    if (!signedOk) {
       return res.status(400).json({
         ok:false,
         error:'Binance Futures imzalı bağlantı kurulamadı. API key/secret eşleşmesi, Futures yetkisi ve IP whitelist kontrol edilmeli.',
-        errors:errors.slice(-12),
-        hint:'Sıfırla yapıp API Key + Secret yeniden yapıştır. Telefonda kopyala/yapıştır sonuna boşluk gelirse imza bozulur.'
+        errors: errors.slice(-12),
+        hint:'Dashboardda Sıfırla yapıp API Key + API Secretı yeniden yapıştır. Telefonda kopyala/yapıştır sonuna boşluk gelirse imza bozulur.'
       });
     }
 
-    if(!balanceSources.length){
+    if (!balanceSources.length) {
       return res.status(400).json({
-        ok:false, signedOk:true,
+        ok:false,
+        signedOk:true,
         error:'Binance Futures bağlantısı var ama USDT Futures bakiyesi okunamadı.',
-        errors:errors.slice(-12),
+        errors: errors.slice(-12),
         hint:sawUsdtAsset
-          ?'USDT satırı bulundu ama bakiye alanları parse edilemedi.'
-          :'Bu API key Futures hesabında USDT satırı göstermiyor. USDⓈ-M Futures cüzdanında USDT olduğundan ve Enable Futures açık olduğundan emin ol.'
+          ? 'USDT satırı bulundu ama bakiye alanları parse edilemedi. Railway logundaki /api/account debugSource bilgisini kontrol et.'
+          : 'Bu API key Futures hesabında USDT satırı göstermiyor. Binance USDⓈ-M Futures cüzdanında USDT olduğundan ve keyde Enable Futures açık olduğundan emin ol.'
       });
     }
 
     res.json({
-      ok:true, signedOk:true, balanceOk:true,
+      ok:true,
+      signedOk:true,
+      balanceOk:true,
       source:[...new Set(sources)].join(' + '),
+      balanceSource:[...new Set(balanceSources)].join(' + '),
+      positionSource:[...new Set(positionSources)].join(' + '),
       totalWalletBalance:Number.isFinite(w)?w:0,
       availableBalance:Number.isFinite(a)?a:0,
       totalUnrealizedProfit:Number.isFinite(u)?u:0,
       positions,
-      warning:errors.length?errors.slice(-4).join(' | '):undefined
+      warning: errors.length ? errors.slice(-4).join(' | ') : undefined
     });
   }catch(e){res.status(400).json({ok:false,error:safeErrMsg(e),errors:[safeErrMsg(e)]});}
 });
-
-
 
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
