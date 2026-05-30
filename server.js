@@ -396,13 +396,157 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   return data;
 }
 
-async function getPositionRisk(apiKey, apiSecret, params={}) {
+// ── R18 POSITIONRISK CACHE / SINGLE-FLIGHT / RATE-LIMIT GUARD ────────────────
+// Binance -1003 hatasının kökü: /positionRisk farklı döngülerden art arda çağrılıyordu.
+// R19: R17/R14 balance gövdesine dokunmadan positionRisk için global cache + single-flight.
+const posRiskCache = {
+  data: null,
+  ts: 0,
+  fetching: false,
+  inflight: null,
+  rateLimitUntil: 0,
+  lastApiKey: null,
+  lastSource: null,
+  lastError: null,
+};
+const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
+const POS_RISK_TTL_ACTIVE =  8000;   //  8sn (pozisyon açık)
+const POS_RISK_RATELIMIT_MS = 60000; // -1003 sonrası 60sn dur
+
+function keyFingerprint(apiKey) {
+  const k = String(apiKey || '').trim();
+  return k ? `${k.slice(0,6)}:${k.length}` : 'no-key';
+}
+function isPositionRiskRateLimitError(err) {
+  const m = String(err && (err.message || err) || '');
+  return m.includes('-1003') || /too many requests/i.test(m);
+}
+function isPositionRiskCooldownActive() {
+  return Date.now() < Number(posRiskCache.rateLimitUntil || 0);
+}
+function getPositionRiskCooldownMs() {
+  return Math.max(0, Number(posRiskCache.rateLimitUntil || 0) - Date.now());
+}
+function positionRowsOpenCount(rows) {
+  return Array.isArray(rows) ? rows.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).length : 0;
+}
+function filterPositionRiskRows(rows, params={}) {
+  if (!Array.isArray(rows)) return [];
+  const sym = params && params.symbol ? String(params.symbol).toUpperCase() : '';
+  return sym ? rows.filter(p => String(p.symbol || '').toUpperCase() === sym) : rows;
+}
+async function fetchPositionRiskRaw(apiKey, apiSecret) {
   try {
-    return await bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk', params);
+    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk', {});
+    posRiskCache.lastSource = 'v3/positionRisk';
+    return Array.isArray(rows) ? rows : [];
   } catch(e1) {
-    return await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', params);
+    if (isPositionRiskRateLimitError(e1)) throw e1;
+    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', {});
+    posRiskCache.lastSource = 'v2/positionRisk';
+    return Array.isArray(rows) ? rows : [];
   }
 }
+
+// Ham positionRisk: symbol-specific çağrılar için doğrudan Binance'e gider.
+// Toplu çağrılar getPositionRiskCached ile yapılmalı.
+async function getPositionRisk(apiKey, apiSecret, params={}) {
+  const rows = await fetchPositionRiskRaw(apiKey, apiSecret);
+  return filterPositionRiskRows(rows, params);
+}
+
+async function getPositionRiskCached(apiKey, apiSecret, params={}) {
+  const now = Date.now();
+  const apiFp = keyFingerprint(apiKey);
+
+  // -1003 cooldown aktifse cache döndür; cache yoksa yeni emir akışını güvenli durdur.
+  if (now < posRiskCache.rateLimitUntil) {
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
+    throw new Error('positionRisk rate-limit cooldown');
+  }
+
+  // Symbol-specific sorgular doğrudan git (cache bypass)
+  if (params && params.symbol) {
+    return getPositionRisk(apiKey, apiSecret, params);
+  }
+
+  const hasOpen = posRiskCache.data && Array.isArray(posRiskCache.data) &&
+    posRiskCache.data.some(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  const ttl = hasOpen ? POS_RISK_TTL_ACTIVE : POS_RISK_TTL_NORMAL;
+
+  if (posRiskCache.data && now - posRiskCache.ts < ttl &&
+      posRiskCache.lastApiKey === apiFp) {
+    return posRiskCache.data;
+  }
+
+  // Single-flight: başka istek uçaktaysa aynı promise'i bekle.
+  if (posRiskCache.fetching && posRiskCache.inflight) {
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
+    try {
+      const rows = await posRiskCache.inflight;
+      return Array.isArray(rows) ? rows : [];
+    } catch(_e) {
+      return posRiskCache.data || [];
+    }
+  }
+
+  posRiskCache.fetching = true;
+  posRiskCache.inflight = (async () => {
+    try {
+      const data = await getPositionRisk(apiKey, apiSecret, {});
+      posRiskCache.data = Array.isArray(data) ? data : [];
+      posRiskCache.ts = Date.now();
+      posRiskCache.lastApiKey = apiFp;
+      posRiskCache.lastError = null;
+      return posRiskCache.data;
+    } catch(e) {
+      const msg = e.message || '';
+      posRiskCache.lastError = safeErrMsg(e);
+      if (msg.includes('-1003') || msg.includes('Too many requests')) {
+        posRiskCache.rateLimitUntil = Date.now() + POS_RISK_RATELIMIT_MS;
+        pushCritical('POSITION_RISK_RATELIMIT', e, {}, 'WARNING');
+        console.log('⛔ positionRisk rate-limit: 60sn bekleniyor');
+      }
+      if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
+      throw e;
+    } finally {
+      posRiskCache.fetching = false;
+      posRiskCache.inflight = null;
+    }
+  })();
+
+  return posRiskCache.inflight;
+}
+
+function invalidatePosRiskCache(reason='manual') {
+  posRiskCache.ts = 0;
+  posRiskCache.lastInvalidateReason = reason;
+}
+// Eski isimle çağıran yerler kırılmasın.
+function invalidatePositionRiskCache(reason='manual') {
+  invalidatePosRiskCache(reason);
+}
+
+// Eski dashboard diagnostik alanı için uyumluluk objesi.
+const positionRiskState = {
+  get cache() {
+    if (!posRiskCache.data) return null;
+    const hasOpen = positionRowsOpenCount(posRiskCache.data) > 0;
+    const ttl = hasOpen ? POS_RISK_TTL_ACTIVE : POS_RISK_TTL_NORMAL;
+    return {
+      rows: posRiskCache.data,
+      ts: posRiskCache.ts,
+      ttl,
+      exp: posRiskCache.ts + ttl,
+      openCount: positionRowsOpenCount(posRiskCache.data),
+      fp: posRiskCache.lastApiKey,
+    };
+  },
+  get inflight() { return posRiskCache.fetching; },
+  get cooldownUntil() { return posRiskCache.rateLimitUntil; },
+  get lastError() { return posRiskCache.lastError; },
+  get lastSource() { return posRiskCache.lastSource; },
+};
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2767,12 +2911,13 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const cvdWarmingBridge=!cvdValid && !tickDeltaKnown && hardSweepForBridge && sc>=72 && bridgeCount>=2;
         const deltaOk=deltaOkStrict||cvdWarmingBridge;
 
-        // R14: CVD köprüsü işlem açtıracaksa 72 puan + 2/4 artık yeterli değil.
-        // UB zararı gibi senaryoda CVD/Tick yokken 3/4 köprü ve 72 puan A-Tier'a geçmişti.
-        // CVD yoksa gerçek otomatik A-Tier için ya 4/4 köprü gerekir, ya da skor >=78 + RVOL çok zayıf olmamalı.
-        // Böylece CVD reset olduğunda bot tamamen kör olmaz ama zayıf köprüyle agresif 15x açmaz.
-        const rvolVeryLow = !!(rvol1h && (rvol1h.signal === 'VERY_LOW' || Number(rvol1h.rvol || 0) < 0.25));
-        const cvdBridgeQualityOk = !cvdWarmingBridge || bridgeCount >= 4 || (bridgeCount >= 3 && sc >= 78 && !rvolVeryLow);
+        // R19: CVD reset/ısınma sırasında bot saatlerce kilitlenmesin.
+        // 4/4 köprü direkt geçer. 3/4 köprü ise skor >=72, RVOL aşırı ölü değil ve ATR gate yoksa A-Tier olabilir.
+        const rvolVeryLow = !!(rvol1h && (rvol1h.signal === 'VERY_LOW' || Number(rvol1h.rvol || 0) < 0.15));
+        const _slPctEval = parseFloat(autoConfig?.slPct || 2);
+        const atrBlocking = atrPct > _slPctEval * 2.5;
+        const cvdBridgeQualityOk = !cvdWarmingBridge || bridgeCount >= 4
+          || (bridgeCount >= 3 && sc >= 72 && !rvolVeryLow && !atrBlocking);
 
         // KURAL 3: Funding zehirli değil
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
@@ -2809,7 +2954,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(softEntry&&!hasEntry) reasons.push('👁 Yumuşak sinyal');
         if(!hasEntry&&!softEntry) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD+Tick teyidi yok');
-        if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, skor ${sc}${rvolVeryLow?', RVOL çok düşük':''})`);
+        if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, skor ${sc}${rvolVeryLow?', RVOL çok düşük':''}${atrBlocking?', ATR gate':''})`);
         if(!fundOk)  blocks.push('Fund zehirli');
         if(!rsiOk)   blocks.push(`RSI4h ${rsi4h} ${isL?'aşırı alım':'aşırı satım'}`);
         if(!mmOk)    blocks.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
@@ -2819,7 +2964,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const passCount=[hasEntry||softEntry,deltaOk,fundOk,rsiOk,mmOk,sc>=55].filter(Boolean).length;
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk:isTierA,
-          cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, rvolVeryLow,
+          cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, rvolVeryLow, atrBlocking,
           reason: tier==='A'?`🎯 ${reasons.slice(0,3).join(' + ')}`:
                   tier==='B'?`👁 ${reasons.slice(0,2).join(' + ')} — elle bak`:
                   `❌ ${blocks.slice(0,2).join(', ')}` };
@@ -3094,12 +3239,10 @@ app.post('/api/account', async (req, res) => {
     const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
     if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
 
-    const pr3 = await trySigned('v3/positionRisk', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk'));
-    if (pr3) setPositions(pr3, 'v3/positionRisk');
-    else {
-      const pr2 = await trySigned('v2/positionRisk', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk'));
-      if (pr2) setPositions(pr2, 'v2/positionRisk');
-    }
+    // R18: /api/account içinde de positionRisk cache kullanılır; API sekmesi açıkken
+    // aynı endpoint'i tekrar tekrar dövüp -1003 üretmez. Balance/account okuma sırası R14 gibi kalır.
+    const pr = await trySigned('positionRisk/cache', () => getPositionRiskCached(apiKey, apiSecret));
+    if (pr) setPositions(pr, positionRiskState.lastSource || 'positionRisk/cache');
 
     if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
     if (!Number.isFinite(u)) u = 0;
@@ -3339,7 +3482,7 @@ app.post('/api/positions', async (req, res) => {
   const{apiKey,apiSecret}=req.body;
   if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
   try{
-    const data=await getPositionRisk(apiKey,apiSecret);
+    const data=await getPositionRiskCached(apiKey,apiSecret);
     const rawOpen=Array.isArray(data)?data.filter(p=>parseFloat(p.positionAmt)!==0):[];
     const open=[];
     for(const p of rawOpen){
@@ -3929,6 +4072,15 @@ app.get('/api/diagnostics/status', (_req, res) => {
     autoPhase: autoScanState?.phase,
     autoLastAction: autoScanState?.lastAction,
     autoErrors: autoScanState?.skipReasons || {},
+    positionRisk: {
+      cooldownMs: getPositionRiskCooldownMs(),
+      cacheAgeMs: positionRiskState.cache ? Date.now() - positionRiskState.cache.ts : null,
+      cacheTtlMs: positionRiskState.cache?.ttl || null,
+      openCount: positionRiskState.cache?.openCount || 0,
+      source: positionRiskState.lastSource || null,
+      lastError: positionRiskState.lastError || null,
+      inflight: !!positionRiskState.inflight,
+    },
     serverTime: Date.now(),
   });
 });
@@ -3995,11 +4147,20 @@ async function runAutoScan() {
     autoScanState.phase = 'POZİSYON_KONTROL';
 
     // 1. Mevcut pozisyonları kontrol et
-    const posData = await getPositionRisk(apiKey,apiSecret);
+    const posData = await getPositionRiskCached(apiKey,apiSecret);
     const openPos = Array.isArray(posData)
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
     autoScanState.livePositions = openPos.length;
+
+    // R18: positionRisk rate-limit aktifken yeni emir açma. Cache ile panel/pozisyon
+    // görünür kalır ama taze pozisyon doğrulaması gelene kadar giriş güvenli değildir.
+    if (isPositionRiskCooldownActive()) {
+      autoScanState.phase = 'RATE_LIMIT_COOLDOWN';
+      autoScanState.lastAction = `positionRisk REST cooldown ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn — yeni emir bekletiliyor`;
+      logAuto(`⏳ RATE_LIMIT_COOLDOWN: positionRisk ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn dinleniyor, yeni emir açılmayacak`);
+      return;
+    }
 
     // Trailing SL kontrol
     if (openPos.length > 0) {
@@ -4262,6 +4423,7 @@ async function runAutoScan() {
 
         if (orderResp.ok) {
           autoScanState.opened = (autoScanState.opened||0) + 1;
+          invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
           logAuto(`✅ ${coin.symbol} ${recommendation} açıldı — ${orderResp.message}`);
           // Trailing state başlat + açılış sebebi kaydet (Pos kartında görünür)
@@ -4306,9 +4468,15 @@ async function runAutoScan() {
     }
 
   } catch(e) {
-    autoScanState.phase = 'TARAMA_HATA';
-    pushCritical('AUTO_SCAN', e, { phase:autoScanState.phase }, 'CRITICAL');
-    logAuto(`Tarama hatası: ${e.message?.substring(0,120)}`);
+    if (isPositionRiskRateLimitError(e) || String(e?.message||'').includes('RATE_LIMIT_COOLDOWN')) {
+      autoScanState.phase = 'RATE_LIMIT_COOLDOWN';
+      autoScanState.lastAction = `positionRisk limit/cooldown — ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn bekleniyor`;
+      logAuto(`⏳ positionRisk limit/cooldown — yeni emir bekletiliyor: ${e.message?.substring(0,120)}`);
+    } else {
+      autoScanState.phase = 'TARAMA_HATA';
+      pushCritical('AUTO_SCAN', e, { phase:autoScanState.phase }, 'CRITICAL');
+      logAuto(`Tarama hatası: ${e.message?.substring(0,120)}`);
+    }
   } finally {
     autoRunning = false;
     autoScanState.running = false;
@@ -4327,7 +4495,7 @@ async function runAutoScan() {
       } catch(e) {}
     }
 
-    if (!['MAX_POZİSYON_DOLU','EMİR_AÇILDI','TARAMA_HATA'].includes(autoScanState.phase)) {
+    if (!['MAX_POZİSYON_DOLU','EMİR_AÇILDI','TARAMA_HATA','RATE_LIMIT_COOLDOWN'].includes(autoScanState.phase)) {
       autoScanState.phase = autoScanState.opened>0 ? 'EMİR_AÇILDI' : 'BEKLİYOR';
     }
   }
@@ -4337,7 +4505,7 @@ async function getNewPosCount() {
   try {
     const cfg = autoConfig;
     if (!cfg?.apiKey) return 0;
-    const d = await getPositionRisk(cfg.apiKey,cfg.apiSecret);
+    const d = await getPositionRiskCached(cfg.apiKey,cfg.apiSecret);
     return Array.isArray(d) ? d.filter(p=>Math.abs(parseFloat(p.positionAmt))>0).length : 0;
   } catch(e) { return 0; }
 }
@@ -4450,7 +4618,7 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
 async function syncPositions() {
   if (!autoConfig?.enabled || !autoConfig?.apiKey || !autoConfig?.apiSecret) return;
   try {
-    const posData = await getPositionRisk(autoConfig.apiKey, autoConfig.apiSecret);
+    const posData = await getPositionRiskCached(autoConfig.apiKey, autoConfig.apiSecret);
     const openMap = new Map();
     if (Array.isArray(posData)) {
       for (const p of posData) {
