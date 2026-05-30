@@ -192,11 +192,73 @@ async function verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, expectedSL, expe
   }
 }
 
+
+
+// ── PRICE TICK NORMALIZER — SL/TP precision (-1111) koruması ────────────────
+// Binance bazı coinlerde BEAT gibi 4 decimal, bazı coinlerde 5/6 decimal kabul eder.
+// SL/TP kurtarma veya trailing tarafında .toFixed(8) ile ham fiyat gönderilirse
+// "Precision is over the maximum defined for this asset (-1111)" hatası alınır.
+const symbolFilterCache = new Map();
+function decimalPlacesFromStep(step) {
+  const raw = String(step || '').trim();
+  if (!raw || raw === '0') return 8;
+  if (raw.includes('e-')) return parseInt(raw.split('e-')[1], 10) || 8;
+  const dot = raw.indexOf('.');
+  if (dot < 0) return 0;
+  return raw.slice(dot + 1).replace(/0+$/, '').length;
+}
+function roundToStepValue(value, step) {
+  value = Number(value); step = Number(step);
+  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(step) || step <= 0) return value;
+  const dec = decimalPlacesFromStep(step);
+  const rounded = Math.round(value / step) * step;
+  return Number(rounded.toFixed(Math.min(12, Math.max(0, dec))));
+}
+function formatStepValue(value, step) {
+  const dec = decimalPlacesFromStep(step);
+  const n = roundToStepValue(value, step);
+  return Number(n).toFixed(Math.max(0, dec));
+}
+async function getSymbolFilters(symbol) {
+  const sym = normalizeSymbol ? normalizeSymbol(symbol) : String(symbol || '').toUpperCase();
+  const cached = symbolFilterCache.get(sym);
+  if (cached && Date.now() - cached.ts < 6 * 60 * 60 * 1000) return cached.val;
+  let val = { tickSize: 0.00000001, stepSize: 0.001, pricePrecision: 8, qtyPrecision: 3 };
+  try {
+    const si = await bPub('/fapi/v1/exchangeInfo', 'symbol=' + encodeURIComponent(sym));
+    const info = Array.isArray(si.symbols) ? si.symbols.find(x => x.symbol === sym) : null;
+    if (info) {
+      const pf = info.filters?.find(f => f.filterType === 'PRICE_FILTER');
+      const lf = info.filters?.find(f => f.filterType === 'LOT_SIZE');
+      if (pf && Number(pf.tickSize) > 0) val.tickSize = Number(pf.tickSize);
+      if (lf && Number(lf.stepSize) > 0) val.stepSize = Number(lf.stepSize);
+      if (Number.isFinite(Number(info.pricePrecision))) val.pricePrecision = Number(info.pricePrecision);
+      if (Number.isFinite(Number(info.quantityPrecision))) val.qtyPrecision = Number(info.quantityPrecision);
+    }
+  } catch(e) {
+    pushCritical('EXCHANGE_INFO_FILTER', `${sym}: ${e.message}`, {}, 'WARN');
+  }
+  symbolFilterCache.set(sym, { ts: Date.now(), val });
+  return val;
+}
+async function normalizeSLTPToTick(symbol, slPrice, tpPrice) {
+  const filters = await getSymbolFilters(symbol);
+  const tickSize = Number(filters.tickSize) || 0.00000001;
+  const sl = formatStepValue(slPrice, tickSize);
+  const tp = formatStepValue(tpPrice, tickSize);
+  return { sl, tp, slNum: Number(sl), tpNum: Number(tp), tickSize };
+}
+
 // ── SL/TP ÇİFTİ YAZ + İSPAT AL — install_live_sltp_pair_with_proof ──────────
 // Lazarus'un en önemli pattern'i: yaz, 250ms bekle, Binance'te gözle
 async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPrice, tpPrice, sym) {
   // Çalışan Python çekirdeği kuralı:
   // cancel-first → SL+TP çiftini yaz → Binance'te görünür proof al → proof yoksa başarılı sayma.
+  // R11 kritik ek: Her SL/TP çağrısı burada tek merkezden tickSize'a yuvarlanır.
+  // Böylece /api/order, BE/trailing ve SL/TP kurtarma aynı precision kuralını kullanır.
+  const normalized = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
+  slPrice = normalized.sl;
+  tpPrice = normalized.tp;
   try {
     await cancelAlgoOrders(apiKey, apiSecret, symbol);
 
@@ -204,28 +266,28 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
     const tpOrder = await placeAlgoTP(apiKey, apiSecret, symbol, closeSide, tpPrice, null);
 
     await new Promise(r => setTimeout(r, 300));
-    const proof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
-    if (proof.ok) return { ok: true, slOrder, tpOrder, proof };
+    const proof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, normalized.slNum, normalized.tpNum);
+    if (proof.ok) return { ok: true, slOrder, tpOrder, proof, slPrice: normalized.slNum, tpPrice: normalized.tpNum, tickSize: normalized.tickSize };
 
     console.log(`${symbol} algo SLTP doğrulanamadı, standart fallback deneniyor...`);
     await cancelAlgoOrders(apiKey, apiSecret, symbol);
 
     await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
       symbol, side:closeSide, type:'STOP_MARKET',
-      stopPrice: slPrice.toString(), closePosition:'true', workingType:'MARK_PRICE'
+      stopPrice: slPrice, closePosition:'true', workingType:'MARK_PRICE'
     });
     await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
       symbol, side:closeSide, type:'TAKE_PROFIT_MARKET',
-      stopPrice: tpPrice.toString(), closePosition:'true', workingType:'MARK_PRICE'
+      stopPrice: tpPrice, closePosition:'true', workingType:'MARK_PRICE'
     });
     await new Promise(r => setTimeout(r, 300));
-    const proof2 = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, slPrice, tpPrice);
-    return { ok: proof2.ok, proof: proof2, fallback: 'standard_closePosition', error: proof2.ok ? undefined : 'SL/TP proof başarısız' };
+    const proof2 = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, normalized.slNum, normalized.tpNum);
+    return { ok: proof2.ok, proof: proof2, fallback: 'standard_closePosition', slPrice: normalized.slNum, tpPrice: normalized.tpNum, tickSize: normalized.tickSize, error: proof2.ok ? undefined : 'SL/TP proof başarısız' };
   } catch(e) {
     // Önceki sürümde bAlgo burada exception atarsa /api/order dış catch'e düşebiliyor,
     // acil kapatma yolu çalışmadan pozisyon korumasız kalma riski doğuyordu.
-    pushCritical('SLTP_WRITE_ERROR', `${symbol}: ${e.message}`);
-    return { ok: false, error: e.message, proof: null };
+    pushCritical('SLTP_WRITE_ERROR', `${symbol}: ${e.message}`, { tickSize: normalized?.tickSize, slPrice, tpPrice });
+    return { ok: false, error: e.message, proof: null, slPrice: normalized?.slNum, tpPrice: normalized?.tpNum, tickSize: normalized?.tickSize };
   }
 }
 
@@ -3182,15 +3244,15 @@ async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) 
     logAuto(`❌ ${sym} ${reason} SL/TP çifti doğrulanamadı; yerel BE/trailing aktif sayılmadı`);
     return { ok:false, proof, safeSL, tpPrice };
   }
-  state.currentSL = safeSL;
-  state.targetTP = tpPrice;
+  state.currentSL = proof.slPrice || safeSL;
+  state.targetTP = proof.tpPrice || tpPrice;
   state.currentSLAlgoId = proof.slOrder?.algoId || proof.slOrder?.clientAlgoId || proof.slOrder?.orderId || null;
   state.tpAlgoId = proof.tpOrder?.algoId || proof.tpOrder?.clientAlgoId || proof.tpOrder?.orderId || null;
   state.sltpVerified = true;
   state.lastSltpUpdate = Date.now();
   trailingState.set(sym, state);
-  logAuto(`✅ ${sym} ${reason}: SL ${safeSL} + TP ${tpPrice} Binance doğrulandı`);
-  return { ok:true, proof, safeSL, tpPrice };
+  logAuto(`✅ ${sym} ${reason}: SL ${state.currentSL} + TP ${state.targetTP} Binance doğrulandı (tick:${proof.tickSize || '-'})`);
+  return { ok:true, proof, safeSL: state.currentSL, tpPrice: state.targetTP };
 }
 
 // CVD + Tick delta flip tespiti — en kritik çıkış sinyali
@@ -3311,6 +3373,10 @@ async function managePosition(apiKey, apiSecret, pos) {
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
+  // BE emri sadece entry'ye değil, taker fee + olası stop-market kayması için
+  // küçük kâr bölgesine taşınır. INJ örneğinde entry üstü kapanışa rağmen
+  // komisyon/slippage nedeniyle eksi yazmıştı. Varsayılan %0.22 coin hareketi.
+  const beFeeSafePct = Math.max(0.12, safe(cfg.beLockPct ?? cfg.breakEvenLockPct ?? cfg.beProfitLockPct, 0.22));
 
   let action = null; // { type, reason, urgency }
 
@@ -3372,10 +3438,10 @@ async function managePosition(apiKey, apiSecret, pos) {
   if (!action && !state.breakEvenSet && realProfitPct >= breakEvenAt) {
     action = {
       type:'BREAK_EVEN',
-      reason:`Fiyat %${realProfitPct.toFixed(2)} hareket etti (kaldıraçsız) → SL giriş fiyatına`,
+      reason:`Fiyat %${realProfitPct.toFixed(2)} hareket etti (kaldıraçsız) → SL giriş + fee buffer %${beFeeSafePct.toFixed(2)}`,
       urgency:'LOW',
-      newSL: +(entryPrice * (isLong ? 1.001 : 0.999)).toFixed(8),
-      stateUpdates:{ breakEvenSet:true }
+      newSL: +(entryPrice * (isLong ? (1 + beFeeSafePct/100) : (1 - beFeeSafePct/100))).toFixed(8),
+      stateUpdates:{ breakEvenSet:true, beFeeSafePct }
     };
     logAuto(`${sym} Break-even: Gerçek hareket %${realProfitPct.toFixed(2)}, Kaldıraçlı PnL: %${pnlPct.toFixed(1)}, Lev:${leverage}x`);
   }
@@ -3896,6 +3962,7 @@ async function runAutoScan() {
           logAuto(`✅ ${coin.symbol} ${recommendation} açıldı — ${orderResp.message}`);
           // Trailing state başlat + açılış sebebi kaydet (Pos kartında görünür)
           trailingState.set(coin.fullSymbol, {
+            side: recommendation,
             entryPrice: orderResp.executedPrice||analysis.price,
             highWater: orderResp.executedPrice||analysis.price,
             breakEvenSet:false, currentSL:orderResp.details?.stop||stopPrice,
@@ -3982,6 +4049,96 @@ function startAutoTrader() {
   runAutoScan(); // Hemen başlat
 }
 
+
+// ── KAPANIŞ SEBEBİ SINIFLANDIRMA ────────────────────────────────────────────
+// Binance positionRisk'te pozisyon kaybolduğunda eski sürüm bunu genel olarak
+// "manuel/SL/TP" yazıyordu. Bu kafa karıştırıyordu. Burada best-effort şekilde
+// son userTrades + state'teki SL/TP fiyatlarına göre sebep ayrıştırılır.
+async function getRecentUserTradesSafe(apiKey, apiSecret, symbol, state) {
+  try {
+    const openedAt = Number(state?.openedAt || state?.entryAt || 0);
+    const startTime = openedAt > 0 ? Math.max(0, openedAt - 5*60*1000) : Date.now() - 6*60*60*1000;
+    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/userTrades', {
+      symbol,
+      startTime,
+      limit: 80,
+    }, 10000);
+    return Array.isArray(rows) ? rows : [];
+  } catch(e) {
+    return [];
+  }
+}
+
+function inferStateSide(state) {
+  const side = String(state?.side || state?.positionSide || '').toUpperCase();
+  if (side === 'LONG' || side === 'SHORT') return side;
+  const ep = parseFloat(state?.entryPrice || state?.entry || 0);
+  const tp = parseFloat(state?.targetTP || state?.tp || 0);
+  if (ep > 0 && tp > 0) return tp > ep ? 'LONG' : 'SHORT';
+  return '';
+}
+
+function pctDiff(a, b) {
+  a = parseFloat(a); b = parseFloat(b);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return Infinity;
+  return Math.abs(a - b) / a * 100;
+}
+
+function weightedAvgTradePrice(trades) {
+  let notional = 0, qty = 0, pnl = 0;
+  for (const t of trades || []) {
+    const p = parseFloat(t.price || 0);
+    const q = Math.abs(parseFloat(t.qty || t.quantity || 0));
+    if (p > 0 && q > 0) { notional += p*q; qty += q; }
+    const rp = parseFloat(t.realizedPnl || 0);
+    if (Number.isFinite(rp)) pnl += rp;
+  }
+  return { price: qty > 0 ? notional/qty : 0, qty, pnl };
+}
+
+async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
+  const side = inferStateSide(state);
+  const isLong = side === 'LONG';
+  const closeTradeSide = isLong ? 'SELL' : side === 'SHORT' ? 'BUY' : '';
+  const trades = await getRecentUserTradesSafe(apiKey, apiSecret, symbol, state);
+  const closeTrades = closeTradeSide
+    ? trades.filter(t => String(t.side || '').toUpperCase() === closeTradeSide)
+    : trades;
+  const wa = weightedAvgTradePrice(closeTrades.length ? closeTrades : trades);
+  const closePrice = wa.price;
+  const sl = parseFloat(state?.currentSL || state?.stop || state?.sl || 0);
+  const tp = parseFloat(state?.targetTP || state?.target || state?.tp || 0);
+
+  // Stop-market fill kayması olabilir; bu yüzden %0.45 tolerans kullanılır.
+  const tol = 0.45;
+  let code = 'BINANCE_CLOSED_UNKNOWN';
+  let label = 'Binance kapanışı';
+  let emoji = '🔍';
+
+  if (closePrice > 0 && tp > 0 && pctDiff(closePrice, tp) <= tol) {
+    code = 'TAKE_PROFIT'; label = 'TP ile kapandı'; emoji = '🎯';
+  } else if (closePrice > 0 && sl > 0 && pctDiff(closePrice, sl) <= tol) {
+    if (state?.step3Set || state?.step2Set || state?.step1Set) {
+      code = 'KAR_TASIMA_SL'; label = 'Kâr taşıma SL ile kapandı'; emoji = '📈';
+    } else if (state?.breakEvenSet) {
+      code = 'BREAK_EVEN_SL'; label = 'BE / güvenli SL ile kapandı'; emoji = '🟦';
+    } else {
+      code = 'STOP_LOSS'; label = 'SL ile kapandı'; emoji = '🛑';
+    }
+  } else if (closePrice > 0) {
+    code = 'EXTERNAL_OR_MANUAL'; label = 'Binance dış/manuel kapanış olabilir'; emoji = '👁️';
+  }
+
+  return {
+    code, label, emoji,
+    closePrice: closePrice ? +closePrice.toFixed(8) : null,
+    realizedPnl: Number.isFinite(wa.pnl) ? +wa.pnl.toFixed(6) : null,
+    tradeCount: closeTrades.length || trades.length || 0,
+    sl: sl || null,
+    tp: tp || null,
+  };
+}
+
 // ── POZİSYON SENKRON + SL/TP KURTARMA ───────────────────────────────────────
 // Her 30 saniyede bir çalışır.
 // 1. trailingState'de kayıtlı ama Binance'te kapanmış → manuel/SL/TP algılandı → cooldown
@@ -3998,12 +4155,16 @@ async function syncPositions() {
     }
     autoScanState.livePositions = openMap.size;
 
-    // trailingState'de kayıtlı ama Binance'te artık olmayan = kapanmış (manuel/SL/TP)
+    // trailingState'de kayıtlı ama Binance'te artık olmayan = kapanmış.
+    // Eski log "manuel/SL/TP" diye geneldi; şimdi mümkünse BE/TP/SL ayrıştırılır.
     for (const [sym, state] of trailingState.entries()) {
       if (!openMap.has(sym)) {
-        logAuto(`🔍 ${sym.replace('USDT','')} Binance'te kapanmış (manuel/SL/TP) → state temizlendi, 30dk cooldown eklendi`);
+        const cls = await classifyClosedPosition(autoConfig.apiKey, autoConfig.apiSecret, sym, state);
+        const px = cls.closePrice ? ` fiyat:${cls.closePrice}` : '';
+        const pnl = Number.isFinite(cls.realizedPnl) ? ` pnl:${cls.realizedPnl}` : '';
+        logAuto(`${cls.emoji} ${sym.replace('USDT','')} kapandı → ${cls.label}${px}${pnl} — state temizlendi, 30dk cooldown`);
         trailingState.delete(sym);
-        setCooldown(sym, COOLDOWN_CLOSE_MS, 'Manuel/SL/TP kapanış algılandı');
+        setCooldown(sym, COOLDOWN_CLOSE_MS, `${cls.code} algılandı`);
       }
     }
 
@@ -4028,13 +4189,14 @@ async function syncPositions() {
             logAuto(`✅ ${sym.replace('USDT','')} SL/TP kurtarıldı ✅`);
             if (!trailingState.has(sym)) {
               trailingState.set(sym, {
+                side:isLong?'LONG':'SHORT',
                 entryPrice:ep, highWater:parseFloat(p.markPrice)||ep,
-                breakEvenSet:false, currentSL:slPrice, targetTP:tpPrice,
+                breakEvenSet:false, currentSL:result.slPrice || slPrice, targetTP:result.tpPrice || tpPrice,
                 sltpVerified:true, leverage:parseInt(p.leverage)||1
               });
             } else {
               const st = trailingState.get(sym);
-              st.sltpVerified=true; st.currentSL=slPrice; st.targetTP=tpPrice;
+              st.sltpVerified=true; st.currentSL=result.slPrice || slPrice; st.targetTP=result.tpPrice || tpPrice;
               trailingState.set(sym, st);
             }
           } else {
