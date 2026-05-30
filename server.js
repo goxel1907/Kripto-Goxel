@@ -253,42 +253,57 @@ async function normalizeSLTPToTick(symbol, slPrice, tpPrice) {
 // Lazarus'un en önemli pattern'i: yaz, 250ms bekle, Binance'te gözle
 async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPrice, tpPrice, sym) {
   // Çalışan Python çekirdeği kuralı:
-  // cancel-first → SL+TP çiftini yaz → Binance'te görünür proof al → proof yoksa başarılı sayma.
-  // R11 kritik ek: Her SL/TP çağrısı burada tek merkezden tickSize'a yuvarlanır.
-  // Böylece /api/order, BE/trailing ve SL/TP kurtarma aynı precision kuralını kullanır.
+  // cancel-first → SL+TP çiftini ALGO endpoint'e yaz → Binance'te görünür proof al → proof yoksa başarılı sayma.
+  // R11: Her SL/TP çağrısı burada tek merkezden tickSize'a yuvarlanır.
+  // R13 kritik düzeltme: STOP_MARKET / TAKE_PROFIT_MARKET için /fapi/v1/order fallback'i KALDIRILDI.
+  // Binance yeni sembollerde -4120 ile açıkça "Algo Order API kullan" diyor; bu yüzden standart endpoint'e düşmek
+  // sahte kritik hata üretir ve bazı hesaplarda koruma yazımını gereksiz bozabilir.
   const normalized = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
   slPrice = normalized.sl;
   tpPrice = normalized.tp;
-  try {
-    await cancelAlgoOrders(apiKey, apiSecret, symbol);
 
-    const slOrder = await placeAlgoSL(apiKey, apiSecret, symbol, closeSide, slPrice, null);
-    const tpOrder = await placeAlgoTP(apiKey, apiSecret, symbol, closeSide, tpPrice, null);
+  let lastErr = null;
+  let lastProof = null;
 
-    await new Promise(r => setTimeout(r, 300));
-    const proof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, normalized.slNum, normalized.tpNum);
-    if (proof.ok) return { ok: true, slOrder, tpOrder, proof, slPrice: normalized.slNum, tpPrice: normalized.tpNum, tickSize: normalized.tickSize };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await cancelAlgoOrders(apiKey, apiSecret, symbol);
 
-    console.log(`${symbol} algo SLTP doğrulanamadı, standart fallback deneniyor...`);
-    await cancelAlgoOrders(apiKey, apiSecret, symbol);
+      const slOrder = await placeAlgoSL(apiKey, apiSecret, symbol, closeSide, slPrice, null);
+      const tpOrder = await placeAlgoTP(apiKey, apiSecret, symbol, closeSide, tpPrice, null);
 
-    await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol, side:closeSide, type:'STOP_MARKET',
-      stopPrice: slPrice, closePosition:'true', workingType:'MARK_PRICE'
-    });
-    await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol, side:closeSide, type:'TAKE_PROFIT_MARKET',
-      stopPrice: tpPrice, closePosition:'true', workingType:'MARK_PRICE'
-    });
-    await new Promise(r => setTimeout(r, 300));
-    const proof2 = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, normalized.slNum, normalized.tpNum);
-    return { ok: proof2.ok, proof: proof2, fallback: 'standard_closePosition', slPrice: normalized.slNum, tpPrice: normalized.tpNum, tickSize: normalized.tickSize, error: proof2.ok ? undefined : 'SL/TP proof başarısız' };
-  } catch(e) {
-    // Önceki sürümde bAlgo burada exception atarsa /api/order dış catch'e düşebiliyor,
-    // acil kapatma yolu çalışmadan pozisyon korumasız kalma riski doğuyordu.
-    pushCritical('SLTP_WRITE_ERROR', `${symbol}: ${e.message}`, { tickSize: normalized?.tickSize, slPrice, tpPrice });
-    return { ok: false, error: e.message, proof: null, slPrice: normalized?.slNum, tpPrice: normalized?.tpNum, tickSize: normalized?.tickSize };
+      // Binance algo emirleri açık emir listesine bazen 300ms'den geç düşüyor.
+      // Önce kısa, sonra biraz daha uzun proof kontrolü yap; proof gecikmesini hata sanma.
+      for (const waitMs of [450, 900]) {
+        await new Promise(r => setTimeout(r, waitMs));
+        const proof = await verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, normalized.slNum, normalized.tpNum);
+        lastProof = proof;
+        if (proof.ok) {
+          return {
+            ok: true, slOrder, tpOrder, proof,
+            slPrice: normalized.slNum, tpPrice: normalized.tpNum, tickSize: normalized.tickSize,
+            endpoint: 'algoOrder', attempt
+          };
+        }
+      }
+
+      lastErr = new Error(`Algo SL/TP proof başarısız (deneme ${attempt}); SL:${lastProof?.foundSL || false} TP:${lastProof?.foundTP || false} emir:${lastProof?.orderCount || 0}`);
+    } catch(e) {
+      lastErr = e;
+      // İlk denemede geçici API/propagation olabilir; ikinci denemeye izin ver.
+      if (attempt === 1) await new Promise(r => setTimeout(r, 700));
+    }
   }
+
+  const msg = lastErr?.message || 'Algo SL/TP proof başarısız';
+  pushCritical('SLTP_ALGO_PROOF_FAIL', `${symbol}: ${msg}`, {
+    tickSize: normalized?.tickSize, slPrice, tpPrice, proof: lastProof, endpoint: 'algoOrder'
+  });
+  return {
+    ok: false, error: msg, proof: lastProof,
+    slPrice: normalized?.slNum, tpPrice: normalized?.tpNum, tickSize: normalized?.tickSize,
+    endpoint: 'algoOrder'
+  };
 }
 
 async function bPub(path, qs='') {
@@ -1807,8 +1822,161 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const atrPct=lastPrice>0?(atr1h/lastPrice)*100:1;
 
     // ═════════════════════════════════════════════════════════════════════════
-    // YENİ ANALİZ MODÜLLERİ — MM avı önleme + pro trader katmanları
+    // R15 AÇIK KAYNAK MODÜLLER — Boğmadan sinyal kalitesi artırma
+    // Kaynak: LazyBear, Chaikin, Bill Williams, LuxAlgo SMC, Jesse Framework
     // ═════════════════════════════════════════════════════════════════════════
+
+    // ── R15-1. SQUEEZE MOMENTUM (LazyBear / TradingView) ─────────────────────
+    // BB (Bollinger) KC (Keltner) içinde kaldığında patlama enerjisi birikir.
+    // Momentum yönü = patlama yönü. Kripto'da en güvenilir pre-breakout sinyali.
+    function calcSqueeze(kl, lenKC=20, multKC=1.5, lenBB=20, multBB=2.0) {
+      if(!kl||kl.length<Math.max(lenBB,lenKC)+5)return{ok:false};
+      const c=kl.slice(-lenBB).map(k=>parseFloat(k[4]));
+      const h=kl.slice(-lenBB).map(k=>parseFloat(k[2]));
+      const lo=kl.slice(-lenBB).map(k=>parseFloat(k[3]));
+      const midBB=c.reduce((a,b)=>a+b,0)/c.length;
+      const stdBB=Math.sqrt(c.reduce((s,v)=>s+Math.pow(v-midBB,2),0)/c.length);
+      const trArr=kl.slice(-lenKC).map((k,i,a)=>{
+        if(i===0)return parseFloat(k[2])-parseFloat(k[3]);
+        const p=parseFloat(a[i-1][4]);
+        return Math.max(parseFloat(k[2])-parseFloat(k[3]),Math.abs(parseFloat(k[2])-p),Math.abs(parseFloat(k[3])-p));
+      });
+      const atrKC=trArr.reduce((a,b)=>a+b,0)/trArr.length;
+      const midKC=c.reduce((a,b)=>a+b,0)/c.length;
+      const sqzOn=midBB+multBB*stdBB<midKC+multKC*atrKC && midBB-multBB*stdBB>midKC-multKC*atrKC;
+      const hh=Math.max(...h),ll=Math.min(...lo);
+      const mom=c[c.length-1]-((hh+ll)/2+midBB)/2;
+      const prev=c[c.length-2]-((hh+ll)/2+midBB)/2;
+      const dir=mom>0?'BULL':'BEAR';
+      const accel=mom>prev?'GROWING':'FADING';
+      return{ok:true,squeeze:sqzOn,momentum:+mom.toFixed(8),direction:dir,acceleration:accel,
+        signal:sqzOn&&accel==='GROWING'?`SQ_${dir}`:`${dir}_FREE`};
+    }
+
+    // ── R15-2. CHAIKIN MONEY FLOW (Marc Chaikin) ─────────────────────────────
+    // Volume × fiyatın high-low içindeki pozisyonu. +0.1 üstü alım baskısı,
+    // -0.1 altı satış baskısı. CVD'den bağımsız — mum kapanışlarına bakar.
+    function calcCMF(kl, period=20) {
+      if(!kl||kl.length<period)return{ok:false};
+      const r=kl.slice(-period);
+      let mfv=0,tv=0;
+      for(const k of r){
+        const h=parseFloat(k[2]),lo=parseFloat(k[3]),c=parseFloat(k[4]),v=parseFloat(k[5]);
+        const mfm=h===lo?0:((c-lo)-(h-c))/(h-lo);
+        mfv+=mfm*v; tv+=v;
+      }
+      const cmf=tv>0?mfv/tv:0;
+      const sig=cmf>0.15?'STRONG_BUY':cmf>0.07?'BUY':cmf<-0.15?'STRONG_SELL':cmf<-0.07?'SELL':'NEUTRAL';
+      return{ok:true,value:+cmf.toFixed(4),signal:sig};
+    }
+
+    // ── R15-3. ELLIOTT WAVE OSCILLATOR (Bill Williams) ───────────────────────
+    // 5 periyot EMA - 35 periyot EMA. Histo sıfır üstü ve büyüyorsa = bull wave.
+    // Trend gücünü ölçer, RSI'dan farklı olarak dalga yapısını yansıtır.
+    function calcEWO(kl) {
+      if(!kl||kl.length<40)return{ok:false};
+      const c=kl.map(k=>parseFloat(k[4]));
+      function e(arr,p){const k=2/(p+1);let v=arr.slice(0,p).reduce((a,b)=>a+b,0)/p;for(let i=p;i<arr.length;i++)v=arr[i]*k+v*(1-k);return v;}
+      const ewo=(e(c,5)-e(c,35))/c[c.length-1]*100;
+      const prev=(e(c.slice(0,-1),5)-e(c.slice(0,-1),35))/c[c.length-2]*100;
+      return{ok:true,value:+ewo.toFixed(3),growing:ewo>prev,
+        signal:ewo>0.2&&ewo>prev?'BULL_WAVE':ewo<-0.2&&ewo<prev?'BEAR_WAVE':'NEUTRAL'};
+    }
+
+    // ── R15-4. WEIS WAVE VOLUME (Richard Weis) ───────────────────────────────
+    // Mumları yön bazlı dalgalara gruplar. Alım dalgası hacmi > satım dalgası = güç.
+    // Effort vs Result: fiyat hareket ediyor ama hacim yoksa = zayıf hareket.
+    function calcWeisWave(kl) {
+      if(!kl||kl.length<15)return{ok:false};
+      const r=kl.slice(-20);
+      let cur={dir:null,vol:0};const waves=[];
+      for(const k of r){
+        const o=parseFloat(k[1]),c=parseFloat(k[4]),v=parseFloat(k[5]);
+        const d=c>=o?'UP':'DOWN';
+        if(cur.dir===d){cur.vol+=v;}
+        else{if(cur.dir)waves.push({...cur});cur={dir:d,vol:v};}
+      }
+      if(cur.dir)waves.push({...cur});
+      if(waves.length<3)return{ok:false};
+      const lastUp=[...waves].reverse().find(w=>w.dir==='UP');
+      const lastDn=[...waves].reverse().find(w=>w.dir==='DOWN');
+      const ratio=lastUp&&lastDn?lastUp.vol/Math.max(lastDn.vol,1):1;
+      return{ok:true,ratio:+ratio.toFixed(2),upVol:+lastUp?.vol.toFixed(0)||0,dnVol:+lastDn?.vol.toFixed(0)||0,
+        signal:ratio>1.5?'BULL_EFFORT':ratio<0.67?'BEAR_EFFORT':'NEUTRAL'};
+    }
+
+    // ── R15-5. SMART MONEY ChoCH (LuxAlgo / ICT) ─────────────────────────────
+    // Change of Character: ardışık HH/HL → LL/LH dönüşü veya tersi.
+    // Wyckoff Spring'den farkı: YAPI değişimini ölçer, tek mum eventi değil.
+    function detectChoCH(kl) {
+      if(!kl||kl.length<20)return{ok:false};
+      const r=kl.slice(-20);
+      const sH=[],sL=[];
+      for(let i=2;i<r.length-2;i++){
+        const h=parseFloat(r[i][2]),lo=parseFloat(r[i][3]);
+        if(h>parseFloat(r[i-1][2])&&h>parseFloat(r[i-2][2])&&h>parseFloat(r[i+1][2])&&h>parseFloat(r[i+2][2]))sH.push(h);
+        if(lo<parseFloat(r[i-1][3])&&lo<parseFloat(r[i-2][3])&&lo<parseFloat(r[i+1][3])&&lo<parseFloat(r[i+2][3]))sL.push(lo);
+      }
+      if(sH.length<2||sL.length<2)return{ok:false};
+      const bullChoCH=sH[sH.length-1]>sH[sH.length-2]&&sL[sL.length-1]>sL[sL.length-2];
+      const bearChoCH=sL[sL.length-1]<sL[sL.length-2]&&sH[sH.length-1]<sH[sH.length-2];
+      return{ok:true,bullChoCH,bearChoCH,
+        signal:bullChoCH?'BULL_CHOCH':bearChoCH?'BEAR_CHOCH':'NONE'};
+    }
+
+    // ── R15-6. SPREAD / LİKİDİTE KALİTE SKORU ────────────────────────────────
+    // UB sorununun kökenü: düşük likidite + dar depth = büyük slippage.
+    // En iyi ask - en iyi bid / fiyat = spread yüzdesi.
+    // depth top-5 USDT hacmi = gerçek likidite.
+    function calcLiqQuality(dep, price) {
+      if(!dep||!price)return{ok:false,quality:'UNKNOWN',slippageRisk:false};
+      const bids=Array.isArray(dep.bids)?dep.bids.slice(0,10):[];
+      const asks=Array.isArray(dep.asks)?dep.asks.slice(0,10):[];
+      if(!bids.length||!asks.length)return{ok:false,quality:'UNKNOWN',slippageRisk:false};
+      const bestB=parseFloat(bids[0][0]),bestA=parseFloat(asks[0][0]);
+      const spread=(bestA-bestB)/price*100;
+      const bidD=bids.slice(0,5).reduce((s,[p,q])=>s+parseFloat(p)*parseFloat(q),0);
+      const askD=asks.slice(0,5).reduce((s,[p,q])=>s+parseFloat(p)*parseFloat(q),0);
+      const depth=bidD+askD;
+      const quality=spread<0.02&&depth>50000?'EXCELLENT':spread<0.05&&depth>20000?'GOOD':spread<0.10&&depth>5000?'FAIR':'POOR';
+      const slippageRisk=spread>0.08||depth<10000;
+      return{ok:true,spread:+spread.toFixed(4),depth:+depth.toFixed(0),quality,slippageRisk};
+    }
+
+    // ── R15-7. FUNDING RATE MOMENTUM ─────────────────────────────────────────
+    // Anlık funding değil TREND. Funding hızla negatife gidiyorsa short squeeze yakın.
+    // Hızla pozitife gidiyorsa long'lar aşırı ısınıyor → dikkat.
+    function calcFundingMomentum(funArr) {
+      if(!funArr||funArr.length<4)return{ok:false};
+      const rates=funArr.slice(-8).map(f=>parseFloat(f.fundingRate)*100);
+      const trend=rates[rates.length-1]-rates[0];
+      const accel=rates[rates.length-1]-rates[rates.length-2];
+      return{ok:true,trend:+trend.toFixed(5),acceleration:+accel.toFixed(5),
+        signal:trend<-0.015&&accel<0?'STRONG_LONG_BIAS':trend<-0.008?'LONG_BIAS':
+               trend>0.015&&accel>0?'STRONG_SHORT_BIAS':trend>0.008?'SHORT_BIAS':'NEUTRAL'};
+    }
+
+    // ── R15-8. ATR KALİTE GATE ──────────────────────────────────────────────
+    // Girişten ÖNCE: coinın ATR yüzdesi kullanıcının SL ayarından büyükse
+    // coin çok volatil = SL yetersiz = UB riski.
+    // atrPct > slPct*1.5 → skor düşür, A-Tier engellenebilir
+    const slPctForGate=parseFloat(autoConfig?.slPct||2);
+    const atrGateWarn=atrPct>slPctForGate*1.5; // ATR SL'den %50 büyükse uyarı
+    const atrGateBlock=atrPct>slPctForGate*2.5; // ATR SL'den %150 büyükse blok
+
+    // Hesapla
+    const sqz1h=calcSqueeze(k1h);
+    const sqz4h=calcSqueeze(k4h);
+    const cmf1h=calcCMF(k1h);
+    const cmf4h=calcCMF(k4h);
+    const ewo1h=calcEWO(k1h);
+    const weis1h=calcWeisWave(k1h);
+    const choch1h=detectChoCH(k1h);
+    const choch4h=detectChoCH(k4h);
+    const liqQual=calcLiqQuality(depth,lastPrice);
+    const fundMom=calcFundingMomentum(fundArr);
+
+
 
     // ── 1. VOLUME PROFILE (VPVR) ──────────────────────────────────────────────
     // POC = en çok volume olan seviye → kurumlar buradan order koyar
@@ -2250,7 +2418,89 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     if(lastPrice<bb1h.lower*1.005){longScore+=6;signals.long.push('BB alt');}
     if(lastPrice>bb1h.upper*0.995){shortScore+=6;signals.short.push('BB üst');}
 
-    // ── 11. VOLUME PROFILE (POC/VAH/VAL) ─────────────────────────────────────
+    // ── R15: 8 YENİ AÇIK KAYNAK MODÜL SKORLAMASI ─────────────────────────────
+
+    // SQUEEZE MOMENTUM (LazyBear)
+    if(sqz1h.ok){
+      if(sqz1h.signal==='SQ_BULL'){longScore+=14;signals.long.push(`⚡ 1h Squeeze Bull patlamak üzere`);}
+      if(sqz1h.signal==='SQ_BEAR'){shortScore+=14;signals.short.push(`⚡ 1h Squeeze Bear patlamak üzere`);}
+      if(sqz1h.signal==='BULL_FREE'&&sqz1h.acceleration==='GROWING'){longScore+=6;}
+      if(sqz1h.signal==='BEAR_FREE'&&sqz1h.acceleration==='GROWING'){shortScore+=6;}
+    }
+    if(sqz4h.ok){
+      if(sqz4h.signal==='SQ_BULL'){longScore+=10;signals.long.push(`⚡ 4h Squeeze Bull`);}
+      if(sqz4h.signal==='SQ_BEAR'){shortScore+=10;signals.short.push(`⚡ 4h Squeeze Bear`);}
+    }
+
+    // CHAIKIN MONEY FLOW (CMF) — volume+fiyat kombinasyonu
+    if(cmf1h.ok){
+      if(cmf1h.signal==='STRONG_BUY'){longScore+=12;signals.long.push(`💧 CMF1h Güçlü Alım ${cmf1h.value}`);}
+      else if(cmf1h.signal==='BUY'){longScore+=6;}
+      if(cmf1h.signal==='STRONG_SELL'){shortScore+=12;signals.short.push(`💧 CMF1h Güçlü Satım ${cmf1h.value}`);}
+      else if(cmf1h.signal==='SELL'){shortScore+=6;}
+      // CMF ters → ceza
+      if(cmf1h.signal==='STRONG_SELL'&&longScore>shortScore){longScore=Math.round(longScore*0.85);}
+      if(cmf1h.signal==='STRONG_BUY'&&shortScore>longScore){shortScore=Math.round(shortScore*0.85);}
+    }
+    if(cmf4h.ok){
+      if(cmf4h.signal==='STRONG_BUY'){longScore+=8;signals.long.push(`💧 CMF4h ${cmf4h.value}`);}
+      if(cmf4h.signal==='STRONG_SELL'){shortScore+=8;signals.short.push(`💧 CMF4h ${cmf4h.value}`);}
+    }
+
+    // ELLIOTT WAVE OSCILLATOR (Bill Williams)
+    if(ewo1h.ok){
+      if(ewo1h.signal==='BULL_WAVE'){longScore+=8;signals.long.push(`🌊 EWO Bull ${ewo1h.value}%`);}
+      if(ewo1h.signal==='BEAR_WAVE'){shortScore+=8;signals.short.push(`🌊 EWO Bear ${ewo1h.value}%`);}
+    }
+
+    // WEIS WAVE VOLUME (Richard Weis) — Effort vs Result
+    if(weis1h.ok){
+      if(weis1h.signal==='BULL_EFFORT'){longScore+=10;signals.long.push(`🌊 Weis Bull Effort ${weis1h.ratio}x`);}
+      if(weis1h.signal==='BEAR_EFFORT'){shortScore+=10;signals.short.push(`🌊 Weis Bear Effort`);}
+    }
+
+    // SMART MONEY CHOCH (LuxAlgo/ICT) — Yapı değişimi
+    if(choch1h.ok){
+      if(choch1h.signal==='BULL_CHOCH'){longScore+=16;signals.long.push(`🔄 1h ChoCH Bull — yapı değişimi`);}
+      if(choch1h.signal==='BEAR_CHOCH'){shortScore+=16;signals.short.push(`🔄 1h ChoCH Bear — yapı değişimi`);}
+    }
+    if(choch4h.ok){
+      if(choch4h.signal==='BULL_CHOCH'){longScore+=12;signals.long.push(`🔄 4h ChoCH Bull`);}
+      if(choch4h.signal==='BEAR_CHOCH'){shortScore+=12;signals.short.push(`🔄 4h ChoCH Bear`);}
+    }
+
+    // LİKİDİTE KALİTE SKORU — UB sorununun önleyicisi
+    if(liqQual.ok){
+      if(liqQual.slippageRisk){
+        // Spread geniş veya derinlik az → kayma riski → skor düşür
+        longScore=Math.round(longScore*0.78);shortScore=Math.round(shortScore*0.78);
+        signals.long.push(`⚠️ Spread %${liqQual.spread} düşük likidite — kayma riski`);
+        signals.short.push(`⚠️ Spread %${liqQual.spread} düşük likidite — kayma riski`);
+      }
+      if(liqQual.quality==='EXCELLENT'){longScore+=5;shortScore+=5;}
+      if(liqQual.quality==='POOR'&&!liqQual.slippageRisk){longScore=Math.round(longScore*0.88);shortScore=Math.round(shortScore*0.88);}
+    }
+
+    // FUNDING RATE MOMENTUM
+    if(fundMom.ok){
+      if(fundMom.signal==='STRONG_LONG_BIAS'){longScore+=12;signals.long.push(`📉 Funding hızla negatife → short squeeze yakın`);}
+      else if(fundMom.signal==='LONG_BIAS'){longScore+=6;}
+      if(fundMom.signal==='STRONG_SHORT_BIAS'){shortScore+=12;signals.short.push(`📈 Funding hızla pozitife → longs tükenebilir`);}
+      else if(fundMom.signal==='SHORT_BIAS'){shortScore+=6;}
+    }
+
+    // ATR KALİTE GATE — UB tipi volatil coin için son savunma
+    if(atrGateBlock){
+      // ATR SL'nin %150 üstünde → bu coine verilen SL ayarı yetersiz
+      longScore=Math.round(longScore*0.65);shortScore=Math.round(shortScore*0.65);
+      signals.long.push(`⛔ ATR %${atrPct.toFixed(1)} >> SL %${slPctForGate} — volatilite riski`);
+      signals.short.push(`⛔ ATR %${atrPct.toFixed(1)} >> SL %${slPctForGate} — volatilite riski`);
+    } else if(atrGateWarn){
+      longScore=Math.round(longScore*0.85);shortScore=Math.round(shortScore*0.85);
+      signals.long.push(`⚠️ ATR %${atrPct.toFixed(1)} yüksek — giriş dikkatli`);
+    }
+
+
     if(vpvr1h) {
       const distPOC=Math.abs(lastPrice-vpvr1h.poc)/lastPrice*100;
       // VAL altında = value area dışı → kurumlar geri alır
@@ -2517,6 +2767,13 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const cvdWarmingBridge=!cvdValid && !tickDeltaKnown && hardSweepForBridge && sc>=72 && bridgeCount>=2;
         const deltaOk=deltaOkStrict||cvdWarmingBridge;
 
+        // R14: CVD köprüsü işlem açtıracaksa 72 puan + 2/4 artık yeterli değil.
+        // UB zararı gibi senaryoda CVD/Tick yokken 3/4 köprü ve 72 puan A-Tier'a geçmişti.
+        // CVD yoksa gerçek otomatik A-Tier için ya 4/4 köprü gerekir, ya da skor >=78 + RVOL çok zayıf olmamalı.
+        // Böylece CVD reset olduğunda bot tamamen kör olmaz ama zayıf köprüyle agresif 15x açmaz.
+        const rvolVeryLow = !!(rvol1h && (rvol1h.signal === 'VERY_LOW' || Number(rvol1h.rvol || 0) < 0.25));
+        const cvdBridgeQualityOk = !cvdWarmingBridge || bridgeCount >= 4 || (bridgeCount >= 3 && sc >= 78 && !rvolVeryLow);
+
         // KURAL 3: Funding zehirli değil
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
 
@@ -2529,7 +2786,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           : !(mmTarget==='GENUINE_UP' && mmConf>=60);
 
         // A-Tier: net sinyal + delta ok + funding ok + RSI ok + MM ok + skor≥68
-        const isTierA=hasEntry&&deltaOk&&fundOk&&rsiOk&&mmOk&&sc>=68;
+        // R14: CVD bridge ile geçiyorsa bridge kalitesi de zorunlu.
+        const isTierA=hasEntry&&deltaOk&&fundOk&&rsiOk&&mmOk&&cvdBridgeQualityOk&&sc>=68;
 
         // B-Tier: yumuşak sinyal + skor≥55
         const softEntry=
@@ -2551,6 +2809,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(softEntry&&!hasEntry) reasons.push('👁 Yumuşak sinyal');
         if(!hasEntry&&!softEntry) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD+Tick teyidi yok');
+        if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, skor ${sc}${rvolVeryLow?', RVOL çok düşük':''})`);
         if(!fundOk)  blocks.push('Fund zehirli');
         if(!rsiOk)   blocks.push(`RSI4h ${rsi4h} ${isL?'aşırı alım':'aşırı satım'}`);
         if(!mmOk)    blocks.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
@@ -2560,6 +2819,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const passCount=[hasEntry||softEntry,deltaOk,fundOk,rsiOk,mmOk,sc>=55].filter(Boolean).length;
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk:isTierA,
+          cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, rvolVeryLow,
           reason: tier==='A'?`🎯 ${reasons.slice(0,3).join(' + ')}`:
                   tier==='B'?`👁 ${reasons.slice(0,2).join(' + ')} — elle bak`:
                   `❌ ${blocks.slice(0,2).join(', ')}` };
@@ -2626,6 +2886,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       rsiDivergence: { '1h':rsiDiv1h, '4h':rsiDiv4h },
       mtfBias,
       liquidityVoids: liqVoids1h,
+      // ── R15 YENİ MODÜLLER ──────────────────────────────────────────────────
+      r15: {
+        squeeze: { '1h':sqz1h, '4h':sqz4h },
+        cmf: { '1h':cmf1h, '4h':cmf4h },
+        ewo: ewo1h,
+        weisWave: weis1h,
+        choch: { '1h':choch1h, '4h':choch4h },
+        liquidityQuality: liqQual,
+        fundingMomentum: fundMom,
+        atrGate: { atrPct:+atrPct.toFixed(2), slPct:slPctForGate, warn:atrGateWarn, block:atrGateBlock },
+      },
       longScore, shortScore, recommendation, decisionChain,
       signals:recommendation==='LONG'?signals.long.slice(0,8):signals.short.slice(0,8),
     });
@@ -3380,6 +3651,18 @@ async function managePosition(apiKey, apiSecret, pos) {
 
   let action = null; // { type, reason, urgency }
 
+  // ── 0. R14 ACİL ZARAR KORUMASI — SL çalışmaz/gecikirse kaçış ─────────────
+  // Normalde Binance algo SL kapatmalı. Ama yeni sembol / aşırı hızlı fitil / proof gecikmesi
+  // durumunda pozisyon SL seviyesinin ötesine sarkarsa 3 dakikalık taramayı beklemeden kapatılır.
+  const hardLossReal = -Math.max(slPct + 0.25, slPct * 1.12); // SL %2 ise yaklaşık -%2.25 coin hareketi
+  const hardLossRoi  = -Math.max((slPct * leverage) + 5, 30); // 15x %2 SL için yaklaşık -%35 ROI
+  if (realProfitPct <= hardLossReal || pnlPct <= hardLossRoi) {
+    action = {
+      type:'EMERGENCY_EXIT', urgency:'CRITICAL',
+      reason:`R14 hard-loss guard: fiyat hareketi %${realProfitPct.toFixed(2)}, ROI %${pnlPct.toFixed(1)}; SL gecikmesi/slippage riski`
+    };
+  }
+
   // ── 1. ACİL ÇIKIŞ — CVD Flip ────────────────────────────────────────────
   const cvdFlip   = detectCVDFlip(sym, side);
   const tickSnap  = getTickAnalysis(sym);
@@ -3861,6 +4144,13 @@ async function runAutoScan() {
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason});
           continue;
         }
+        // R14 savunma katmanı: CVD yokken zayıf bridge ile otomatik işlem açma.
+        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk) {
+          const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}) — otomatik açılmıyor`;
+          logAuto(`📊 ${coin.symbol} ${why}`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason});
+          continue;
+        }
 
         // MM yönü: sadece yüksek güvenli doğrudan ters MM hedefi veto eder. Nötr/likidite hedefleri skorda kalır, bot boğulmaz.
         const mm = analysis.marketMaker || {};
@@ -3922,6 +4212,20 @@ async function runAutoScan() {
         const userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));
         const userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
         const userRR    = userTPPct / userSLPct;
+
+        // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
+        const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
+        if (coinAtrPct > 0 && coinAtrPct > userSLPct * 2.5) {
+          logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — volatilite riski yüksek, atlandı`);
+          markAutoSkip(coin.symbol, `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score});
+          continue;
+        }
+        // Likidite kalitesi çok düşükse skip
+        if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
+          logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — kayma riski, atlandı`);
+          markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
+          continue;
+        }
         const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
 
         if (userRR < minRR) {
@@ -4168,9 +4472,39 @@ async function syncPositions() {
       }
     }
 
-    // Açık pozisyonlarda SL/TP eksik mi? → kurtarmaya çalış
+    // Açık pozisyonlarda önce 30sn hard-loss guard, sonra SL/TP eksik mi? → kurtarmaya çalış
     for (const [sym, p] of openMap.entries()) {
       try {
+        // R14: runAutoScan 3 dakikada bir çalıştığı için ani SL gecikmesini burada 30sn döngüde yakala.
+        const amt = parseFloat(p.positionAmt || 0);
+        const ep  = parseFloat(p.entryPrice || 0);
+        const mp  = parseFloat(p.markPrice || 0);
+        const lev = parseInt(p.leverage) || parseInt(autoConfig.leverage) || 1;
+        const isLongGuard = amt > 0;
+        const slPctGuard = Math.max(0.1, parseFloat(autoConfig.slPct || 2));
+        const realMoveGuard = ep > 0 && mp > 0
+          ? ((mp - ep) / ep * 100 * (isLongGuard ? 1 : -1))
+          : 0;
+        const roiGuard = realMoveGuard * lev;
+        const hardLossRealGuard = -Math.max(slPctGuard + 0.25, slPctGuard * 1.12);
+        const hardLossRoiGuard  = -Math.max((slPctGuard * lev) + 5, 30);
+        if (ep > 0 && mp > 0 && (realMoveGuard <= hardLossRealGuard || roiGuard <= hardLossRoiGuard)) {
+          try {
+            pushCritical('R14_HARD_LOSS_GUARD', `${sym}: SL ötesi zarar yakalandı; market reduceOnly kapatılıyor. move=${realMoveGuard.toFixed(2)}% roi=${roiGuard.toFixed(1)}%`, {symbol:sym, entry:ep, mark:mp, leverage:lev});
+            await cancelAlgoOrders(autoConfig.apiKey, autoConfig.apiSecret, sym);
+            await bReq(autoConfig.apiKey, autoConfig.apiSecret, 'POST', '/fapi/v1/order', {
+              symbol:sym, side:isLongGuard?'SELL':'BUY', type:'MARKET',
+              quantity:Math.abs(amt).toString(), reduceOnly:'true', positionSide:'BOTH'
+            });
+            logAuto(`🛑 ${sym.replace('USDT','')} R14 hard-loss guard kapattı: move ${realMoveGuard.toFixed(2)}% ROI ${roiGuard.toFixed(1)}%`);
+            trailingState.delete(sym);
+            setCooldown(sym, COOLDOWN_CLOSE_MS, 'R14_HARD_LOSS_GUARD');
+            continue;
+          } catch(closeErr) {
+            pushCritical('R14_HARD_LOSS_CLOSE_FAIL', `${sym}: hard-loss close başarısız — ${closeErr.message}`, {symbol:sym});
+          }
+        }
+
         const orders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym);
         const hasSL = orders.some(o => orderKind(o) === 'SL');
         const hasTP = orders.some(o => orderKind(o) === 'TP');
