@@ -440,13 +440,16 @@ function startCVDStream(symbol) {
       if (t.m) store.sell += qty;  // maker=true → taker SATTI
       else     store.buy  += qty;  // maker=false → taker ALDI
 
-      // Her 5 dakikada bir geçmişe kaydet
+      // Her 5 dakikada bir geçmişe kaydet.
+      // Önemli: tamamen sıfırlamak yerine küçük bir iz bırakıyoruz.
+      // Railway/WS yeniden ısınırken CVD'nin sürekli $0 görünmesini azaltır.
       const now = Date.now();
       if (now - store.lastReset > 5 * 60 * 1000) {
         store.history.push({ ts: now, buy: store.buy, sell: store.sell,
           delta: store.buy - store.sell });
         if (store.history.length > 48) store.history.shift(); // 4 saatlik tarih
-        store.buy = 0; store.sell = 0;
+        store.buy  = store.buy  * 0.30;
+        store.sell = store.sell * 0.30;
         store.lastReset = now;
       }
     } catch(e) {}
@@ -1217,27 +1220,11 @@ app.get('/api/volatile-coins', (req, res) => {
     lastUpdate: volatilityStore.lastUpdate });
 });
 
-// ── KILL ZONE TESPİTİ ─────────────────────────────────────────────────────────
-// ICT Kill Zones — en yüksek olasılıklı işlem pencereleri
+// ── KILL ZONE DEVRE DIŞI ─────────────────────────────────────────────────────
+// Kripto 24/7 çalışır. London/NY/Asia etiketleri artık skor, min skor veya tarama
+// sayısını değiştirmez. Endpoint sadece geriye uyumluluk için sabit değer döndürür.
 function getKillZone() {
-  // UTC saati kullan (Binance UTC'de çalışır)
-  const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  const utcTime = utcH * 60 + utcM; // dakika cinsinden
-
-  // Asia Session: 00:00-03:00 UTC
-  if (utcTime >= 0   && utcTime < 180)  return { zone:'ASIA',    strength:0.6, label:'🌏 Asya', active:true };
-  // London Open Kill Zone: 07:00-10:00 UTC (en güçlü)
-  if (utcTime >= 420 && utcTime < 600)  return { zone:'LONDON',  strength:1.0, label:'🇬🇧 London Open', active:true };
-  // London Close: 11:00-13:00 UTC
-  if (utcTime >= 660 && utcTime < 780)  return { zone:'LONDON_CLOSE', strength:0.7, label:'🇬🇧 London Kapat', active:true };
-  // NY Open Kill Zone: 13:00-16:00 UTC (çok güçlü)
-  if (utcTime >= 780 && utcTime < 960)  return { zone:'NY_OPEN', strength:1.0, label:'🇺🇸 NY Open', active:true };
-  // NY PM: 17:00-20:00 UTC
-  if (utcTime >= 1020&& utcTime < 1200) return { zone:'NY_PM',   strength:0.7, label:'🇺🇸 NY PM', active:true };
-  // Ölü saatler
-  return { zone:'DEAD', strength:0.3, label:'💤 Ölü Saat', active:false };
+  return { zone:'CRYPTO_24_7', strength:1.0, label:'⚡ Kripto 24/7', active:true, disabled:true };
 }
 
 app.get('/api/killzone', (req, res) => {
@@ -2034,15 +2021,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       // MSS bekleniyor — skor verme ama bilgi ver
     }
 
-    // Kill Zone ağırlığı — ölü saatte skor %40 azalt
-    const kz = getKillZone();
-    if (kz.zone === 'DEAD') {
-      longScore  = Math.round(longScore  * 0.6);
-      shortScore = Math.round(shortScore * 0.6);
-    } else if (kz.strength < 1.0) {
-      longScore  = Math.round(longScore  * 0.85);
-      shortScore = Math.round(shortScore * 0.85);
-    }
+    // Kill zone skor cezası kaldırıldı.
+    // Kripto 24/7 olduğu için saat bazlı long/short skor azaltma yapılmaz.
 
     // 0a. WYCKOFF — MM'nin gerçek dip/zirve tespiti
     // Spring = en güçlü sinyal, ML backtested
@@ -2441,15 +2421,39 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (tickData?.deltaFlip==='BEAR_TO_BULL'&&tickData.whaleBias==='WHALE_BUY'&&isL)||
           (tickData?.deltaFlip==='BULL_TO_BEAR'&&tickData.whaleBias==='WHALE_SELL'&&!isL);
 
-        // KURAL 2: Delta (CVD) ters değil — CVD valid olmasa tick zorunlu
+        // KURAL 2: Delta (CVD) ters değil.
+        // R9'da CVD/Tick ikisi de UNKNOWN ise A-Tier engelleniyordu. Bu güvenliydi,
+        // ama Railway restart/WS ısınması sonrası 5m kripto fırsatlarını saatlerce kaçırdı.
+        // R10: CVD yoksa sadece ÇOK GÜÇLÜ köprü şartlarıyla geçiş verilir.
         const cvdRatio=cvdD?.ratio||50;
         const cvdValid=!!(cvdD?.valid && ((cvdD.buy||0)+(cvdD.sell||0)>0));
         const deltaTrend=String(tickData?.deltaTrend||'UNKNOWN').toUpperCase();
         const tickDeltaKnown=!!(deltaTrend && deltaTrend!=='UNKNOWN');
         const tickDeltaOk=tickDeltaKnown ? (isL?deltaTrend==='BULL':deltaTrend==='BEAR') : false;
         const cvdSideOk=cvdValid?(isL?cvdRatio>40:cvdRatio<60):false;
-        // CVD yoksa tick delta bilinen ve doğru yönde OLMALIDIR — her ikisi UNKNOWN ise A-Tier vermez
-        const deltaOk=cvdSideOk||(tickDeltaKnown&&tickDeltaOk);
+        const deltaOkStrict=cvdSideOk||(tickDeltaKnown&&tickDeltaOk);
+
+        const hardSweepForBridge=
+          (sw1?.confirmed&&(isL?sw1.direction==='BULL_SWEEP':sw1.direction==='BEAR_SWEEP'))||
+          (sweep15m?.confirmed&&(isL?sweep15m.direction==='BULL_SWEEP':sweep15m.direction==='BEAR_SWEEP'))||
+          (sweep4h?.confirmed&&(isL?sweep4h.direction==='BULL_SWEEP':sweep4h.direction==='BEAR_SWEEP'))||
+          (tickData?.tickSweep?.type===(isL?'BULL_SWEEP':'BEAR_SWEEP')&&tickData.tickSweep.fresh)||
+          (amd5m?.signal===(isL?'AMD_LONG':'AMD_SHORT')&&amd5m?.tickConfirm);
+        const mtfBridgeOk=isL
+          ? (mtfBias?.bias==='STRONG_BULL'||mtfBias?.bullPct>=70)
+          : (mtfBias?.bias==='STRONG_BEAR'||mtfBias?.bullPct<=30);
+        const fundBridgeOk=isL
+          ? (fundSig==='NEGATIVE'||fundSig==='EXTREME_NEGATIVE')
+          : (fundSig==='POSITIVE'||fundSig==='EXTREME_POSITIVE');
+        const oiBridgeOk=isL
+          ? (oiDiv==='SHORT_SQUEEZE'||oiDiv==='CONFIRMED_BULL')
+          : (oiDiv==='LONG_LIQUIDATION'||oiDiv==='CONFIRMED_BEAR');
+        const huntBridgeOk=isL
+          ? ((hunt1h?.hunted&&hunt1h.direction==='BULL_HUNT')||(hunt15m?.hunted&&hunt15m.direction==='BULL_HUNT'))
+          : ((hunt1h?.hunted&&hunt1h.direction==='BEAR_HUNT')||(hunt15m?.hunted&&hunt15m.direction==='BEAR_HUNT'));
+        const bridgeCount=[mtfBridgeOk,fundBridgeOk,oiBridgeOk,huntBridgeOk].filter(Boolean).length;
+        const cvdWarmingBridge=!cvdValid && !tickDeltaKnown && hardSweepForBridge && sc>=72 && bridgeCount>=2;
+        const deltaOk=deltaOkStrict||cvdWarmingBridge;
 
         // KURAL 3: Funding zehirli değil
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
@@ -2479,6 +2483,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(wy1?.recentEvents?.some(e=>e.type==='SPRING')) reasons.push('🌊 Spring');
         if(wy1?.recentEvents?.some(e=>e.type==='UTAD'))   reasons.push('🚨 UTAD');
         if(cvdValid&&deltaOk) reasons.push(`📊 CVD${cvdRatio.toFixed(0)}%`);
+        else if(cvdWarmingBridge) reasons.push(`🟡 CVD ısınıyor: güçlü köprü ${bridgeCount}/4`);
         else if(!cvdValid) reasons.push('📊 CVD ısınma/veri yok');
         if(liqD?.cascade) reasons.push(`💥 ${liqD.cascade.signal}`);
         if(softEntry&&!hasEntry) reasons.push('👁 Yumuşak sinyal');
@@ -3687,12 +3692,8 @@ async function runAutoScan() {
       return;
     }
 
-    // 2. Kill Zone kontrolü — ölü saatte tarama kalitesi düşük
+    // 2. Kill zone kaldırıldı — kripto 24/7, saat bazlı tarama seyreltilmez.
     const kz = getKillZone();
-    if (kz.zone === 'DEAD') {
-      logAuto(`💤 Ölü saat (${kz.label}) — tarama seyreltiyor`);
-      // Ölü saatte çok daha sıkı kriter
-    }
 
     // 3. Volatil coinleri kullan — en çok hareket edenler önce
     let scanList;
@@ -3703,7 +3704,7 @@ async function runAutoScan() {
     } else {
       // Volatilite scanner'dan al — en aktif coinler
       if (volatilityStore.coins.length > 0) {
-        scanList = volatilityStore.coins.slice(0, kz.zone==='DEAD'?10:20);
+        scanList = volatilityStore.coins.slice(0, 20);
         logAuto(`🔥 Volatil top ${scanList.length}: ${scanList.slice(0,5).map(c=>c.symbol).join(', ')}...`);
       } else {
         const coinsResp = await fetch(`http://localhost:${PORT}/api/futures-coins`).then(r=>r.json());
@@ -3712,12 +3713,10 @@ async function runAutoScan() {
     }
     if (!scanList?.length) return;
 
-    // Kill Zone bazlı min skor ayarı
-    const effectiveMinScore = kz.zone === 'DEAD' ? Math.max(minScore + 10, 80) :
-                              kz.strength < 1.0   ? minScore + 5 : minScore;
-    autoScanState.killZone = kz;
+    // Kill zone bazlı min skor artırma kaldırıldı.
+    const effectiveMinScore = minScore;
+    autoScanState.killZone = null;
     autoScanState.effectiveMinScore = effectiveMinScore;
-    if (kz.zone === 'DEAD') logAuto(`💤 Ölü saat — min skor ${effectiveMinScore}'e yükseltildi`);
 
     // Haber kontrolü — tehlikeli saatlerde işlem açma
     try {
@@ -3831,8 +3830,8 @@ async function runAutoScan() {
           : fund?.signal !== 'EXTREME_NEGATIVE';
         if (!fundOk) { logAuto(`${coin.symbol} Funding aşırı karşı (${fund?.current}) — atlandı`); markAutoSkip(coin.symbol, `Funding aşırı karşı ${fund?.current}`, {rec:recommendation, score}); continue; }
 
-        // Skor ve seans filtresi
-        if (score < effectiveMinScore) { logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore}(kz:${kz.zone}) — atlandı`); markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason}); continue; }
+        // Skor filtresi
+        if (score < effectiveMinScore) { logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore} — atlandı`); markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason}); continue; }
 
         // F&G: Extreme durumlarda ters yön yasak
         if (fgSignal==='EXTREME_GREED' && isLong)  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
