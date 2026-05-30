@@ -2851,36 +2851,39 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       const proTPSLSide = rawRec==='SHORT' ? 'SHORT' : 'LONG';
       const proTPSL=calcProTPSL(proTPSLSide,lastPrice,atr1h,atr4h,liq1h,liq4h,ob1h,ob4h,k1h);
 
-      // ── SNIPER KARAR MOTORU — 3 kural ──────────────────────────────────────
+      // ── SMART PRIORITY KARAR MOTORU — A / B+ / B TERAZİSİ ───────────────
+      // R20: Modül sayma / sert kural yığma yerine ağırlıklı karar.
+      // CVD veri yoksa tek başına veto değildir; yalnızca güven kırpar.
+      // Gerçek hard veto sadece likidite, aşırı ATR, kesin ters MM/funding gibi teknik risklerde çalışır.
       function evalDecision(side){
-        if(side==='WAIT')return{pass:false,tier:'WAIT',score:0,reasons:[],blocks:[],autoOk:false};
+        if(side==='WAIT')return{pass:false,tier:'WAIT',score:0,reasons:[],blocks:[],autoOk:false,priorityScore:0};
         const isL=side==='LONG';
         const sw1=sweep1h,wy1=wyckoff1h;
         const cvdD=getCVD(full);
         const liqD=getLiqData(full);
         const sc=isL?longScore:shortScore;
+        const minAutoScore = Math.max(55, Number(autoConfig?.minScore || 72));
 
-        // KURAL 1: Giriş sinyali (bunlardan biri ZORUNLU)
+        // Giriş sinyali: otomatik için en az bir gerçek entry izi isteriz.
         const hasEntry=
-          // Kline bazlı sweep (1h mum)
           (sw1?.confirmed&&(isL?sw1.direction==='BULL_SWEEP':sw1.direction==='BEAR_SWEEP'))||
-          // TİCK SEVİYESİNDE sweep — mum kapanışı beklemiyor ⚡
+          (sweep15m?.confirmed&&(isL?sweep15m.direction==='BULL_SWEEP':sweep15m.direction==='BEAR_SWEEP'))||
+          (sweep4h?.confirmed&&(isL?sweep4h.direction==='BULL_SWEEP':sweep4h.direction==='BEAR_SWEEP'))||
           (tickData?.tickSweep?.type===(isL?'BULL_SWEEP':'BEAR_SWEEP')&&tickData.tickSweep.fresh)||
-          // AMD 5m (tick teyitli ise +ağırlık)
           (amd5m?.signal===(isL?'AMD_LONG':'AMD_SHORT'))||
-          // Wyckoff
           (wy1?.recentEvents?.some(e=>isL?(e.type==='SPRING'||e.type==='SOS'):e.type==='UTAD'))||
-          // Tick: Stacked imbalance + whale aynı yönde
           (tickData?.imbalance?.bull&&tickData.whaleBias==='WHALE_BUY'&&isL)||
           (tickData?.imbalance?.bear&&tickData.whaleBias==='WHALE_SELL'&&!isL)||
-          // Delta flip + whale
           (tickData?.deltaFlip==='BEAR_TO_BULL'&&tickData.whaleBias==='WHALE_BUY'&&isL)||
           (tickData?.deltaFlip==='BULL_TO_BEAR'&&tickData.whaleBias==='WHALE_SELL'&&!isL);
 
-        // KURAL 2: Delta (CVD) ters değil.
-        // R9'da CVD/Tick ikisi de UNKNOWN ise A-Tier engelleniyordu. Bu güvenliydi,
-        // ama Railway restart/WS ısınması sonrası 5m kripto fırsatlarını saatlerce kaçırdı.
-        // R10: CVD yoksa sadece ÇOK GÜÇLÜ köprü şartlarıyla geçiş verilir.
+        const softEntry=
+          (sw1?.swept&&!sw1?.confirmed)||
+          (isL?(ob1h?.bullOB&&lastPrice<=ob1h.bullOB.high*1.01):(ob1h?.bearOB&&lastPrice>=ob1h.bearOB.low*0.99))||
+          mmTarget===(isL?'GENUINE_UP':'GENUINE_DOWN')||
+          mmTarget===(isL?'UP_SWEEP':'DOWN_SWEEP');
+
+        // CVD / tick: ikisi de yoksa veri eksik kabul edilir, tek başına veto değildir.
         const cvdRatio=cvdD?.ratio||50;
         const cvdValid=!!(cvdD?.valid && ((cvdD.buy||0)+(cvdD.sell||0)>0));
         const deltaTrend=String(tickData?.deltaTrend||'UNKNOWN').toUpperCase();
@@ -2888,7 +2891,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const tickDeltaOk=tickDeltaKnown ? (isL?deltaTrend==='BULL':deltaTrend==='BEAR') : false;
         const cvdSideOk=cvdValid?(isL?cvdRatio>40:cvdRatio<60):false;
         const deltaOkStrict=cvdSideOk||(tickDeltaKnown&&tickDeltaOk);
+        const cvdMissing=!cvdValid&&!tickDeltaKnown;
 
+        // Ana köprüler: bunlar eşit değil, ağırlıkları farklı.
         const hardSweepForBridge=
           (sw1?.confirmed&&(isL?sw1.direction==='BULL_SWEEP':sw1.direction==='BEAR_SWEEP'))||
           (sweep15m?.confirmed&&(isL?sweep15m.direction==='BULL_SWEEP':sweep15m.direction==='BEAR_SWEEP'))||
@@ -2896,77 +2901,142 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (tickData?.tickSweep?.type===(isL?'BULL_SWEEP':'BEAR_SWEEP')&&tickData.tickSweep.fresh)||
           (amd5m?.signal===(isL?'AMD_LONG':'AMD_SHORT')&&amd5m?.tickConfirm);
         const mtfBridgeOk=isL
-          ? (mtfBias?.bias==='STRONG_BULL'||mtfBias?.bullPct>=70)
-          : (mtfBias?.bias==='STRONG_BEAR'||mtfBias?.bullPct<=30);
+          ? (mtfBias?.bias==='STRONG_BULL'||mtfBias?.bullPct>=65)
+          : (mtfBias?.bias==='STRONG_BEAR'||mtfBias?.bullPct<=35);
+        const mtfStrongOpposite=isL
+          ? (mtfBias?.bias==='STRONG_BEAR'||mtfBias?.bullPct<=25)
+          : (mtfBias?.bias==='STRONG_BULL'||mtfBias?.bullPct>=75);
         const fundBridgeOk=isL
           ? (fundSig==='NEGATIVE'||fundSig==='EXTREME_NEGATIVE')
           : (fundSig==='POSITIVE'||fundSig==='EXTREME_POSITIVE');
         const oiBridgeOk=isL
           ? (oiDiv==='SHORT_SQUEEZE'||oiDiv==='CONFIRMED_BULL')
           : (oiDiv==='LONG_LIQUIDATION'||oiDiv==='CONFIRMED_BEAR');
+        const oiOpposite=isL
+          ? (oiDiv==='LONG_LIQUIDATION'||oiDiv==='CONFIRMED_BEAR')
+          : (oiDiv==='SHORT_SQUEEZE'||oiDiv==='CONFIRMED_BULL');
         const huntBridgeOk=isL
           ? ((hunt1h?.hunted&&hunt1h.direction==='BULL_HUNT')||(hunt15m?.hunted&&hunt15m.direction==='BULL_HUNT'))
           : ((hunt1h?.hunted&&hunt1h.direction==='BEAR_HUNT')||(hunt15m?.hunted&&hunt15m.direction==='BEAR_HUNT'));
-        const bridgeCount=[mtfBridgeOk,fundBridgeOk,oiBridgeOk,huntBridgeOk].filter(Boolean).length;
-        const cvdWarmingBridge=!cvdValid && !tickDeltaKnown && hardSweepForBridge && sc>=72 && bridgeCount>=2;
-        const deltaOk=deltaOkStrict||cvdWarmingBridge;
+        const mmSameSide=isL
+          ? (mmTarget==='GENUINE_UP'||mmTarget==='UP_SWEEP')
+          : (mmTarget==='GENUINE_DOWN'||mmTarget==='DOWN_SWEEP');
+        const mmStrongOpposite=isL
+          ? (mmTarget==='GENUINE_DOWN'&&mmConf>=60)
+          : (mmTarget==='GENUINE_UP'&&mmConf>=60);
+        const mmVeryStrongOpposite=isL
+          ? (mmTarget==='GENUINE_DOWN'&&mmConf>=70)
+          : (mmTarget==='GENUINE_UP'&&mmConf>=70);
+        const obSameSide=isL
+          ? (bookImb>8||iceberg?.signal==='HIDDEN_BUY'||iceberg?.signal==='STRONG_HIDDEN_BUY'||tickData?.imbalance?.bull)
+          : (bookImb<-8||iceberg?.signal==='HIDDEN_SELL'||iceberg?.signal==='STRONG_HIDDEN_SELL'||tickData?.imbalance?.bear);
+        const cmfSameSide=isL
+          ? (cmf1h?.signal==='BUY'||cmf1h?.signal==='STRONG_BUY'||cmf4h?.signal==='STRONG_BUY')
+          : (cmf1h?.signal==='SELL'||cmf1h?.signal==='STRONG_SELL'||cmf4h?.signal==='STRONG_SELL');
+        const cmfOpposite=isL
+          ? (cmf1h?.signal==='STRONG_SELL'||cmf4h?.signal==='STRONG_SELL')
+          : (cmf1h?.signal==='STRONG_BUY'||cmf4h?.signal==='STRONG_BUY');
+        const weisSameSide=isL ? (weis1h?.signal==='BULL_EFFORT') : (weis1h?.signal==='BEAR_EFFORT');
+        const chochSameSide=isL
+          ? (choch1h?.signal==='BULL_CHOCH'||choch4h?.signal==='BULL_CHOCH')
+          : (choch1h?.signal==='BEAR_CHOCH'||choch4h?.signal==='BEAR_CHOCH');
+        const ewoSameSide=isL ? (ewo1h?.signal==='BULL_WAVE') : (ewo1h?.signal==='BEAR_WAVE');
+        const squeezeSameSide=isL
+          ? (sqz1h?.direction==='BULL'&&sqz1h?.acceleration==='GROWING')
+          : (sqz1h?.direction==='BEAR'&&sqz1h?.acceleration==='GROWING');
+        const pdSameSide=isL ? (pd1h?.forLong||pd4h?.forLong) : (pd1h?.forShort||pd4h?.forShort);
+        const pdOpposite=isL ? (pd1h?.zone==='PREMIUM_HIGH') : (pd1h?.zone==='DISCOUNT_LOW');
 
-        // R19: CVD reset/ısınma sırasında bot saatlerce kilitlenmesin.
-        // 4/4 köprü direkt geçer. 3/4 köprü ise skor >=72, RVOL aşırı ölü değil ve ATR gate yoksa A-Tier olabilir.
         const rvolVeryLow = !!(rvol1h && (rvol1h.signal === 'VERY_LOW' || Number(rvol1h.rvol || 0) < 0.15));
         const _slPctEval = parseFloat(autoConfig?.slPct || 2);
-        const atrBlocking = atrPct > _slPctEval * 2.5;
-        const cvdBridgeQualityOk = !cvdWarmingBridge || bridgeCount >= 4
-          || (bridgeCount >= 3 && sc >= 72 && !rvolVeryLow && !atrBlocking);
+        const atrBlocking = atrGateBlock || atrPct > _slPctEval * 2.5;
+        const poorLiquidity = !!(liqQual?.quality==='POOR' || (liqQual?.slippageRisk && Number(liqQual?.spread||0)>0.10));
 
-        // KURAL 3: Funding zehirli değil
+        let priorityScore=0;
+        const priorityTags=[];
+        const addP=(ok,pts,tag)=>{ if(ok){ priorityScore+=pts; priorityTags.push(`${tag}+${pts}`); } };
+        const subP=(ok,pts,tag)=>{ if(ok){ priorityScore-=pts; priorityTags.push(`${tag}-${pts}`); } };
+        addP(hardSweepForBridge,24,'Sweep');
+        addP(mmSameSide,mmTarget?.startsWith('GENUINE')?18:12,'MM');
+        addP(huntBridgeOk,14,'StopHunt');
+        addP(oiBridgeOk,12,'OI');
+        addP(obSameSide,10,'Book');
+        addP(fundBridgeOk,8,'Funding');
+        addP(cmfSameSide,7,'CMF');
+        addP(weisSameSide,7,'Weis');
+        addP(chochSameSide,6,'ChoCH');
+        addP(mtfBridgeOk,6,'MTF');
+        addP(ewoSameSide,4,'EWO');
+        addP(squeezeSameSide,4,'Squeeze');
+        addP(pdSameSide,3,'P/D');
+        subP(rvolVeryLow,4,'RVOL');
+        subP(cmfOpposite,7,'CMFters');
+        subP(pdOpposite,5,'P/Dters');
+        subP(mtfStrongOpposite,10,'MTFters');
+        subP(oiOpposite,12,'OIters');
+        subP(mmStrongOpposite,18,'MMters');
+        if(isL && rsi4h>75) subP(true, rsi4h>82?12:7, 'RSI4h');
+        if(!isL && rsi4h<25) subP(true, rsi4h<18?12:7, 'RSI4h');
+        if(atrGateWarn&&!atrBlocking) subP(true,5,'ATRwarn');
+
+        const bridgeCount=[mtfBridgeOk,fundBridgeOk,oiBridgeOk,huntBridgeOk].filter(Boolean).length;
+        const cvdWarmingBridge=cvdMissing && (hasEntry||hardSweepForBridge) && sc>=Math.min(72,minAutoScore) && bridgeCount>=2;
+        const cvdBridgePass = deltaOkStrict || (!cvdValid && priorityScore>=50 && (hardSweepForBridge||huntBridgeOk||mmSameSide||oiBridgeOk));
+        const deltaOk = deltaOkStrict || cvdBridgePass;
+        const cvdBridgeQualityOk = !cvdWarmingBridge || cvdBridgePass;
+
+        // Hard veto: bunlar skor değil, güvenlik frenidir.
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
+        const rsiOk = isL ? rsi4h < 82 : rsi4h > 18; // Aşırı uçta otomatik açma yok, 78/22 artık yumuşak ceza.
+        const mmOk = !mmVeryStrongOpposite;
+        const hardVeto = !!(poorLiquidity || atrBlocking || !fundOk || !rsiOk || !mmOk);
+        const hardVetoReasons=[];
+        if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
+        if(atrBlocking) hardVetoReasons.push(`ATR gate %${atrPct.toFixed(2)}`);
+        if(!fundOk) hardVetoReasons.push('Funding aşırı ters');
+        if(!rsiOk) hardVetoReasons.push(`RSI4h uç ${rsi4h}`);
+        if(!mmOk) hardVetoReasons.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
 
-        // KURAL 4: RSI 4h aşırı alım/satım → A-Tier engelle
-        const rsiOk = isL ? rsi4h < 78 : rsi4h > 22;
-
-        // KURAL 5: MM kesin ters yönde → A-Tier engelle
-        const mmOk = isL
-          ? !(mmTarget==='GENUINE_DOWN' && mmConf>=60)
-          : !(mmTarget==='GENUINE_UP' && mmConf>=60);
-
-        // A-Tier: net sinyal + delta ok + funding ok + RSI ok + MM ok + skor≥68
-        // R14: CVD bridge ile geçiyorsa bridge kalitesi de zorunlu.
-        const isTierA=hasEntry&&deltaOk&&fundOk&&rsiOk&&mmOk&&cvdBridgeQualityOk&&sc>=68;
-
-        // B-Tier: yumuşak sinyal + skor≥55
-        const softEntry=
-          (sw1?.swept&&!sw1?.confirmed)||
-          (isL?(ob1h?.bullOB&&lastPrice<=ob1h.bullOB.high*1.01):(ob1h?.bearOB&&lastPrice>=ob1h.bearOB.low*0.99))||
-          mmTarget===(isL?'GENUINE_UP':'GENUINE_DOWN')||
-          mmTarget===(isL?'UP_SWEEP':'DOWN_SWEEP');
-        const isTierB=!isTierA&&(softEntry||hasEntry)&&fundOk&&sc>=55;
+        // A: temiz otomatik. B+: CVD eksik/orta sinyal ama ağırlıklı terazi güçlü; kontrollü otomatik.
+        const isTierA = !hardVeto && hasEntry && deltaOk && sc>=Math.max(68, minAutoScore) && priorityScore>=58;
+        const isTierBPlus = !isTierA && !hardVeto && (hasEntry||softEntry) && cvdBridgePass && sc>=minAutoScore && priorityScore>=50;
+        const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry) && fundOk && sc>=55;
 
         const reasons=[], blocks=[];
         if(amd5m?.signal===(isL?'AMD_LONG':'AMD_SHORT')) reasons.push('⚡ AMD');
-        if(sw1?.confirmed&&(isL?sw1.direction==='BULL_SWEEP':sw1.direction==='BEAR_SWEEP')) reasons.push('✅ Sweep+Teyit');
-        if(wy1?.recentEvents?.some(e=>e.type==='SPRING')) reasons.push('🌊 Spring');
-        if(wy1?.recentEvents?.some(e=>e.type==='UTAD'))   reasons.push('🚨 UTAD');
-        if(cvdValid&&deltaOk) reasons.push(`📊 CVD${cvdRatio.toFixed(0)}%`);
-        else if(cvdWarmingBridge) reasons.push(`🟡 CVD ısınıyor: güçlü köprü ${bridgeCount}/4`);
+        if(hardSweepForBridge) reasons.push('✅ Sweep+Teyit');
+        if(wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS')) reasons.push('🌊 Wyckoff');
+        if(wy1?.recentEvents?.some(e=>e.type==='UTAD')) reasons.push('🚨 UTAD');
+        if(huntBridgeOk) reasons.push('🎣 Stop Hunt');
+        if(mmSameSide) reasons.push(`🏦 MM ${mmTarget}`);
+        if(oiBridgeOk) reasons.push(`📈 OI ${oiDiv}`);
+        if(fundBridgeOk) reasons.push(`💸 Funding ${fundSig}`);
+        if(cmfSameSide) reasons.push('💧 CMF');
+        if(weisSameSide) reasons.push('🌊 Weis');
+        if(chochSameSide) reasons.push('🔄 ChoCH');
+        if(cvdValid&&deltaOkStrict) reasons.push(`📊 CVD${cvdRatio.toFixed(0)}%`);
+        else if(!cvdValid && cvdBridgePass) reasons.push(`🟡 CVD yok ama terazi güçlü ${priorityScore}`);
         else if(!cvdValid) reasons.push('📊 CVD ısınma/veri yok');
-        if(liqD?.cascade) reasons.push(`💥 ${liqD.cascade.signal}`);
         if(softEntry&&!hasEntry) reasons.push('👁 Yumuşak sinyal');
-        if(!hasEntry&&!softEntry) blocks.push('Sinyal yok');
-        if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD+Tick teyidi yok');
-        if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, skor ${sc}${rvolVeryLow?', RVOL çok düşük':''}${atrBlocking?', ATR gate':''})`);
-        if(!fundOk)  blocks.push('Fund zehirli');
-        if(!rsiOk)   blocks.push(`RSI4h ${rsi4h} ${isL?'aşırı alım':'aşırı satım'}`);
-        if(!mmOk)    blocks.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
-        if(sc<55)    blocks.push(`Skor düşük(${sc})`);
 
-        const tier=isTierA?'A':isTierB?'B':'WAIT';
-        const passCount=[hasEntry||softEntry,deltaOk,fundOk,rsiOk,mmOk,sc>=55].filter(Boolean).length;
+        if(!hasEntry&&!softEntry) blocks.push('Sinyal yok');
+        if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik ve terazi zayıf');
+        if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, terazi ${priorityScore})`);
+        if(priorityScore<50) blocks.push(`Terazi düşük ${priorityScore}`);
+        if(hardVetoReasons.length) blocks.push(...hardVetoReasons.slice(0,2));
+        if(sc<55) blocks.push(`Skor düşük(${sc})`);
+
+        const tier=isTierA?'A':isTierBPlus?'B+':isTierB?'B':'WAIT';
+        const passCount=[hasEntry||softEntry,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
+        const autoOk=isTierA||isTierBPlus;
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
-          reasons, blocks, autoOk:isTierA,
-          cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, rvolVeryLow, atrBlocking,
-          reason: tier==='A'?`🎯 ${reasons.slice(0,3).join(' + ')}`:
-                  tier==='B'?`👁 ${reasons.slice(0,2).join(' + ')} — elle bak`:
+          reasons, blocks, autoOk,
+          priorityScore, priorityTags:priorityTags.slice(0,8), hardVeto, hardVetoReasons,
+          cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass,
+          rvolVeryLow, atrBlocking, poorLiquidity,
+          reason: tier==='A'?`🎯 A-Tier: ${reasons.slice(0,3).join(' + ')} · terazi ${priorityScore}`:
+                  tier==='B+'?`⚖️ B+ kontrollü: ${reasons.slice(0,3).join(' + ')} · terazi ${priorityScore}`:
+                  tier==='B'?`👁 ${reasons.slice(0,2).join(' + ')} — elle bak · terazi ${priorityScore}`:
                   `❌ ${blocks.slice(0,2).join(', ')}` };
       }
       let recommendation='WAIT', decisionChain=null;
@@ -4047,8 +4117,9 @@ function pushAutoCandidate(row) {
     action:String(row.action||'İzle').slice(0,80)
   };
   autoScanState.topCandidates.push(r);
+  const tierRank = t => t==='A'?3:t==='B+'?2:t==='B'?1:0;
   autoScanState.topCandidates = autoScanState.topCandidates
-    .sort((a,b)=>(b.tier==='A')-(a.tier==='A') || b.score-a.score || b.ts-a.ts)
+    .sort((a,b)=>tierRank(b.tier)-tierRank(a.tier) || b.score-a.score || b.ts-a.ts)
     .slice(0,12);
 }
 function markAutoSkip(symbol, reason, row={}) {
@@ -4290,26 +4361,26 @@ async function runAutoScan() {
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
-        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?'Aday':'İzle'});
+        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.tier==='B+'?'Kontrollü':'Aday'):'İzle'});
 
         // Yön izni
         if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
         if (isShort && !allowShort) { markAutoSkip(coin.symbol, 'Short kapalı', {rec:recommendation, score}); continue; }
         if (recommendation==='WAIT') { markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, longScore, shortScore, reason:decisionChain?.reason}); continue; }
 
-        // Sadece A-Tier otomatik açılır. B-Tier panelde görünür ama otomatik emir açmaz.
-        const tierOk = decisionChain?.autoOk === true && decisionChain?.tier === 'A';
+        // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
+        const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const why = `B/WAIT-Tier: ${decisionChain?.reason||'A-Tier değil'}`;
+          const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore});
           continue;
         }
-        // R14 savunma katmanı: CVD yokken zayıf bridge ile otomatik işlem açma.
-        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk) {
-          const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}) — otomatik açılmıyor`;
+        // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur; B+ autoOk ise boğma.
+        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk) {
+          const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore});
           continue;
         }
 
@@ -4395,7 +4466,7 @@ async function runAutoScan() {
           continue;
         }
 
-        logAuto(`🔥 ${coin.symbol} A-Tier PRO! ${decisionChain?.reason||'A-Tier decisionChain'} — hard-gate değil, ağırlıklı karar geçti.`);
+        logAuto(`🔥 ${coin.symbol} ${decisionChain?.tier||'A'} PRO! ${decisionChain?.reason||'decisionChain'} — hard-gate değil, ağırlıklı terazi geçti.`);
 
         // TP/SL: Paneldeki değerler kesin uygulanır; proTPSL sadece analiz kalitesine katkı verir.
         const targetPrice = isLong
