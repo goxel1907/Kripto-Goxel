@@ -1452,6 +1452,185 @@ app.get('/api/killzone', (req, res) => {
   res.json({ ok:true, ...getKillZone(), time: new Date().toUTCString() });
 });
 
+
+// ── R21 ORTAK TARAMA LİSTESİ ────────────────────────────────────────────────
+// Long/Short ekranı ile Canlı Auto aynı coin havuzunu kullanır.
+// Böylece panelde A-Tier görünen RENDER/ZEC/ALGO gibi coinler auto scanner dışında kalmaz.
+function calcScanInterest(c={}) {
+  const vol = Number(c.volume || c.quoteVolume || 0);
+  const chg = Math.abs(Number(c.change24h ?? c.priceChangePercent ?? 0));
+  const trades = Number(c.trades || c.count || 0);
+  let interest = 0;
+  if (vol > 1e9) interest += 50;
+  else if (vol > 5e8) interest += 40;
+  else if (vol > 1e8) interest += 25;
+  else if (vol > 5e7) interest += 15;
+  else if (vol > 1e7) interest += 8;
+  else interest += 3;
+  if (chg > 10) interest += 25;
+  else if (chg > 5) interest += 18;
+  else if (chg > 3) interest += 12;
+  else if (chg > 1) interest += 6;
+  if (trades > 500000) interest += 20;
+  else if (trades > 200000) interest += 14;
+  else if (trades > 100000) interest += 9;
+  else if (trades > 50000) interest += 5;
+  if (Number(c.volScore || 0) > 0) interest += Math.min(18, Math.round(Number(c.volScore || 0) / 5));
+  if (Number(c.rangePct || 0) > 6) interest += 5;
+  return Math.round(interest);
+}
+
+function normalizeTickerToCoin(t={}) {
+  const full = String(t.fullSymbol || t.symbol || '').toUpperCase().endsWith('USDT')
+    ? String(t.fullSymbol || t.symbol).toUpperCase()
+    : String(t.fullSymbol || t.symbol || '').toUpperCase() + 'USDT';
+  const sym = full.replace('USDT','');
+  return {
+    symbol: sym,
+    fullSymbol: full,
+    price: Number(t.price || t.lastPrice || 0),
+    change24h: Number(t.change24h ?? t.priceChangePercent ?? 0),
+    volume: Number(t.volume || t.quoteVolume || 0),
+    high: Number(t.high || t.highPrice || 0),
+    low: Number(t.low || t.lowPrice || 0),
+    trades: Number(t.trades || t.count || 0),
+    rangePct: Number(t.rangePct || 0),
+    volScore: Number(t.volScore || 0),
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// R22 — HASSAS TERAZİ KATMANI
+// Ek Binance REST çağrısı yapmaz. Sadece zaten hesaplanan analiz/veri sonuçlarını
+// öncelik puanına bağlar: sektör rotasyon, sweep cluster, signal decay,
+// funding trap, likidasyon şelalesi, ilk/kaç test kalitesi.
+// ═══════════════════════════════════════════════════════════════════════════════
+const r22AnalysisMemory = new Map(); // symbol -> son analiz özeti
+const R22_MEMORY_MS = 12 * 60 * 1000;
+
+function r22BaseSymbol(symbol) {
+  return String(symbol || '').toUpperCase().replace(/USDT$/,'').replace(/^1000/,'');
+}
+function r22SectorOf(symbol) {
+  const s = r22BaseSymbol(symbol);
+  // R22 BEST: GPT + Claude sektör haritaları birleştirildi — daha geniş kapsam
+  const groups = [
+    ['AI',      ['FET','RENDER','RNDR','TAO','AIGENSYN','CGPT','NFP','WLD','VVV','VIRTUAL','GRASS','ARKM',
+                 'AI','AIOZ','OCEAN','AGIX','NMR','MASA','AIT','PAAL','PALM','HYPER']],
+    ['MEME',    ['PEPE','DOGE','SHIB','WIF','BONK','FLOKI','MEME','TURBO','BOME','MYRO','BRETT','GOAT',
+                 'MOG','NEIRO','POPCAT','SUNDOG','PNUT','ACT','TRUMP','MELANIA']],
+    ['LAYER2',  ['OP','ARB','STRK','MANTA','ZK','SCROLL','LINEA','METIS','IMX','LOOPRING','LRC']],
+    ['LAYER1',  ['SUI','APT','NEAR','SEI','TON','INJ','TIA','AVAX','ADA','HBAR','ALGO','ATOM','DOT',
+                 'KAVA','OSMO','LUNA','ONE','EGLD','ICX','QTUM']],
+    ['PRIVACY', ['ZEC','XMR','SCRT','ROSE','AZERO','BEAM','DUSK']],
+    ['DEFI',    ['UNI','AAVE','PENDLE','ENA','LDO','CRV','MKR','COMP','SUSHI','CAKE','JUP','DYDX',
+                 'GMX','BAL','SNX','YFI','RUNE','BANANA','BIFI']],
+    ['GAMING',  ['GALA','SAND','MANA','PIXEL','MAGIC','PORTAL','YGG','AXS','GMT','BIGTIME',
+                 'RONIN','RON','ENJ','BEAM','MAGIC']],
+    ['STORAGE', ['FIL','AR','HNT','STORJ','BLUZ']],
+    ['RWA',     ['LINK','PYTH','ONDO','OM','TRU','RIO','POND','MPL','CFG','POLYX','TOKEN']],
+    ['EXCHANGE',['OKB','LEO','CRO','KCS','GT','MX']],
+  ];
+  for (const [name, arr] of groups) if (arr.includes(s)) return name;
+  return 'ALT';
+}
+function r22PruneMemory() {
+  const now = Date.now();
+  for (const [k,v] of r22AnalysisMemory.entries()) {
+    if (!v || now - (v.ts||0) > R22_MEMORY_MS) r22AnalysisMemory.delete(k);
+  }
+}
+function r22RememberAnalysis(symbol, summary={}) {
+  try {
+    const full = String(symbol || '').toUpperCase().endsWith('USDT') ? String(symbol).toUpperCase() : String(symbol).toUpperCase() + 'USDT';
+    const side = summary.recommendation === 'LONG' || summary.recommendation === 'SHORT' ? summary.recommendation : 'WAIT';
+    const dc = summary.decisionChain || {};
+    const score = side === 'LONG' ? Number(summary.longScore||0) : side === 'SHORT' ? Number(summary.shortScore||0) : Math.max(Number(summary.longScore||0), Number(summary.shortScore||0));
+    r22AnalysisMemory.set(full, {
+      ts: Date.now(), symbol: full, base: r22BaseSymbol(full), sector: r22SectorOf(full),
+      side, tier: String(dc.tier || 'WAIT'), autoOk: !!dc.autoOk,
+      priorityScore: Number(dc.priorityScore || 0), score,
+      signalAgeMin: Number(summary.signalAgeMin || 0),
+      r22: dc.r22 || null,
+    });
+    r22PruneMemory();
+  } catch(e) {}
+}
+function r22RotationBias(symbol, side) {
+  r22PruneMemory();
+  const full = String(symbol || '').toUpperCase().endsWith('USDT') ? String(symbol).toUpperCase() : String(symbol).toUpperCase() + 'USDT';
+  const sector = r22SectorOf(full);
+  const rows = [...r22AnalysisMemory.values()].filter(x =>
+    x.symbol !== full && x.side === side && ['A','B+'].includes(x.tier) && x.score >= 68 &&
+    !(x.r22?.signalDecay?.noAuto)
+  );
+  const sameSector = rows.filter(x => x.sector === sector);
+  const marketSameSide = rows;
+  let score = 0, active = false, tag = 'NONE';
+  if (sameSector.length >= 3) { active = true; score = 12; tag = 'SECTOR_ROTATION_STRONG'; }
+  else if (sameSector.length >= 2) { active = true; score = 8; tag = 'SECTOR_ROTATION'; }
+  else if (marketSameSide.length >= 4) { active = true; score = 7; tag = 'MARKET_ROTATION'; }
+  return {
+    active, score, tag, sector,
+    sameSectorCount: sameSector.length,
+    marketCount: marketSameSide.length,
+    symbols: (sameSector.length ? sameSector : marketSameSide).slice(0,5).map(x => x.base),
+  };
+}
+function r22Clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, Number(n||0))); }
+
+async function getUnifiedScanCandidates(limit=40) {
+  const lim = Math.max(10, Math.min(60, Number(limit || 40)));
+  const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
+    'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
+
+  const merged = new Map();
+  try {
+    const data = await cached('futures_tickers', 15*60*1000, () => bPub('/fapi/v1/ticker/24hr'));
+    if (Array.isArray(data)) {
+      for (const t of data) {
+        if (!String(t.symbol||'').endsWith('USDT') || EXCL.has(String(t.symbol))) continue;
+        const c = normalizeTickerToCoin(t);
+        if (c.volume <= 20000000 || !c.price) continue;
+        c.source = 'futures';
+        merged.set(c.fullSymbol, c);
+      }
+    }
+  } catch(e) {
+    console.log('[R21_SCAN] futures_tickers alınamadı:', e.message);
+  }
+
+  // Volatilite motorundaki coinleri de aynı havuza kat; aynı sembol varsa volScore/range bilgisini zenginleştir.
+  for (const v of (volatilityStore.coins || [])) {
+    const c = normalizeTickerToCoin(v);
+    if (!c.fullSymbol || !c.price) continue;
+    const old = merged.get(c.fullSymbol) || {};
+    merged.set(c.fullSymbol, {
+      ...old,
+      ...c,
+      volume: Math.max(Number(old.volume||0), Number(c.volume||0)),
+      trades: Math.max(Number(old.trades||0), Number(c.trades||0)),
+      volScore: Math.max(Number(old.volScore||0), Number(c.volScore||0)),
+      rangePct: Math.max(Number(old.rangePct||0), Number(c.rangePct||0)),
+      source: old.source ? old.source + '+volatility' : 'volatility'
+    });
+  }
+
+  return [...merged.values()]
+    .map(c => ({ ...c, interest: calcScanInterest(c) }))
+    .sort((a,b) => (b.interest-a.interest) || (b.volScore-a.volScore) || (b.volume-a.volume))
+    .slice(0, lim);
+}
+
+app.get('/api/scan-candidates', async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 40);
+    const coins = await getUnifiedScanCandidates(limit);
+    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(60, limit)), coins, source:'R21_UNIFIED_SCAN_LIST' });
+  } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
+});
+
 // ── COIN LİSTESİ ──────────────────────────────────────────────────────────────
 app.get('/api/futures-coins', async (req, res) => {
   try {
@@ -1778,6 +1957,41 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const sweep15m = detectSweepAndConfirm(k15m, {buyLiq:liq1h.buyLiq,  sellLiq:liq1h.sellLiq},  10);
     const hunt1h   = detectStopHunt(k1h, 15);
     const hunt15m  = detectStopHunt(k15m, 8);
+
+
+    // ── R22 SİNYAL YAŞI / İLK TEST ÖLÇÜMÜ ──────────────────────────────────
+    // Bu fonksiyonlar yeni REST çağrısı yapmaz. Var olan sweep/tick/AMD bilgisinin
+    // tazeliğini hesaplar. Bayat sweep A/B+ otomatik hakkını düşürür.
+    function r22SideSweepRows(isLong) {
+      const dir = isLong ? 'BULL_SWEEP' : 'BEAR_SWEEP';
+      const rows = [];
+      if (sweep15m?.confirmed && sweep15m.direction === dir) rows.push({ tf:'15m', minutesPerCandle:15, ...sweep15m });
+      if (sweep1h?.confirmed  && sweep1h.direction  === dir) rows.push({ tf:'1h',  minutesPerCandle:60, ...sweep1h  });
+      if (sweep4h?.confirmed  && sweep4h.direction  === dir) rows.push({ tf:'4h',  minutesPerCandle:240,...sweep4h  });
+      return rows;
+    }
+    function r22SignalDecayForSide(isLong) {
+      const tickDir = isLong ? 'BULL_SWEEP' : 'BEAR_SWEEP';
+      const tickFresh = !!(tickData?.tickSweep?.fresh && tickData?.tickSweep?.type === tickDir);
+      const amdFresh = !!(amd5m?.tickConfirm && amd5m?.signal === (isLong ? 'AMD_LONG' : 'AMD_SHORT'));
+      if (tickFresh || amdFresh) return { ageMin:0, mult:1, penalty:0, bonus:6, noAuto:false, label:'0-3dk taze tick/AMD' };
+      const rows = r22SideSweepRows(isLong);
+      if (!rows.length) return { ageMin:null, mult:1, penalty:0, bonus:0, noAuto:false, label:'sweep yok' };
+      const ageMin = Math.min(...rows.map(r => Math.max(0, Number(r.candleAge||0) * Number(r.minutesPerCandle||15))));
+      if (ageMin <= 3)  return { ageMin, mult:1.00, penalty:0,  bonus:5, noAuto:false, label:'0-3dk taze' };
+      if (ageMin <= 6)  return { ageMin, mult:0.80, penalty:4,  bonus:0, noAuto:false, label:'3-6dk geçerli' };
+      if (ageMin <= 10) return { ageMin, mult:0.60, penalty:8,  bonus:0, noAuto:false, label:'6-10dk zayıflıyor' };
+      return { ageMin, mult:0.45, penalty:14, bonus:0, noAuto:true, label:'10dk+ bayat: auto yok' };
+    }
+    function r22TestQualityForSide(isLong) {
+      const rows = r22SideSweepRows(isLong);
+      if (!rows.length) return { count:0, label:'test yok', bonus:0, penalty:0, first:false, second:false, late:false };
+      const best = rows.sort((a,b)=>(Number(a.candleAge||99)*Number(a.minutesPerCandle||15))-(Number(b.candleAge||99)*Number(b.minutesPerCandle||15)))[0];
+      const count = Math.max(1, Number(best.sweepStrength || 1));
+      if (count <= 1) return { count, tf:best.tf, label:'İlk test / taze sweep', bonus:8, penalty:0, first:true, second:false, late:false };
+      if (count === 2) return { count, tf:best.tf, label:'2. test hâlâ geçerli', bonus:3, penalty:0, first:false, second:true, late:false };
+      return { count, tf:best.tf, label:'3+ test: seviye yıprandı', bonus:0, penalty:8, first:false, second:false, late:true };
+    }
 
     // ── ORDER BLOCKS ──────────────────────────────────────────────────────────
     function detectWyckoff(klines) {
@@ -2839,6 +3053,110 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
     longScore =Math.min(Math.round(longScore*freshnessMult),100);
     shortScore=Math.min(Math.round(shortScore*freshnessMult),100);
+
+    // ── R23: R22 BEST ÜSTÜ HASSAS SKOR KATMANI ─────────────────────────────
+    // Burada ham longScore/shortScore güçlendirilir; evalDecision içinde ayrıca
+    // priorityScore/terazi hesaplanır. Aynı aile bonusları tavanlıdır ki bot
+    // kural yığmasıyla boğulmasın veya tek aileden aşırı şişmesin.
+    const r23ScoreLedger={
+      LONG:{macro:0,structure:0},
+      SHORT:{macro:0,structure:0}
+    };
+    function r23AddScore(side, pts, label, family='macro', familyCap=28){
+      const s=side==='SHORT'?'SHORT':'LONG';
+      const capLeft=Math.max(0, Number(familyCap||0) - Number(r23ScoreLedger[s][family]||0));
+      const add=Math.max(0, Math.min(Number(pts||0), capLeft));
+      if(add<=0){
+        const msg=`⚖️ ${label} aile tavanına takıldı (${familyCap})`;
+        if(s==='LONG')signals.long.push(msg); else signals.short.push(msg);
+        return 0;
+      }
+      r23ScoreLedger[s][family]=(r23ScoreLedger[s][family]||0)+add;
+      if(s==='LONG') longScore=Math.min(longScore+add,100);
+      else shortScore=Math.min(shortScore+add,100);
+      if(s==='LONG')signals.long.push(`${label} +${add}`); else signals.short.push(`${label} +${add}`);
+      return add;
+    }
+    function r23MulScore(side, mult, label){
+      const s=side==='SHORT'?'SHORT':'LONG';
+      if(s==='LONG'){ longScore=Math.round(longScore*mult); signals.long.push(label); }
+      else { shortScore=Math.round(shortScore*mult); signals.short.push(label); }
+    }
+
+    // FONLAMA TUZAĞI SKORU — artık rapordaki gibi STRONG/NORMAL ayrımı gerçekten uygulanır.
+    {
+      const _ftSweepHunt = (sweep1h?.confirmed) || (hunt1h?.hunted) || !!(amd5m?.tickConfirm);
+      if (_ftSweepHunt) {
+        const _fundMomBull = fundMom?.ok && (fundMom.signal==='STRONG_LONG_BIAS' || fundMom.signal==='LONG_BIAS');
+        const _fundMomBear = fundMom?.ok && (fundMom.signal==='STRONG_SHORT_BIAS' || fundMom.signal==='SHORT_BIAS');
+        const _ftLong = (curFund < -0.08 || fundSig==='EXTREME_NEGATIVE') &&
+          (oiChg1h < -0.4 || oiDiv==='SHORT_SQUEEZE' || oiDiv==='NEUTRAL');
+        const _ftShort = (curFund > 0.08 || fundSig==='EXTREME_POSITIVE') &&
+          (oiChg1h < -0.4 || oiDiv==='LONG_LIQUIDATION' || oiDiv==='NEUTRAL');
+        if (_ftLong) {
+          const strong = _fundMomBull || !fundMom?.ok;
+          r23AddScore('LONG', strong ? 20 : 15, `💣 Fonlama Tuzağı ${strong?'STRONG':'NORMAL'}: Fund ${curFund.toFixed(4)}% + sweep/hunt + OI ${oiDiv}`, 'macro', 28);
+        }
+        if (_ftShort) {
+          const strong = _fundMomBear || !fundMom?.ok;
+          r23AddScore('SHORT', strong ? 20 : 15, `💣 Fonlama Tuzağı SHORT ${strong?'STRONG':'NORMAL'}: Fund ${curFund.toFixed(4)}% + sweep/hunt + OI ${oiDiv}`, 'macro', 28);
+        }
+      }
+    }
+
+    // LİKİDASYON ŞELALESİ SKORU — 1h + 4h cluster artık gerçekten hesaba katılır.
+    {
+      const _up1 = liq1h?.buyLiq?.[0];
+      const _dn1 = liq1h?.sellLiq?.[0];
+      const _up4 = liq4h?.buyLiq?.[0];
+      const _dn4 = liq4h?.sellLiq?.[0];
+      const _oiBig = Math.abs(oiChg1h) > 1.5 || Math.abs(oiChg4h) > 4 || ['SHORT_SQUEEZE','LONG_LIQUIDATION'].includes(oiDiv);
+      const _near = (l,m=1.0,min=0.35)=>!!(l && Math.abs(Number(l.distPct||99)) < Math.max(min, atrPct*m));
+      const _near4 = (l)=>!!(l && Math.abs(Number(l.distPct||99)) < Math.max(1.2, atrPct*2.2));
+      const _upStrength = (_near(_up1,0.95,0.35)?Number(_up1.strength||0):0) + (_near4(_up4)?Number(_up4.strength||0)*0.65:0);
+      const _dnStrength = (_near(_dn1,0.95,0.35)?Number(_dn1.strength||0):0) + (_near4(_dn4)?Number(_dn4.strength||0)*0.65:0);
+      const _bullSweep = (sweep1h?.confirmed && sweep1h.direction==='BULL_SWEEP') || (hunt1h?.hunted && hunt1h.direction==='BULL_HUNT');
+      const _bearSweep = (sweep1h?.confirmed && sweep1h.direction==='BEAR_SWEEP') || (hunt1h?.hunted && hunt1h.direction==='BEAR_HUNT');
+      const _cascOppL = _bullSweep && _upStrength >= 2 && _oiBig;
+      const _cascOppS = _bearSweep && _dnStrength >= 2 && _oiBig;
+      const _cascRiskL = _dnStrength >= 3 && (oiDiv==='CONFIRMED_BEAR' || oiDiv==='LONG_LIQUIDATION');
+      const _cascRiskS = _upStrength >= 3 && (oiDiv==='CONFIRMED_BULL' || oiDiv==='SHORT_SQUEEZE');
+      if (_cascOppL) r23AddScore('LONG', 14, `🌊 Liq Şelalesi ↑: üst cluster ${_upStrength.toFixed(1)}x + OI`, 'macro', 28);
+      if (_cascOppS) r23AddScore('SHORT', 14, `🌊 Liq Şelalesi ↓: alt cluster ${_dnStrength.toFixed(1)}x + OI`, 'macro', 28);
+      if (_cascRiskL) r23MulScore('LONG',0.80,`⚠️ Liq Şelalesi Riski ↓: alt cluster ${_dnStrength.toFixed(1)}x`);
+      if (_cascRiskS) r23MulScore('SHORT',0.80,`⚠️ Liq Şelalesi Riski ↑: üst cluster ${_upStrength.toFixed(1)}x`);
+    }
+
+    // SEKTÖR ROTASYON SKORU — sektör nabzı skor + teraziye ayrı ayrı bağlanır.
+    {
+      const _sideRec = longScore > shortScore ? 'LONG' : shortScore > longScore ? 'SHORT' : 'WAIT';
+      if (_sideRec !== 'WAIT') {
+        const rotBias = r22RotationBias(full, _sideRec);
+        if (rotBias.active) {
+          const _bonus = rotBias.tag === 'SECTOR_ROTATION_STRONG' ? 14 : Math.min(10, rotBias.score + 2);
+          r23AddScore(_sideRec, _bonus, `🎯 Sektör Rotasyon [${rotBias.sector}]: ${rotBias.symbols.join('/')} aynı yön`, 'macro', 28);
+        }
+      }
+    }
+
+    // KAÇ. TEST? İLK TEST? — taze ilk test güçlenir, 3+ test yıpranır.
+    {
+      if (sweep1h?.confirmed) {
+        const _sweepStr = sweep1h.sweepStrength || 1;
+        if (_sweepStr <= 1) {
+          if (sweep1h.direction==='BULL_SWEEP') r23AddScore('LONG',12,'🥇 İlk Seviye Testi — en temiz giriş','structure',18);
+          else r23AddScore('SHORT',12,'🥇 İlk Seviye Testi — en temiz giriş','structure',18);
+        } else if (_sweepStr === 2) {
+          if (sweep1h.direction==='BULL_SWEEP') r23AddScore('LONG',5,'🥈 2. Test — hâlâ geçerli','structure',18);
+          else r23AddScore('SHORT',5,'🥈 2. Test — hâlâ geçerli','structure',18);
+        } else {
+          if (sweep1h.direction==='BULL_SWEEP') r23MulScore('LONG',0.85,`⚠️ ${_sweepStr}. Test — seviye yorgun`);
+          else r23MulScore('SHORT',0.85,`⚠️ ${_sweepStr}. Test — seviye yorgun`);
+        }
+      }
+    }
+    // ── R23 skor katmanı bitti ──────────────────────────────────────────────────
+
     // ── İKİ KATMANLI KARAR MEKANİZMASI ─────────────────────────────────────────
       // A-Tier: Yüksek güven → otomatik işlem açılır
       // B-Tier: Orta güven  → sinyal gösterilir, elle karar ver
@@ -2947,6 +3265,62 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const pdSameSide=isL ? (pd1h?.forLong||pd4h?.forLong) : (pd1h?.forShort||pd4h?.forShort);
         const pdOpposite=isL ? (pd1h?.zone==='PREMIUM_HIGH') : (pd1h?.zone==='DISCOUNT_LOW');
 
+        // ── R22: Teraziye bağlanan ileri okuma katmanları ────────────────────
+        const r22Side = isL ? 'LONG' : 'SHORT';
+        const r22Rotation = r22RotationBias(full, r22Side);
+        const r22Decay = r22SignalDecayForSide(isL);
+        const r22TestQ = r22TestQualityForSide(isL);
+        const r22FundingTrap = (() => {
+          // R22 BEST: -0.08% eşiği (GPT) + fundMom momentum teyidi (benim eklentim)
+          const sameSweepOrHunt = hardSweepForBridge || huntBridgeOk || amd5m?.signal === (isL ? 'AMD_LONG' : 'AMD_SHORT');
+          const fundMomBull = fundMom?.ok && (fundMom?.signal === 'STRONG_LONG_BIAS' || fundMom?.signal === 'LONG_BIAS');
+          const fundMomBear = fundMom?.ok && (fundMom?.signal === 'STRONG_SHORT_BIAS' || fundMom?.signal === 'SHORT_BIAS');
+          if (isL) {
+            const extreme = curFund < -0.08 || fundSig === 'EXTREME_NEGATIVE';
+            const oiShortsClosing = oiChg1h < -0.4 || oiDiv === 'SHORT_SQUEEZE' || oiDiv === 'NEUTRAL';
+            const fundMomConfirm = fundMomBull || !fundMom?.ok; // Funding negatife gidiyorsa ekstra güçlü
+            const detected = !!(extreme && sameSweepOrHunt && oiShortsClosing);
+            const strength = detected ? (fundMomConfirm ? 'STRONG' : 'NORMAL') : 'NONE';
+            return { detected, strength, side:'LONG', funding:+curFund.toFixed(4), oiChg1h:+oiChg1h.toFixed(2),
+                     scoreBonus: detected ? (strength === 'STRONG' ? 20 : 15) : 0,
+                     psBonus: detected ? 16 : 0,
+                     label: detected ? `Fonlama short tuzağı (Fund:${curFund.toFixed(4)}% OI:${oiChg1h.toFixed(1)}%)` : '' };
+          }
+          const extreme = curFund > 0.08 || fundSig === 'EXTREME_POSITIVE';
+          const oiLongsClosing = oiChg1h < -0.4 || oiDiv === 'LONG_LIQUIDATION' || oiDiv === 'NEUTRAL';
+          const detected = !!(extreme && sameSweepOrHunt && oiLongsClosing);
+          const strength = detected ? (fundMomBear ? 'STRONG' : 'NORMAL') : 'NONE';
+          return { detected, strength, side:'SHORT', funding:+curFund.toFixed(4), oiChg1h:+oiChg1h.toFixed(2),
+                   scoreBonus: detected ? (strength === 'STRONG' ? 20 : 15) : 0,
+                   psBonus: detected ? 16 : 0,
+                   label: detected ? `Fonlama long tuzağı (Fund:${curFund.toFixed(4)}%)` : '' };
+        })();
+        const r22LiqWaterfall = (() => {
+          const lvls = Array.isArray(cgData?.topLiqLevels) ? cgData.topLiqLevels : [];
+          const above = lvls.filter(l => Number(l.price) > lastPrice).reduce((s,l)=>s+Number(l.total ?? (Number(l.buyLiq||0)+Number(l.sellLiq||0))),0);
+          const below = lvls.filter(l => Number(l.price) < lastPrice).reduce((s,l)=>s+Number(l.total ?? (Number(l.buyLiq||0)+Number(l.sellLiq||0))),0);
+          const levelSignal = lvls.length >= 2;
+          const bookAbove = upLiqStr || 0, bookBelow = dnLiqStr || 0;
+          const _lvlScore=(l,w=1)=>l ? (Number(l.strength||0)*w)/Math.max(Math.abs(Number(l.distPct||99)),0.15) : 0;
+          const localAbove = bookAbove + _lvlScore(liq1h?.buyLiq?.[0], 1200) + _lvlScore(liq4h?.buyLiq?.[0], 750);
+          const localBelow = bookBelow + _lvlScore(liq1h?.sellLiq?.[0], 1200) + _lvlScore(liq4h?.sellLiq?.[0], 750);
+          const adverseFromMap = isL ? (below > 100000 && below > above * 1.55) : (above > 100000 && above > below * 1.55);
+          const favorableFromMap = isL ? (above > 100000 && above > below * 1.25) : (below > 100000 && below > above * 1.25);
+          const adverseFromBook = isL ? (localBelow > localAbove * 1.55) : (localAbove > localBelow * 1.55);
+          const favorableFromBook = isL ? (localAbove > localBelow * 1.25) : (localBelow > localAbove * 1.25);
+          const cascade = liqData?.cascade || null;
+          const adverseCascade = cascade ? (isL ? cascade.direction==='LONG_CASCADE' : cascade.direction==='SHORT_CASCADE') : false;
+          const favorableCascade = cascade ? (isL ? cascade.direction==='SHORT_CASCADE' : cascade.direction==='LONG_CASCADE') : false;
+          return {
+            above:+above.toFixed(0), below:+below.toFixed(0),
+            localAbove:+localAbove.toFixed(2), localBelow:+localBelow.toFixed(2),
+            adverse: !!(adverseCascade || adverseFromMap || (!levelSignal && adverseFromBook)),
+            favorable: !!(favorableCascade || favorableFromMap || (!levelSignal && favorableFromBook)),
+            source: levelSignal ? 'coinglass-cache' : 'local-liq-1h4h-strength',
+            label: isL ? 'Long için alt şelale riski / üst squeeze potansiyeli' : 'Short için üst şelale riski / alt cascade potansiyeli'
+          };
+        })();
+
         const rvolVeryLow = !!(rvol1h && (rvol1h.signal === 'VERY_LOW' || Number(rvol1h.rvol || 0) < 0.15));
         const _slPctEval = parseFloat(autoConfig?.slPct || 2);
         const atrBlocking = atrGateBlock || atrPct > _slPctEval * 2.5;
@@ -2954,7 +3328,19 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         let priorityScore=0;
         const priorityTags=[];
-        const addP=(ok,pts,tag)=>{ if(ok){ priorityScore+=pts; priorityTags.push(`${tag}+${pts}`); } };
+        const priorityFamily={macro:0,structure:0};
+        const addP=(ok,pts,tag,family=null,cap=999)=>{
+          if(!ok)return 0;
+          let add=Number(pts||0);
+          if(family){
+            const left=Math.max(0, Number(cap||0)-Number(priorityFamily[family]||0));
+            add=Math.min(add,left);
+            priorityFamily[family]=(priorityFamily[family]||0)+add;
+          }
+          if(add>0){ priorityScore+=add; priorityTags.push(`${tag}+${add}`); }
+          else if(family){ priorityTags.push(`${tag}+0(cap)`); }
+          return add;
+        };
         const subP=(ok,pts,tag)=>{ if(ok){ priorityScore-=pts; priorityTags.push(`${tag}-${pts}`); } };
         addP(hardSweepForBridge,24,'Sweep');
         addP(mmSameSide,mmTarget?.startsWith('GENUINE')?18:12,'MM');
@@ -2969,6 +3355,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(ewoSameSide,4,'EWO');
         addP(squeezeSameSide,4,'Squeeze');
         addP(pdSameSide,3,'P/D');
+        // R22: öncelik terazi ekleri. Bunlar iyi sinyali hızlandırır ama güvenlik frenlerini devre dışı bırakmaz.
+        addP(r22Rotation.active, r22Rotation.score, r22Rotation.tag === 'SECTOR_ROTATION_STRONG' ? 'SektörRot' : 'Rotasyon', 'macro', 28);
+        addP(r22FundingTrap.detected, r22FundingTrap.psBonus || 16, r22FundingTrap.strength==='STRONG'?'FundTrap🔥':'FundingTrap', 'macro', 28);
+        addP(r22LiqWaterfall.favorable && !r22LiqWaterfall.adverse, 8, 'LiqŞelale+', 'macro', 28);
+        addP(r22Decay.bonus > 0, r22Decay.bonus, 'Taze', 'structure', 16);
+        addP(r22TestQ.bonus > 0, r22TestQ.bonus, r22TestQ.first ? 'İlkTest' : '2.Test', 'structure', 16);
+        subP(r22Decay.penalty > 0, r22Decay.penalty, 'Decay');
+        subP(r22TestQ.penalty > 0, r22TestQ.penalty, '3.Test');
+        subP(r22LiqWaterfall.adverse, 14, 'LiqŞelaleTers');
         subP(rvolVeryLow,4,'RVOL');
         subP(cmfOpposite,7,'CMFters');
         subP(pdOpposite,5,'P/Dters');
@@ -2989,6 +3384,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
         const rsiOk = isL ? rsi4h < 82 : rsi4h > 18; // Aşırı uçta otomatik açma yok, 78/22 artık yumuşak ceza.
         const mmOk = !mmVeryStrongOpposite;
+        const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk));
         const hardVeto = !!(poorLiquidity || atrBlocking || !fundOk || !rsiOk || !mmOk);
         const hardVetoReasons=[];
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
@@ -2996,10 +3392,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!fundOk) hardVetoReasons.push('Funding aşırı ters');
         if(!rsiOk) hardVetoReasons.push(`RSI4h uç ${rsi4h}`);
         if(!mmOk) hardVetoReasons.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
+        if(signalDecayAutoBlock) hardVetoReasons.push(`Signal decay ${r22Decay.label}`);
 
         // A: temiz otomatik. B+: CVD eksik/orta sinyal ama ağırlıklı terazi güçlü; kontrollü otomatik.
-        const isTierA = !hardVeto && hasEntry && deltaOk && sc>=Math.max(68, minAutoScore) && priorityScore>=58;
-        const isTierBPlus = !isTierA && !hardVeto && (hasEntry||softEntry) && cvdBridgePass && sc>=minAutoScore && priorityScore>=50;
+        // R22: 10dk+ bayat sweep A/B+ otomatik açamaz; panelde B olarak kalır.
+        const isTierA = !hardVeto && !signalDecayAutoBlock && hasEntry && deltaOk && sc>=Math.max(68, minAutoScore) && priorityScore>=58;
+        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && (hasEntry||softEntry) && cvdBridgePass && sc>=minAutoScore && priorityScore>=50;
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry) && fundOk && sc>=55;
 
         const reasons=[], blocks=[];
@@ -3011,6 +3409,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(mmSameSide) reasons.push(`🏦 MM ${mmTarget}`);
         if(oiBridgeOk) reasons.push(`📈 OI ${oiDiv}`);
         if(fundBridgeOk) reasons.push(`💸 Funding ${fundSig}`);
+        if(r22FundingTrap.detected) reasons.push('💣 Funding tuzağı');
+        if(r22Rotation.active) reasons.push(`🎯 ${r22Rotation.tag} ${r22Rotation.symbols.join('/')}`);
+        if(r22Decay.bonus>0) reasons.push(`⏳ ${r22Decay.label}`);
+        if(r22TestQ.first||r22TestQ.second) reasons.push(`🔁 ${r22TestQ.label}`);
+        if(r22LiqWaterfall.favorable&&!r22LiqWaterfall.adverse) reasons.push('🌊 Liq şelalesi lehte');
         if(cmfSameSide) reasons.push('💧 CMF');
         if(weisSameSide) reasons.push('🌊 Weis');
         if(chochSameSide) reasons.push('🔄 ChoCH');
@@ -3022,6 +3425,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!hasEntry&&!softEntry) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik ve terazi zayıf');
         if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, terazi ${priorityScore})`);
+        if(signalDecayAutoBlock) blocks.push(`Bayat sweep: ${r22Decay.label}`);
+        if(r22LiqWaterfall.adverse) blocks.push('Likidasyon şelalesi ters risk');
         if(priorityScore<50) blocks.push(`Terazi düşük ${priorityScore}`);
         if(hardVetoReasons.length) blocks.push(...hardVetoReasons.slice(0,2));
         if(sc<55) blocks.push(`Skor düşük(${sc})`);
@@ -3031,9 +3436,19 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const autoOk=isTierA||isTierBPlus;
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
-          priorityScore, priorityTags:priorityTags.slice(0,8), hardVeto, hardVetoReasons,
+          priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass,
-          rvolVeryLow, atrBlocking, poorLiquidity,
+          rvolVeryLow, atrBlocking, poorLiquidity, signalDecayAutoBlock,
+          r22: {
+            sector: r22Rotation.sector,
+            rotation: r22Rotation,
+            signalDecay: r22Decay,
+            testQuality: r22TestQ,
+            fundingTrap: r22FundingTrap,
+            liqWaterfall: r22LiqWaterfall,
+            scoreLedger: r23ScoreLedger,
+            priorityFamily,
+          },
           reason: tier==='A'?`🎯 A-Tier: ${reasons.slice(0,3).join(' + ')} · terazi ${priorityScore}`:
                   tier==='B+'?`⚖️ B+ kontrollü: ${reasons.slice(0,3).join(' + ')} · terazi ${priorityScore}`:
                   tier==='B'?`👁 ${reasons.slice(0,2).join(' + ')} — elle bak · terazi ${priorityScore}`:
@@ -3056,6 +3471,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     else if(score>=55)suggestedLev=4;
     else suggestedLev=3;
     suggestedLev=Math.min(suggestedLev,50);
+
+    // R22 hafıza: Long/Short ekranı ile Auto aynı piyasa nabzını görsün.
+    // Ek çağrı yok; yalnızca bu analiz sonucunun özetini 12dk saklar.
+    r22RememberAnalysis(full, { recommendation, longScore, shortScore, signalAgeMin, decisionChain });
 
     res.json({
       ok:true, symbol:full, price:lastPrice,
@@ -3090,7 +3509,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         longRiskCap, shortRiskCap, longAdverse, shortAdverse,
         rsi4h, mmTarget, mmConf, oiDiv
       },
-      smartMoney:{topLongPct:+topLong.toFixed(1),globalLongPct:+globalLong.toFixed(1),divergence:smDiv},
+      smartMoney:{topLongPct:+topLong.toFixed(1),topShortPct:+(100-topLong).toFixed(1),globalLongPct:+globalLong.toFixed(1),globalShortPct:+(100-globalLong).toFixed(1),divergence:smDiv},
       orderBook:{imbalance:+bookImb.toFixed(1)},
       // ── YENİ ANALİZ KATMANLARI ──────────────────────────────────────────────
       volumeProfile: { '1h':vpvr1h, '4h':vpvr4h },
@@ -3113,6 +3532,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         atrGate: { atrPct:+atrPct.toFixed(2), slPct:slPctForGate, warn:atrGateWarn, block:atrGateBlock },
       },
       longScore, shortScore, recommendation, decisionChain,
+      r22: decisionChain?.r22 || null,
       signals:recommendation==='LONG'?signals.long.slice(0,8):signals.short.slice(0,8),
     });
   } catch(e) {
@@ -4276,23 +4696,16 @@ async function runAutoScan() {
     // 2. Kill zone kaldırıldı — kripto 24/7, saat bazlı tarama seyreltilmez.
     const kz = getKillZone();
 
-    // 3. Volatil coinleri kullan — en çok hareket edenler önce
-    let scanList;
+    // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
+    // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
+    const scanLimit = Math.max(10, Math.min(60, Number(cfg.scanCount || 40)));
+    let scanList = await getUnifiedScanCandidates(scanLimit);
     if (symbols.length > 0) {
-      // Kullanıcı belirlemiş
-      const coinsResp = await fetch(`http://localhost:${PORT}/api/futures-coins`).then(r=>r.json());
-      scanList = (coinsResp.coins||[]).filter(c=>symbols.includes(c.symbol));
-    } else {
-      // Volatilite scanner'dan al — en aktif coinler
-      if (volatilityStore.coins.length > 0) {
-        scanList = volatilityStore.coins.slice(0, 20);
-        logAuto(`🔥 Volatil top ${scanList.length}: ${scanList.slice(0,5).map(c=>c.symbol).join(', ')}...`);
-      } else {
-        const coinsResp = await fetch(`http://localhost:${PORT}/api/futures-coins`).then(r=>r.json());
-        scanList = (coinsResp.coins||[]).sort((a,b)=>b.volume-a.volume).slice(0,20);
-      }
+      const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
+      scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
+    logAuto(`🔥 R22 ortak tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
@@ -4319,7 +4732,7 @@ async function runAutoScan() {
     } catch(e) {}
 
     autoScanState.phase = 'TARIYOR';
-    autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,30);
+    autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
     // 3. Her coini analiz et
