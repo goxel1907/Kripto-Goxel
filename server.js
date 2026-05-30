@@ -386,8 +386,12 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   let data;
   try { data = JSON.parse(text); }
   catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
-  if (data.code && data.code < 0) {
-    if (Number(data.code) === -1021 && !_retry) {
+  // R16 BALANCE LOCK: Futures balance/account endpointleri başarıda array veya account objesi döndürür.
+  // Eğer Binance {code,msg} döndürdüyse bu başarı değil, imza/key/IP/izin veya endpoint hatasıdır.
+  // Önceki R15'te bazı {code,msg} cevapları debug'ta OK görünüp balance parse edilemedi hatasına düşüyordu.
+  if (data && typeof data === 'object' && !Array.isArray(data) && ('code' in data) && ('msg' in data)) {
+    const codeNum = Number(data.code);
+    if (codeNum === -1021 && !_retry) {
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
     }
@@ -3067,6 +3071,11 @@ app.post('/api/account', async (req, res) => {
   async function trySigned(label, fn) {
     try {
       const data = await fn();
+      // R16 BALANCE LOCK: {code,msg} hiçbir account/balance/positionRisk çağrısında başarılı veri değildir.
+      // Böyle gelirse 'OK object keys=code,msg' diye yanıltıcı gösterme; gerçek Binance hatasını kaydet.
+      if (data && typeof data === 'object' && !Array.isArray(data) && ('code' in data) && ('msg' in data)) {
+        throw new Error(formatBinanceError(label, data));
+      }
       signedOk = true;
       debugOk(label, data);
       return data;
