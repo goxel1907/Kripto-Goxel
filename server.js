@@ -13,6 +13,27 @@ const PORT = process.env.PORT || 3000;
 const FAPI = 'https://fapi.binance.com';
 const FAPI_WS = 'wss://fstream.binance.com/stream';
 
+// ── TR SAATİ — tüm panel/log zamanları Europe/Istanbul ─────────────────────
+function trTime(ts = Date.now()) {
+  try {
+    return new Intl.DateTimeFormat('tr-TR', {
+      timeZone: 'Europe/Istanbul', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(new Date(ts));
+  } catch(_) { return new Date(ts).toISOString().slice(11,19); }
+}
+function trDateTime(ts = Date.now()) {
+  try {
+    return new Intl.DateTimeFormat('tr-TR', {
+      timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(new Date(ts));
+  } catch(_) { return new Date(ts).toISOString(); }
+}
+function safeNum(v, d=6) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Number(n.toFixed(d)) : null;
+}
+
 // R24: Auto monitor gerçek açılış sayaçları. Restart olsa bile mümkün olduğunca korunur.
 const AUTO_STATS_PATH = path.join(process.cwd(), 'lazarus_auto_stats.json');
 function loadAutoStats() {
@@ -296,10 +317,15 @@ async function freshOpenPositionForSymbol(apiKey, apiSecret, symbol, attempts=3)
   return { open:false, pos:null };
 }
 async function cleanupClosedPositionState(symbol, reason='POSITION_ALREADY_CLOSED') {
-  const sym = String(symbol||'').toUpperCase();
-  try { trailingState.delete(sym); } catch(_) {}
+  const sym = normalizeSymbol ? normalizeSymbol(symbol) : String(symbol||'').toUpperCase();
+  const st = (() => { try { return trailingState.get(sym) || {}; } catch(_) { return {}; } })();
   try { invalidatePositionRiskCache(reason); } catch(_) {}
-  try { setCooldown(sym, 30*1000, reason); } catch(_) {}
+  try {
+    if (st && st.side) setCloseCooldown(sym, {code:reason, realizedPnl:0, side:st.side}, st);
+    else setCooldown(sym, COOLDOWN_CLOSE_MS, reason, {mode:'SAME_SIDE_AFTER_CLOSE'});
+  } catch(_) {}
+  try { recordTradeClose(sym, st, {code:reason, label:'Pozisyon kapanmış, SLTP rescue atlandı', realizedPnl:null, cooldownMs:COOLDOWN_CLOSE_MS}); } catch(_) {}
+  try { trailingState.delete(sym); } catch(_) {}
   try { logAuto(`⚠️ ${sym.replace('USDT','')} pozisyon kapanmış — SLTP rescue atlandı (${reason})`); } catch(_) {}
 }
 
@@ -1520,7 +1546,7 @@ function getKillZone() {
 }
 
 app.get('/api/killzone', (req, res) => {
-  res.json({ ok:true, ...getKillZone(), time: new Date().toUTCString() });
+  res.json({ ok:true, ...getKillZone(), time: trDateTime(), timeZone:'Europe/Istanbul' });
 });
 
 
@@ -1650,6 +1676,65 @@ function r22RotationBias(symbol, side) {
   };
 }
 function r22Clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, Number(n||0))); }
+
+
+// ── R25 — ÜST/ALT FİTİL LİKİDİTE TUZAĞI HARİTASI ────────────────────────────
+// Hard veto değildir. Yanlış yönde otomatiği yavaşlatır, doğru yönde terazi/score güçlendirir.
+function r25DetectWickTrapMap(k1h=[], k4h=[], price=0, ctx={}) {
+  const px = Number(price || 0);
+  if (!px) return { upperTrap:false, lowerTrap:false, strength:0, notes:[] };
+  const atrPct = Math.max(0.25, Number(ctx.atrPct || 1));
+  const nearPct = Math.min(3.2, Math.max(0.65, atrPct * 0.85));
+  const notes = [];
+  function scan(kl, tf, weight=1) {
+    const out = { upper:0, lower:0, nearestUpper:null, nearestLower:null };
+    const arr = Array.isArray(kl) ? kl.slice(-(tf==='4h'?55:70)) : [];
+    for (const k of arr) {
+      const o=Number(k[1]), h=Number(k[2]), l=Number(k[3]), c=Number(k[4]);
+      const range=h-l, body=Math.abs(c-o);
+      if (!range || !h || !l) continue;
+      const up=h-Math.max(o,c), dn=Math.min(o,c)-l;
+      const upReject = up/range > 0.42 && up > body*1.15;
+      const dnReject = dn/range > 0.42 && dn > body*1.15;
+      const du = Math.abs(h-px)/px*100;
+      const dl = Math.abs(px-l)/px*100;
+      if (upReject && du <= nearPct) {
+        out.upper += weight;
+        if (!out.nearestUpper || du < out.nearestUpper.distPct) out.nearestUpper = { price:h, distPct:+du.toFixed(2), tf };
+      }
+      if (dnReject && dl <= nearPct) {
+        out.lower += weight;
+        if (!out.nearestLower || dl < out.nearestLower.distPct) out.nearestLower = { price:l, distPct:+dl.toFixed(2), tf };
+      }
+    }
+    return out;
+  }
+  const a = scan(k1h,'1h',1.0), b = scan(k4h,'4h',1.45);
+  let upperStrength = a.upper + b.upper;
+  let lowerStrength = a.lower + b.lower;
+  const nearestUpper = [a.nearestUpper,b.nearestUpper].filter(Boolean).sort((x,y)=>x.distPct-y.distPct)[0] || null;
+  const nearestLower = [a.nearestLower,b.nearestLower].filter(Boolean).sort((x,y)=>x.distPct-y.distPct)[0] || null;
+  const pd1 = ctx.pd1h || {}, pd4 = ctx.pd4h || {};
+  const vp1 = ctx.vpvr1h || {}, vp4 = ctx.vpvr4h || {};
+  const premHigh = pd1.zone === 'PREMIUM_HIGH' || pd4.zone === 'PREMIUM_HIGH' || Number(pd1.pct||0) > 78 || Number(pd4.pct||0) > 82;
+  const discLow  = pd1.zone === 'DISCOUNT_LOW'  || pd4.zone === 'DISCOUNT_LOW'  || Number(pd1.pct||0) < 22 || Number(pd4.pct||0) < 18;
+  const nearVah = (Number(vp1.vah)>0 && Math.abs(px-Number(vp1.vah))/px*100 <= nearPct) || (Number(vp4.vah)>0 && Math.abs(px-Number(vp4.vah))/px*100 <= nearPct*1.25);
+  const nearVal = (Number(vp1.val)>0 && Math.abs(px-Number(vp1.val))/px*100 <= nearPct) || (Number(vp4.val)>0 && Math.abs(px-Number(vp4.val))/px*100 <= nearPct*1.25);
+  const upLiq = ctx.liq1h?.buyLiq?.[0] || ctx.liq4h?.buyLiq?.[0];
+  const dnLiq = ctx.liq1h?.sellLiq?.[0] || ctx.liq4h?.sellLiq?.[0];
+  const nearUpperLiq = !!(upLiq && Number(upLiq.distPct) >= -0.05 && Number(upLiq.distPct) <= nearPct*1.25);
+  const nearLowerLiq = !!(dnLiq && Number(dnLiq.distPct) >= -0.05 && Number(dnLiq.distPct) <= nearPct*1.25);
+  if (premHigh) { upperStrength += 1.0; notes.push('premium_high'); }
+  if (nearVah) { upperStrength += 0.8; notes.push('VAH_yakın'); }
+  if (nearUpperLiq) { upperStrength += 0.9; notes.push('üst_liq_yakın'); }
+  if (discLow) { lowerStrength += 1.0; notes.push('discount_low'); }
+  if (nearVal) { lowerStrength += 0.8; notes.push('VAL_yakın'); }
+  if (nearLowerLiq) { lowerStrength += 0.9; notes.push('alt_liq_yakın'); }
+  const upperTrap = upperStrength >= 2.8;
+  const lowerTrap = lowerStrength >= 2.8;
+  const dominant = upperTrap && upperStrength >= lowerStrength ? 'UPPER_REJECTION_TRAP' : lowerTrap ? 'LOWER_REJECTION_TRAP' : 'NONE';
+  return { upperTrap, lowerTrap, dominant, upperStrength:+upperStrength.toFixed(2), lowerStrength:+lowerStrength.toFixed(2), strength:+Math.max(upperStrength, lowerStrength).toFixed(2), nearestUpper, nearestLower, nearPct:+nearPct.toFixed(2), notes };
+}
 
 async function getUnifiedScanCandidates(limit=40) {
   const lim = Math.max(10, Math.min(60, Number(limit || 40)));
@@ -2636,6 +2721,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const eqLvl4h  = detectEqualLevels(k4h);
     const pd1h     = calcPremiumDiscount(k1h, lastPrice, 20);
     const pd4h     = calcPremiumDiscount(k4h, lastPrice, 20);
+    const r25WickTrapMap = r25DetectWickTrapMap(k1h, k4h, lastPrice, { atrPct, pd1h, pd4h, vpvr1h, vpvr4h, liq1h, liq4h });
     const rvol1h   = calcRVOL(k1h);
     const rvol4h   = calcRVOL(k4h);
     const brk1h    = detectBreakerBlocks(k1h);
@@ -2960,6 +3046,20 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       // Yanlış bölgede ceza: premium'da long = MM tuzağı
       if(!pd1h.forLong&&pd1h.pct>60) {longScore=Math.round(longScore*0.80);}
       if(!pd1h.forShort&&pd1h.pct<40) {shortScore=Math.round(shortScore*0.80);}
+    }
+
+    // ── R25.5 ÜST/ALT FİTİL LİKİDİTE TUZAĞI — ters yön fırsatını kaçırma ───
+    if (r25WickTrapMap?.upperTrap) {
+      shortScore += Math.min(22, 12 + Math.round(r25WickTrapMap.upperStrength * 2));
+      longScore = Math.round(longScore * (r25WickTrapMap.upperStrength >= 4 ? 0.66 : 0.74));
+      signals.short.push(`🧲 Üst fitil/direnç likidite tuzağı → LONG değil SHORT izle (${r25WickTrapMap.upperStrength}x)`);
+      signals.long.push(`⚠️ Üst fitil direnç havuzu — long otomatik zayıflatıldı`);
+    }
+    if (r25WickTrapMap?.lowerTrap) {
+      longScore += Math.min(22, 12 + Math.round(r25WickTrapMap.lowerStrength * 2));
+      shortScore = Math.round(shortScore * (r25WickTrapMap.lowerStrength >= 4 ? 0.66 : 0.74));
+      signals.long.push(`🧲 Alt fitil/destek likidite tuzağı → SHORT değil LONG izle (${r25WickTrapMap.lowerStrength}x)`);
+      signals.short.push(`⚠️ Alt fitil destek havuzu — short otomatik zayıflatıldı`);
     }
 
     // ── 13. EQUAL HIGHS/LOWS — İNDUCEMENT TESPİTİ ───────────────────────────
@@ -3335,6 +3435,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           : (sqz1h?.direction==='BEAR'&&sqz1h?.acceleration==='GROWING');
         const pdSameSide=isL ? (pd1h?.forLong||pd4h?.forLong) : (pd1h?.forShort||pd4h?.forShort);
         const pdOpposite=isL ? (pd1h?.zone==='PREMIUM_HIGH') : (pd1h?.zone==='DISCOUNT_LOW');
+        const wickTrapAgainst = isL ? !!r25WickTrapMap?.upperTrap : !!r25WickTrapMap?.lowerTrap;
+        const wickTrapFavorable = isL ? !!r25WickTrapMap?.lowerTrap : !!r25WickTrapMap?.upperTrap;
+        const wickTrapAutoBlock = wickTrapAgainst && !(mmSameSide && sc >= 88 && (r25WickTrapMap?.strength||0) < 3.6);
+        const wickTrapFlip = {
+          against: wickTrapAgainst,
+          favorable: wickTrapFavorable,
+          autoBlock: wickTrapAutoBlock,
+          suggestedSide: r25WickTrapMap?.upperTrap ? 'SHORT' : r25WickTrapMap?.lowerTrap ? 'LONG' : 'NONE',
+          strength: r25WickTrapMap?.strength || 0,
+          map: r25WickTrapMap
+        };
 
         // ── R22: Teraziye bağlanan ileri okuma katmanları ────────────────────
         const r22Side = isL ? 'LONG' : 'SHORT';
@@ -3426,6 +3537,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(ewoSameSide,4,'EWO');
         addP(squeezeSameSide,4,'Squeeze');
         addP(pdSameSide,3,'P/D');
+        addP(wickTrapFavorable,16,'FitilTrapFlip','structure',16);
         // R22: öncelik terazi ekleri. Bunlar iyi sinyali hızlandırır ama güvenlik frenlerini devre dışı bırakmaz.
         addP(r22Rotation.active, r22Rotation.score, r22Rotation.tag === 'SECTOR_ROTATION_STRONG' ? 'SektörRot' : 'Rotasyon', 'macro', 28);
         addP(r22FundingTrap.detected, r22FundingTrap.psBonus || 16, r22FundingTrap.strength==='STRONG'?'FundTrap🔥':'FundingTrap', 'macro', 28);
@@ -3438,6 +3550,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         subP(rvolVeryLow,4,'RVOL');
         subP(cmfOpposite,7,'CMFters');
         subP(pdOpposite,5,'P/Dters');
+        subP(wickTrapAgainst,20,'FitilTrapTers');
         subP(mtfStrongOpposite,10,'MTFters');
         subP(oiOpposite,12,'OIters');
         subP(mmStrongOpposite,18,'MMters');
@@ -3456,6 +3569,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const rsiOk = isL ? rsi4h < 82 : rsi4h > 18; // Aşırı uçta otomatik açma yok, 78/22 artık yumuşak ceza.
         const mmOk = !mmVeryStrongOpposite;
         const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk));
+        const trapAutoBlock = !!wickTrapAutoBlock;
         const hardVeto = !!(poorLiquidity || atrBlocking || !fundOk || !rsiOk || !mmOk);
         const hardVetoReasons=[];
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
@@ -3464,11 +3578,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!rsiOk) hardVetoReasons.push(`RSI4h uç ${rsi4h}`);
         if(!mmOk) hardVetoReasons.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
         if(signalDecayAutoBlock) hardVetoReasons.push(`Signal decay ${r22Decay.label}`);
+        if(trapAutoBlock) hardVetoReasons.push(`Fitil/liquidite tuzağı ${wickTrapFlip.suggestedSide} lehine`);
 
         // A: temiz otomatik. B+: CVD eksik/orta sinyal ama ağırlıklı terazi güçlü; kontrollü otomatik.
         // R22: 10dk+ bayat sweep A/B+ otomatik açamaz; panelde B olarak kalır.
-        const isTierA = !hardVeto && !signalDecayAutoBlock && hasEntry && deltaOk && sc>=Math.max(68, minAutoScore) && priorityScore>=58;
-        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && (hasEntry||softEntry) && cvdBridgePass && sc>=minAutoScore && priorityScore>=50;
+        const isTierA = !hardVeto && !signalDecayAutoBlock && !trapAutoBlock && hasEntry && deltaOk && sc>=Math.max(68, minAutoScore) && priorityScore>=58;
+        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !trapAutoBlock && (hasEntry||softEntry) && cvdBridgePass && sc>=minAutoScore && priorityScore>=50;
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry) && fundOk && sc>=55;
 
         const reasons=[], blocks=[];
@@ -3485,6 +3600,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r22Decay.bonus>0) reasons.push(`⏳ ${r22Decay.label}`);
         if(r22TestQ.first||r22TestQ.second) reasons.push(`🔁 ${r22TestQ.label}`);
         if(r22LiqWaterfall.favorable&&!r22LiqWaterfall.adverse) reasons.push('🌊 Liq şelalesi lehte');
+        if(wickTrapFavorable) reasons.push('🧲 Fitil tuzağı ters yön lehine');
         if(cmfSameSide) reasons.push('💧 CMF');
         if(weisSameSide) reasons.push('🌊 Weis');
         if(chochSameSide) reasons.push('🔄 ChoCH');
@@ -3497,6 +3613,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik ve terazi zayıf');
         if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, terazi ${priorityScore})`);
         if(signalDecayAutoBlock) blocks.push(`Bayat sweep: ${r22Decay.label}`);
+        if(trapAutoBlock) blocks.push(`Fitil/liquidite tuzağı: ${wickTrapFlip.suggestedSide} tarafı daha doğru`);
         if(r22LiqWaterfall.adverse) blocks.push('Likidasyon şelalesi ters risk');
         if(priorityScore<50) blocks.push(`Terazi düşük ${priorityScore}`);
         if(hardVetoReasons.length) blocks.push(...hardVetoReasons.slice(0,2));
@@ -3509,7 +3626,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass,
-          rvolVeryLow, atrBlocking, poorLiquidity, signalDecayAutoBlock,
+          rvolVeryLow, atrBlocking, poorLiquidity, signalDecayAutoBlock, trapAutoBlock, wickTrapFlip,
           r22: {
             sector: r22Rotation.sector,
             rotation: r22Rotation,
@@ -3517,6 +3634,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
             testQuality: r22TestQ,
             fundingTrap: r22FundingTrap,
             liqWaterfall: r22LiqWaterfall,
+            wickTrapFlip,
             scoreLedger: r23ScoreLedger,
             priorityFamily,
           },
@@ -3604,6 +3722,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       },
       longScore, shortScore, recommendation, decisionChain,
       r22: decisionChain?.r22 || null,
+      r25: { wickTrapMap: r25WickTrapMap, wickTrapFlip: decisionChain?.wickTrapFlip || null },
       signals:recommendation==='LONG'?signals.long.slice(0,8):signals.short.slice(0,8),
     });
   } catch(e) {
@@ -4137,52 +4256,140 @@ app.post('/api/update-sl', async (req, res) => {
 const trailingState = new Map(); // symbol → pozisyon durumu
 
 // ── COOLDOWN SİSTEMİ ─────────────────────────────────────────────────────────
-// Aynı coine tekrar tekrar girmesini önler. Manuel/SL/TP kapanışında,
-// hata durumunda ve açık pozisyon varken cooldown eklenir.
-const cooldownMap = new Map(); // symbol (FULLSYM) → expiry timestamp
-const COOLDOWN_CLOSE_MS   = 30 * 60 * 1000; // Manuel/SL/TP kapanış: 30dk
-const COOLDOWN_ERR_MS     = 20 * 60 * 1000; // Emir hatası: 20dk
-// NOT: POSOPEN cooldown kaldırıldı — açık pozisyon koruması alreadyOpen kontrolüyle yapılır
+// R25: Cooldown artık sadece kör sembol kilidi değil. Kapanan işlemlerde aynı yönü kilitler,
+// ama güçlü fitil/liquidite flip varsa ters yöne izin verir. Emir/SLTP hatası hâlâ full kilittir.
+const cooldownMap = new Map(); // FULLSYM → {exp, reason, mode, side, createdAt}
+const COOLDOWN_CLOSE_MS   = 45 * 60 * 1000; // kâr/manuel/TP sonrası aynı yön: 45dk
+const COOLDOWN_LOSS_MS    = 90 * 60 * 1000; // zarar sonrası aynı yön: 90dk
+const COOLDOWN_ERR_MS     = 20 * 60 * 1000; // Emir/SLTP hatası: 20dk full
 
 function normalizeSymbol(s) {
   const str = String(s || '').toUpperCase().trim();
   return str.endsWith('USDT') ? str : str + 'USDT';
 }
-function isOnCooldown(symbol) {
+function normalizeSide(s) {
+  const x = String(s || '').toUpperCase();
+  if (x === 'BUY') return 'LONG';
+  if (x === 'SELL') return 'SHORT';
+  return x === 'LONG' || x === 'SHORT' ? x : '';
+}
+function getCooldownInfo(symbol) {
   const sym = normalizeSymbol(symbol);
-  const exp = cooldownMap.get(sym);
-  if (!exp) return false;
-  if (Date.now() > exp) { cooldownMap.delete(sym); return false; }
+  let info = cooldownMap.get(sym);
+  if (!info) return null;
+  if (typeof info === 'number') info = { exp: info, reason:'legacy', mode:'FULL', side:null, createdAt:Date.now() };
+  if (Date.now() > Number(info.exp||0)) { cooldownMap.delete(sym); return null; }
+  return { ...info, symbol:sym, remainMs:Number(info.exp)-Date.now(), remainMin:Math.ceil((Number(info.exp)-Date.now())/60000) };
+}
+function canBypassCooldownForReverse(info, desiredSide, decisionChain) {
+  if (!info || info.mode !== 'SAME_SIDE_AFTER_CLOSE') return false;
+  const ds = normalizeSide(desiredSide);
+  if (!ds || !info.side || ds === info.side) return false;
+  const flip = decisionChain?.wickTrapFlip || decisionChain?.r22?.wickTrapFlip || {};
+  const ps = Number(decisionChain?.priorityScore || 0);
+  const tier = String(decisionChain?.tier || '');
+  return !!((flip.favorable || flip.suggestedSide === ds) && ps >= 55) || (tier === 'A' && ps >= 75);
+}
+function isOnCooldown(symbol, desiredSide=null, decisionChain=null) {
+  const info = getCooldownInfo(symbol);
+  if (!info) return false;
+  if (desiredSide && canBypassCooldownForReverse(info, desiredSide, decisionChain)) return false;
   return true;
 }
-function setCooldown(symbol, ms, reason) {
+function setCooldown(symbol, ms, reason, meta={}) {
   const sym = normalizeSymbol(symbol);
   const exp = Date.now() + ms;
-  cooldownMap.set(sym, exp);
-  logAuto(`⏳ ${sym.replace('USDT','')} cooldown ${Math.round(ms/60000)}dk: ${reason}`);
+  const info = { exp, reason:String(reason||''), mode:meta.mode || 'FULL', side:normalizeSide(meta.side), createdAt:Date.now() };
+  cooldownMap.set(sym, info);
+  logAuto(`⏳ ${sym.replace('USDT','')} cooldown ${Math.round(ms/60000)}dk: ${reason}${info.side?` (${info.side})`:''}${info.mode==='SAME_SIDE_AFTER_CLOSE'?' • ters flip serbest':''}`);
 }
-function getCooldownRemainMs(symbol) {
-  const sym = normalizeSymbol(symbol);
-  const exp = cooldownMap.get(sym);
-  if (!exp) return 0;
-  const rem = exp - Date.now();
-  if (rem <= 0) { cooldownMap.delete(sym); return 0; }
-  return rem;
+function setCloseCooldown(symbol, cls={}, state={}) {
+  const side = normalizeSide(state?.side || cls?.side);
+  const pnl = Number(cls?.realizedPnl);
+  const loss = Number.isFinite(pnl) && pnl < 0;
+  const code = String(cls?.code || 'CLOSED');
+  const ms = loss || code === 'STOP_LOSS' || code.includes('LOSS') ? COOLDOWN_LOSS_MS : COOLDOWN_CLOSE_MS;
+  setCooldown(symbol, ms, `${code} sonrası aynı yön re-entry kilidi`, { mode:'SAME_SIDE_AFTER_CLOSE', side });
+  return ms;
+}
+function getCooldownRemainMs(symbol, desiredSide=null, decisionChain=null) {
+  const info = getCooldownInfo(symbol);
+  if (!info) return 0;
+  if (desiredSide && canBypassCooldownForReverse(info, desiredSide, decisionChain)) return 0;
+  return info.remainMs;
 }
 function getCooldownList() {
   const list = [];
-  const now = Date.now();
-  for (const [sym, exp] of cooldownMap.entries()) {
-    const rem = exp - now;
-    if (rem > 0) {
-      list.push({ symbol: sym.replace('USDT',''), remainMs: rem, remainMin: Math.ceil(rem/60000) });
-    } else {
-      cooldownMap.delete(sym);
-    }
+  for (const [sym] of cooldownMap.entries()) {
+    const info = getCooldownInfo(sym);
+    if (info) list.push({ symbol: sym.replace('USDT',''), remainMs: info.remainMs, remainMin: info.remainMin, reason:info.reason, mode:info.mode, side:info.side });
   }
-  return list.sort((a,b) => b.remainMs - a.remainMs).slice(0, 15);
+  return list.sort((a,b) => b.remainMs - a.remainMs).slice(0, 20);
 }
 
+// ── R25 TRADE LEDGER / İŞLEM KARNESİ ─────────────────────────────────────────
+const tradeLedgerPath = './trade_ledger_live.json';
+let tradeLedger = [];
+try { tradeLedger = JSON.parse(fs.readFileSync(tradeLedgerPath, 'utf8') || '[]'); if (!Array.isArray(tradeLedger)) tradeLedger=[]; } catch(_) { tradeLedger=[]; }
+function saveTradeLedger() {
+  try { fs.writeFileSync(tradeLedgerPath, JSON.stringify(tradeLedger.slice(0,250), null, 2)); } catch(_) {}
+}
+function makeTradeId(symbol, openedAt) { return `${normalizeSymbol(symbol)}_${Number(openedAt||Date.now())}`; }
+function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
+  const sym = normalizeSymbol(symbol);
+  const openedAt = Number(state.openedAt || Date.now());
+  const id = makeTradeId(sym, openedAt);
+  const row = {
+    id, symbol:sym, side:normalizeSide(side), status:'OPEN', openedAt, openedAtTR:trDateTime(openedAt),
+    entryPrice:safeNum(entryPrice, 10), qty:safeNum(qty, 6), leverage:Number(state.leverage||autoConfig?.leverage||0)||null,
+    marginUSDT:safeNum(state?.entryReason?.panel?.usdtAmount ?? autoConfig?.usdtAmount, 2),
+    entryReason: state?.entryReason?.reason || `${normalizeSide(side)} açıldı`,
+    entryTags: state?.entryReason?.tags || [], score: state?.entryReason?.score || null,
+    exitReason:null, resultNote:null, pnlUSDT:null, roiPct:null, closedAt:null, closedAtTR:null,
+  };
+  tradeLedger = [row, ...tradeLedger.filter(x => x.id !== id)].slice(0,250);
+  saveTradeLedger();
+  return row;
+}
+function buildResultNote(cls={}, state={}) {
+  const pnl = Number(cls.realizedPnl);
+  if (Number.isFinite(pnl) && pnl < 0) {
+    const er = JSON.stringify(state?.entryReason || {}).toLowerCase();
+    if (er.includes('fitil') || er.includes('premium') || er.includes('vah')) return 'Zarar: üst/alt fitil likidite bölgesinde ters MM dönüşü; aynı yön 90dk kilit.';
+    if (er.includes('rvol') || er.includes('poor')) return 'Zarar: likidite/hacim kalitesi zayıf; aynı yön 90dk kilit.';
+    return 'Zarar: SL/ters akış; aynı yön 90dk re-entry kilidi.';
+  }
+  if (Number.isFinite(pnl) && pnl > 0) return 'Kâr: plan çalıştı; aynı yön kısa süre bekleme, ters fitil flip varsa izin.';
+  if (cls.code === 'EXTERNAL_OR_MANUAL') return 'Manuel/Binance kapanışı: kullanıcı risk gördü kabul edildi; aynı yön kilit.';
+  return cls.label || 'Kapanış Binance senkronundan alındı.';
+}
+function recordTradeClose(symbol, state={}, cls={}) {
+  const sym = normalizeSymbol(symbol);
+  const openedAt = Number(state?.openedAt || 0);
+  const id = openedAt ? makeTradeId(sym, openedAt) : null;
+  let row = tradeLedger.find(x => (id && x.id === id) || (x.symbol === sym && x.status === 'OPEN'));
+  if (!row) row = recordTradeOpen(sym, state?.side || cls?.side || 'UNKNOWN', state?.entryPrice || null, null, state);
+  const closedAt = Date.now();
+  const entry = Number(row.entryPrice || state?.entryPrice || 0);
+  const close = Number(cls.closePrice || 0);
+  const rawMove = entry > 0 && close > 0 ? ((close-entry)/entry*100*(normalizeSide(row.side)==='SHORT'?-1:1)) : null;
+  const lev = Number(row.leverage || state?.leverage || 1) || 1;
+  const roiPct = Number.isFinite(rawMove) ? rawMove * lev : null;
+  Object.assign(row, {
+    status:'CLOSED', closedAt, closedAtTR:trDateTime(closedAt), closePrice:safeNum(close,10),
+    pnlUSDT:Number.isFinite(Number(cls.realizedPnl)) ? safeNum(cls.realizedPnl,6) : null,
+    roiPct:Number.isFinite(roiPct) ? safeNum(roiPct,2) : null,
+    exitReason:cls.code || 'BINANCE_CLOSED', exitLabel:cls.label || 'Binance kapanışı',
+    resultNote:buildResultNote(cls, state), sl:cls.sl || state?.currentSL || null, tp:cls.tp || state?.targetTP || null,
+    cooldownMin: Math.ceil((Number(cls.cooldownMs||0))/60000) || null,
+  });
+  tradeLedger = [row, ...tradeLedger.filter(x => x !== row && x.id !== row.id)].slice(0,250);
+  saveTradeLedger();
+  return row;
+}
+app.get('/api/trade-ledger', (_req, res) => {
+  res.json({ ok:true, time:trDateTime(), timeZone:'Europe/Istanbul', trades:tradeLedger.slice(0,120) });
+});
 
 function calcFallbackTP(entryPrice, isLong, tpPct) {
   const pct = Math.max(0.05, parseFloat(tpPct || 10));
@@ -4725,7 +4932,7 @@ app.get('/api/auto/status', (req, res) => {
 });
 
 function logAuto(msg) {
-  const entry = `${new Date().toLocaleTimeString('tr-TR')} ${msg}`;
+  const entry = `${trTime()} ${msg}`;
   autoLog.push(entry);
   if (autoLog.length > 80) autoLog.shift();
   autoScanState.lastAction = entry;
@@ -4872,9 +5079,11 @@ async function runAutoScan() {
       const alreadyOpen = openPos.some(p=>p.symbol===coin.fullSymbol);
       if (alreadyOpen) { markAutoSkip(coin.symbol, 'Zaten açık pozisyon var'); continue; }
 
-      // Cooldown kontrolü — aynı coine tekrar girmesini önler
+      // Cooldown kontrolü — FULL kilitlerde analiz bile yapma.
+      // SAME_SIDE_AFTER_CLOSE ise analizi yine yap: ZEC örneğindeki gibi ters fitil/liquidite flip SHORT fırsatı olabilir.
       const fullSymCheck = normalizeSymbol(coin.fullSymbol || coin.symbol);
-      if (isOnCooldown(fullSymCheck)) {
+      const preCd = getCooldownInfo(fullSymCheck);
+      if (preCd && preCd.mode !== 'SAME_SIDE_AFTER_CLOSE') {
         const remMin = Math.ceil(getCooldownRemainMs(fullSymCheck)/60000);
         markAutoSkip(coin.symbol, `Cooldown ${remMin}dk kaldı`, {rec:'CD', tier:'CD', reason:`Cooldown ${remMin}dk`});
         continue;
@@ -4907,6 +5116,18 @@ async function runAutoScan() {
         if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
         if (isShort && !allowShort) { markAutoSkip(coin.symbol, 'Short kapalı', {rec:recommendation, score}); continue; }
         if (recommendation==='WAIT') { markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, longScore, shortScore, reason:decisionChain?.reason}); continue; }
+
+        // R25: kapanış cooldown'u aynı yönü kilitler; güçlü ters fitil/liquidite flip varsa ters yön geçebilir.
+        const postCd = getCooldownInfo(fullSymCheck);
+        if (postCd) {
+          const bypass = canBypassCooldownForReverse(postCd, recommendation, decisionChain);
+          if (!bypass) {
+            const remMin = Math.ceil(getCooldownRemainMs(fullSymCheck, recommendation, decisionChain)/60000);
+            markAutoSkip(coin.symbol, `Cooldown ${remMin}dk: ${postCd.reason || 'aynı yön kilit'}`, {rec:recommendation, tier:'CD', score, reason:postCd.reason});
+            continue;
+          }
+          logAuto(`🔁 ${coin.symbol} cooldown ters flip ile bypass: eski ${postCd.side}, yeni ${recommendation}, terazi ${decisionChain?.priorityScore||0}`);
+        }
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
@@ -5067,9 +5288,11 @@ async function runAutoScan() {
               cvd: analysis.cvd?.momentum,
               funding: analysis.funding?.current,
               panel:{ usdtAmount, leverage, slPct:userSLPct, tpPct:userTPPct },
+              wickTrap: analysis.r25?.wickTrapMap || analysis.decisionChain?.wickTrapFlip?.map || null,
             },
             managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${recommendation} açıldı — skor:${score}`, urgency:'LOW', lastCheck:Date.now() },
           });
+          try { recordTradeOpen(coin.fullSymbol, recommendation, orderResp.executedPrice||analysis.price, orderResp.quantity || orderResp.qty || null, trailingState.get(coin.fullSymbol)); } catch(_) {}
           // Bir sonraki coin için bekle
           await new Promise(r=>setTimeout(r,2000));
         } else {
@@ -5221,7 +5444,7 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   }
 
   return {
-    code, label, emoji,
+    code, label, emoji, side, openedAt: state?.openedAt || null,
     closePrice: closePrice ? +closePrice.toFixed(8) : null,
     realizedPnl: Number.isFinite(wa.pnl) ? +wa.pnl.toFixed(6) : null,
     tradeCount: closeTrades.length || trades.length || 0,
@@ -5253,9 +5476,12 @@ async function syncPositions() {
         const cls = await classifyClosedPosition(autoConfig.apiKey, autoConfig.apiSecret, sym, state);
         const px = cls.closePrice ? ` fiyat:${cls.closePrice}` : '';
         const pnl = Number.isFinite(cls.realizedPnl) ? ` pnl:${cls.realizedPnl}` : '';
-        logAuto(`${cls.emoji} ${sym.replace('USDT','')} kapandı → ${cls.label}${px}${pnl} — state temizlendi, 30dk cooldown`);
+        const cdMs = setCloseCooldown(sym, cls, state);
+        cls.cooldownMs = cdMs;
+        try { recordTradeClose(sym, state, cls); } catch(_) {}
+        logAuto(`${cls.emoji} ${sym.replace('USDT','')} kapandı → ${cls.label}${px}${pnl} — state temizlendi, ${Math.ceil(cdMs/60000)}dk aynı yön cooldown`);
         trailingState.delete(sym);
-        setCooldown(sym, COOLDOWN_CLOSE_MS, `${cls.code} algılandı`);
+        invalidatePositionRiskCache('POSITION_CLOSED_SYNC');
       }
     }
 
@@ -5284,8 +5510,11 @@ async function syncPositions() {
               quantity:Math.abs(amt).toString(), reduceOnly:'true', positionSide:'BOTH'
             });
             logAuto(`🛑 ${sym.replace('USDT','')} R14 hard-loss guard kapattı: move ${realMoveGuard.toFixed(2)}% ROI ${roiGuard.toFixed(1)}%`);
+            const stHard = trailingState.get(sym) || {side:isLongGuard?'LONG':'SHORT', entryPrice:ep, leverage:lev, openedAt:Date.now()};
+            const clsHard = {code:'R14_HARD_LOSS_GUARD', label:'Hard-loss guard', emoji:'🛑', side:stHard.side, closePrice:mp, realizedPnl:null, cooldownMs:COOLDOWN_LOSS_MS};
+            try { recordTradeClose(sym, stHard, clsHard); } catch(_) {}
             trailingState.delete(sym);
-            setCooldown(sym, COOLDOWN_CLOSE_MS, 'R14_HARD_LOSS_GUARD');
+            setCooldown(sym, COOLDOWN_LOSS_MS, 'R14_HARD_LOSS_GUARD aynı yön kilit', {mode:'SAME_SIDE_AFTER_CLOSE', side:stHard.side});
             continue;
           } catch(closeErr) {
             pushCritical('R14_HARD_LOSS_CLOSE_FAIL', `${sym}: hard-loss close başarısız — ${closeErr.message}`, {symbol:sym});
