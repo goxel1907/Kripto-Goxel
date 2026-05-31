@@ -1713,6 +1713,46 @@ function recentLossPatternGuard(side, decisionChain={}, lookbackMs=24*60*60*1000
   return { block:false, key, count:losses.length };
 }
 
+
+// R33: Binance Top Gainers kilidi — bot artık sadece özel interest sırasına değil,
+// Binance Futures 24h değişim listesindeki ilk hareketli coinlere de zorunlu bakar.
+// Ek endpoint yok: zaten kullanılan /fapi/v1/ticker/24hr verisinden hesaplanır.
+const FUTURES_TICKERS_CACHE_MS = 60 * 1000;
+const R33_TOP_GAINER_LOCK_COUNT = 10;
+const R33_TOP_GAINER_MIN_QUOTE_VOL = 1_000_000;
+function r33IsTradeableTicker(t={}) {
+  const sym = String(t.symbol || '').toUpperCase();
+  if (!sym.endsWith('USDT')) return false;
+  if (['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT','DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT'].includes(sym)) return false;
+  const vol = Number(t.quoteVolume || t.volume || 0);
+  const price = Number(t.lastPrice || t.price || 0);
+  return vol >= R33_TOP_GAINER_MIN_QUOTE_VOL && price > 0;
+}
+function r33TopGainersFromTickers(data=[], n=R33_TOP_GAINER_LOCK_COUNT) {
+  if (!Array.isArray(data)) return new Map();
+  const rows = data
+    .filter(r33IsTradeableTicker)
+    .map(t => ({
+      symbol: String(t.symbol).replace('USDT',''),
+      fullSymbol: String(t.symbol).toUpperCase(),
+      price: Number(t.lastPrice || 0),
+      change24h: Number(t.priceChangePercent || 0),
+      change24hRaw: Number(t.priceChangePercent || 0),
+      volume: Number(t.quoteVolume || 0),
+      high: Number(t.highPrice || 0),
+      low: Number(t.lowPrice || 0),
+      trades: Number(t.count || 0),
+      rangePct: Number(t.lastPrice) > 0 ? +(((Number(t.highPrice||0)-Number(t.lowPrice||0))/Number(t.lastPrice))*100).toFixed(2) : 0,
+      source: 'top_gainers_lock'
+    }))
+    .filter(c => Number.isFinite(c.change24h) && c.change24h > 0)
+    .sort((a,b) => (b.change24h - a.change24h) || (b.volume - a.volume))
+    .slice(0, n);
+  const out = new Map();
+  rows.forEach((c, i) => out.set(c.fullSymbol, {...c, topGainerRank:i+1, topGainerLocked:true}));
+  return out;
+}
+
 async function scanVolatility() {
   try {
     const tickers = await bPub('/fapi/v1/ticker/24hr');
@@ -2277,25 +2317,38 @@ function renkoSignal(klines, lastPrice, atrVal) {
   return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
 }
 
-async function getUnifiedScanCandidates(limit=12) {
-  const lim = Math.max(6, Math.min(18, Number(limit || 12))); // R30: akıllı aday limiti
+async function getUnifiedScanCandidates(limit=18) {
+  // R33: Top Gainers kilidi. Kullanıcı Binance Top Movers ekranında gördüğü ilk coinleri
+  // bot hedef listesinde de görmek istiyor. Bu yüzden limit 10 altına düşmez; max 24 ile API boğulmaz.
+  const lim = Math.max(10, Math.min(24, Number(limit || 18)));
   const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
     'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
 
   const merged = new Map();
+  let topLocked = new Map();
   try {
-    const data = await cached('futures_tickers', 15*60*1000, () => bPub('/fapi/v1/ticker/24hr'));
+    // R33: 15dk cache 5m bot için çok bayattı; 60sn cache tek endpoint ile güncel Top Gainers sağlar.
+    const data = await cached('futures_tickers', FUTURES_TICKERS_CACHE_MS, () => bPub('/fapi/v1/ticker/24hr'));
+    topLocked = r33TopGainersFromTickers(data, R33_TOP_GAINER_LOCK_COUNT);
     if (Array.isArray(data)) {
       for (const t of data) {
         if (!String(t.symbol||'').endsWith('USDT') || EXCL.has(String(t.symbol))) continue;
         const c = normalizeTickerToCoin(t);
+        // Normal havuz halen 20M üstü; ama R33 Top Gainers kilidi 1M+ coinleri ayrıca ekler.
         if (c.volume <= 20000000 || !c.price) continue;
         c.source = 'futures';
-        merged.set(c.fullSymbol, c);
+        const tg = topLocked.get(c.fullSymbol);
+        merged.set(c.fullSymbol, tg ? {...c, ...tg, source:'futures+top_gainers_lock'} : c);
       }
     }
   } catch(e) {
-    console.log('[R21_SCAN] futures_tickers alınamadı:', e.message);
+    console.log('[R33_SCAN] futures_tickers/top_gainers alınamadı:', e.message);
+  }
+
+  // Binance Top Movers ilk 10: hacmi düşük olsa bile analiz listesine girer; emir yine RVOL/spread/ATR kapılarından geçer.
+  for (const [sym, c] of topLocked.entries()) {
+    const old = merged.get(sym) || {};
+    merged.set(sym, { ...old, ...c, source: old.source ? old.source + '+top_gainers_lock' : 'top_gainers_lock' });
   }
 
   // Volatilite motorundaki coinleri de aynı havuza kat; aynı sembol varsa volScore/range bilgisini zenginleştir.
@@ -2306,6 +2359,8 @@ async function getUnifiedScanCandidates(limit=12) {
     merged.set(c.fullSymbol, {
       ...old,
       ...c,
+      topGainerRank: old.topGainerRank,
+      topGainerLocked: old.topGainerLocked,
       volume: Math.max(Number(old.volume||0), Number(c.volume||0)),
       trades: Math.max(Number(old.trades||0), Number(c.trades||0)),
       volScore: Math.max(Number(old.volScore||0), Number(c.volScore||0)),
@@ -2314,24 +2369,39 @@ async function getUnifiedScanCandidates(limit=12) {
     });
   }
 
-  return [...merged.values()]
-    .map(c => ({ ...c, interest: calcScanInterest(c) }))
-    .sort((a,b) => (b.interest-a.interest) || (b.volScore-a.volScore) || (b.volume-a.volume))
-    .slice(0, lim);
+  const all = [...merged.values()].map(c => ({ ...c, interest: calcScanInterest(c) }));
+  const pinned = all
+    .filter(c => c.topGainerLocked && Number(c.topGainerRank||999) <= R33_TOP_GAINER_LOCK_COUNT)
+    .sort((a,b) => Number(a.topGainerRank||999) - Number(b.topGainerRank||999));
+  const rest = all
+    .filter(c => !(c.topGainerLocked && Number(c.topGainerRank||999) <= R33_TOP_GAINER_LOCK_COUNT))
+    .sort((a,b) => (b.interest-a.interest) || (b.volScore-a.volScore) || (b.volume-a.volume));
+
+  // Duplicate koruma: Top Gainers ilk sırada, sonra gerçek interest/volatilite adayları.
+  const seen = new Set();
+  const ordered = [];
+  for (const c of [...pinned, ...rest]) {
+    const key = c.fullSymbol;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    ordered.push(c);
+    if (ordered.length >= lim) break;
+  }
+  return ordered;
 }
 
 app.get('/api/scan-candidates', async (req, res) => {
   try {
     const limit = Number(req.query.limit || 40);
     const coins = await getUnifiedScanCandidates(limit);
-    res.json({ ok:true, count:coins.length, limit:Math.max(6, Math.min(18, limit)), coins, source:'R30_SAFE_MM_SCAN_LIST' });
+    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R33_TOP_GAINERS_LOCKED_SCAN_LIST' });
   } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
 });
 
 // ── COIN LİSTESİ ──────────────────────────────────────────────────────────────
 app.get('/api/futures-coins', async (req, res) => {
   try {
-    const data = await cached('futures_tickers', 15*60*1000, () => bPub('/fapi/v1/ticker/24hr'));
+    const data = await cached('futures_tickers', FUTURES_TICKERS_CACHE_MS, () => bPub('/fapi/v1/ticker/24hr'));
     if (!Array.isArray(data)) return res.json({ coins:[] });
     const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
       'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
@@ -6326,7 +6396,7 @@ async function runAutoScan() {
 
     // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
     // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
-    const scanLimit = Math.max(6, Math.min(18, Number(cfg.scanCount || 12))); // R30: 40 coin REST boğuyordu; akıllı 6-18 aday
+    const scanLimit = Math.max(10, Math.min(24, Number(cfg.scanCount || 18))); // R33: Top Gainers ilk 10 kilitli + 8/14 akıllı aday; API boğulmaz
     let scanList = await getUnifiedScanCandidates(scanLimit);
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
