@@ -3,6 +3,8 @@ const cors    = require('cors');
 const crypto  = require('crypto');
 const fetch   = require('node-fetch');
 const WebSocket = require('ws');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -10,6 +12,28 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const FAPI = 'https://fapi.binance.com';
 const FAPI_WS = 'wss://fstream.binance.com/stream';
+
+// R24: Auto monitor gerçek açılış sayaçları. Restart olsa bile mümkün olduğunca korunur.
+const AUTO_STATS_PATH = path.join(process.cwd(), 'lazarus_auto_stats.json');
+function loadAutoStats() {
+  try {
+    const raw = fs.readFileSync(AUTO_STATS_PATH, 'utf8');
+    const obj = JSON.parse(raw);
+    return {
+      totalOpenedAllTime: Number(obj.totalOpenedAllTime || 0),
+      sessionOpened: Number(obj.sessionOpened || 0),
+      lastOpenedAt: Number(obj.lastOpenedAt || 0),
+      lastOpenedSymbol: obj.lastOpenedSymbol || null,
+      lastOpenedSide: obj.lastOpenedSide || null,
+    };
+  } catch (_) {
+    return { totalOpenedAllTime:0, sessionOpened:0, lastOpenedAt:0, lastOpenedSymbol:null, lastOpenedSide:null };
+  }
+}
+function saveAutoStats(obj) {
+  try { fs.writeFileSync(AUTO_STATS_PATH, JSON.stringify(obj, null, 2)); } catch (_) {}
+}
+const autoPersistentStats = loadAutoStats();
 
 
 // ── KRİTİK HATA GÖSTERİM MERKEZİ ─────────────────────────────────────────────
@@ -249,6 +273,36 @@ async function normalizeSLTPToTick(symbol, slPrice, tpPrice) {
   return { sl, tp, slNum: Number(sl), tpNum: Number(tp), tickSize };
 }
 
+// R24: kapanmış pozisyona SL/TP rescue yazma koruması.
+function isNoOpenPositionAlgoError(e) {
+  const msg = String(e && (e.message || e) || '');
+  return msg.includes('-4509') ||
+    msg.includes('GTE can only be used with open positions') ||
+    msg.includes('Please ensure that positions are available');
+}
+async function freshOpenPositionForSymbol(apiKey, apiSecret, symbol, attempts=3) {
+  const sym = String(symbol||'').toUpperCase();
+  for (let i=0; i<attempts; i++) {
+    try {
+      const rows = await getPositionRisk(apiKey, apiSecret, {symbol:sym}); // symbol-specific: cache bypass
+      const p = Array.isArray(rows) ? rows.find(x=>String(x.symbol||'').toUpperCase()===sym) : null;
+      if (p && Math.abs(parseFloat(p.positionAmt || 0)) > 0) return { open:true, pos:p };
+    } catch(e) {
+      // API geçici patladıysa SL/TP yazmayı tamamen kesme; sadece fresh kontrol başarısız say.
+      if (i === attempts-1) return { open:null, error:e };
+    }
+    if (i < attempts-1) await new Promise(r=>setTimeout(r, i===0 ? 450 : 850));
+  }
+  return { open:false, pos:null };
+}
+async function cleanupClosedPositionState(symbol, reason='POSITION_ALREADY_CLOSED') {
+  const sym = String(symbol||'').toUpperCase();
+  try { trailingState.delete(sym); } catch(_) {}
+  try { invalidatePositionRiskCache(reason); } catch(_) {}
+  try { setCooldown(sym, 30*1000, reason); } catch(_) {}
+  try { logAuto(`⚠️ ${sym.replace('USDT','')} pozisyon kapanmış — SLTP rescue atlandı (${reason})`); } catch(_) {}
+}
+
 // ── SL/TP ÇİFTİ YAZ + İSPAT AL — install_live_sltp_pair_with_proof ──────────
 // Lazarus'un en önemli pattern'i: yaz, 250ms bekle, Binance'te gözle
 async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPrice, tpPrice, sym) {
@@ -258,6 +312,15 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
   // R13 kritik düzeltme: STOP_MARKET / TAKE_PROFIT_MARKET için /fapi/v1/order fallback'i KALDIRILDI.
   // Binance yeni sembollerde -4120 ile açıkça "Algo Order API kullan" diyor; bu yüzden standart endpoint'e düşmek
   // sahte kritik hata üretir ve bazı hesaplarda koruma yazımını gereksiz bozabilir.
+  const freshStart = await freshOpenPositionForSymbol(apiKey, apiSecret, symbol, 3);
+  if (freshStart.open === false) {
+    await cleanupClosedPositionState(symbol, 'FRESH_POSITION_ZERO_BEFORE_SLTP');
+    return { ok:false, skipped:true, skippedClosed:true, error:'POSITION_ALREADY_CLOSED', endpoint:'algoOrder' };
+  }
+  if (freshStart.open === null) {
+    console.log(`${symbol} fresh positionRisk kontrolü yapılamadı; SL/TP yazımı deneniyor: ${freshStart.error?.message || freshStart.error}`);
+  }
+
   const normalized = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
   slPrice = normalized.sl;
   tpPrice = normalized.tp;
@@ -290,12 +353,20 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
       lastErr = new Error(`Algo SL/TP proof başarısız (deneme ${attempt}); SL:${lastProof?.foundSL || false} TP:${lastProof?.foundTP || false} emir:${lastProof?.orderCount || 0}`);
     } catch(e) {
       lastErr = e;
+      if (isNoOpenPositionAlgoError(e)) {
+        await cleanupClosedPositionState(symbol, 'ALGO_-4509_POSITION_ALREADY_CLOSED');
+        return { ok:false, skipped:true, skippedClosed:true, error:'POSITION_ALREADY_CLOSED', endpoint:'algoOrder' };
+      }
       // İlk denemede geçici API/propagation olabilir; ikinci denemeye izin ver.
       if (attempt === 1) await new Promise(r => setTimeout(r, 700));
     }
   }
 
   const msg = lastErr?.message || 'Algo SL/TP proof başarısız';
+  if (isNoOpenPositionAlgoError(lastErr)) {
+    await cleanupClosedPositionState(symbol, 'ALGO_-4509_POSITION_ALREADY_CLOSED');
+    return { ok:false, skipped:true, skippedClosed:true, error:'POSITION_ALREADY_CLOSED', endpoint:'algoOrder' };
+  }
   pushCritical('SLTP_ALGO_PROOF_FAIL', `${symbol}: ${msg}`, {
     tickSize: normalized?.tickSize, slPrice, tpPrice, proof: lastProof, endpoint: 'algoOrder'
   });
@@ -3918,6 +3989,15 @@ app.post('/api/order', async (req, res) => {
     // SL/TP Binance üzerinde doğrulanmadan pozisyonu 'başarılı' sayma.
     // Korumasız pozisyon kalırsa acil reduce-only market kapat.
     if (!slResult.ok) {
+      if (slResult.skippedClosed) {
+        return res.status(400).json({
+          ok:false,
+          error:`${sym} pozisyon SL/TP yazılmadan önce kapanmış; rescue atlandı`,
+          mainOrderId:main.orderId,
+          skippedClosed:true,
+          sltpError:slResult.error
+        });
+      }
       let emergencyClose = null;
       try {
         await cancelAlgoOrders(apiKey, apiSecret, sym);
@@ -4284,6 +4364,16 @@ async function managePosition(apiKey, apiSecret, pos) {
 
   let action = null; // { type, reason, urgency }
 
+  // R24: 90dk+ açık kalan ve hâlâ BE bölgesine yaklaşmayan pozisyonu yormadan kapat.
+  const openedTs = Number(state.openedAt || state.entryAt || 0);
+  const openMinutes = openedTs > 0 ? (Date.now() - openedTs) / 60000 : 0;
+  if (openMinutes > 90 && realProfitPct < breakEvenAt * 0.5) {
+    action = {
+      type:'MAX_SURE_KAPAT', urgency:'HIGH',
+      reason:`90dk+ açık, kâr yok: hareket %${realProfitPct.toFixed(2)} < BE yarısı %${(breakEvenAt*0.5).toFixed(2)}`
+    };
+  }
+
   // ── 0. R14 ACİL ZARAR KORUMASI — SL çalışmaz/gecikirse kaçış ─────────────
   // Normalde Binance algo SL kapatmalı. Ama yeni sembol / aşırı hızlı fitil / proof gecikmesi
   // durumunda pozisyon SL seviyesinin ötesine sarkarsa 3 dakikalık taramayı beklemeden kapatılır.
@@ -4328,10 +4418,22 @@ async function managePosition(apiKey, apiSecret, pos) {
   }
 
   // ── 2. ACİL ÇIKIŞ — Ters Cascade ────────────────────────────────────────
+  let cascade = null;
   if (!action) {
-    const cascade = detectAdverseCascade(sym, side);
+    cascade = detectAdverseCascade(sym, side);
     if (cascade.adverse && realProfitPct > 0) { // Kârdayken cascade gelirse koru
       action = { type:'EMERGENCY_EXIT', ...cascade };
+    }
+  }
+
+  // R24: küçük kârda tek zayıf flip yüzünden çıkma. En az iki ters teyit yoksa BE/trailing yönetsin.
+  if (action?.type === 'EMERGENCY_EXIT' && realProfitPct > 0 && realProfitPct < 3.0) {
+    const reversalHits = [
+      !!cvdFlip.flip, !!tickFlip, !!exhaustExit, !!trappedExit, !!(cascade && cascade.adverse)
+    ].filter(Boolean).length;
+    if (reversalHits < 2) {
+      logAuto(`⏳ ${sym} erken çıkış engellendi: kaldıraçsız kâr %${realProfitPct.toFixed(2)}, ters teyit ${reversalHits}/2`);
+      action = null;
     }
   }
 
@@ -4429,7 +4531,7 @@ async function managePosition(apiKey, apiSecret, pos) {
 
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
-  if (action.type === 'EMERGENCY_EXIT') {
+  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT') {
     // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
       await cancelAlgoOrders(apiKey, apiSecret, sym);
@@ -4517,15 +4619,40 @@ let autoScanState = {
   enabled:false, running:false, phase:'KAPALI',
   lastScanStart:null, lastScanEnd:null, nextScanDue:null, currentSymbol:null,
   scanList:[], checked:0, opened:0, skipped:0, livePositions:0, maxPositions:0,
+  sessionOpened:autoPersistentStats.sessionOpened||0,
+  totalOpenedAllTime:autoPersistentStats.totalOpenedAllTime||0,
+  lastOpenedAt:autoPersistentStats.lastOpenedAt||0,
+  lastOpenedSymbol:autoPersistentStats.lastOpenedSymbol||null,
+  lastOpenedSide:autoPersistentStats.lastOpenedSide||null,
   effectiveMinScore:0, killZone:null, settings:{},
   topCandidates:[], skipReasons:{}, lastAction:'Henüz tarama yok'
 };
 function resetAutoScanState(patch={}) {
+  const prev = autoScanState || {};
   autoScanState = {
     ...autoScanState, ...patch,
     topCandidates: patch.topCandidates || [],
     skipReasons: patch.skipReasons || {},
   };
+  autoScanState.sessionOpened = autoPersistentStats.sessionOpened || prev.sessionOpened || 0;
+  autoScanState.totalOpenedAllTime = autoPersistentStats.totalOpenedAllTime || prev.totalOpenedAllTime || 0;
+  autoScanState.lastOpenedAt = autoPersistentStats.lastOpenedAt || prev.lastOpenedAt || 0;
+  autoScanState.lastOpenedSymbol = autoPersistentStats.lastOpenedSymbol || prev.lastOpenedSymbol || null;
+  autoScanState.lastOpenedSide = autoPersistentStats.lastOpenedSide || prev.lastOpenedSide || null;
+}
+function markAutoOpened(symbol, side) {
+  autoPersistentStats.totalOpenedAllTime = Number(autoPersistentStats.totalOpenedAllTime || 0) + 1;
+  autoPersistentStats.sessionOpened = Number(autoPersistentStats.sessionOpened || 0) + 1;
+  autoPersistentStats.lastOpenedAt = Date.now();
+  autoPersistentStats.lastOpenedSymbol = String(symbol || '').replace(/USDT$/,'');
+  autoPersistentStats.lastOpenedSide = String(side || '').toUpperCase();
+  saveAutoStats(autoPersistentStats);
+  autoScanState.opened = Number(autoScanState.opened || 0) + 1;
+  autoScanState.sessionOpened = autoPersistentStats.sessionOpened;
+  autoScanState.totalOpenedAllTime = autoPersistentStats.totalOpenedAllTime;
+  autoScanState.lastOpenedAt = autoPersistentStats.lastOpenedAt;
+  autoScanState.lastOpenedSymbol = autoPersistentStats.lastOpenedSymbol;
+  autoScanState.lastOpenedSide = autoPersistentStats.lastOpenedSide;
 }
 function pushAutoCandidate(row) {
   const r = {
@@ -4858,6 +4985,14 @@ async function runAutoScan() {
         const userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
         const userRR    = userTPPct / userSLPct;
 
+        // ── R24 RVOL MİKRO LİKİDİTE FRENİ — performansı boğmadan sadece ekstrem zayıf hacmi keser
+        const rvolNum = Number(analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
+        if (rvolNum > 0 && rvolNum < 0.08) {
+          logAuto(`⛔ ${coin.symbol} RVOL çok düşük (${rvolNum.toFixed(2)}x) — likidite yetersiz, otomatik atlandı`);
+          markAutoSkip(coin.symbol, `RVOL çok düşük ${rvolNum.toFixed(2)}x`, {rec:recommendation, tier:decisionChain?.tier, score});
+          continue;
+        }
+
         // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
         const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
         if (coinAtrPct > 0 && coinAtrPct > userSLPct * 2.5) {
@@ -4906,7 +5041,7 @@ async function runAutoScan() {
         }).then(r=>r.json());
 
         if (orderResp.ok) {
-          autoScanState.opened = (autoScanState.opened||0) + 1;
+          markAutoOpened(coin.fullSymbol, recommendation);
           invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
           logAuto(`✅ ${coin.symbol} ${recommendation} açıldı — ${orderResp.message}`);
@@ -5157,6 +5292,12 @@ async function syncPositions() {
           }
         }
 
+        const freshPosCheck = await freshOpenPositionForSymbol(autoConfig.apiKey, autoConfig.apiSecret, sym, 2);
+        if (freshPosCheck.open === false) {
+          await cleanupClosedPositionState(sym, 'SYNC_POSITION_ALREADY_CLOSED_BEFORE_SLTP_RESCUE');
+          continue;
+        }
+
         const orders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym);
         const hasSL = orders.some(o => orderKind(o) === 'SL');
         const hasTP = orders.some(o => orderKind(o) === 'TP');
@@ -5185,6 +5326,8 @@ async function syncPositions() {
               st.sltpVerified=true; st.currentSL=result.slPrice || slPrice; st.targetTP=result.tpPrice || tpPrice;
               trailingState.set(sym, st);
             }
+          } else if (result.skippedClosed) {
+            logAuto(`⚠️ ${sym.replace('USDT','')} SL/TP rescue atlandı: pozisyon artık açık değil`);
           } else {
             pushCritical('SLTP_RESCUE_FAIL', `${sym}: SL/TP kurtarma başarısız — ${result.error}`, {symbol:sym});
             logAuto(`❌ ${sym.replace('USDT','')} SL/TP kurtarma başarısız: ${result.error||'bilinmeyen'}`);
