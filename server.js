@@ -1059,6 +1059,36 @@ function updateSweepDetector(det, price, isBuy, usdt) {
 
 const tickStarting = new Set(); // R26: aynı sembole paralel WS açılışını engeller
 
+// ── R27: MM AVLAMA — GLOBAL DEPOLAR ──────────────────────────────────────────
+// BTC 5m değişim cache (tüm coinler için ortak, 25sn TTL)
+let btcChange5mCache = 0;
+const btcPriceRef = { p:0, prev:0, ts:0 };
+async function refreshBtcChange5m() {
+  if (Date.now() - btcPriceRef.ts < 25000) return;
+  try {
+    const t = await bPub('/fapi/v1/ticker/bookTicker', 'symbol=BTCUSDT');
+    const np = parseFloat(t.bidPrice || t.askPrice || 0);
+    if (btcPriceRef.p > 0 && np > 0)
+      btcChange5mCache = (np - btcPriceRef.p) / btcPriceRef.p * 100;
+    btcPriceRef.prev = btcPriceRef.p;
+    btcPriceRef.p    = np;
+    btcPriceRef.ts   = Date.now();
+  } catch(_) {}
+}
+
+// Spread geçmişi (per symbol, 3dk ring)
+const r27SpreadHistory = new Map(); // symbol → {cur, prev3m, ts}
+function updateSpreadHistory(sym, spreadPct) {
+  const now = Date.now();
+  const prev = r27SpreadHistory.get(sym);
+  if (!prev) { r27SpreadHistory.set(sym, { cur:spreadPct, prev3m:spreadPct, ts:now }); return; }
+  if (now - prev.ts > 3*60*1000) {
+    r27SpreadHistory.set(sym, { cur:spreadPct, prev3m:prev.cur, ts:now });
+  } else {
+    prev.cur = spreadPct; // anlık güncelle
+  }
+}
+
 // Tick WS başlat — @trade stream (aggTrade'den daha granüler)
 async function startTickStream(symbol) {
   const full = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
@@ -2596,6 +2626,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const choch1h=detectChoCH(k1h);
     const choch4h=detectChoCH(k4h);
     const liqQual=calcLiqQuality(depth,lastPrice);
+    // R27: Spread geçmişini güncelle + BTC cache yenile
+    if (liqQual.ok && liqQual.spread > 0) updateSpreadHistory(full, liqQual.spread);
+    refreshBtcChange5m().catch(()=>{});
     const fundMom=calcFundingMomentum(fundArr);
 
 
@@ -3256,6 +3289,118 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     // ── R25 Wick Trap bitti ──────────────────────────────────────────────────
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // ── R27: MM AVLAMA MODÜLLERİ (5 dedektör, önem sırasına göre) ─────────────
+    // Öncelik: Spread Hızlanması > Absorption > BTC Kopuşu > Hacim Çürümesi > Tape
+    // ══════════════════════════════════════════════════════════════════════════
+    {
+      // ── 1. SPREAD HIZLANMASI (Hard veto — MM likidite çekiyor) ──────────────
+      // MM büyük hamle öncesi emir kitabından çekilir → spread ani genişler
+      const _sh = r27SpreadHistory.get(full);
+      if (_sh && _sh.prev3m > 0 && _sh.cur > 0) {
+        const _sv = (_sh.cur - _sh.prev3m) / _sh.prev3m;
+        if (_sv > 0.45) { // %45+ 3dk'da spread genişlemesi
+          // Hard veto — her iki yön için de tehlikeli
+          longScore  = Math.round(longScore  * 0.55);
+          shortScore = Math.round(shortScore * 0.55);
+          signals.long.push(`🚨 Spread hızlanması +${(_sv*100).toFixed(0)}%: MM likidite çekiyor`);
+          signals.short.push(`🚨 Spread hızlanması: MM çekiliyor`);
+        } else if (_sv > 0.25) { // %25+ uyarı
+          longScore  = Math.round(longScore  * 0.78);
+          shortScore = Math.round(shortScore * 0.78);
+          signals.long.push(`⚠️ Spread genişliyor +${(_sv*100).toFixed(0)}%: likidite azalıyor`);
+        }
+      }
+
+      // ── 2. ABSORPTION (MM dağıtım tespiti — yüksek hacim + fiyat kıpırdamıyor) ──
+      // MM retail alımlarını emerek satar; hacim var ama fiyat hareket etmez
+      if (k5m && k5m.length >= 25) {
+        const _lastN  = k5m.slice(-5);
+        const _baseN  = k5m.slice(-25, -5);
+        const _recVol = _lastN.reduce((s,c) => s + Number(c[5]), 0);
+        const _avgVol = _baseN.reduce((s,c) => s + Number(c[5]), 0) / _baseN.length;
+        // Fiyat hareketi: son 5 mum giriş-çıkış farkı
+        const _priceMove = _avgVol > 0
+          ? Math.abs(Number(_lastN.at(-1)[4]) - Number(_lastN[0][1])) / lastPrice * 100
+          : 999;
+        const _absorption = _avgVol > 0
+          && _recVol > _avgVol * 5 * 2.2  // 5 mumda toplam hacim avg'nin 11x üstü
+          && _priceMove < atrPct * 0.30;   // Ama fiyat neredeyse kıpırdamadı
+        if (_absorption) {
+          // Long tarafına ağır ceza (MM muhtemelen satıyor)
+          longScore  = Math.round(longScore  * 0.62);
+          shortScore = Math.min(shortScore + 12, 100);
+          signals.long.push(`🧲 Absorption: hacim ${(_recVol/_avgVol/5).toFixed(1)}x yüksek + fiyat ${_priceMove.toFixed(2)}% hareket → MM emme`);
+          signals.short.push(`🧲 Absorption tespiti → SHORT lehine`);
+        }
+      }
+
+      // ── 3. BTC KORELASYON KOPUŞU (izole pump = manipülasyon uyarısı) ─────────
+      // Organik hareket BTC ile korele olur; coin tek başına büyük hareket = şüphe
+      if (k5m && k5m.length >= 3 && btcPriceRef.p > 0) {
+        const _coinChg5 = (Number(k5m.at(-1)[4]) - Number(k5m.at(-3)?.[1] || k5m.at(-2)[1]))
+                        / Number(k5m.at(-2)[1]) * 100;
+        const _btcChg   = btcChange5mCache;
+        if (Math.abs(_coinChg5) > 1.8 && _btcChg !== 0) {
+          const _div = Math.abs(_coinChg5) / (Math.abs(_btcChg) + 0.02);
+          if (_div > 6) { // Coin BTC'den 6x+ daha hızlı hareket ediyor
+            if (_coinChg5 > 0) { // Yukarı izole pump
+              longScore  = Math.round(longScore  * 0.70);
+              signals.long.push(`📡 BTC kopuşu: coin +${_coinChg5.toFixed(1)}% / BTC ${_btcChg.toFixed(2)}% → izole pump, manipülasyon riski`);
+              shortScore = Math.min(shortScore + 8, 100); // Ters yön fırsatı
+            } else { // Aşağı izole dump
+              shortScore = Math.round(shortScore * 0.70);
+              signals.short.push(`📡 BTC kopuşu: izole dump → short riski`);
+              longScore  = Math.min(longScore  + 8, 100);
+            }
+          } else if (_div > 3) { // Orta uyarı
+            if (_coinChg5 > 0) longScore  = Math.round(longScore  * 0.82);
+            else               shortScore = Math.round(shortScore * 0.82);
+          }
+        }
+      }
+
+      // ── 4. HACİM ÇÜRÜMESI (MM pump bitti → SHORT fırsatı) ────────────────────
+      // Pump sonrası hacim hızla kuruyorsa MM dağıtım tamamladı = dönüş yakın
+      if (k5m && k5m.length >= 20) {
+        const _last20  = k5m.slice(-20);
+        const _peakVol = Math.max(..._last20.map(c => Number(c[5])));
+        const _curVol  = Number(k5m.at(-1)[5]);
+        const _pxChg20 = _last20.length > 1
+          ? (Number(k5m.at(-1)[4]) - Number(_last20[0][1])) / Number(_last20[0][1]) * 100
+          : 0;
+        const _decay   = _peakVol > 0 ? (_peakVol - _curVol) / _peakVol : 0;
+        if (_decay > 0.70 && _pxChg20 > 7) {
+          // Pump oldu ama hacim kurudu → MM çıktı, gerçek dönüş fırsatı
+          shortScore = Math.min(shortScore + 14, 100);
+          longScore  = Math.round(longScore  * 0.76);
+          signals.short.push(`⚡ Hacim çürümesi: +${_pxChg20.toFixed(1)}% pump sonrası hacim %${(_decay*100).toFixed(0)} düştü → MM çıkış`);
+          signals.long.push(`⚡ Hacim çürümesi: pump zayıflıyor`);
+        }
+      }
+
+      // ── 5. TAPE BOYAMA (Algo düzenli tick = sahte hareket) ───────────────────
+      // MM grafı boyamak için eşit büyüklükte, eşit aralıklı algo emirleri atar
+      // Bu pattern düşük spread + yüksek fiyat trendi yanılgısı yaratır
+      const _eng = tickStore?.get?.(full);
+      if (_eng?.candles?.length >= 8) {
+        const _recentCandles = _eng.candles.slice(-8);
+        const _tradeCounts   = _recentCandles.map(c => c.trades || 0).filter(t => t > 0);
+        if (_tradeCounts.length >= 6) {
+          const _mean = _tradeCounts.reduce((s,v) => s+v, 0) / _tradeCounts.length;
+          const _std  = Math.sqrt(_tradeCounts.reduce((s,v) => s+(v-_mean)**2, 0) / _tradeCounts.length);
+          const _cv   = _mean > 0 ? _std / _mean : 1;
+          // CV < 0.12 = çok düzenli trade sayısı = algo boyama
+          if (_cv < 0.12 && _mean > 5) {
+            longScore  = Math.round(longScore  * 0.76);
+            shortScore = Math.round(shortScore * 0.76);
+            signals.long.push('🎨 Tape boyama: düzenli tick → sahte trend şüphesi');
+          }
+        }
+      }
+    }
+    // ── R27 MM Avlama Modülleri bitti ─────────────────────────────────────────
+
     // ── MM HEDEF CEZALARI — DOWN_SWEEP/GENUINE_DOWN longScore'u keser ──────────
     // MM aşağı sweep yapmak istiyorsa long girmek tuzağa girmek demektir
     if(mmTarget==='GENUINE_DOWN'&&mmConf>=50) {
@@ -3654,6 +3799,33 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(isL && rsi4h>75) subP(true, rsi4h>82?12:7, 'RSI4h');
         if(!isL && rsi4h<25) subP(true, rsi4h<18?12:7, 'RSI4h');
         if(atrGateWarn&&!atrBlocking) subP(true,5,'ATRwarn');
+        // ── R27: MM avlama PS etkisi ──────────────────────────────────────────
+        {
+          const _sh = r27SpreadHistory.get(full);
+          const _sv = (_sh && _sh.prev3m > 0) ? (_sh.cur - _sh.prev3m) / _sh.prev3m : 0;
+          subP(_sv > 0.45, 20, 'SpreadHızlanma🚨');
+          subP(_sv > 0.25 && _sv <= 0.45, 10, 'SpreadGenişliyor');
+          // Absorption: son 5dk'da 3+ büyük satış emirleri
+          const _eng2 = tickStore?.get?.(full);
+          const _bigSells = (_eng2?.bigTrades||[]).filter(t=>t.side==='SELL'&&Date.now()-t.ts<5*60*1000).length;
+          subP(_bigSells >= 3, 12, 'Absorption🧲');
+          // BTC kopuşu PS
+          if (k5m?.length >= 3 && btcPriceRef.p > 0) {
+            const _cChg = (Number(k5m.at(-1)[4]) - Number(k5m.at(-2)[1])) / Number(k5m.at(-2)[1]) * 100;
+            const _divR = Math.abs(_cChg) / (Math.abs(btcChange5mCache) + 0.02);
+            subP(_divR > 6 && Math.abs(_cChg) > 1.8, 12, 'BTCKopuşu📡');
+          }
+          // Hacim çürümesi PS
+          if (k5m?.length >= 20) {
+            const _pv    = Math.max(...k5m.slice(-20).map(c=>Number(c[5])));
+            const _cv    = Number(k5m.at(-1)[5]);
+            const _pxChg = k5m.length>20 ? (Number(k5m.at(-1)[4])-Number(k5m.at(-21)?.[1]||k5m[0][1]))/Number(k5m.at(-21)?.[1]||k5m[0][1])*100 : 0;
+            const _isDecay = _pv > 0 && (_pv-_cv)/_pv > 0.70 && _pxChg > 7;
+            addP(!isL && _isDecay, 12, 'HacimÇürümesi⚡', 'macro', 28);
+            subP( isL && _isDecay, 10, 'HacimÇürümesiLong');
+          }
+        }
+        // ── R27 PS bitti ──────────────────────────────────────────────────────
 
         const bridgeCount=[mtfBridgeOk,fundBridgeOk,oiBridgeOk,huntBridgeOk].filter(Boolean).length;
         const cvdWarmingBridge=cvdMissing && (hasEntry||hardSweepForBridge) && sc>=Math.min(72,minAutoScore) && bridgeCount>=2;
@@ -4987,11 +5159,15 @@ app.get('/api/auto/status', (req, res) => {
 });
 
 function logAuto(msg) {
-  const entry = `${new Date().toLocaleTimeString('tr-TR')} ${msg}`;
+  // R26: TR saati (Europe/Istanbul = UTC+3)
+  const ts = new Intl.DateTimeFormat('tr-TR', {
+    timeZone:'Europe/Istanbul', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+  }).format(new Date());
+  const entry = `${ts} ${msg}`;
   autoLog.push(entry);
   if (autoLog.length > 80) autoLog.shift();
   autoScanState.lastAction = entry;
-  console.log('[AUTO]', entry);
+  console.log('[AUTO]', entry); // TR saat
 }
 
 function stopAutoTrader(silent=false) {
@@ -5122,6 +5298,10 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
+    autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
+      timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
+      hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+    }).format(new Date());
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
     // 3. Her coini analiz et
