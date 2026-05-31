@@ -2038,6 +2038,245 @@ function r25DetectWickTrapMap(k1h=[], k4h=[], price=0, ctx={}) {
   };
 }
 
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R32: GRAFİK OKUMA KATMANLARI — pure JS, ekstra Binance API yok
+// Amaç: 5m fırsatları kaçırmadan, R31 karar mimarisini körleştirmeden pattern/renko
+// verilerini sadece AMPLIFIER ve risk filtresi olarak kullanmak.
+// ═════════════════════════════════════════════════════════════════════════════
+function calcHeikinAshi(klines) {
+  if (!Array.isArray(klines) || klines.length < 2) return [];
+  const ha = [];
+  for (let i = 0; i < klines.length; i++) {
+    const o = Number(klines[i][1]), h = Number(klines[i][2]), l = Number(klines[i][3]), c = Number(klines[i][4]);
+    if (![o,h,l,c].every(Number.isFinite)) continue;
+    const haC = (o + h + l + c) / 4;
+    const haO = i === 0 || !ha[i-1] ? (o + c) / 2 : (ha[i-1].o + ha[i-1].c) / 2;
+    ha.push({
+      o: haO,
+      h: Math.max(h, haO, haC),
+      l: Math.min(l, haO, haC),
+      c: haC,
+      bull: haC > haO,
+      body: Math.abs(haC - haO),
+      upper: Math.max(h, haO, haC) - Math.max(haO, haC),
+      lower: Math.min(haO, haC) - Math.min(l, haO, haC)
+    });
+  }
+  return ha;
+}
+
+function haSignal(ha) {
+  if (!Array.isArray(ha) || ha.length < 3) return { signal:'NEUTRAL', strength:0 };
+  const last = ha.slice(-3);
+  const bc = last.filter(c => c.bull).length;
+  const nc = last.filter(c => !c.bull).length;
+  const avgB = last.reduce((s,c) => s + Number(c.body || 0), 0) / 3;
+  const weak = last[2].body < avgB * 0.35;
+  const sBull = last[2].bull && last[2].lower < last[2].body * 0.10 && last[2].upper < last[2].body * 0.30;
+  const sBear = !last[2].bull && last[2].upper < last[2].body * 0.10 && last[2].lower < last[2].body * 0.30;
+  if (bc === 3 && sBull) return { signal:'STRONG_BULL', strength:3 };
+  if (nc === 3 && sBear) return { signal:'STRONG_BEAR', strength:3 };
+  if (bc === 3) return { signal:'BULL', strength:2 };
+  if (nc === 3) return { signal:'BEAR', strength:2 };
+  if (weak) return { signal:'WEAKENING', strength:1 };
+  return { signal:'NEUTRAL', strength:0 };
+}
+
+function cdlPatterns(klines) {
+  if (!Array.isArray(klines) || klines.length < 5) return { bull:[], bear:[], score:0 };
+  const bull = [], bear = [];
+  const k = klines.slice(-5).map(c => ({
+    o: Number(c[1]), h: Number(c[2]), l: Number(c[3]), c: Number(c[4]),
+    body: Math.abs(Number(c[4]) - Number(c[1])),
+    range: Number(c[2]) - Number(c[3]),
+    upper: Number(c[2]) - Math.max(Number(c[1]), Number(c[4])),
+    lower: Math.min(Number(c[1]), Number(c[4])) - Number(c[3]),
+    bull: Number(c[4]) > Number(c[1])
+  })).filter(x => [x.o,x.h,x.l,x.c,x.body,x.range].every(Number.isFinite));
+  if (k.length < 5) return { bull:[], bear:[], score:0 };
+  const [p4,p3,p2,p1,p0] = k;
+  const safeRange = (x) => Math.max(Number(x?.range || 0), 1e-12);
+  const safePrice = (x) => Math.max(Math.abs(Number(x || 0)), 1e-12);
+
+  if (p0.body > 0 && p0.lower > p0.body * 2 && p0.upper < p0.body * 0.5) {
+    if (p0.bull) bull.push({name:'Hammer',str:3}); else bear.push({name:'HangingMan',str:2});
+  }
+  if (p0.body > 0 && p0.upper > p0.body * 2 && p0.lower < p0.body * 0.5) {
+    if (!p0.bull) bear.push({name:'ShootingStar',str:3}); else bull.push({name:'InvHammer',str:2});
+  }
+  if (p0.range > 0 && p0.body / safeRange(p0) < 0.10) { bull.push({name:'Doji',str:1}); bear.push({name:'Doji',str:1}); }
+  if (p0.lower > p0.range * 0.60 && p0.body < p0.range * 0.10) bull.push({name:'DragonflyDoji',str:3});
+  if (p0.upper > p0.range * 0.60 && p0.body < p0.range * 0.10) bear.push({name:'GravestoneDoji',str:3});
+  if (p0.body > 0 && p0.upper < p0.body * 0.05 && p0.lower < p0.body * 0.05) {
+    if (p0.bull) bull.push({name:'BullMarubozu',str:3}); else bear.push({name:'BearMarubozu',str:3});
+  }
+
+  if (p1 && !p1.bull && p0.bull && p0.o < p1.c && p0.c > p1.o && p0.body > p1.body * 1.1) bull.push({name:'BullEngulfing',str:4});
+  if (p1 && p1.bull && !p0.bull && p0.o > p1.c && p0.c < p1.o && p0.body > p1.body * 1.1) bear.push({name:'BearEngulfing',str:4});
+  if (p1 && p0.h < p1.h && p0.l > p1.l && p0.body < p1.body * 0.5) {
+    if (p0.bull && !p1.bull) bull.push({name:'BullHarami',str:2});
+    if (!p0.bull && p1.bull) bear.push({name:'BearHarami',str:2});
+  }
+  if (p1 && p0.h < p1.h && p0.l > p1.l && p0.body / safeRange(p0) < 0.10) {
+    if (!p1.bull) bull.push({name:'BullHaramiCross',str:3}); else bear.push({name:'BearHaramiCross',str:3});
+  }
+  if (p1 && Math.abs(p0.l - p1.l) / Math.max(safePrice(p0.l), safePrice(p1.l)) < 0.001 && !p1.bull && p0.bull) bull.push({name:'TweezerBottom',str:3});
+  if (p1 && Math.abs(p0.h - p1.h) / Math.max(safePrice(p0.h), safePrice(p1.h)) < 0.001 && p1.bull && !p0.bull) bear.push({name:'TweezerTop',str:3});
+  if (p1 && !p1.bull && p0.bull && p0.o > p1.h && p0.upper < p0.body * 0.1 && p1.lower < p1.body * 0.1) bull.push({name:'BullKicking',str:5});
+  if (p1 && p1.bull && !p0.bull && p0.o < p1.l && p1.upper < p1.body * 0.1 && p0.lower < p0.body * 0.1) bear.push({name:'BearKicking',str:5});
+  if (p1 && p1.bull && !p0.bull && p0.o > p1.h && p0.c < (p1.o + p1.c) / 2 && p0.c > p1.o) bear.push({name:'DarkCloudCover',str:4});
+  if (p1 && !p1.bull && p0.bull && p0.o < p1.l && p0.c > (p1.o + p1.c) / 2 && p0.c < p1.o) bull.push({name:'PiercingLine',str:4});
+
+  if (p2 && p1 && p0) {
+    if (!p2.bull && p2.body > 0 && p1.body < p2.body * 0.3 && p0.bull && p0.c > p2.o + (p2.c - p2.o) * 0.5) bull.push({name:'MorningStar',str:5});
+    if (p2.bull && p2.body > 0 && p1.body < p2.body * 0.3 && !p0.bull && p0.c < p2.o + (p2.c - p2.o) * 0.5) bear.push({name:'EveningStar',str:5});
+    if (!p2.bull && p2.body > 0 && p1.body / safeRange(p1) < 0.10 && p0.bull && p0.c > p2.o + (p2.c - p2.o) * 0.5) bull.push({name:'MorningDojiStar',str:5});
+    if (p2.bull && p2.body > 0 && p1.body / safeRange(p1) < 0.10 && !p0.bull && p0.c < p2.o + (p2.c - p2.o) * 0.5) bear.push({name:'EveningDojiStar',str:5});
+    if (p2.bull && p1.bull && p0.bull && p0.c > p1.c && p1.c > p2.c && p0.lower < p0.body * 0.3 && p1.lower < p1.body * 0.3) bull.push({name:'ThreeWhiteSoldiers',str:5});
+    if (!p2.bull && !p1.bull && !p0.bull && p0.c < p1.c && p1.c < p2.c && p0.upper < p0.body * 0.3 && p1.upper < p1.body * 0.3) bear.push({name:'ThreeBlackCrows',str:5});
+    if (!p2.bull && p1.bull && p1.o < p2.c && p1.c > p2.o && p0.bull && p0.c > p1.c) bull.push({name:'ThreeOutsideUp',str:4});
+    if (p2.bull && !p1.bull && p1.o > p2.c && p1.c < p2.o && !p0.bull && p0.c < p1.c) bear.push({name:'ThreeOutsideDown',str:4});
+    if (!p2.bull && p1.h < p2.h && p1.l > p2.l && p0.bull && p0.c > p2.c) bull.push({name:'ThreeInsideUp',str:3});
+    if (p2.bull && p1.h < p2.h && p1.l > p2.l && !p0.bull && p0.c < p2.c) bear.push({name:'ThreeInsideDown',str:3});
+    if (!p2.bull && p2.body > 0 && p1.h < p2.l && p1.body / safeRange(p1) < 0.10 && p0.l > p1.h && p0.bull) bull.push({name:'AbandonedBabyBull',str:5});
+    if (p2.bull && p2.body > 0 && p1.l > p2.h && p1.body / safeRange(p1) < 0.10 && p0.h < p1.l && !p0.bull) bear.push({name:'AbandonedBabyBear',str:5});
+  }
+  return { bull, bear, score: bull.reduce((s,p)=>s+p.str,0) - bear.reduce((s,p)=>s+p.str,0) };
+}
+
+function calcZigZag(klines, devPct = 1.5) {
+  if (!Array.isArray(klines) || klines.length < 8) return [];
+  const pts = [], highs = klines.map(c => Number(c[2])), lows = klines.map(c => Number(c[3]));
+  let dir = 0, lastPt = { i:0, v:highs[0], type:'H' };
+  for (let i = 1; i < klines.length; i++) {
+    if (![highs[i], lows[i], lastPt.v].every(Number.isFinite)) continue;
+    if (dir >= 0) {
+      if (highs[i] >= lastPt.v) lastPt = { i, v:highs[i], type:'H' };
+      else if ((lastPt.v - lows[i]) / Math.max(lastPt.v, 1e-12) * 100 >= devPct) { pts.push(lastPt); lastPt = { i, v:lows[i], type:'L' }; dir = -1; }
+    }
+    if (dir <= 0) {
+      if (lows[i] <= lastPt.v) lastPt = { i, v:lows[i], type:'L' };
+      else if ((highs[i] - lastPt.v) / Math.max(lastPt.v, 1e-12) * 100 >= devPct) { pts.push(lastPt); lastPt = { i, v:highs[i], type:'H' }; dir = 1; }
+    }
+  }
+  pts.push(lastPt);
+  return pts.slice(-12);
+}
+
+function detectChartPatterns(klines, lastPrice, atrPct = 1.5) {
+  const tol = Math.max(0.01, Number(atrPct || 1.5) * 0.012);
+  const pivots = calcZigZag(klines, Math.max(0.8, Number(atrPct || 1.5) * 0.8));
+  if (pivots.length < 4 || !Number.isFinite(Number(lastPrice))) return { patterns:[], bullScore:0, bearScore:0 };
+  const patterns = []; let bullScore = 0, bearScore = 0;
+  const near = (a,b) => Math.abs(a-b) / Math.max(Math.abs(a), Math.abs(b), 1e-12) < tol;
+  const px = pivots;
+  for (let i = 0; i < px.length - 3; i++) {
+    const [a,b,c,d] = [px[i], px[i+1], px[i+2], px[i+3]];
+    if (!a || !b || !c || !d) continue;
+    if (a.type==='H' && b.type==='L' && c.type==='H' && d.type==='L' && near(b.v,d.v) && c.v > Math.max(a.v,b.v)) {
+      if (lastPrice > c.v * 0.995) { patterns.push({name:'DoubleBottom',str:4,dir:'BULL'}); bullScore += 16; }
+      else { patterns.push({name:'DoubleBottomForming',str:2,dir:'BULL'}); bullScore += 6; }
+    }
+    if (a.type==='L' && b.type==='H' && c.type==='L' && d.type==='H' && near(b.v,d.v) && c.v < Math.min(a.v,d.v)) {
+      if (lastPrice < c.v * 1.005) { patterns.push({name:'DoubleTop',str:4,dir:'BEAR'}); bearScore += 16; }
+      else { patterns.push({name:'DoubleTopForming',str:2,dir:'BEAR'}); bearScore += 6; }
+    }
+  }
+  for (let i = 0; i < px.length - 4; i++) {
+    const [s0,s1,s2,s3,s4] = [px[i], px[i+1], px[i+2], px[i+3], px[i+4]];
+    if (!s0 || !s1 || !s2 || !s3 || !s4) continue;
+    if (s0.type==='H' && s1.type==='L' && s2.type==='L' && s3.type==='L' && s4.type==='H' && s1.v > s2.v && s3.v > s2.v && near(s1.v,s3.v)) {
+      if (lastPrice > ((s0.v + s4.v) / 2) * 0.998) { patterns.push({name:'InvHeadShoulders',str:5,dir:'BULL'}); bullScore += 20; }
+      else { patterns.push({name:'InvHSForming',str:3,dir:'BULL'}); bullScore += 8; }
+    }
+    if (s0.type==='L' && s1.type==='H' && s2.type==='H' && s3.type==='H' && s4.type==='L' && s1.v < s2.v && s3.v < s2.v && near(s1.v,s3.v)) {
+      if (lastPrice < ((s0.v + s4.v) / 2) * 1.002) { patterns.push({name:'HeadShoulders',str:5,dir:'BEAR'}); bearScore += 20; }
+      else { patterns.push({name:'HSForming',str:3,dir:'BEAR'}); bearScore += 8; }
+    }
+  }
+  if (px.length >= 4) {
+    const l4 = px.slice(-4);
+    if (l4[0].type==='L' && l4[1].type==='H' && l4[2].type==='H' && l4[3].type==='L') {
+      const pole = (l4[1].v - l4[0].v) / Math.max(l4[0].v, 1e-12) * 100;
+      const pullbackPct = Math.abs(l4[1].v - l4[2].v) / Math.max(l4[1].v, 1e-12) * 100;
+      if (pole > 3 && pullbackPct > 0.15 && pullbackPct < pole * 0.5) { patterns.push({name:'BullFlag',str:4,dir:'BULL'}); bullScore += 14; }
+    }
+    if (l4[0].type==='H' && l4[1].type==='L' && l4[2].type==='L' && l4[3].type==='H') {
+      const pole = (l4[0].v - l4[1].v) / Math.max(l4[0].v, 1e-12) * 100;
+      const pullbackPct = Math.abs(l4[2].v - l4[1].v) / Math.max(l4[1].v, 1e-12) * 100;
+      if (pole > 3 && pullbackPct > 0.15 && pullbackPct < pole * 0.5) { patterns.push({name:'BearFlag',str:4,dir:'BEAR'}); bearScore += 14; }
+    }
+  }
+  return { patterns, bullScore, bearScore };
+}
+
+function detectHarmonicPatterns(klines, lastPrice) {
+  if (!Array.isArray(klines) || klines.length < 20 || !Number.isFinite(Number(lastPrice))) return { patterns:[], bullScore:0, bearScore:0 };
+  const pivots = calcZigZag(klines, 2.0);
+  if (pivots.length < 5) return { patterns:[], bullScore:0, bearScore:0 };
+  const patterns = []; let bullScore = 0, bearScore = 0;
+  const fibM = (val,tgt,tol=0.06) => Math.abs(val-tgt) < tgt * tol;
+  const [X,A,B,C,D] = pivots.slice(-5);
+  if (!X || !A || !B || !C || !D) return { patterns:[], bullScore:0, bearScore:0 };
+  const XA = Math.abs(A.v-X.v), AB = Math.abs(B.v-A.v), BC = Math.abs(C.v-B.v), XD = Math.abs(D.v-X.v);
+  if (XA < 1e-12 || AB < 1e-12 || BC < 1e-12) return { patterns:[], bullScore:0, bearScore:0 };
+  const R_AB = AB / XA, R_BC = BC / AB, R_XD = XD / XA;
+  const isBull = D.v < X.v, dir = isBull ? 'BULL' : 'BEAR';
+  const addP = (name,str,s) => { patterns.push({ name, str, dir, prz:D.v }); if (isBull) bullScore += s; else bearScore += s; };
+  if (fibM(R_AB,0.618) && R_BC > 0.382 && R_BC < 0.886 && fibM(R_XD,0.786)) addP(isBull?'BullGartley':'BearGartley',4,18);
+  if (fibM(R_AB,0.786) && (fibM(R_XD,1.27) || fibM(R_XD,1.618,0.08))) addP(isBull?'BullButterfly':'BearButterfly',4,18);
+  if (R_AB > 0.382 && R_AB < 0.5 && fibM(R_XD,0.886)) addP(isBull?'BullBat':'BearBat',5,22);
+  if (R_AB > 0.382 && R_AB < 0.618 && fibM(R_XD,1.618,0.08)) addP(isBull?'BullCrab':'BearCrab',5,25);
+  if (R_BC > 1.13 && R_BC < 1.618 && fibM(R_XD,0.886)) addP(isBull?'BullShark':'BearShark',3,14);
+  if (patterns.length > 0) {
+    const minD = Math.min(...patterns.map(p => Math.abs(Number(lastPrice) - p.prz) / Math.max(Number(lastPrice), 1e-12) * 100));
+    if (minD > 3) { bullScore = Math.round(bullScore / 2); bearScore = Math.round(bearScore / 2); }
+  }
+  return { patterns, bullScore, bearScore };
+}
+
+function buildRenko(klines, brickSize) {
+  if (!Array.isArray(klines) || klines.length < 5 || !(brickSize > 0)) return [];
+  const bricks = [];
+  let refPrice = Number(klines[0][4]);
+  if (!Number.isFinite(refPrice) || refPrice <= 0) return [];
+  for (const c of klines) {
+    const h = Number(c[2]), l = Number(c[3]);
+    if (!Number.isFinite(h) || !Number.isFinite(l)) continue;
+    while (h >= refPrice + brickSize) { refPrice += brickSize; bricks.push({ open:refPrice-brickSize, close:refPrice, bull:true }); if (bricks.length > 200) break; }
+    while (l <= refPrice - brickSize) { refPrice -= brickSize; bricks.push({ open:refPrice+brickSize, close:refPrice, bull:false }); if (bricks.length > 200) break; }
+    if (bricks.length > 200) break;
+  }
+  return bricks.slice(-20);
+}
+
+function renkoSignal(klines, lastPrice, atrVal) {
+  if (!Array.isArray(klines) || klines.length < 10 || !atrVal || !lastPrice)
+    return { signal:'NEUTRAL', spikeTrap:false, ranging:false, trend:'FLAT', brickCount:0, consecutive:0 };
+  const brickSize = Math.max(Number(atrVal) * 0.8, Number(lastPrice) * 0.003);
+  const bricks = buildRenko(klines, brickSize);
+  if (bricks.length < 3) return { signal:'NEUTRAL', spikeTrap:false, ranging:false, trend:'FLAT', brickCount:bricks.length, consecutive:0 };
+  const last = bricks.slice(-6);
+  const bulls = last.filter(b => b.bull).length, bears = last.filter(b => !b.bull).length;
+  let consecutive = 1;
+  for (let i = bricks.length - 2; i >= 0; i--) {
+    if (bricks[i].bull === bricks[bricks.length-1].bull) consecutive++;
+    else break;
+    if (consecutive >= 6) break;
+  }
+  const spikeTrap = bricks.length >= 3 && (
+    (bricks.at(-1).bull && !bricks.at(-2).bull && (bricks.at(-3)?.bull ?? true)) ||
+    (!bricks.at(-1).bull && bricks.at(-2).bull && !(bricks.at(-3)?.bull ?? false))
+  );
+  let alternations = 0;
+  for (let i = 1; i < last.length; i++) if (last[i].bull !== last[i-1].bull) alternations++;
+  const ranging = alternations >= 4;
+  const trend = bulls >= 4 ? 'STRONG_UP' : bulls >= 3 ? 'UP' : bears >= 4 ? 'STRONG_DOWN' : bears >= 3 ? 'DOWN' : ranging ? 'RANGING' : 'FLAT';
+  const signal = trend === 'STRONG_UP' ? 'STRONG_BULL' : trend === 'UP' ? 'BULL' : trend === 'STRONG_DOWN' ? 'STRONG_BEAR' : trend === 'DOWN' ? 'BEAR' : ranging ? 'RANGING' : 'NEUTRAL';
+  return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
+}
+
 async function getUnifiedScanCandidates(limit=12) {
   const lim = Math.max(6, Math.min(18, Number(limit || 12))); // R30: akıllı aday limiti
   const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
@@ -2335,6 +2574,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     const tickData = getTickAnalysis(full); // Tek referans, hem AMD hem skor için
     const amd5m = detectAMD(k5m, k15m, tickData?.tickSweep);
+
+    // R32: HA + Candle + ZigZag/Chart + Harmonic + Renko katmanları
+    // Ek Binance çağrısı yok; mevcut k5m/k1h/k4h + atr1h üzerinden hesaplanır.
+    const _r32AtrPct = lastPrice > 0 ? (atr1h / lastPrice) * 100 : 1;
+    const _cdl5m = cdlPatterns(k5m);
+    const _cdl1h = cdlPatterns(k1h);
+    const _ha5m  = haSignal(calcHeikinAshi(k5m));
+    const _ha1h  = haSignal(calcHeikinAshi(k1h));
+    const _chart = detectChartPatterns(k1h, lastPrice, _r32AtrPct);
+    const _harm  = detectHarmonicPatterns(k4h, lastPrice);
+    const _renko = renkoSignal(k1h, lastPrice, atr1h);
 
     // ── LİKİDİTE SWEEP + TEYİT (joshyattridge/smart-money-concepts mantığı) ──
     // Kural: Sweep tek başına yeterli değil. Sweep SONRASI geri dönüş teyidi lazım.
@@ -3581,6 +3831,89 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     // ── R27 MM Avlama Modülleri bitti ─────────────────────────────────────────
 
+    // ── R32 PATTERN + RENKO SKORU — körleştirmeyen grafik okuma katmanı ──
+    // Bu katman sadece amplifier/risk filtresi olarak çalışır. Tek başına A/B+ açtırmaz.
+    // Pozitif pattern bonusları toplam +35 ile sınırlıdır; Renko spike/range cezaları ayrı çalışır.
+    {
+      const R32_PATTERN_CAP = 35;
+      let r32LongBoost = 0, r32ShortBoost = 0;
+      const addR32Long = (pts, msg) => {
+        const add = Math.max(0, Math.min(Number(pts)||0, R32_PATTERN_CAP - r32LongBoost));
+        if (add > 0) { longScore = Math.min(longScore + add, 100); r32LongBoost += add; if (msg) signals.long.push(msg.replace(/\+\d+/, `+${add}`)); }
+        return add;
+      };
+      const addR32Short = (pts, msg) => {
+        const add = Math.max(0, Math.min(Number(pts)||0, R32_PATTERN_CAP - r32ShortBoost));
+        if (add > 0) { shortScore = Math.min(shortScore + add, 100); r32ShortBoost += add; if (msg) signals.short.push(msg.replace(/\+\d+/, `+${add}`)); }
+        return add;
+      };
+
+      // 1) Heikin Ashi: 5m zamanlama + 1h bağlam, ters 1h'e kör long/short basmaz.
+      const haCombo = (_ha5m.signal === 'STRONG_BULL' && _ha1h.signal !== 'STRONG_BEAR') ? 'BULL'
+        : (_ha5m.signal === 'STRONG_BEAR' && _ha1h.signal !== 'STRONG_BULL') ? 'BEAR'
+        : (_ha5m.signal === 'BULL' || _ha1h.signal === 'STRONG_BULL') ? 'MILD_BULL'
+        : (_ha5m.signal === 'BEAR' || _ha1h.signal === 'STRONG_BEAR') ? 'MILD_BEAR'
+        : _ha5m.signal === 'WEAKENING' ? 'WEAKENING' : 'NEUTRAL';
+      if (haCombo === 'BULL') addR32Long(10, '🕯️ HA güçlü yükseliş +10');
+      if (haCombo === 'MILD_BULL') addR32Long(5, null);
+      if (haCombo === 'BEAR') addR32Short(10, '🕯️ HA güçlü düşüş +10');
+      if (haCombo === 'MILD_BEAR') addR32Short(5, null);
+      if (haCombo === 'WEAKENING' && longScore > shortScore) { longScore = Math.round(longScore * 0.88); signals.long.push('⚠️ HA zayıflıyor'); }
+      if (haCombo === 'WEAKENING' && shortScore > longScore) shortScore = Math.round(shortScore * 0.88);
+
+      // 2) CDL paternleri: 5m giriş mumu, 1h bağlam; karşı patern varsa puan keser.
+      const cdlBullStr5 = (_cdl5m.bull||[]).reduce((s,p)=>s+p.str,0);
+      const cdlBearStr5 = (_cdl5m.bear||[]).reduce((s,p)=>s+p.str,0);
+      const cdlBullStr1 = (_cdl1h.bull||[]).reduce((s,p)=>s+p.str,0);
+      const cdlBearStr1 = (_cdl1h.bear||[]).reduce((s,p)=>s+p.str,0);
+      const topBull5 = (_cdl5m.bull||[]).slice().sort((a,b)=>b.str-a.str).slice(0,2).map(p=>p.name).join('+');
+      const topBear5 = (_cdl5m.bear||[]).slice().sort((a,b)=>b.str-a.str).slice(0,2).map(p=>p.name).join('+');
+      if (cdlBullStr5 >= 4) { const b = Math.min(cdlBullStr5 >= 8 ? 18 : cdlBullStr5 >= 5 ? 12 : 8, 18); addR32Long(b, `🕯️ CDL ${topBull5} +${b}`); }
+      if (cdlBearStr5 >= 4) { const b = Math.min(cdlBearStr5 >= 8 ? 18 : cdlBearStr5 >= 5 ? 12 : 8, 18); addR32Short(b, `🕯️ CDL ${topBear5} +${b}`); }
+      if (cdlBullStr1 >= 5 && longScore > shortScore) addR32Long(8, null);
+      if (cdlBearStr1 >= 5 && shortScore > longScore) addR32Short(8, null);
+      if (cdlBearStr5 >= 5 && longScore > shortScore && cdlBullStr5 < cdlBearStr5) { longScore = Math.round(longScore * 0.82); signals.long.push(`⚠️ CDL karşı: ${topBear5}`); }
+      if (cdlBullStr5 >= 5 && shortScore > longScore && cdlBullStr5 > cdlBearStr5) shortScore = Math.round(shortScore * 0.82);
+
+      // 3) ZigZag chart formasyonları: 1h yapı okur; tepede long / dipte short kovalamayı cezalar.
+      const cBull = _chart?.bullScore || 0, cBear = _chart?.bearScore || 0;
+      const bullPatt = (_chart?.patterns||[]).filter(p=>p.dir==='BULL').map(p=>p.name).slice(0,2).join('+');
+      const bearPatt = (_chart?.patterns||[]).filter(p=>p.dir==='BEAR').map(p=>p.name).slice(0,2).join('+');
+      if (cBull > 0 && cBull > cBear) { const b = Math.min(Math.round(cBull * 0.55), 22); addR32Long(b, b >= 8 ? `📐 ${bullPatt} +${b}` : null); }
+      if (cBear > 0 && cBear > cBull) { const b = Math.min(Math.round(cBear * 0.55), 22); addR32Short(b, b >= 8 ? `📐 ${bearPatt} +${b}` : null); }
+      if ((_chart?.patterns||[]).some(p=>['HeadShoulders','DoubleTop'].includes(p.name)) && longScore > shortScore) { longScore = Math.round(longScore * 0.72); signals.long.push('📐 H&S/DoubleTop: LONG tehlikeli'); }
+      if ((_chart?.patterns||[]).some(p=>['InvHeadShoulders','DoubleBottom'].includes(p.name)) && shortScore > longScore) shortScore = Math.round(shortScore * 0.72);
+
+      // 4) Harmonik PRZ: 4h PRZ bağlamı; sadece güçlü mevcut yönü destekler.
+      const hBull = _harm?.bullScore || 0, hBear = _harm?.bearScore || 0;
+      const bullHarm = (_harm?.patterns||[]).filter(p=>p.dir==='BULL').map(p=>p.name).slice(0,1).join('');
+      const bearHarm = (_harm?.patterns||[]).filter(p=>p.dir==='BEAR').map(p=>p.name).slice(0,1).join('');
+      if (hBull > 0 && hBull > hBear) { const b = Math.min(Math.round(hBull * 0.60), 22); addR32Long(b, b >= 8 ? `🔮 Harmonik PRZ: ${bullHarm} +${b}` : null); }
+      if (hBear > 0 && hBear > hBull) { const b = Math.min(Math.round(hBear * 0.60), 22); addR32Short(b, b >= 8 ? `🔮 Harmonik PRZ: ${bearHarm} +${b}` : null); }
+
+      // 5) Renko manipülasyon filtresi: spike/range önce güvenlik, trend sadece destek.
+      if (_renko && _renko.brickCount >= 4) {
+        if (_renko.spikeTrap) {
+          if (longScore > shortScore) { longScore = Math.round(longScore * 0.72); signals.long.push('🧱 Renko spike tuzağı: MM manipülasyonu'); }
+          else { shortScore = Math.round(shortScore * 0.72); signals.short.push('🧱 Renko spike tuzağı'); }
+        } else if (_renko.ranging) {
+          longScore = Math.round(longScore * 0.85); shortScore = Math.round(shortScore * 0.85);
+          signals.long.push(`🧱 Renko ranging: yön belirsiz (${_renko.bulls}↑/${_renko.bears}↓)`);
+        } else if (_renko.signal === 'STRONG_BULL' && longScore > shortScore) {
+          addR32Long(12, `🧱 Renko güçlü yükseliş (${_renko.consecutive} brick) +12`);
+        } else if (_renko.signal === 'STRONG_BEAR' && shortScore > longScore) {
+          addR32Short(12, `🧱 Renko güçlü düşüş (${_renko.consecutive} brick) +12`);
+        } else if ((_renko.signal === 'BEAR' || _renko.signal === 'STRONG_BEAR') && longScore > shortScore) {
+          longScore = Math.round(longScore * 0.82); signals.long.push('🧱 Renko bear, LONG karşıt');
+        } else if ((_renko.signal === 'BULL' || _renko.signal === 'STRONG_BULL') && shortScore > longScore) {
+          shortScore = Math.round(shortScore * 0.82);
+        }
+      }
+      if (r32LongBoost >= R32_PATTERN_CAP) signals.long.push('🔒 R32 pattern bonus tavanı +35');
+      if (r32ShortBoost >= R32_PATTERN_CAP) signals.short.push('🔒 R32 pattern bonus tavanı +35');
+    }
+    // ── R32 Pattern + Renko bitti ─────────────────────────────────────────────
+
     // ── R31 MODÜL KONSENSÜS SAYACI — tek modül değil, aile çoğunluğu konuşsun ──
     // Amaç: Sweep/StopHunt gibi hızlı sinyaller tek başına A/B+ şişirmesin.
     // CMF + RSI Div + EWO + Weis + MTF + Wyckoff + ChoCH + Premium/Discount + VPVR + VPIN
@@ -4316,6 +4649,29 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(isL && rsi4h>75) subP(true, rsi4h>82?12:7, 'RSI4h');
         if(!isL && rsi4h<25) subP(true, rsi4h<18?12:7, 'RSI4h');
         if(atrGateWarn&&!atrBlocking) subP(true,5,'ATRwarn');
+
+        // R32: Pattern + Renko priorityScore katkısı
+        // Sadece mevcut yönün yapısal kalitesini ölçer; hard veto ve mikro teyitleri bypass etmez.
+        {
+          const _cdlStr5 = (_cdl5m?.bull || []).reduce((s,p)=>s+p.str,0) - (_cdl5m?.bear || []).reduce((s,p)=>s+p.str,0);
+          addP(isL && _cdlStr5 >= 5, Math.min(_cdlStr5, 8), 'CDL5m🕯️', 'structure', 16);
+          addP(!isL && _cdlStr5 <= -5, Math.min(-_cdlStr5, 8), 'CDL5m🕯️', 'structure', 16);
+          addP(isL && _ha5m?.signal === 'STRONG_BULL', 8, 'HA_StrongBull', 'structure', 16);
+          addP(!isL && _ha5m?.signal === 'STRONG_BEAR', 8, 'HA_StrongBear', 'structure', 16);
+          const _cBull = _chart?.bullScore || 0, _cBear = _chart?.bearScore || 0;
+          const _hBull = _harm?.bullScore || 0, _hBear = _harm?.bearScore || 0;
+          addP(isL && _cBull > _cBear && _cBull >= 14, 10, 'ChartForm📐', 'structure', 16);
+          addP(!isL && _cBear > _cBull && _cBear >= 14, 10, 'ChartForm📐', 'structure', 16);
+          addP(isL && _hBull > _hBear && _hBull >= 18, 10, 'HarmonicPRZ🔮', 'macro', 28);
+          addP(!isL && _hBear > _hBull && _hBear >= 18, 10, 'HarmonicPRZ🔮', 'macro', 28);
+          addP(isL && _renko?.signal === 'STRONG_BULL', 8, 'Renko🧱', 'structure', 16);
+          addP(!isL && _renko?.signal === 'STRONG_BEAR', 8, 'Renko🧱', 'structure', 16);
+          subP(isL && (_chart?.patterns || []).some(p=>['HeadShoulders','DoubleTop'].includes(p.name)), 12, 'H&S_ters');
+          subP(!isL && (_chart?.patterns || []).some(p=>['InvHeadShoulders','DoubleBottom'].includes(p.name)), 12, 'IHS_ters');
+          subP(Boolean(_renko?.spikeTrap), 12, 'RenkoSpikeTrap');
+          subP(Boolean(_renko?.ranging), 6, 'RenkoRanging');
+        }
+
         // ── R27: MM avlama PS etkisi ──────────────────────────────────────────
         {
           const _sh = r27SpreadHistory.get(full);
