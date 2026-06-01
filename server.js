@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R62_DUAL_TREND_REVERSAL_BALANCE';
+const LAZARUS_BUILD = 'R63_DIRECT_SWEEP_TDZ_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5358,9 +5358,13 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           ? (wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS') || wy15?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS') || wy4?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS'))
           : (wy1?.recentEvents?.some(e=>e.type==='UTAD') || wy15?.recentEvents?.some(e=>e.type==='UTAD') || wy4?.recentEvents?.some(e=>e.type==='UTAD'))
         );
+        // R63-FIX: directSweepOk burada henüz const olarak tanımlanmadan okunuyordu.
+        // JS TDZ hatası: "Cannot access 'directSweepOk' before initialization".
+        // directSweepOk zaten hardSweepForBridge || huntBridgeOk ailesi olduğu için burada
+        // doğrudan bu iki güvenli değişken kullanılır.
         const r62CounterTrendTrapContextOk = !!(
           mtfStrongOpposite &&
-          (r62SideTrapEventOk || directSweepOk || hardSweepForBridge || huntBridgeOk || tickData?.tickSweep?.fresh || r39Confluence || r39Side?.breakConfirmed)
+          (r62SideTrapEventOk || hardSweepForBridge || huntBridgeOk || tickData?.tickSweep?.fresh || r39Confluence || r39Side?.breakConfirmed)
         );
         const r62CounterTrendTrapFlowOk = !!(
           deltaOkStrict || obSameSide || oiBridgeOk || fundBridgeOk || cmfSameSide || weisSameSide || chochSameSide || ewoSameSide || squeezeSameSide
