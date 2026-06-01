@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R44_CVD_UI_NO_FAKE_50';
+const LAZARUS_BUILD = 'R45_5M_SWEEPONLY_REAL_GATE';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5237,13 +5237,53 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(signalDecayAutoBlock) hardVetoReasons.push(`Signal decay ${r22Decay.label}`);
         if(r29CtxBlock) hardVetoReasons.push(`R29 bağlam riski ${isL ? r29Context.longRisk : r29Context.shortRisk}`);
 
+        // R45: 5m SweepOnly REAL GATE — UI checkbox artık gerçek otomatik emir kapısıdır.
+        // directSweepOk: gerçek likidite/sweep/stop-hunt ailesi. Sweep zorunlu AÇIK ise otomatik emir bununla sınırlıdır.
+        // nonSweepQualityOk: Sweep zorunlu KAPALI ise, sadece çok kaliteli 5m erken impuls/retest + CVD/OI/book/MM uyumu ile B+ köprü açabilir.
+        const sweepRequired = autoConfig?.sweepOnly !== false;
+        const directSweepOk = !!(hardSweepForBridge || huntBridgeOk);
+        const r45Rvol = Number(rvol1h?.rvol || 0);
+        const r45RvolUnknown = !(r45Rvol > 0);
+        const r45RvolDead = r45Rvol > 0 && r45Rvol < 0.18;
+        const r45RvolLowButWatch = r45Rvol >= 0.18 && r45Rvol < 0.45;
+        const r45RvolTradable = r45Rvol >= 0.45;
+        const r45TopMoverSecondImpulseWatch = !!(
+          r45RvolDead && r38TopMoverStrong && (fresh5mImpulse || r37EarlyOk) && (oiBridgeOk || obSameSide || mmSameSide) &&
+          !r37LateChaseBlock && !r39TargetNearBlock && priorityScore >= 78
+        );
+        const r45RvolOkForBridge = !!(
+          r45RvolTradable ||
+          (r45RvolUnknown && priorityScore >= 76 && (fresh5mImpulse || r37EarlyOk) && (oiBridgeOk || obSameSide || mmSameSide)) ||
+          (r45RvolLowButWatch && (fresh5mImpulse || r37EarlyOk) && priorityScore >= 70) ||
+          (r45TopMoverSecondImpulseWatch && directSweepOk)
+        );
+        const r45RvolStatus = r45RvolUnknown ? 'UNKNOWN' : r45RvolDead ? 'DEAD_WATCH' : r45RvolLowButWatch ? 'LOW_WATCH' : r45RvolTradable ? 'TRADABLE' : 'UNKNOWN';
+        const r45CvdAlternativeOk = !!(
+          cvdMissing && priorityScore >= 76 && (fresh5mImpulse || r37EarlyOk) &&
+          (oiBridgeOk || obSameSide || (mmSameSide && mmConf >= 45)) &&
+          !r41OppositeWyckoff && !r37LateChaseBlock && !r39TargetNearBlock
+        );
+        const r45CvdOkForBridge = !!(deltaOkStrict || r45CvdAlternativeOk);
+        const nonSweepQualityOk = !!(
+          !directSweepOk && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r37LateChaseBlock && !r39TargetNearBlock &&
+          !poorLiquidity && !mtfStrongOpposite && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
+          sc >= minAutoScore && priorityScore >= (r38TopMoverStrong ? 68 : 72) &&
+          (fresh5mImpulse || r37EarlyOk || r38RetestBridgeOk) && microConfirmR35 && r45CvdOkForBridge && r45RvolOkForBridge &&
+          (oiBridgeOk || obSameSide || mmSameSide || mtfBridgeOk || fundBridgeOk || chochSameSide || weisSameSide)
+        );
+        const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk);
+        const entryPermissionReason = directSweepOk ? 'DIRECT_SWEEP'
+          : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE'
+          : sweepRequired ? 'SWEEP_REQUIRED_FAIL'
+          : 'ENTRY_PERMISSION_FAIL';
+
         // R35: 5m fırsat köprüsü. Bu kör giriş değildir: gerçek entry/soft-entry +
         // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
         // Amacı R34'teki 'her şey B, hiç emir yok' kilidini açmak.
         const r35ScalperBridge = !!(
           !hardVeto && !signalDecayAutoBlock && !rvolVeryLow && !poorLiquidity && r42FlowGate &&
           sc >= minAutoScore && priorityScore >= 64 &&
-          (hasEntry || (softEntry && fresh5mImpulse) || (softEntry && r37EarlyOk)) &&
+          (hasEntry || nonSweepQualityOk || (softEntry && fresh5mImpulse) || (softEntry && r37EarlyOk)) &&
           microConfirmR35 && !r37RetestWait &&
           (bridgeCount >= 2 || priorityScore >= 72 || (r37EarlyOk && priorityScore >= 66)) &&
           !mtfStrongOpposite && !mmVeryStrongOpposite
@@ -5252,12 +5292,13 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // A: temiz otomatik. B+: kontrollü otomatik. R35 scalper bridge yüksek kaliteli B'leri B+ yapar.
         // R41: A-tier artık CVD/tick tamamen köprüyle varsayılarak geçemez; gerçek canlı flow ister.
         // Flow eksikse en fazla B+ kontrollü adaya düşer, A-tier otomatik güven etiketi alamaz.
-        const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && sc>=minAutoScore && (
-          (hasEntry && cvdBridgePass && r42FlowGate && microConfirmR35 && priorityScore>=58) ||
+        const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && directSweepOk && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
+        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && sc>=minAutoScore && (
+          (directSweepOk && hasEntry && cvdBridgePass && r42FlowGate && microConfirmR35 && priorityScore>=58) ||
+          (!sweepRequired && nonSweepQualityOk) ||
           r35ScalperBridge
         );
-        const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry) && fundOk && sc>=55;
+        const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry||nonSweepQualityOk) && fundOk && sc>=55;
 
         const reasons=[], blocks=[];
         if(amd5m?.signal===(isL?'AMD_LONG':'AMD_SHORT')) reasons.push('⚡ AMD');
@@ -5286,9 +5327,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(cvdValid&&deltaOkStrict) reasons.push(`📊 CVD${cvdRatio.toFixed(0)}%`);
         else if(!cvdValid && cvdBridgePass) reasons.push(`🟡 CVD yok ama terazi güçlü ${priorityScore}`);
         else if(!cvdValid) reasons.push('📊 CVD ısınma/veri yok');
+        if(directSweepOk) reasons.push(`🔐 Sweep kapısı: ${sweepRequired?'AÇIK':'KAPALI'} / DIRECT_SWEEP`);
+        else if(!sweepRequired && nonSweepQualityOk) reasons.push('🟦 Sweep kapalı: 5m non-sweep köprü');
+        if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
+        if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
+        if(r45RvolDead) reasons.push(`📊 RVOL ölü/ikinci impuls izleme ${r45Rvol.toFixed(2)}x`);
         if(softEntry&&!hasEntry) reasons.push('👁 Yumuşak sinyal');
 
-        if(!hasEntry&&!softEntry) blocks.push('Sinyal yok');
+        if(!entryPermissionOk) blocks.push(`R45 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}`);
+        if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
         if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, terazi ${priorityScore})`);
         if(signalDecayAutoBlock) blocks.push(`Bayat sweep: ${r22Decay.label}`);
@@ -5304,14 +5351,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(sc<55) blocks.push(`Skor düşük(${sc})`);
 
         const tier=isTierA?'A':isTierBPlus?'B+':isTierB?'B':'WAIT';
-        if((tier==='B'||tier==='WAIT') && softEntry && !hasEntry) blocks.push('Yumuşak bağlam var ama canlı emir için gerçek giriş izi yok');
+        if((tier==='B'||tier==='WAIT') && softEntry && !hasEntry && !nonSweepQualityOk) blocks.push('Yumuşak bağlam var ama canlı emir için gerçek giriş izi yok');
         if((isTierA||isTierBPlus) && !microConfirmR35) blocks.push('Mikro teyit eksik');
-        const passCount=[hasEntry||softEntry,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
-        const autoOk=isTierA||isTierBPlus;
+        const passCount=[entryPermissionOk,hasEntry||softEntry||nonSweepQualityOk,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
+        const autoOk=(isTierA||isTierBPlus) && entryPermissionOk;
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
+          sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
@@ -6750,7 +6798,11 @@ function pushAutoCandidate(row) {
     longScore:Number(row.longScore||0), shortScore:Number(row.shortScore||0),
     priorityScore:Number(row.priorityScore||0),
     reason:String(row.reason||row.block||'—').slice(0,160),
-    action:String(row.action||'İzle').slice(0,90)
+    action:String(row.action||'İzle').slice(0,90),
+    sweepRequired: row.sweepRequired,
+    entryPermissionReason: row.entryPermissionReason || '',
+    cvdMissing: !!row.cvdMissing,
+    r45RvolStatus: row.r45RvolStatus || ''
   };
   // R34: Aynı sembol aynı taramada iki satır görünmesin. Önce aday, sonra atlandı gelirse son durum yazılır.
   const key = `${r.symbol}_${r.rec}`;
@@ -6966,7 +7018,7 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
-    autoScanState.scanSource = 'R42_PRIORITY_SANITY_AUTO_SYNC';
+    autoScanState.scanSource = 'R45_5M_SWEEPONLY_REAL_GATE';
     autoScanState.scanLimit = scanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
@@ -7026,7 +7078,7 @@ async function runAutoScan() {
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
-        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.r38RetestBridgeOk?'R38 Retest Köprü':(decisionChain?.r37EarlyOk?'R37 Erken/Köprü':(decisionChain?.scalperBridge?'R36 Köprü':(decisionChain?.tier==='B+'?'Kontrollü':'Aday')))):'İzle'});
+        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.entryPermissionReason||'Aday'):'İzle', sweepRequired:decisionChain?.sweepRequired, entryPermissionReason:decisionChain?.entryPermissionReason, cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus});
 
         // Yön izni
         if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
@@ -7043,6 +7095,14 @@ async function runAutoScan() {
             continue;
           }
           logAuto(`🔁 ${coin.symbol} cooldown ters flip bypass: eski ${postCd.side}, yeni ${recommendation}, terazi ${decisionChain?.priorityScore||0}`);
+        }
+
+        // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
+        if (decisionChain && decisionChain.entryPermissionOk === false) {
+          const why = `R45 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}`;
+          logAuto(`⛔ ${coin.symbol} ${why}`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired});
+          continue;
         }
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
