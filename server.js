@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R35_SCALPER_BRIDGE_NO_BLIND';
+const LAZARUS_BUILD = 'R37_EARLY_MOVE_NO_LATE_CHASE';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -2317,6 +2317,101 @@ function renkoSignal(klines, lastPrice, atrVal) {
   return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
 }
 
+
+// ── R37: EARLY MOVE CAPTURE + NO LATE CHASE ────────────────────────────────
+// Amaç: 5m hareket bitmeye yaklaşırken market emir kovalamayı engellemek,
+// fakat ilk kırılım / ilk retest / taze impuls geldiğinde botu kurallarla kör etmemek.
+function r37EMA(values, period=9) {
+  const arr = (values || []).map(Number).filter(Number.isFinite);
+  if (arr.length < 2) return arr.at(-1) || 0;
+  const k = 2 / (period + 1);
+  let e = arr[0];
+  for (let i = 1; i < arr.length; i++) e = arr[i] * k + e * (1-k);
+  return e;
+}
+function r37VWAP(klines) {
+  let pv = 0, vol = 0;
+  for (const c of (klines || [])) {
+    const h=Number(c[2]), l=Number(c[3]), cl=Number(c[4]), v=Number(c[5]||0);
+    if (![h,l,cl,v].every(Number.isFinite)) continue;
+    const typ = (h+l+cl)/3; pv += typ*v; vol += v;
+  }
+  return vol > 0 ? pv/vol : 0;
+}
+function r37MoveTiming(klines5m, klines15m, lastPrice, atrPct=1, vpvr1h=null, liq1h=null) {
+  const kl = Array.isArray(klines5m) ? klines5m.filter(Boolean) : [];
+  const k15 = Array.isArray(klines15m) ? klines15m.filter(Boolean) : [];
+  const lp = Number(lastPrice || (kl.at(-1)||[])[4] || 0);
+  const base = { ok:false, long:{}, short:{}, notes:[] };
+  if (kl.length < 12 || !(lp > 0)) return base;
+  const rows = kl.map(c=>({
+    o:Number(c[1]), h:Number(c[2]), l:Number(c[3]), c:Number(c[4]), v:Number(c[5]||0)
+  })).filter(c=>[c.o,c.h,c.l,c.c].every(Number.isFinite));
+  if (rows.length < 12) return base;
+  const last = rows.at(-1);
+  const prev = rows.at(-2) || last;
+  const chgFrom = n => {
+    const r = rows.at(-1-n);
+    return r && r.o > 0 ? (lp - r.o) / r.o * 100 : 0;
+  };
+  const chg3 = chgFrom(3), chg5 = chgFrom(5), chg8 = chgFrom(8);
+  let bullSeq = 0, bearSeq = 0;
+  for (let i = rows.length - 1; i >= Math.max(0, rows.length - 8); i--) {
+    if (rows[i].c >= rows[i].o) {
+      if (bearSeq === 0) bullSeq++; else break;
+    } else {
+      if (bullSeq === 0) bearSeq++; else break;
+    }
+  }
+  const recent8 = rows.slice(-8);
+  const recent20 = rows.slice(-20);
+  const localHigh = Math.max(...recent20.map(x=>x.h));
+  const localLow  = Math.min(...recent20.map(x=>x.l));
+  const distHigh = localHigh > 0 ? (localHigh - lp) / lp * 100 : 99;
+  const distLow  = localLow > 0 ? (lp - localLow) / lp * 100 : 99;
+  const range8Hi = Math.max(...recent8.map(x=>x.h));
+  const range8Lo = Math.min(...recent8.map(x=>x.l));
+  const rangePos = range8Hi > range8Lo ? (lp - range8Lo) / (range8Hi - range8Lo) : 0.5;
+  const closes = rows.map(x=>x.c);
+  const ema9 = r37EMA(closes.slice(-30), 9);
+  const ema21 = r37EMA(closes.slice(-50), 21);
+  const vw = r37VWAP(rows.slice(-72));
+  const atr = Math.max(0.25, Number(atrPct)||1);
+  const near = (a,b,pct) => a > 0 && b > 0 && Math.abs(a-b)/b*100 <= pct;
+  const nearBand = Math.max(0.12, Math.min(0.55, atr * 0.28));
+  const lastBody = Math.abs(last.c-last.o) / lp * 100;
+  const lowerWick = (Math.min(last.o,last.c)-last.l) / lp * 100;
+  const upperWick = (last.h-Math.max(last.o,last.c)) / lp * 100;
+  const volAvg = rows.slice(-25,-1).reduce((s,x)=>s+x.v,0) / Math.max(1, rows.slice(-25,-1).length);
+  const volBoost = last.v > volAvg * 1.25;
+  const emaStackBull = ema9 > ema21 && lp >= ema9 * 0.996;
+  const emaStackBear = ema9 < ema21 && lp <= ema9 * 1.004;
+  const retestLong = (near(last.l, ema9, nearBand) || near(last.l, ema21, nearBand) || near(last.l, vw, nearBand)) && last.c >= last.o && lowerWick >= lastBody * 0.35;
+  const retestShort= (near(last.h, ema9, nearBand) || near(last.h, ema21, nearBand) || near(last.h, vw, nearBand)) && last.c <= last.o && upperWick >= lastBody * 0.35;
+  const firstBullImpulse = chg3 > Math.max(0.35, atr*0.35) && chg5 < Math.max(1.6, atr*1.4) && volBoost && emaStackBull;
+  const firstBearImpulse = chg3 < -Math.max(0.35, atr*0.35) && chg5 > -Math.max(1.6, atr*1.4) && volBoost && emaStackBear;
+  const bullExtended = chg5 > Math.max(1.15, atr*1.15) || chg8 > Math.max(1.8, atr*1.65) || bullSeq >= 4;
+  const bearExtended = chg5 < -Math.max(1.15, atr*1.15) || chg8 < -Math.max(1.8, atr*1.65) || bearSeq >= 4;
+  const nearUpperTarget = distHigh < Math.max(0.28, atr*0.28) || rangePos > 0.86 || (vpvr1h?.vah && Math.abs(lp-Number(vpvr1h.vah))/lp*100 < Math.max(0.35, atr*0.35));
+  const nearLowerTarget = distLow  < Math.max(0.28, atr*0.28) || rangePos < 0.14 || (vpvr1h?.val && Math.abs(lp-Number(vpvr1h.val))/lp*100 < Math.max(0.35, atr*0.35));
+  const k15Rows = k15.map(c=>({o:Number(c[1]), h:Number(c[2]), l:Number(c[3]), c:Number(c[4])})).filter(c=>[c.o,c.h,c.l,c.c].every(Number.isFinite));
+  const k15Last = k15Rows.at(-1) || null;
+  const k15Bull = !!(k15Last && k15Last.c > k15Last.o);
+  const k15Bear = !!(k15Last && k15Last.c < k15Last.o);
+  const longLateChase  = bullExtended && nearUpperTarget && !retestLong && !firstBullImpulse;
+  const shortLateChase = bearExtended && nearLowerTarget && !retestShort && !firstBearImpulse;
+  const longRetestOnly = bullExtended && !firstBullImpulse && !retestLong;
+  const shortRetestOnly= bearExtended && !firstBearImpulse && !retestShort;
+  const longEarlyScore = [firstBullImpulse, retestLong, emaStackBull, k15Bull, volBoost, rangePos < 0.72].filter(Boolean).length;
+  const shortEarlyScore= [firstBearImpulse, retestShort, emaStackBear, k15Bear, volBoost, rangePos > 0.28].filter(Boolean).length;
+  return {
+    ok:true, chg3:+chg3.toFixed(2), chg5:+chg5.toFixed(2), chg8:+chg8.toFixed(2),
+    bullSeq, bearSeq, distHigh:+distHigh.toFixed(2), distLow:+distLow.toFixed(2), rangePos:+rangePos.toFixed(2), ema9:+ema9.toFixed(8), ema21:+ema21.toFixed(8), vwap:+vw.toFixed(8),
+    long:{ lateChase:longLateChase, retestOnly:longRetestOnly, retestOk:retestLong, earlyImpulse:firstBullImpulse, earlyScore:longEarlyScore, targetNear:nearUpperTarget, extended:bullExtended, reason:`5m chg5 ${chg5.toFixed(2)}%, mum:${bullSeq}, hedefUzak:${distHigh.toFixed(2)}%` },
+    short:{ lateChase:shortLateChase, retestOnly:shortRetestOnly, retestOk:retestShort, earlyImpulse:firstBearImpulse, earlyScore:shortEarlyScore, targetNear:nearLowerTarget, extended:bearExtended, reason:`5m chg5 ${chg5.toFixed(2)}%, mum:${bearSeq}, hedefUzak:${distLow.toFixed(2)}%` }
+  };
+}
+
 async function getUnifiedScanCandidates(limit=24) {
   // R33: Top Gainers kilidi. Kullanıcı Binance Top Movers ekranında gördüğü ilk coinleri
   // bot hedef listesinde de görmek istiyor. Bu yüzden limit 10 altına düşmez; max 24 ile API boğulmaz.
@@ -2394,7 +2489,7 @@ app.get('/api/scan-candidates', async (req, res) => {
   try {
     const limit = Number(req.query.limit || 24);
     const coins = await getUnifiedScanCandidates(limit);
-    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R35_TOP24_SCALPER_BRIDGE_SCAN_LIST' });
+    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R37_TOP24_EARLY_MOVE_SCAN_LIST' });
   } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
 });
 
@@ -3370,6 +3465,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const rsiDiv4h = detectRSIDivergence(k4h);
     const mtfBias  = calcMTFBias(rsi4h,rsi1h,rsi15m,rsi5m,ema20_4h,ema50_4h,ema200_4h,ema20_1h,ema50_1h);
     const liqVoids1h = detectLiquidityVoids(k1h.slice(-30));
+    const r37Timing = r37MoveTiming(k5m, k15m, lastPrice, atrPct, vpvr1h, liq1h);
 
     let longScore=0,shortScore=0;const signals={long:[],short:[]};
 
@@ -4400,6 +4496,34 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     longScore =Math.min(Math.round(longScore*freshnessMult),100);
     shortScore=Math.min(Math.round(shortScore*freshnessMult),100);
 
+    // ── R37: 5m erken yakalama / geç kovalamama skor düzeltmesi ───────────
+    if (r37Timing?.ok) {
+      if (r37Timing.long.earlyImpulse || r37Timing.long.retestOk) {
+        const add = r37Timing.long.earlyImpulse ? 10 : 7;
+        longScore = Math.min(longScore + add, 100);
+        signals.long.push(`⚡ R37 erken LONG ${r37Timing.long.earlyImpulse?'ilk impuls':'retest'} (+${add})`);
+      }
+      if (r37Timing.short.earlyImpulse || r37Timing.short.retestOk) {
+        const add = r37Timing.short.earlyImpulse ? 10 : 7;
+        shortScore = Math.min(shortScore + add, 100);
+        signals.short.push(`⚡ R37 erken SHORT ${r37Timing.short.earlyImpulse?'ilk impuls':'retest'} (+${add})`);
+      }
+      if (r37Timing.long.lateChase) {
+        longScore = Math.round(longScore * 0.62);
+        signals.long.push(`⛔ R37 geç LONG chase: ${r37Timing.long.reason}`);
+      } else if (r37Timing.long.retestOnly) {
+        longScore = Math.round(longScore * 0.82);
+        signals.long.push(`⏳ R37 LONG retest bekle: ${r37Timing.long.reason}`);
+      }
+      if (r37Timing.short.lateChase) {
+        shortScore = Math.round(shortScore * 0.62);
+        signals.short.push(`⛔ R37 geç SHORT chase: ${r37Timing.short.reason}`);
+      } else if (r37Timing.short.retestOnly) {
+        shortScore = Math.round(shortScore * 0.82);
+        signals.short.push(`⏳ R37 SHORT retest bekle: ${r37Timing.short.reason}`);
+      }
+    }
+
     // ── R23: R22 BEST ÜSTÜ HASSAS SKOR KATMANI ─────────────────────────────
     // Burada ham longScore/shortScore güçlendirilir; evalDecision içinde ayrıca
     // priorityScore/terazi hesaplanır. Aynı aile bonusları tavanlıdır ki bot
@@ -4702,6 +4826,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const atrExtremeBlock = atrPct > Math.max(14, _slPctEval * 7.0);
         const atrBlocking = !!atrExtremeBlock;
         const poorLiquidity = !!(liqQual?.quality==='POOR' || (liqQual?.slippageRisk && Number(liqQual?.spread||0)>0.10));
+        const r37Side = r37Timing?.ok ? (isL ? r37Timing.long : r37Timing.short) : null;
+        const r37LateChaseBlock = !!(r37Side?.lateChase);
+        const r37RetestWait = !!(r37Side?.retestOnly && !r37Side?.retestOk && !r37Side?.earlyImpulse);
+        const r37EarlyOk = !!(r37Side?.earlyImpulse || r37Side?.retestOk || Number(r37Side?.earlyScore||0) >= 4);
 
         let priorityScore=0;
         const priorityTags=[];
@@ -4732,6 +4860,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(ewoSameSide,4,'EWO');
         addP(squeezeSameSide,4,'Squeeze');
         addP(pdSameSide,3,'P/D');
+        // R37: 5m timing terazi katkısı — erken impuls/retest lehte, geç chase ters.
+        addP(r37Side?.earlyImpulse, 10, 'R37Early');
+        addP(r37Side?.retestOk, 8, 'R37Retest');
+        addP(Number(r37Side?.earlyScore||0) >= 4, 5, 'R37Micro');
+        subP(r37Side?.lateChase, 22, 'R37LateChase');
+        subP(r37RetestWait, 12, 'R37RetestWait');
         // R22: öncelik terazi ekleri. Bunlar iyi sinyali hızlandırır ama güvenlik frenlerini devre dışı bırakmaz.
         addP(r22Rotation.active, r22Rotation.score, r22Rotation.tag === 'SECTOR_ROTATION_STRONG' ? 'SektörRot' : 'Rotasyon', 'macro', 28);
         addP(r22FundingTrap.detected, r22FundingTrap.psBonus || 16, r22FundingTrap.strength==='STRONG'?'FundTrap🔥':'FundingTrap', 'macro', 28);
@@ -4825,10 +4959,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const mmOk = !mmVeryStrongOpposite;
         const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk) && !fresh15mConfirm && !fresh5mImpulse);
         const r29CtxBlock = isL ? !!r29Context.longAutoBlock : !!r29Context.shortAutoBlock;
-        const hardVeto = !!(poorLiquidity || atrBlocking || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
+        const hardVeto = !!(poorLiquidity || atrBlocking || r37LateChaseBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
         const hardVetoReasons=[];
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
         if(atrBlocking) hardVetoReasons.push(`ATR gate %${atrPct.toFixed(2)}`);
+        if(r37LateChaseBlock) hardVetoReasons.push(`R37 geç chase: ${r37Side?.reason||''}`);
         if(!fundOk) hardVetoReasons.push('Funding aşırı ters');
         if(!rsiOk) hardVetoReasons.push(`RSI4h uç ${rsi4h}`);
         if(!mmOk) hardVetoReasons.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
@@ -4841,15 +4976,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r35ScalperBridge = !!(
           !hardVeto && !signalDecayAutoBlock && !rvolVeryLow && !poorLiquidity &&
           sc >= minAutoScore && priorityScore >= 64 &&
-          (hasEntry || (softEntry && fresh5mImpulse)) &&
-          microConfirmR35 &&
-          (bridgeCount >= 2 || priorityScore >= 72) &&
+          (hasEntry || (softEntry && fresh5mImpulse) || (softEntry && r37EarlyOk)) &&
+          microConfirmR35 && !r37RetestWait &&
+          (bridgeCount >= 2 || priorityScore >= 72 || (r37EarlyOk && priorityScore >= 66)) &&
           !mtfStrongOpposite && !mmVeryStrongOpposite
         );
 
         // A: temiz otomatik. B+: kontrollü otomatik. R35 scalper bridge yüksek kaliteli B'leri B+ yapar.
-        const isTierA = !hardVeto && !signalDecayAutoBlock && hasEntry && deltaOk && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && sc>=minAutoScore && (
+        const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && hasEntry && deltaOk && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
+        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && sc>=minAutoScore && (
           (hasEntry && cvdBridgePass && microConfirmR35 && priorityScore>=58) ||
           r35ScalperBridge
         );
@@ -4887,6 +5022,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r22LiqWaterfall.adverse) blocks.push('Likidasyon şelalesi ters risk');
         if(isL && r29Context.longAutoBlock) blocks.push(`R29 bağlam LONG blok ${r29Context.longRisk}: ${r29Context.longNotes.slice(0,2).join(' + ')}`);
         if(!isL && r29Context.shortAutoBlock) blocks.push(`R29 bağlam SHORT blok ${r29Context.shortRisk}: ${r29Context.shortNotes.slice(0,2).join(' + ')}`);
+        if(r37LateChaseBlock) blocks.push(`R37 geç giriş/chase: ${r37Side?.reason||''}`);
+        if(r37RetestWait) blocks.push(`R37 hareket kaçmış: retest bekleniyor (${r37Side?.reason||''})`);
         if(priorityScore<50) blocks.push(`Terazi düşük ${priorityScore}`);
         if(hardVetoReasons.length) blocks.push(...hardVetoReasons.slice(0,2));
         if(sc<55) blocks.push(`Skor düşük(${sc})`);
@@ -4900,7 +5037,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, microConfirm,
-          rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm,
+          rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
             favorable:    r25WickTrapMap ? (isL ? r25WickTrapMap.lowerTrap : r25WickTrapMap.upperTrap) : false,
@@ -5028,6 +5165,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       longScore, shortScore, recommendation, decisionChain,
       r22: decisionChain?.r22 || null,
       r29: r29Context,
+      r37: r37Timing,
       signals:recommendation==='LONG'?signals.long.slice(0,8):signals.short.slice(0,8),
     });
   } catch(e) {
@@ -5493,11 +5631,13 @@ app.post('/api/positions', async (req, res) => {
     const rawOpen=Array.isArray(data)?data.filter(p=>parseFloat(p.positionAmt)!==0):[];
     const open=[];
     for(const p of rawOpen){
-      const amt=parseFloat(p.positionAmt),ep=parseFloat(p.entryPrice),mp=parseFloat(p.markPrice),lev=parseInt(p.leverage)||1;
-      const side=amt>0?'LONG':'SHORT';
-      const pct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)).toFixed(2):'0';
+      const amt=parseFloat(p.positionAmt),ep=parseFloat(p.entryPrice),mp=parseFloat(p.markPrice);
       const full=normalizeSymbol(p.symbol);
       const state=trailingState.get(full)||trailingState.get(String(p.symbol||''))||{};
+      // R37: Bazı positionRisk/account cevaplarında leverage 1/boş dönebiliyor; canlı state/panel leverage'ı ile tamamla.
+      const lev=parseInt(p.leverage)||parseInt(state.leverage)||parseInt(autoConfig?.leverage)||1;
+      const side=amt>0?'LONG':'SHORT';
+      const pct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)).toFixed(2):'0';
       // SL/TP bracket kontrolü — Binance'teki gerçek emir durumu
       let brackets={hasSL:false,hasTP:false,sl:null,tp:null,orderCount:0};
       try{
@@ -5520,7 +5660,7 @@ app.post('/api/positions', async (req, res) => {
         stopLoss:state.currentSL||brackets.sl||null,
         target:state.targetTP||brackets.tp||null,
         brackets,
-        managerStatus:state.managerStatus||positionManagerSnapshot({symbol:full,pnlPct:parseFloat(pct)},state,'İZLEME'),
+        managerStatus:{...(state.managerStatus||positionManagerSnapshot({symbol:full,pnlPct:parseFloat(pct)},state,'İZLEME')), lastCheck: state.lastCheck || state.managerStatus?.lastCheck || Date.now()},
         entryReason:state.entryReason||null,
         openTime:state.openedAt||state.entryAt||null,
         sltpVerified:!!(state.sltpVerified||(brackets.hasSL&&brackets.hasTP)),
@@ -5887,6 +6027,18 @@ async function managePosition(apiKey, apiSecret, pos) {
   state.leverage = state.leverage || leverage;
   state.peakPnl    = Math.max(state.peakPnl || 0, pnlPct);
   state.peakRealPct= Math.max(state.peakRealPct, realProfitPct);
+  // R37: canlı yönetim timestamp'i her hızlı döngüde güncellensin.
+  // Önceki sürümde action yoksa lastCheck/managerStatus eski kalıyor, panel 'kontrol 15dk önce' gösteriyordu.
+  const stampManager = (type='İZLEME', reason=null, urgency='LOW') => {
+    state.lastCheck = Date.now();
+    state.managerStatus = {
+      type, urgency,
+      reason: reason || `${sym} ${side} canlı izleniyor • PnL %${Number(pnlPct||0).toFixed(2)} • BE:${state.breakEvenSet?'AKTİF':'bekliyor'} • SL/TP:${state.sltpVerified?'doğrulandı':'kontrol'}`,
+      pnlPct:Number(pnlPct||0), peakPnl:Number(state.peakPnl||0), peakRealPct:Number(state.peakRealPct||0),
+      currentSL:state.currentSL||null, targetTP:state.targetTP||null, lastCheck:state.lastCheck
+    };
+    trailingState.set(sym, state);
+  };
 
   const cfg = autoConfig || {};
   // parseFloat + fallback — NaN koruması
@@ -6078,8 +6230,9 @@ async function managePosition(apiKey, apiSecret, pos) {
   }
 
   // ── AKSİYON UYGULA ────────────────────────────────────────────────────────
-  if (!action) return null;
+  if (!action) { stampManager('İZLEME', null, 'LOW'); return null; }
 
+  stampManager(action.type, action.reason, action.urgency||'LOW');
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
   if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT') {
@@ -6480,7 +6633,7 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
-    autoScanState.scanSource = 'R35_SCALPER_BRIDGE_AUTO_SYNC';
+    autoScanState.scanSource = 'R37_EARLY_MOVE_AUTO_SYNC';
     autoScanState.scanLimit = scanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
@@ -6530,7 +6683,7 @@ async function runAutoScan() {
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
-        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.scalperBridge?'R35 Köprü':(decisionChain?.tier==='B+'?'Kontrollü':'Aday')):'İzle'});
+        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.r37EarlyOk?'R37 Erken/Köprü':(decisionChain?.scalperBridge?'R36 Köprü':(decisionChain?.tier==='B+'?'Kontrollü':'Aday'))):'İzle'});
 
         // Yön izni
         if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
@@ -6666,7 +6819,7 @@ async function runAutoScan() {
             markAutoSkip(coin.symbol, `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore});
             continue;
           }
-          logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama R35 scalper köprüsü geçti — user SL/TP korunarak devam`);
+          logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama R37/R36 scalper köprüsü geçti — user SL/TP korunarak devam`);
         }
         // Likidite kalitesi çok düşükse skip
         if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
@@ -6764,6 +6917,12 @@ async function runAutoScan() {
             },
             managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${recommendation} açıldı — skor:${score}`, urgency:'LOW', lastCheck:Date.now() },
           });
+          try {
+            const _stOpen = trailingState.get(coin.fullSymbol) || {};
+            recordTradeOpen(coin.fullSymbol, recommendation, orderResp.executedPrice||analysis.price, orderResp.details?.quantity||null, _stOpen);
+            rememberOpenPositionForReentry({symbol:coin.fullSymbol, positionAmt: recommendation==='LONG' ? 1 : -1, entryPrice:orderResp.executedPrice||analysis.price, leverage:parseInt(leverage)||1}, _stOpen);
+            saveLastKnownPositions();
+          } catch(_e) { logAuto(`⚠️ Trade ledger açılış kaydı yazılamadı: ${String(_e.message||_e).slice(0,80)}`); }
           // R30: Aynı scan içinde ikinci/üçüncü emir yok. Binance pozisyon/SLTP senkronu otursun;
           // yeni fırsat bir sonraki taramada, taze verilerle tekrar değerlendirilsin.
           openSideCounts[recommendation] = Number(openSideCounts[recommendation]||0) + 1;
