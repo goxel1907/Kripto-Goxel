@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R59_5M_BLIND_SPOT_SAFE_MERGE';
+const LAZARUS_BUILD = 'R62_DUAL_TREND_REVERSAL_BALANCE';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -3095,7 +3095,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       if (ageMin <= 3)  return { ageMin, mult:1.00, penalty:0,  bonus:5, noAuto:false, label:'0-3dk taze' };
       if (ageMin <= 6)  return { ageMin, mult:0.80, penalty:4,  bonus:0, noAuto:false, label:'3-6dk geçerli' };
       if (ageMin <= 10) return { ageMin, mult:0.60, penalty:8,  bonus:0, noAuto:false, label:'6-10dk zayıflıyor' };
-      return { ageMin, mult:0.45, penalty:14, bonus:0, noAuto:true, label:'10dk+ bayat: auto yok' };
+      // R60-FIX2: Bayat sweep ama RVOL güçlüyse skor çarpanı daha az agresif
+      // RVOL 5.58x ile 0.45 çarpanı 138→62 yapıyordu (72 altına düşürüyor).
+      // Ceza korunuyor ama skor minScore altına baskılanmıyor.
+      return { ageMin, mult:0.65, penalty:10, bonus:0, noAuto:true, label:'10dk+ bayat: auto yok (R60: skor çarpanı yumuşatıldı)' };
     }
     function r22TestQualityForSide(isLong) {
       const rows = r22SideSweepRows(isLong);
@@ -5327,7 +5330,42 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
         const rsiOk = isL ? rsi4h < 82 : rsi4h > 18; // Aşırı uçta otomatik açma yok, 78/22 artık yumuşak ceza.
         const mmOk = !mmVeryStrongOpposite;
-        const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk) && !fresh15mConfirm && !fresh5mImpulseOrRecent);
+        // R60-FIX1: Bayat sweep ≠ trend bitti. MTF 4/4 Bull + RVOL güçlü + OI pozitif = trend devam ediyor.
+        // Önceden 10dk+ sweep → signalDecayAutoBlock=true, her şeyi killiyordu.
+        // Güçlü trend devamında bu kör kilidi açıyoruz.
+        // R61-FIX: R60 raporundaki trend continuation mantığı doğruydu ama kodda mtfBull
+        // diye tanımsız bir değişken kullanılmıştı. Bu yüzden override fiilen hiç çalışmıyordu.
+        // Burada MTF kontrolü side-aware hale getirildi: LONG için bull, SHORT için bear.
+        const r61MtfFullTrendOk = !!(
+          isL
+            ? (mtfBridgeOk && (Number(mtfBias?.bull || 0) >= Math.min(4, Number(mtfBias?.total || 4)) || mtfBias?.bias === 'STRONG_BULL' || Number(mtfBias?.bullPct || 0) >= 65))
+            : (mtfBridgeOk && (Number(mtfBias?.bear || 0) >= Math.min(4, Number(mtfBias?.total || 4)) || mtfBias?.bias === 'STRONG_BEAR' || Number(mtfBias?.bullPct || 100) <= 35))
+        );
+        const r60StrongTrendContinuation = !!(
+          r22Decay.noAuto &&
+          r61MtfFullTrendOk &&                            // side-aware MTF devamı
+          (Number(rvol1h?.rvol||0) >= 1.5) &&             // RVOL gerçekten aktif
+          oiBridgeOk &&                                    // OI fiyat yönünü destekliyor
+          !r37LateChaseBlock && !r39TargetNearBlock &&    // geç giriş/hedef yakın değil
+          !r41TrapBlock && !r41OppositeWyckoff &&          // Wyckoff ters tuzak yok
+          (fresh5mImpulseOrRecent || fresh15mConfirm || r37EarlyOk || r39Confluence || r39Side?.breakConfirmed)
+        );
+        // R62: Trend devamı ile ters-fırsat arama ayrıldı.
+        // Güçlü yukarı trend varsa LONG continuation değerlendirilir; ama bu SHORT fırsatlarını körlemesine kapatmaz.
+        // Güçlü aşağı trend varsa SHORT continuation değerlendirilir; ama bu LONG dönüş/spring fırsatlarını kapatmaz.
+        // MTF ters ise normalde sert frendir; sadece gerçek karşı-trend trap/sweep bağlamı varsa bypass adayı olur.
+        const r62SideTrapEventOk = !!(isL
+          ? (wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS') || wy15?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS') || wy4?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS'))
+          : (wy1?.recentEvents?.some(e=>e.type==='UTAD') || wy15?.recentEvents?.some(e=>e.type==='UTAD') || wy4?.recentEvents?.some(e=>e.type==='UTAD'))
+        );
+        const r62CounterTrendTrapContextOk = !!(
+          mtfStrongOpposite &&
+          (r62SideTrapEventOk || directSweepOk || hardSweepForBridge || huntBridgeOk || tickData?.tickSweep?.fresh || r39Confluence || r39Side?.breakConfirmed)
+        );
+        const r62CounterTrendTrapFlowOk = !!(
+          deltaOkStrict || obSameSide || oiBridgeOk || fundBridgeOk || cmfSameSide || weisSameSide || chochSameSide || ewoSameSide || squeezeSameSide
+        );
+        const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk) && !fresh15mConfirm && !fresh5mImpulseOrRecent && !r60StrongTrendContinuation);
         const r29CtxBlock = isL ? !!r29Context.longAutoBlock : !!r29Context.shortAutoBlock;
         const hardVeto = !!(poorLiquidity || atrBlocking || r37LateChaseBlock || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
         const hardVetoReasons=[];
@@ -5436,7 +5474,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         );
         const r47CompositeNonSweepOk = !!(
           !directSweepOk && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r37LateChaseBlock && !r39TargetNearBlock &&
-          !poorLiquidity && !mtfStrongOpposite && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
+          !poorLiquidity && (!mtfStrongOpposite || r62CounterTrendTrapContextOk) && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
           sc >= minAutoScore && priorityScore >= (r38TopMoverStrong ? 64 : 68) &&
           r47TimingPts >= 2 && r47ContextPts >= 2 && r47RvolPts >= 1 && r47FlowEnough && r47Readiness >= r47Needed
         );
@@ -5585,11 +5623,54 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           !r37LateChaseBlock && !r39TargetNearBlock && !poorLiquidity && !rvolVeryLow &&
           (r47FlowPts >= 1 || r47ContextPts >= 3 || deltaOkStrict || oiBridgeOk || mmSameSide || obSameSide)
         );
-        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk);
+        // R61: Trend continuation bridge.
+        // FLNC gibi Top10 5m momentum adaylarında eski sweep bayat olabilir; ama MTF full uyum + RVOL + OI +
+        // taze 5m/retest/break devamı varsa, "sweep 180dk" tek başına otomatik emri öldürmemeli.
+        // Bu yol H SHORT gibi MTF ters/whale-long/UTAD riskli adayları açmaz; çünkü side-aware MTF + hard-clean ister.
+        const r61TrendContinuationBoost = r60StrongTrendContinuation
+          ? Math.min(34, Math.max(12,
+              (r47Readiness >= 8 ? 8 : 4) +
+              (r47ContextPts >= 4 ? 8 : r47ContextPts >= 3 ? 5 : 0) +
+              (r47RvolPts >= 2 ? 6 : r47RvolPts >= 1 ? 3 : 0) +
+              (Number(rvol1h?.rvol || 0) >= 3 ? 6 : 3) +
+              (oiBridgeOk ? 4 : 0) +
+              (mmSameSide ? 3 : 0)
+            ))
+          : 0;
+        const r61TrendEffectiveScore = r60StrongTrendContinuation
+          ? Math.min(100, Math.max(Number(sc || 0) + r61TrendContinuationBoost, Math.round(Number(sc || 0) / Math.max(0.65, Number(r22Decay?.mult || 1)))))
+          : Number(sc || 0);
+        const r61TrendPriorityOk = !!(
+          r50EffectivePriority >= (r38TopMoverStrong ? 34 : 42) ||
+          (r60StrongTrendContinuation && r47ContextPts >= 3 && r47RvolPts >= 1 && oiBridgeOk && mtfBridgeOk)
+        );
+        const r61TrendContinuationBridgeOk = !!(
+          !sweepRequired && r50HardClean && r60StrongTrendContinuation &&
+          sc >= Math.max(60, minAutoScore - 12) &&
+          r61TrendEffectiveScore >= minAutoScore &&
+          r47Readiness >= 7 && r61TrendPriorityOk &&
+          r50FlowOrContextOk && r50StructureOrTimingOk && r50RvolUsable && r53CvdSmartSafe &&
+          (directSweepOk || huntBridgeOk || hardSweepForBridge || mmSameSide || oiBridgeOk || obSameSide || fresh5mImpulseOrRecent || r37EarlyOk || r39Confluence)
+        );
+        // R62: Karşı trend trap/reversal köprüsü.
+        // Amaç: yükseliş trendi var diye SHORT fırsatını, düşüş trendi var diye LONG fırsatını baştan öldürmemek.
+        // Bu sadece MTF'ye karşı gerçek UTAD/Spring-SOS/sweep/hunt + canlı flow geldiğinde çalışır.
+        const r62CounterTrendTrapBridgeOk = !!(
+          !sweepRequired && r50HardClean && r62CounterTrendTrapContextOk &&
+          sc >= minAutoScore &&
+          r47Readiness >= Math.max(8, Math.min(10, Number(r47Needed || 8))) &&
+          r50EffectivePriority >= (r38TopMoverStrong ? 44 : 54) &&
+          r50FlowOrContextOk && r50StructureOrTimingOk && r50RvolUsable && r53CvdSmartSafe && r62CounterTrendTrapFlowOk &&
+          (directSweepOk || hardSweepForBridge || huntBridgeOk || r62SideTrapEventOk || r37EarlyOk || r39Confluence || r39Side?.breakConfirmed) &&
+          !r37LateChaseBlock && !r39TargetNearBlock && !poorLiquidity && !rvolVeryLow && !mmVeryStrongOpposite
+        );
+        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk);
 
-        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk;
+        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk;
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
-        const entryPermissionReason = r57ScalperBTierBridgeOk ? 'R57_SCALPER_B_TIER_BRIDGE'
+        const entryPermissionReason = r62CounterTrendTrapBridgeOk ? 'R62_COUNTER_TREND_TRAP_BRIDGE'
+          : r61TrendContinuationBridgeOk ? 'R61_TREND_CONTINUATION_BRIDGE'
+          : r57ScalperBTierBridgeOk ? 'R57_SCALPER_B_TIER_BRIDGE'
           : r54MicroProbeOk ? 'R54_MICRO_PROBE_BPLUS'
           : r53SmartEdgeScoreOk ? 'R53_SMART_EDGE_SCORE_PRIORITY'
           : r50DirectSweepMatrixOk ? 'R50_DIRECT_SWEEP_MATRIX'
@@ -5598,7 +5679,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           : directSweepOk ? (r49DirectSweepUnlockOk ? 'DIRECT_SWEEP_BPLUS_R49' : 'DIRECT_SWEEP')
           : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE_R47'
           : sweepRequired ? 'SWEEP_REQUIRED_FAIL'
-          : 'ENTRY_PERMISSION_FAIL_R59';
+          : 'ENTRY_PERMISSION_FAIL_R62';
 
         // R35: 5m fırsat köprüsü. Bu kör giriş değildir: gerçek entry/soft-entry +
         // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
@@ -5616,7 +5697,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R41: A-tier artık CVD/tick tamamen köprüyle varsayılarak geçemez; gerçek canlı flow ister.
         // Flow eksikse en fazla B+ kontrollü adaya düşer, A-tier otomatik güven etiketi alamaz.
         const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && directSweepOk && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        const r53TierScoreOk = !!(sc >= minAutoScore || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk);
+        const r53TierScoreOk = !!(sc >= minAutoScore || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk);
         const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && r53TierScoreOk && (
           (directSweepOk && hasEntry && cvdBridgePass && r42FlowGate && microConfirmR35 && priorityScore>=58) ||
           (!sweepRequired && nonSweepQualityOk) ||
@@ -5625,6 +5706,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r50AutoPermissionOk ||
           r53SmartEdgeScoreOk ||
           r57ScalperBTierBridgeOk ||
+          r61TrendContinuationBridgeOk ||
+          r62CounterTrendTrapBridgeOk ||
           r35ScalperBridge
         );
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry||nonSweepQualityOk) && fundOk && sc>=55;
@@ -5671,6 +5754,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!sweepRequired && r53SmartEdgeScoreOk) reasons.push(`🧠 R53 smart-edge score ${sc}+${r53SmartEdgeBoost}=${r53EffectiveScore} / P${r50EffectivePriority}`);
         if(!sweepRequired && r54MicroProbeOk) reasons.push(`🧪 R54 micro-probe B+ score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
         if(!sweepRequired && r57ScalperBTierBridgeOk) reasons.push(`🦅 R57 scalper B→B+ score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
+        if(!sweepRequired && r61TrendContinuationBridgeOk) reasons.push(`🚀 R61 trend devamı score ${sc}+${r61TrendContinuationBoost}=${r61TrendEffectiveScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
+        if(!sweepRequired && r62CounterTrendTrapBridgeOk) reasons.push(`🎯 R62 karşı-trend trap ${isL?'LONG':'SHORT'} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
         if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
         if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
         if(r45RvolDead) reasons.push(`📊 RVOL ölü/ikinci impuls izleme ${r45Rvol.toFixed(2)}x`);
@@ -5678,7 +5763,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R59 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R62 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -5706,7 +5791,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst, r49DirectSweepUnlockOk, r49CvdSafe, r49ContextOk, r49TimingOk, r49StructureOk,
-          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
+          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk, r61TrendEffectiveScore, r61TrendContinuationBoost, r61TrendPriorityOk, r61MtfFullTrendOk, r60StrongTrendContinuation, r62CounterTrendTrapBridgeOk, r62CounterTrendTrapContextOk, r62CounterTrendTrapFlowOk, r62SideTrapEventOk, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh5mImpulse2Bridge, fresh5mImpulseOrRecent, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -7161,6 +7246,14 @@ function pushAutoCandidate(row) {
     r53SmartEdgeScoreOk: !!row.r53SmartEdgeScoreOk,
     r54MicroProbeOk: !!row.r54MicroProbeOk,
     r57ScalperBTierBridgeOk: !!row.r57ScalperBTierBridgeOk,
+    r61TrendContinuationBridgeOk: !!row.r61TrendContinuationBridgeOk,
+    r61TrendEffectiveScore: Number(row.r61TrendEffectiveScore || 0),
+    r61TrendContinuationBoost: Number(row.r61TrendContinuationBoost || 0),
+    r61TrendPriorityOk: !!row.r61TrendPriorityOk,
+    r60StrongTrendContinuation: !!row.r60StrongTrendContinuation,
+    r62CounterTrendTrapBridgeOk: !!row.r62CounterTrendTrapBridgeOk,
+    r62CounterTrendTrapContextOk: !!row.r62CounterTrendTrapContextOk,
+    r62CounterTrendTrapFlowOk: !!row.r62CounterTrendTrapFlowOk,
     r53EffectiveScore: Number(row.r53EffectiveScore || 0),
     r53SmartEdgeBoost: Number(row.r53SmartEdgeBoost || 0),
     r53CvdSmartSafe: !!row.r53CvdSmartSafe,
@@ -7275,8 +7368,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R48 Gate: Sweep ACIK / DIRECT_SWEEP gerekli'
-          : 'R57 Gate: Sweep KAPALI / scalper B-tier bridge + Long-Auto sync + R47/P50 smart-edge aktif',
-        note: 'sweepOnly=false iken R47/R48/R49/R50/R51/R53/R54/R57 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+          : 'R62 Gate: Sweep KAPALI / çift yön trend-devam + karşı-trend trap bridge aktif',
+        note: 'sweepOnly=false iken R47/R48/R49/R50/R51/R53/R54/R57/R61/R62 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7441,7 +7534,7 @@ async function runAutoScan() {
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R59 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 R62 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
@@ -7545,6 +7638,15 @@ async function runAutoScan() {
           r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk,
           r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk,
+          r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk,
+          r61TrendContinuationBridgeOk:decisionChain?.r61TrendContinuationBridgeOk,
+          r61TrendEffectiveScore:decisionChain?.r61TrendEffectiveScore,
+          r61TrendContinuationBoost:decisionChain?.r61TrendContinuationBoost,
+          r61TrendPriorityOk:decisionChain?.r61TrendPriorityOk,
+          r60StrongTrendContinuation:decisionChain?.r60StrongTrendContinuation,
+          r62CounterTrendTrapBridgeOk:decisionChain?.r62CounterTrendTrapBridgeOk,
+          r62CounterTrendTrapContextOk:decisionChain?.r62CounterTrendTrapContextOk,
+          r62CounterTrendTrapFlowOk:decisionChain?.r62CounterTrendTrapFlowOk,
           r53EffectiveScore:decisionChain?.r53EffectiveScore,
           r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost,
           r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe,
@@ -7572,7 +7674,7 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R59 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'}`;
+          const why = `R62 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
@@ -7582,7 +7684,7 @@ async function runAutoScan() {
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
           const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
