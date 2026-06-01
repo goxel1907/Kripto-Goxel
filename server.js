@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R39_TREND_HEALTH_TRAIL';
+const LAZARUS_BUILD = 'R40_VPVR_INIT_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -3224,9 +3224,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const t4dn=ema20_4h<ema50_4h&&ema50_4h<ema200_4h;
     const atrPct=lastPrice>0?(atr1h/lastPrice)*100:1;
 
-    // R39: 5m destek/direnç haritası — mevcut kline/verilerden, ek Binance çağrısı yok.
-    const r39SR = r39FiveMinuteSR(k5m, k1h, lastPrice, atrPct, vpvr1h, liq1h);
-
     // ═════════════════════════════════════════════════════════════════════════
     // R15 AÇIK KAYNAK MODÜLLER — Boğmadan sinyal kalitesi artırma
     // Kaynak: LazyBear, Chaikin, Bill Williams, LuxAlgo SMC, Jesse Framework
@@ -3625,6 +3622,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const mtfBias  = calcMTFBias(rsi4h,rsi1h,rsi15m,rsi5m,ema20_4h,ema50_4h,ema200_4h,ema20_1h,ema50_1h);
     const liqVoids1h = detectLiquidityVoids(k1h.slice(-30));
     const r37Timing = r37MoveTiming(k5m, k15m, lastPrice, atrPct, vpvr1h, liq1h);
+
+    // R40 FIX: R39 5m destek/direnç haritası vpvr1h/liq1h hazırlandıktan SONRA hesaplanmalı.
+    // Önceki R39_TREND_HEALTH_TRAIL build'inde vpvr1h init edilmeden çağrıldığı için
+    // /api/analyze tüm sembollerde "Cannot access 'vpvr1h' before initialization" ERR üretiyordu.
+    const r39SR = r39FiveMinuteSR(k5m, k1h, lastPrice, atrPct, vpvr1h, liq1h);
 
     let longScore=0,shortScore=0;const signals={long:[],short:[]};
 
