@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R30_SAFE_MM_PRIORITY';
+const LAZARUS_BUILD = 'R34_AUTO_TARGET_SYNC_NO_BLIND';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -2317,10 +2317,10 @@ function renkoSignal(klines, lastPrice, atrVal) {
   return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
 }
 
-async function getUnifiedScanCandidates(limit=18) {
+async function getUnifiedScanCandidates(limit=24) {
   // R33: Top Gainers kilidi. Kullanıcı Binance Top Movers ekranında gördüğü ilk coinleri
   // bot hedef listesinde de görmek istiyor. Bu yüzden limit 10 altına düşmez; max 24 ile API boğulmaz.
-  const lim = Math.max(10, Math.min(24, Number(limit || 18)));
+  const lim = Math.max(10, Math.min(24, Number(limit || 24)));
   const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
     'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
 
@@ -2392,9 +2392,9 @@ async function getUnifiedScanCandidates(limit=18) {
 
 app.get('/api/scan-candidates', async (req, res) => {
   try {
-    const limit = Number(req.query.limit || 40);
+    const limit = Number(req.query.limit || 24);
     const coins = await getUnifiedScanCandidates(limit);
-    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R33_TOP_GAINERS_LOCKED_SCAN_LIST' });
+    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R34_TOP24_AUTO_SYNC_SCAN_LIST' });
   } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
 });
 
@@ -6167,6 +6167,7 @@ app.post('/api/close', async (req, res) => {
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
+const AUTO_SCAN_INTERVAL_MS = 2 * 60 * 1000; // R34: 5m grafikte fırsatı kaçırmamak için 3dk -> 2dk; request governor korur
 const autoLog = []; // Son 50 otomatik işlem logu
 
 // ── CANLI TARAMA TELEMETRİSİ ────────────────────────────────────────────────
@@ -6217,13 +6218,17 @@ function pushAutoCandidate(row) {
     symbol:String(row.symbol||'').replace('USDT',''),
     rec:row.rec||'WAIT', tier:row.tier||'WAIT', score:Number(row.score||0),
     longScore:Number(row.longScore||0), shortScore:Number(row.shortScore||0),
-    reason:String(row.reason||row.block||'—').slice(0,140),
-    action:String(row.action||'İzle').slice(0,80)
+    priorityScore:Number(row.priorityScore||0),
+    reason:String(row.reason||row.block||'—').slice(0,160),
+    action:String(row.action||'İzle').slice(0,90)
   };
+  // R34: Aynı sembol aynı taramada iki satır görünmesin. Önce aday, sonra atlandı gelirse son durum yazılır.
+  const key = `${r.symbol}_${r.rec}`;
+  autoScanState.topCandidates = (autoScanState.topCandidates||[]).filter(x => `${x.symbol}_${x.rec}` !== key);
   autoScanState.topCandidates.push(r);
   const tierRank = t => t==='A'?3:t==='B+'?2:t==='B'?1:0;
   autoScanState.topCandidates = autoScanState.topCandidates
-    .sort((a,b)=>tierRank(b.tier)-tierRank(a.tier) || b.score-a.score || b.ts-a.ts)
+    .sort((a,b)=>tierRank(b.tier)-tierRank(a.tier) || b.score-a.score || (b.priorityScore||0)-(a.priorityScore||0) || b.ts-a.ts)
     .slice(0,12);
 }
 function markAutoSkip(symbol, reason, row={}) {
@@ -6396,7 +6401,7 @@ async function runAutoScan() {
 
     // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
     // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
-    const scanLimit = Math.max(10, Math.min(24, Number(cfg.scanCount || 18))); // R33: Top Gainers ilk 10 kilitli + 8/14 akıllı aday; API boğulmaz
+    const scanLimit = 24; // R34: Panel /api/scan-candidates ve auto aynı 24 hedef havuzunu kullanır; A-tier dışarıda kalmaz
     let scanList = await getUnifiedScanCandidates(scanLimit);
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
@@ -6431,6 +6436,8 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
+    autoScanState.scanSource = 'R34_TOP24_PANEL_AUTO_SYNC';
+    autoScanState.scanLimit = scanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
       hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
@@ -6737,7 +6744,7 @@ async function runAutoScan() {
     autoScanState.running = false;
     autoScanState.currentSymbol = null;
     autoScanState.lastScanEnd = Date.now();
-    autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + 3*60*1000 : null;
+    autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + AUTO_SCAN_INTERVAL_MS : null;
 
     // Görünürlük düzeltmesi: emir denemesi hata verdikten sonra eski MAX_POZİSYON_DOLU
     // fazı ekranda takılı kalmasın. Binance pozisyonu tekrar okunur; 0/1 ise BEKLİYOR gösterilir.
@@ -6767,8 +6774,8 @@ async function getNewPosCount() {
 
 function startAutoTrader() {
   logAuto('Otomatik işlem başlatıldı');
-  // Her 3 dakikada bir tara; pozisyon yönetimi bundan bağımsız ve hızlıdır.
-  autoTimer = setInterval(runAutoScan, 3*60*1000);
+  // R34: Her 2 dakikada bir tara; pozisyon yönetimi bundan bağımsız ve hızlıdır.
+  autoTimer = setInterval(runAutoScan, AUTO_SCAN_INTERVAL_MS);
   // R30: BE/trailing/kar taşıma 3dk taramayı beklemesin. Aktif pozisyonda 8sn TTL ile çalışır.
   if (!fastManagerTimer) {
     fastManagerTimer = setInterval(fastManageOpenPositions, 8 * 1000);
