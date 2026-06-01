@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R52_ORDERFLOW_AUDIT_FIX';
+const LAZARUS_BUILD = 'R54_FAST6_MICRO_PROBE_PRIORITY';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1744,6 +1744,28 @@ function recentLossPatternGuard(side, decisionChain={}, lookbackMs=24*60*60*1000
 const FUTURES_TICKERS_CACHE_MS = 60 * 1000;
 const R33_TOP_GAINER_LOCK_COUNT = 10;
 const R33_TOP_GAINER_MIN_QUOTE_VOL = 1_000_000;
+const R54_SCAN_MODES = new Set(['FAST6','TOP10','TOP24']);
+function normalizeR54ScanMode(v) {
+  const raw = String(v || '').toUpperCase();
+  if (raw === '6' || raw === 'FAST' || raw === 'FAST6' || raw === 'TOP3_PLUS3') return 'FAST6';
+  if (raw === '10' || raw === 'TOP10') return 'TOP10';
+  if (raw === '24' || raw === 'TOP24' || raw === 'FULL24') return 'TOP24';
+  return 'FAST6';
+}
+function r54ScanLimitForMode(mode, fallback=6) {
+  const m = normalizeR54ScanMode(mode || fallback);
+  if (m === 'FAST6') return 6;
+  if (m === 'TOP10') return 10;
+  return 24;
+}
+function r54VolatilityRankScore(c={}) {
+  const range = Number(c.rangePct || 0);
+  const volScore = Number(c.volScore || 0);
+  const chg = Math.abs(Number(c.change24h || c.change24hRaw || 0));
+  const vol = Number(c.volume || 0);
+  const trades = Number(c.trades || 0);
+  return Math.round((range*6) + (chg*3) + Math.min(30, volScore/2) + Math.min(25, Math.log10(Math.max(10, vol))/1.5) + Math.min(12, trades/100000));
+}
 function r33IsTradeableTicker(t={}) {
   const sym = String(t.symbol || '').toUpperCase();
   if (!sym.endsWith('USDT')) return false;
@@ -2569,10 +2591,11 @@ function r39FiveMinuteSR(k5m, k1h, lastPrice, atrPct=1, vpvr1h=null, liq1h=null)
   return out;
 }
 
-async function getUnifiedScanCandidates(limit=24) {
-  // R33: Top Gainers kilidi. Kullanıcı Binance Top Movers ekranında gördüğü ilk coinleri
-  // bot hedef listesinde de görmek istiyor. Bu yüzden limit 10 altına düşmez; max 24 ile API boğulmaz.
-  const lim = Math.max(10, Math.min(24, Number(limit || 24)));
+async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
+  // R54: Pro scalper tarama modu. FAST6 = Top Gainers ilk 10 içinden en volatil 3 + top10'a girmeye aday 3.
+  // TOP10 = Binance Futures Top Gainers ilk 10. TOP24 = eski geniş havuz.
+  const scanMode = normalizeR54ScanMode(mode || limit);
+  const lim = r54ScanLimitForMode(scanMode, limit);
   const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
     'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
 
@@ -2621,7 +2644,7 @@ async function getUnifiedScanCandidates(limit=24) {
     });
   }
 
-  const all = [...merged.values()].map(c => ({ ...c, interest: calcScanInterest(c) }));
+  const all = [...merged.values()].map(c => ({ ...c, interest: calcScanInterest(c), r54VolRank: r54VolatilityRankScore(c) }));
   const pinned = all
     .filter(c => c.topGainerLocked && Number(c.topGainerRank||999) <= R33_TOP_GAINER_LOCK_COUNT)
     .sort((a,b) => Number(a.topGainerRank||999) - Number(b.topGainerRank||999));
@@ -2629,10 +2652,28 @@ async function getUnifiedScanCandidates(limit=24) {
     .filter(c => !(c.topGainerLocked && Number(c.topGainerRank||999) <= R33_TOP_GAINER_LOCK_COUNT))
     .sort((a,b) => (b.interest-a.interest) || (b.volScore-a.volScore) || (b.volume-a.volume));
 
-  // Duplicate koruma: Top Gainers ilk sırada, sonra gerçek interest/volatilite adayları.
+  let rawOrdered;
+  if (scanMode === 'FAST6') {
+    const top3Ultra = pinned
+      .slice(0, 10)
+      .sort((a,b) => (b.r54VolRank-a.r54VolRank) || (b.rangePct-a.rangePct) || (b.interest-a.interest))
+      .slice(0, 3)
+      .map(c => ({ ...c, r54Bucket:'TOP3_ULTRA_VOL_IN_TOP10' }));
+    const candidate3 = rest
+      .filter(c => Number(c.price||0) > 0)
+      .slice(0, 3)
+      .map(c => ({ ...c, r54Bucket:'TOP10_CANDIDATE_3' }));
+    rawOrdered = [...top3Ultra, ...candidate3];
+  } else if (scanMode === 'TOP10') {
+    rawOrdered = pinned.slice(0, 10).map(c => ({ ...c, r54Bucket:'TOP10_GAINER' }));
+  } else {
+    rawOrdered = [...pinned.map(c => ({ ...c, r54Bucket:'TOP24_PINNED_TOP10' })), ...rest.map(c => ({ ...c, r54Bucket:'TOP24_INTEREST' }))];
+  }
+
+  // Duplicate koruma: FAST6/TOP10/TOP24 sırasını koru.
   const seen = new Set();
   const ordered = [];
-  for (const c of [...pinned, ...rest]) {
+  for (const c of rawOrdered) {
     const key = c.fullSymbol;
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -2644,9 +2685,10 @@ async function getUnifiedScanCandidates(limit=24) {
 
 app.get('/api/scan-candidates', async (req, res) => {
   try {
-    const limit = Number(req.query.limit || 24);
-    const coins = await getUnifiedScanCandidates(limit);
-    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R39_TOP24_5M_SR_EARLY_MOVE_SCAN_LIST' });
+    const mode = normalizeR54ScanMode(req.query.mode || req.query.scanMode || req.query.limit || 'FAST6');
+    const limit = r54ScanLimitForMode(mode, req.query.limit || 6);
+    const coins = await getUnifiedScanCandidates(limit, mode);
+    res.json({ ok:true, count:coins.length, limit, scanMode:mode, coins, source:'R54_FAST6_TOP3_PLUS_CANDIDATE3_SCAN_LIST' });
   } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
 });
 
@@ -5456,17 +5498,54 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (r47FlowPts >= 1 || r47ContextPts >= 2 || deltaOkStrict || obSameSide || oiBridgeOk || mmSameSide || fundBridgeOk) &&
           r50StructureOrTimingOk && r49CvdSafe
         );
-        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk);
 
-        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk;
+        // R53: Smart edge score priority.
+        // R52 health'te WLD gibi adaylar R47=10/8 ve P50=87 verdiği halde raw score 65<72 diye B'de kalıyordu.
+        // Bu eski kural-yığma etkisidir: amaç panel minScore'u körce silmek değil; güçlü MM/flow/readiness varsa
+        // küçük bir kalite telafisiyle efektif skoru okumak. Alt zemin hâlâ serttir: score minScore-8 altına düşemez,
+        // hard veto/late chase/targetNear/ters MM-MTF/ters CVD/RVOL zayıflığı varsa açmaz.
+        const r53SmartEdgeBoost = r47Readiness >= 10 && r50EffectivePriority >= 80 ? 8
+          : r47Readiness >= 9 && r50EffectivePriority >= 74 ? 6
+          : r47Readiness >= 8 && r50EffectivePriority >= 68 ? 4
+          : 0;
+        const r53EffectiveScore = Number(sc || 0) + r53SmartEdgeBoost;
+        const r53ScoreFloor = Math.max(64, Number(minAutoScore || 72) - 8);
+        const r53CvdSmartSafe = !!(
+          r49CvdSafe ||
+          (directSweepOk && huntBridgeOk && r47FlowPts >= 1 && r47ContextPts >= 3 && r50EffectivePriority >= 84)
+        );
+        const r53SmartEdgeScoreOk = !!(
+          !sweepRequired && r50HardClean &&
+          sc >= r53ScoreFloor && r53EffectiveScore >= minAutoScore &&
+          r47Readiness >= r50MinReadiness &&
+          r50EffectivePriority >= (r38TopMoverStrong ? 78 : 84) &&
+          r50FlowOrContextOk && r50StructureOrTimingOk && r50RvolUsable && r53CvdSmartSafe &&
+          (
+            (directSweepOk && (hasEntry || huntBridgeOk || hardSweepForBridge)) ||
+            (!directSweepOk && r47TimingPts >= 2 && r47FlowEnough && r47ContextPts >= 3)
+          )
+        );
+        const r54MicroProbeOk = !!(
+          !sweepRequired && r50HardClean &&
+          r47Readiness >= 7 &&
+          sc >= Math.max(68, minAutoScore - 4) && sc < minAutoScore &&
+          r50EffectivePriority >= 70 &&
+          r50FlowOrContextOk && r50StructureOrTimingOk && r50RvolUsable && r53CvdSmartSafe &&
+          (directSweepOk || huntBridgeOk || hardSweepForBridge || mmSameSide || oiBridgeOk || obSameSide || fresh5mImpulse)
+        );
+        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk);
+
+        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk;
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
-        const entryPermissionReason = r50DirectSweepMatrixOk ? 'R50_DIRECT_SWEEP_MATRIX'
+        const entryPermissionReason = r54MicroProbeOk ? 'R54_MICRO_PROBE_BPLUS'
+          : r53SmartEdgeScoreOk ? 'R53_SMART_EDGE_SCORE_PRIORITY'
+          : r50DirectSweepMatrixOk ? 'R50_DIRECT_SWEEP_MATRIX'
           : r51DirectSweepMinEdgeOk ? 'R51_DIRECT_SWEEP_MIN_EDGE'
           : r50NonSweepMatrixOk ? 'R50_NON_SWEEP_MATRIX'
           : directSweepOk ? (r49DirectSweepUnlockOk ? 'DIRECT_SWEEP_BPLUS_R49' : 'DIRECT_SWEEP')
           : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE_R47'
           : sweepRequired ? 'SWEEP_REQUIRED_FAIL'
-          : 'ENTRY_PERMISSION_FAIL_R50';
+          : 'ENTRY_PERMISSION_FAIL_R53';
 
         // R35: 5m fırsat köprüsü. Bu kör giriş değildir: gerçek entry/soft-entry +
         // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
@@ -5484,12 +5563,14 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R41: A-tier artık CVD/tick tamamen köprüyle varsayılarak geçemez; gerçek canlı flow ister.
         // Flow eksikse en fazla B+ kontrollü adaya düşer, A-tier otomatik güven etiketi alamaz.
         const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && directSweepOk && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && sc>=minAutoScore && (
+        const r53TierScoreOk = !!(sc >= minAutoScore || r53SmartEdgeScoreOk || r54MicroProbeOk);
+        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && r53TierScoreOk && (
           (directSweepOk && hasEntry && cvdBridgePass && r42FlowGate && microConfirmR35 && priorityScore>=58) ||
           (!sweepRequired && nonSweepQualityOk) ||
           r48DirectSweepBalanceOk ||
           r49DirectSweepUnlockOk ||
           r50AutoPermissionOk ||
+          r53SmartEdgeScoreOk ||
           r35ScalperBridge
         );
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry||nonSweepQualityOk) && fundOk && sc>=55;
@@ -5533,6 +5614,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!sweepRequired && r50DirectSweepMatrixOk) reasons.push(`🧩 R50 direct-sweep matrix ${r47Readiness}/${r50MinReadiness} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
         if(!sweepRequired && r51DirectSweepMinEdgeOk) reasons.push(`🧩 R51 direct-sweep min-edge ${r47Readiness}/${r50MinReadiness} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
         if(!sweepRequired && r50NonSweepMatrixOk) reasons.push(`🧩 R50 non-sweep matrix ${r47Readiness}/${r47Needed} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
+        if(!sweepRequired && r53SmartEdgeScoreOk) reasons.push(`🧠 R53 smart-edge score ${sc}+${r53SmartEdgeBoost}=${r53EffectiveScore} / P${r50EffectivePriority}`);
+        if(!sweepRequired && r54MicroProbeOk) reasons.push(`🧪 R54 micro-probe B+ score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
         if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
         if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
         if(r45RvolDead) reasons.push(`📊 RVOL ölü/ikinci impuls izleme ${r45Rvol.toFixed(2)}x`);
@@ -5540,7 +5623,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R51 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R54 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -5568,7 +5651,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst, r49DirectSweepUnlockOk, r49CvdSafe, r49ContextOk, r49TimingOk, r49StructureOk,
-          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
+          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -6896,11 +6979,7 @@ function mapRiskRowsToManagerPositions(rows=[]) {
       const amt = parseFloat(p.positionAmt || 0);
       const ep  = parseFloat(p.entryPrice || 0);
       const mp  = parseFloat(p.markPrice || 0);
-      // R52: fast manager da dashboard gibi leverage fallback kullanmalı.
-      // Binance positionRisk bazı cevaplarda leverage boş/1 döndüğünde hasar-kes ROI yanlış hesaplanıyordu.
-      const full = normalizeSymbol(p.symbol);
-      const st = trailingState.get(full) || trailingState.get(String(p.symbol||'')) || {};
-      const lev = parseInt(p.leverage) || parseInt(st.leverage) || parseInt(autoConfig?.leverage) || 1;
+      const lev = parseInt(p.leverage) || 1;
       const side = amt > 0 ? 'LONG' : 'SHORT';
       const pnlPct = ep > 0 ? ((mp - ep) / ep * 100 * lev * (side === 'SHORT' ? -1 : 1)) : 0;
       return {
@@ -7024,6 +7103,11 @@ function pushAutoCandidate(row) {
     r50DirectSweepMatrixOk: !!row.r50DirectSweepMatrixOk,
     r50NonSweepMatrixOk: !!row.r50NonSweepMatrixOk,
     r51DirectSweepMinEdgeOk: !!row.r51DirectSweepMinEdgeOk,
+    r53SmartEdgeScoreOk: !!row.r53SmartEdgeScoreOk,
+    r54MicroProbeOk: !!row.r54MicroProbeOk,
+    r53EffectiveScore: Number(row.r53EffectiveScore || 0),
+    r53SmartEdgeBoost: Number(row.r53SmartEdgeBoost || 0),
+    r53CvdSmartSafe: !!row.r53CvdSmartSafe,
     r50EffectivePriority: Number(row.r50EffectivePriority || 0),
     autoOk: !!row.autoOk
   };
@@ -7135,11 +7219,12 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R48 Gate: Sweep ACIK / DIRECT_SWEEP gerekli'
-          : 'R51 Gate: Sweep KAPALI / R47 readiness + R48/R49/R50 + R51 direct-sweep min-edge aktif',
-        note: 'sweepOnly=false iken R47/R48/R49/R50/R51 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+          : 'R54 Gate: Sweep KAPALI / FAST6-TOP10-TOP24 + R47/P50 smart-edge + micro-probe aktif',
+        note: 'sweepOnly=false iken R47/R48/R49/R50/R51/R53/R54 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
       },
       lastScan: {
         source: scan.scanSource || null,
+        scanMode: scan.scanMode || scan.settings?.scanMode || null,
         scanLimit: scan.scanLimit ?? null,
         scanList: Array.isArray(scan.scanList) ? scan.scanList : [],
         lastAction: scan.lastAction || null,
@@ -7214,10 +7299,13 @@ async function runAutoScan() {
     const cfg = autoConfig;
     const { apiKey, apiSecret, usdtAmount, leverage, marginType,
       maxPositions=3, minScore=70, allowLong=true, allowShort=true,
-      sweepOnly=true,
+      sweepOnly=true, scanMode='FAST6', scanLimit=null,
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[] } = cfg;
 
-    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR};
+    const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'FAST6');
+    const r54ScanLimit = r54ScanLimitForMode(r54ScanMode, scanLimit || 6);
+    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR};
+    autoScanState.scanMode = r54ScanMode;
     autoScanState.maxPositions = Number(maxPositions||0);
     autoScanState.phase = 'POZİSYON_KONTROL';
 
@@ -7290,14 +7378,14 @@ async function runAutoScan() {
 
     // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
     // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
-    const scanLimit = 24; // R35: R34 top24 korunur; scalper bridge ile kaliteli B fırsatlar B+ auto adaya döner
-    let scanList = await getUnifiedScanCandidates(scanLimit);
+    const effectiveScanLimit = r54ScanLimit; // R54: panelden FAST6 / TOP10 / TOP24 seçilir
+    let scanList = await getUnifiedScanCandidates(effectiveScanLimit, r54ScanMode);
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R22 ortak tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 R54 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
@@ -7326,7 +7414,7 @@ async function runAutoScan() {
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
     autoScanState.scanSource = LAZARUS_BUILD;
-    autoScanState.scanLimit = scanLimit;
+    autoScanState.scanLimit = effectiveScanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
       hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
@@ -7399,6 +7487,11 @@ async function runAutoScan() {
           r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk,
           r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk,
           r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk,
+          r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
+          r54MicroProbeOk:decisionChain?.r54MicroProbeOk,
+          r53EffectiveScore:decisionChain?.r53EffectiveScore,
+          r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost,
+          r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe,
           r50EffectivePriority:decisionChain?.r50EffectivePriority,
           r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}
         });
@@ -7423,26 +7516,29 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R51 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'}`;
+          const why = `R54 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
+          r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
           const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
+          r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
         // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur; B+ autoOk ise boğma.
         if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk) {
           const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
+          r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
