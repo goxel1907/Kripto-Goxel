@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R73_PRO_SCALPER_TOP10_5M_SCOREFIX';
+const LAZARUS_BUILD = 'R74_TOP10_TOPMOVER_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -2770,7 +2770,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         };
       }
     } catch(_e) {}
-    const r38TopMoverStrong = !!(r38MarketCtx.topMover || Math.abs(Number(r38MarketCtx.change24h||0)) >= 6 || Number(r38MarketCtx.volume||0) >= 100000000);
+    // R74: TOP10/FAST6 scan modunda tüm coinler top gainer sayılır (kullanıcı zaten bu modu seçti)
+    const r74IsTopScanMode = !!(autoConfig?.scanMode === 'TOP10' || autoConfig?.scanMode === 'FAST6');
+    const r38TopMoverStrong = !!(r38MarketCtx.topMover || Math.abs(Number(r38MarketCtx.change24h||0)) >= 6 || Number(r38MarketCtx.volume||0) >= 100000000 || r74IsTopScanMode);
 
     // ── TEKNİK FONKSİYONLAR ──────────────────────────────────────────────────
     function rsi(kl,p=14){
@@ -7722,7 +7724,7 @@ async function runAutoScan() {
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R71 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 ${LAZARUS_BUILD} ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
