@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R45_5M_SWEEPONLY_REAL_GATE';
+const LAZARUS_BUILD = 'R46_COMPOSITE_PATTERN_SCORE';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5070,6 +5070,33 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r42TrapReclaimOk = !!(r41OppositeWyckoff && deltaOkStrict && r39Side?.breakConfirmed && r37EarlyOk);
         const r41TrapBlock = !!(r41OppositeWyckoff && !r42TrapReclaimOk);
 
+        // ── R46: BİLEŞİK PATTERN BEYNİ ───────────────────────────────────────
+        // Tek tek sinyalleri 0/1 saymak yerine, aynı yönde birlikte geldiklerinde
+        // ekstra kalite puanı verir. Yeni Binance çağrısı yok; k5m/CVD/OI/funding/
+        // sweep/MM verileri zaten evalDecision içinde hazır.
+        const r46Clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || 0));
+        const r46SpreadHist = r27SpreadHistory?.get?.(full);
+        const r46SpreadVelocity = (r46SpreadHist && Number(r46SpreadHist.prev3m) > 0)
+          ? (Number(r46SpreadHist.cur || 0) - Number(r46SpreadHist.prev3m || 0)) / Number(r46SpreadHist.prev3m || 1)
+          : 0;
+        const r46Rvol = Number(rvol1h?.rvol || 0);
+        const r46PerfectAlignCount = [hardSweepForBridge, mtfBridgeOk, fresh5mImpulse, deltaOkStrict, fundBridgeOk].filter(Boolean).length;
+        const r46PerfectAlignBonus = r46PerfectAlignCount >= 5 ? 15 : r46PerfectAlignCount === 4 ? 8 : r46PerfectAlignCount === 3 ? 3 : 0;
+        const r46CvdGradeBonus = cvdValid ? (isL
+          ? (cvdRatio >= 75 ? 14 : cvdRatio >= 65 ? 10 : cvdRatio >= 55 ? 5 : 0)
+          : (cvdRatio <= 25 ? 14 : cvdRatio <= 35 ? 10 : cvdRatio <= 45 ? 5 : 0)
+        ) : 0;
+        const r46SqueezeQualityScore = (r46Rvol > 0 && r46Rvol < 0.30 && fresh5mImpulse)
+          ? Math.round(r46Clamp(_r35BodyPct * 8 * (1 - r46Rvol / 0.30), 0, 12))
+          : 0;
+        const r46HasSpring = !!(isL && wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS'));
+        const r46SpringFlowOk = !!(r46HasSpring && (deltaOkStrict || (cvdValid && cvdRatio >= 55) || tickDeltaOk));
+        const r46RecoverySpeed = Math.max(0, Number(_r41Move3 || 0));
+        const r46SpringQuality = (r46HasSpring && r46SpringFlowOk && (fresh5mImpulse || r46RecoverySpeed > 0.15))
+          ? Math.round(r46Clamp(6 + r46RecoverySpeed * 4 + (_r35ClosePos >= 0.65 ? 4 : 0) + (hardSweepForBridge ? 3 : 0), 6, 18))
+          : 0;
+        const r46ExhaustionShort = !!(!isL && wy1?.recentEvents?.some(e=>e.type==='UTAD') && !cvdSideOk && oiOpposite && r46SpreadVelocity > 0.15);
+
         let priorityScore=0;
         const priorityTags=[];
         const priorityFamily={macro:0,structure:0};
@@ -5099,6 +5126,13 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(ewoSameSide,4,'EWO');
         addP(squeezeSameSide,4,'Squeeze');
         addP(pdSameSide,3,'P/D');
+        // R46: bileşik pattern puanları — tekil sinyaller aynı yönde üst üste gelirse
+        // karar terazisini kademeli güçlendirir, ama hard veto/late-chase/sweep kapısını bypass etmez.
+        addP(r46PerfectAlignBonus > 0, r46PerfectAlignBonus, `R46Align${r46PerfectAlignCount}/5`);
+        addP(r46CvdGradeBonus > 0, r46CvdGradeBonus, `R46CVD${Math.round(cvdRatio)}%`);
+        addP(r46SqueezeQualityScore > 0, r46SqueezeQualityScore, `R46Squeeze${r46Rvol.toFixed(2)}x`);
+        addP(r46SpringQuality > 0, r46SpringQuality, 'R46SpringQuality');
+        addP(r46ExhaustionShort, 20, 'R46ExhaustionShort');
         // R37: 5m timing terazi katkısı — erken impuls/retest lehte, geç chase ters.
         addP(r37Side?.earlyImpulse, 10, 'R37Early');
         addP(r37Side?.retestOk, 8, 'R37Retest');
@@ -5318,6 +5352,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r22LiqWaterfall.favorable&&!r22LiqWaterfall.adverse) reasons.push('🌊 Liq şelalesi lehte');
         if(r39Confluence) reasons.push(`🧱 R39 ${isL?'destek':'direnç'} ${isL?(r39Side?.nearestSupport?.type||''):(r39Side?.nearestResistance?.type||'')}`);
         if(r39Side?.breakConfirmed) reasons.push(`🚀 R39 ${isL?'breakout':'breakdown'}`);
+        if(r46PerfectAlignBonus > 0) reasons.push(`🧠 R46 uyum ${r46PerfectAlignCount}/5`);
+        if(r46CvdGradeBonus > 0) reasons.push(`📊 R46 CVD kademeli +${r46CvdGradeBonus}`);
+        if(r46SqueezeQualityScore > 0) reasons.push(`⚡ R46 sıkışma kalitesi +${r46SqueezeQualityScore}`);
+        if(r46SpringQuality > 0) reasons.push(`🌱 R46 spring kalite +${r46SpringQuality}`);
+        if(r46ExhaustionShort) reasons.push('🚨 R46 exhaustion short birleşimi');
         if((isL&&r29Context.preferSide==='LONG')||(!isL&&r29Context.preferSide==='SHORT')) reasons.push(`🧠 R29 bağlam lehte`);
         if(isL&&r29Context.vwap?.longReclaim) reasons.push('🧭 VWAP reclaim');
         if(!isL&&r29Context.vwap?.shortReject) reasons.push('🧭 VWAP reject');
@@ -5360,6 +5399,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
+          r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
