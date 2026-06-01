@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R40_VPVR_INIT_FIX';
+const LAZARUS_BUILD = 'R43_STREAM_CVD_SANITY_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -709,7 +709,7 @@ const liqStore = new Map(); // symbol → {longLiqs:[], shortLiqs:[], lastCascad
 let globalLiqWS = null;
 
 function startGlobalLiqStream() {
-  if (globalLiqWS && globalLiqWS.readyState === WebSocket.OPEN) return;
+  if (globalLiqWS && (globalLiqWS.readyState === WebSocket.OPEN || globalLiqWS.readyState === WebSocket.CONNECTING)) return;
   const ws = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
   globalLiqWS = ws;
 
@@ -792,9 +792,14 @@ function getLiqData(symbol) {
 
 function startCVDStream(symbol) {
   const full = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
-  if (cvdStore.has(full) && cvdStore.get(full).ws?.readyState === WebSocket.OPEN) return;
+  const existing = cvdStore.get(full);
+  const rs = existing?.ws?.readyState;
+  // R43: OPEN yanında CONNECTING de korunur. Aksi halde getCVD() art arda çağrılınca
+  // aynı sembol için yeni WS açılıyor, CVD store sıfırlanıyor ve veri sürekli 50/UNKNOWN kalabiliyordu.
+  if (existing?.ws && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING)) return;
 
-  const store = { buy:0, sell:0, history:[], lastReset: Date.now(), ws:null };
+  // R43: reconnect veya prewarm sırasında biriken buy/sell/history silinmesin.
+  const store = existing || { buy:0, sell:0, history:[], lastReset: Date.now(), ws:null };
   cvdStore.set(full, store);
 
   const wsUrl = `wss://fstream.binance.com/ws/${full.toLowerCase()}@aggTrade`;
@@ -846,9 +851,14 @@ function getCVD(symbol) {
   if (store.history.length >= 3) {
     const recent = store.history.slice(-3).reduce((s,h)=>s+h.delta,0);
     const older  = store.history.slice(-6,-3).reduce((s,h)=>s+h.delta,0);
-    trend = delta > 0 ? 'POSITIVE' : 'NEGATIVE';
-    if (recent > older * 1.3)      acceleration = 'ACCELERATING_BULL';
-    else if (recent < older * 0.7) acceleration = 'ACCELERATING_BEAR';
+    trend = delta > 0 ? 'POSITIVE' : delta < 0 ? 'NEGATIVE' : 'NEUTRAL';
+    // R43: işaret güvenli CVD momentum. Eski kıyas negatif older değerinde
+    // hâlâ net satış varken ACCELERATING_BULL üretebiliyordu.
+    if (recent > 0 && (older <= 0 || recent > older * 1.30)) {
+      acceleration = 'ACCELERATING_BULL';
+    } else if (recent < 0 && (older >= 0 || Math.abs(recent) > Math.abs(older) * 1.30)) {
+      acceleration = 'ACCELERATING_BEAR';
+    }
   }
 
   const momentum = acceleration !== 'NONE' ? acceleration : ratio > 60 ? 'POSITIVE' : ratio < 40 ? 'NEGATIVE' : 'NEUTRAL';
@@ -1391,9 +1401,12 @@ const icebergStore = new Map(); // symbol → {bids, asks, hiddenBuy, hiddenSell
 
 function startIcebergStream(symbol) {
   const full = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
-  if (icebergStore.has(full) && icebergStore.get(full).ws?.readyState === WebSocket.OPEN) return;
+  const existing = icebergStore.get(full);
+  const rs = existing?.ws?.readyState;
+  // R43: CONNECTING sırasında tekrar depth WS açma; mevcut book/events korunur.
+  if (existing?.ws && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING)) return;
 
-  const store = { bids: new Map(), asks: new Map(), hiddenBuy:0, hiddenSell:0,
+  const store = existing || { bids: new Map(), asks: new Map(), hiddenBuy:0, hiddenSell:0,
     events:[], ws:null, lastUpdate: Date.now() };
   icebergStore.set(full, store);
 
@@ -4804,6 +4817,21 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     // ── R23 skor katmanı bitti ──────────────────────────────────────────────────
 
+    // ── R42: FİNAL RİSK TAVANI TEKRAR UYGULAMA ────────────────────────────────
+    // R41'e kadar riskCap R23/R37 ek puanlarından önce uygulanıyordu. Sonradan gelen
+    // fonlama/likidite/graph bonusları CVD_NOT_READY, OI ters, MM ters, RSI uç gibi
+    // risk tavanlarını tekrar yukarı şişirebiliyordu. AIGENSYN tarzı A/94-A/100
+    // hatalarının ana sessiz kökü buydu. Bu tavan en son, karar seçilmeden hemen önce
+    // yeniden uygulanır.
+    if (longRiskCap < 100 && longScore > longRiskCap) {
+      signals.long.push(`🛡️ R42 final risk tavanı: ${longScore}→${longRiskCap} (${longAdverse.join('+')})`);
+      longScore = longRiskCap;
+    }
+    if (shortRiskCap < 100 && shortScore > shortRiskCap) {
+      signals.short.push(`🛡️ R42 final risk tavanı: ${shortScore}→${shortRiskCap} (${shortAdverse.join('+')})`);
+      shortScore = shortRiskCap;
+    }
+
     // ── İKİ KATMANLI KARAR MEKANİZMASI ─────────────────────────────────────────
       // A-Tier: Yüksek güven → otomatik işlem açılır
       // B-Tier: Orta güven  → sinyal gösterilir, elle karar ver
@@ -4824,6 +4852,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(side==='WAIT')return{pass:false,tier:'WAIT',score:0,reasons:[],blocks:[],autoOk:false,priorityScore:0};
         const isL=side==='LONG';
         const sw1=sweep1h,wy1=wyckoff1h;
+        const wy15=wyckoff15m, wy4=wyckoff4h;
         const cvdD=getCVD(full);
         const liqD=getLiqData(full);
         const sc=isL?longScore:shortScore;
@@ -4849,12 +4878,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           mmTarget===(isL?'UP_SWEEP':'DOWN_SWEEP');
 
         // CVD / tick: ikisi de yoksa veri eksik kabul edilir, tek başına veto değildir.
-        const cvdRatio=cvdD?.ratio||50;
+        const cvdRatio=Number.isFinite(Number(cvdD?.ratio)) ? Number(cvdD.ratio) : 50; // R43: 0%/100% CVD değerlerini 50'ye düşürme
         const cvdValid=!!(cvdD?.valid && ((cvdD.buy||0)+(cvdD.sell||0)>0));
         const deltaTrend=String(tickData?.deltaTrend||'UNKNOWN').toUpperCase();
         const tickDeltaKnown=!!(deltaTrend && deltaTrend!=='UNKNOWN');
         const tickDeltaOk=tickDeltaKnown ? (isL?deltaTrend==='BULL':deltaTrend==='BEAR') : false;
-        const cvdSideOk=cvdValid?(isL?cvdRatio>40:cvdRatio<60):false;
+        const cvdSideOk=cvdValid?(isL?cvdRatio>55:cvdRatio<45):false; // R41B+R42: nötr CVD (50%) tuzak bypass edemez
         const deltaOkStrict=cvdSideOk||(tickDeltaKnown&&tickDeltaOk);
         const cvdMissing=!cvdValid&&!tickDeltaKnown;
 
@@ -4919,15 +4948,22 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const _r35Prev5 = _r35k5.at(-2);
         const _r35Close = Number(_r35Last5?.[4] || 0);
         const _r35Open  = Number(_r35Last5?.[1] || 0);
+        const _r35High  = Number(_r35Last5?.[2] || 0);
+        const _r35Low   = Number(_r35Last5?.[3] || 0);
         const _r35PrevClose = Number(_r35Prev5?.[4] || _r35Open || 0);
         const _r35Vol = Number(_r35Last5?.[5] || 0);
         const _r35AvgVol = _r35k5.length > 12
           ? _r35k5.slice(-12,-1).reduce((a,k)=>a+Number(k?.[5]||0),0)/11
           : 0;
+        const _r35Range = Math.max(0, _r35High - _r35Low);
+        const _r35ClosePos = _r35Range > 0 ? (_r35Close - _r35Low) / _r35Range : 0.5;
+        const _r35BodyPct = (_r35Close > 0 && _r35Open > 0) ? Math.abs(_r35Close - _r35Open) / _r35Close * 100 : 0;
+        // R41: önceki gevşek koşul neredeyse her yeşil/kırmızı mumu "fresh impulse" sayıyordu.
+        // Bu yüzden düşen bıçakta LONG veya şişmiş tepede SHORT A-tier olabiliyordu.
         const fresh5mImpulse = !!(_r35Close > 0 && _r35Open > 0 && _r35PrevClose > 0 && (
           isL
-            ? (_r35Close > _r35Open && _r35Close >= _r35PrevClose * 0.999 && (!_r35AvgVol || _r35Vol >= _r35AvgVol * 0.70))
-            : (_r35Close < _r35Open && _r35Close <= _r35PrevClose * 1.001 && (!_r35AvgVol || _r35Vol >= _r35AvgVol * 0.70))
+            ? (_r35Close > _r35Open && _r35Close >= _r35PrevClose * 1.0005 && _r35BodyPct >= 0.05 && _r35ClosePos >= 0.55 && (!_r35AvgVol || _r35Vol >= _r35AvgVol * 0.90))
+            : (_r35Close < _r35Open && _r35Close <= _r35PrevClose * 0.9995 && _r35BodyPct >= 0.05 && _r35ClosePos <= 0.45 && (!_r35AvgVol || _r35Vol >= _r35AvgVol * 0.90))
         ));
         const fresh15mConfirm = !!(
           (sweep15m?.confirmed && (isL ? sweep15m.direction==='BULL_SWEEP' : sweep15m.direction==='BEAR_SWEEP')) ||
@@ -5013,6 +5049,27 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r39AgainstZone = !!(isL ? r39Side?.nearResistance : r39Side?.nearSupport);
         const r39Confluence = !!(isL ? r39Side?.supportConfluence : r39Side?.resistanceConfluence);
 
+        // R41: AIGENSYN tarzı büyük zarar kökü — long tarafında taze UTAD / dağıtım varken
+        // "Sweep+Teyit + Wyckoff" etiketi yanlışlıkla A-tier long'a çevrilebiliyordu.
+        const r41OppositeWyckoff = !!(isL
+          ? (wy1?.recentEvents?.some(e=>e.type==='UTAD') || wy15?.recentEvents?.some(e=>e.type==='UTAD') || wy4?.recentEvents?.some(e=>e.type==='UTAD'))
+          : (wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS') || wy15?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS') || wy4?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS'))
+        );
+        const _r41Rows5 = (Array.isArray(k5m)?k5m:[]).slice(-5).map(k=>({
+          o:Number(k?.[1]), h:Number(k?.[2]), l:Number(k?.[3]), c:Number(k?.[4])
+        })).filter(x=>[x.o,x.h,x.l,x.c].every(Number.isFinite) && x.c>0);
+        const _r41First = _r41Rows5[0] || null;
+        const _r41Last  = _r41Rows5.at(-1) || null;
+        const _r41Move3 = (_r41First && _r41Last && _r41First.o>0) ? (_r41Last.c - _r41First.o) / _r41First.o * 100 : 0;
+        const _r41LastBear = !!(_r41Last && _r41Last.c < _r41Last.o);
+        const _r41LastBull = !!(_r41Last && _r41Last.c > _r41Last.o);
+        const r41FallingKnifeBlock = !!(isL && _r41Move3 < -0.55 && _r41LastBear && _r35ClosePos < 0.48 && !r39Side?.breakConfirmed && !deltaOkStrict);
+        const r41RisingKnifeBlock  = !!(!isL && _r41Move3 > 0.55 && _r41LastBull && _r35ClosePos > 0.52 && !r39Side?.breakConfirmed && !deltaOkStrict);
+        // R42: ters Wyckoff tuzağı (LONG içinde UTAD / SHORT içinde Spring-SOS) sadece "erken impuls" geldi diye bypass edilemez.
+        // Bypass için hem canlı flow hem de 5m S/R tarafında gerçek kırılım/reclaim gerekir.
+        const r42TrapReclaimOk = !!(r41OppositeWyckoff && deltaOkStrict && r39Side?.breakConfirmed && r37EarlyOk);
+        const r41TrapBlock = !!(r41OppositeWyckoff && !r42TrapReclaimOk);
+
         let priorityScore=0;
         const priorityTags=[];
         const priorityFamily={macro:0,structure:0};
@@ -5052,6 +5109,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(r39Side?.breakConfirmed, 7, 'R39_Break');
         subP(r39TargetNearBlock, 18, 'R39_TargetNear');
         subP(r39AgainstZone && !r39Side?.breakConfirmed, 7, 'R39_AgainstSR');
+        subP(r41TrapBlock, 26, 'R41_WyckoffTrap');
+        subP(r41FallingKnifeBlock || r41RisingKnifeBlock, 20, 'R41_Falling/RisingKnife');
         // R22: öncelik terazi ekleri. Bunlar iyi sinyali hızlandırır ama güvenlik frenlerini devre dışı bırakmaz.
         addP(r22Rotation.active, r22Rotation.score, r22Rotation.tag === 'SECTOR_ROTATION_STRONG' ? 'SektörRot' : 'Rotasyon', 'macro', 28);
         addP(r22FundingTrap.detected, r22FundingTrap.psBonus || 16, r22FundingTrap.strength==='STRONG'?'FundTrap🔥':'FundingTrap', 'macro', 28);
@@ -5145,10 +5204,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         }
         const cvdWarmingBridge=cvdMissing && (hasEntry||hardSweepForBridge) && sc>=Math.min(72,minAutoScore) && bridgeCount>=2;
         const cvdBridgePass = deltaOkStrict || (!cvdValid && priorityScore>=58 && hardSweepForBridge && (huntBridgeOk||mmSameSide||oiBridgeOk||fundBridgeOk));
-        const deltaOk = deltaOkStrict || cvdBridgePass;
+        // R42: CVD/tick yokken köprü otomatik emir için ancak çok güçlü ve çoklu teyitliyse kullanılabilir.
+        // Böylece veri yokluğu "terazi yüksek" diye AIGENSYN benzeri kör B+ girişine dönüşmez.
+        const r42FlowGate = !!(
+          deltaOkStrict ||
+          (tickData?.tickSweep?.fresh && hardSweepForBridge) ||
+          (!cvdValid && priorityScore >= 76 && bridgeCount >= 3 && hardSweepForBridge && (fresh5mImpulse || r37EarlyOk || r38RetestBridgeOk) && !r41OppositeWyckoff)
+        );
+        const deltaOk = deltaOkStrict || (cvdBridgePass && r42FlowGate);
         const microConfirm = deltaOkStrict || (hardSweepForBridge && (tickData?.tickSweep?.fresh || huntBridgeOk || obSameSide || oiBridgeOk || fundBridgeOk));
         const microConfirmR35 = microConfirm || (fresh5mImpulse && (huntBridgeOk || obSameSide || oiBridgeOk || fundBridgeOk || mmSameSide || mtfBridgeOk));
-        const cvdBridgeQualityOk = !cvdWarmingBridge || cvdBridgePass;
+        const cvdBridgeQualityOk = !cvdWarmingBridge || (cvdBridgePass && r42FlowGate);
 
         // Hard veto: bunlar skor değil, güvenlik frenidir.
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
@@ -5156,12 +5222,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const mmOk = !mmVeryStrongOpposite;
         const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk) && !fresh15mConfirm && !fresh5mImpulse);
         const r29CtxBlock = isL ? !!r29Context.longAutoBlock : !!r29Context.shortAutoBlock;
-        const hardVeto = !!(poorLiquidity || atrBlocking || r37LateChaseBlock || r39TargetNearBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
+        const hardVeto = !!(poorLiquidity || atrBlocking || r37LateChaseBlock || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
         const hardVetoReasons=[];
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
         if(atrBlocking) hardVetoReasons.push(`ATR gate %${atrPct.toFixed(2)}`);
         if(r37LateChaseBlock) hardVetoReasons.push(`R37 geç chase: ${r37Side?.reason||''}`);
         if(r39TargetNearBlock) hardVetoReasons.push(`R39 hedef çok yakın: ${r39Side?.reason||''}`);
+        if(r41TrapBlock) hardVetoReasons.push(`R41 ters Wyckoff tuzağı: ${isL?'LONG üstünde UTAD/dağıtım':'SHORT altında Spring/SOS'}`);
+        if(r41FallingKnifeBlock) hardVetoReasons.push(`R41 düşen bıçak LONG yok: 5m ${_r41Move3.toFixed(2)}%, canlı akış teyidi yok`);
+        if(r41RisingKnifeBlock) hardVetoReasons.push(`R41 yükselen bıçak SHORT yok: 5m ${_r41Move3.toFixed(2)}%, canlı akış teyidi yok`);
         if(!fundOk) hardVetoReasons.push('Funding aşırı ters');
         if(!rsiOk) hardVetoReasons.push(`RSI4h uç ${rsi4h}`);
         if(!mmOk) hardVetoReasons.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
@@ -5172,7 +5241,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
         // Amacı R34'teki 'her şey B, hiç emir yok' kilidini açmak.
         const r35ScalperBridge = !!(
-          !hardVeto && !signalDecayAutoBlock && !rvolVeryLow && !poorLiquidity &&
+          !hardVeto && !signalDecayAutoBlock && !rvolVeryLow && !poorLiquidity && r42FlowGate &&
           sc >= minAutoScore && priorityScore >= 64 &&
           (hasEntry || (softEntry && fresh5mImpulse) || (softEntry && r37EarlyOk)) &&
           microConfirmR35 && !r37RetestWait &&
@@ -5181,9 +5250,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         );
 
         // A: temiz otomatik. B+: kontrollü otomatik. R35 scalper bridge yüksek kaliteli B'leri B+ yapar.
-        const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && hasEntry && deltaOk && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
+        // R41: A-tier artık CVD/tick tamamen köprüyle varsayılarak geçemez; gerçek canlı flow ister.
+        // Flow eksikse en fazla B+ kontrollü adaya düşer, A-tier otomatik güven etiketi alamaz.
+        const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
         const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && sc>=minAutoScore && (
-          (hasEntry && cvdBridgePass && microConfirmR35 && priorityScore>=58) ||
+          (hasEntry && cvdBridgePass && r42FlowGate && microConfirmR35 && priorityScore>=58) ||
           r35ScalperBridge
         );
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry) && fundOk && sc>=55;
@@ -5191,8 +5262,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const reasons=[], blocks=[];
         if(amd5m?.signal===(isL?'AMD_LONG':'AMD_SHORT')) reasons.push('⚡ AMD');
         if(hardSweepForBridge) reasons.push('✅ Sweep+Teyit');
-        if(wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS')) reasons.push('🌊 Wyckoff');
-        if(wy1?.recentEvents?.some(e=>e.type==='UTAD')) reasons.push('🚨 UTAD');
+        if(isL && wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS')) reasons.push('🌊 Wyckoff');
+        if(!isL && wy1?.recentEvents?.some(e=>e.type==='UTAD')) reasons.push('🚨 UTAD');
+        if(isL && wy1?.recentEvents?.some(e=>e.type==='UTAD')) blocks.push('🚨 UTAD long karşıtı');
+        if(!isL && wy1?.recentEvents?.some(e=>e.type==='SPRING'||e.type==='SOS')) blocks.push('🌊 Spring/SOS short karşıtı');
         if(huntBridgeOk) reasons.push('🎣 Stop Hunt');
         if(mmSameSide) reasons.push(`🏦 MM ${mmTarget}`);
         if(oiBridgeOk) reasons.push(`📈 OI ${oiDiv}`);
@@ -5238,8 +5311,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
-          cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, microConfirm,
-          rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence,
+          cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
+          rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
             favorable:    r25WickTrapMap ? (isL ? r25WickTrapMap.lowerTrap : r25WickTrapMap.upperTrap) : false,
@@ -6267,9 +6340,9 @@ async function managePosition(apiKey, apiSecret, pos) {
     const ratio = Number(cvd?.ratio ?? 50);
     const mom = String(cvd?.momentum || 'UNKNOWN');
     if (isLong) {
-      return mom === 'ACCELERATING_BULL' || mom === 'POSITIVE' || ratio > 58;
+      return mom === 'ACCELERATING_BULL' || mom === 'POSITIVE' || ratio > 55; // R41B: cvdSideOk ile tutarlı
     }
-    return mom === 'ACCELERATING_BEAR' || mom === 'NEGATIVE' || ratio < 42;
+    return mom === 'ACCELERATING_BEAR' || mom === 'NEGATIVE' || ratio < 45; // R41B: tutarlı
   };
 
   const calcPullbackFromHighWaterPct = (hw) => {
@@ -6301,6 +6374,27 @@ async function managePosition(apiKey, apiSecret, pos) {
     action = {
       type:'EMERGENCY_EXIT', urgency:'CRITICAL',
       reason:`R14 hard-loss guard: fiyat hareketi %${realProfitPct.toFixed(2)}, ROI %${pnlPct.toFixed(1)}; SL gecikmesi/slippage riski`
+    };
+  }
+
+  // R42: Mutlak hasar sigortası. CVD sağlıklı görünse bile yüksek kaldıraçta
+  // belirli ROI hasarından sonra Binance SL'yi bekleme; bu AIGENSYN -40%/-46% tipini keser.
+  const r42AbsoluteDamageRoiCap = -Math.min(28, Math.max(18, slPct * leverage * 0.65));
+  if (!action && openMinutes <= 45 && pnlPct <= r42AbsoluteDamageRoiCap) {
+    action = {
+      type:'EMERGENCY_EXIT', urgency:'CRITICAL',
+      reason:`R42 mutlak hasar kes: ROI %${pnlPct.toFixed(1)} <= %${r42AbsoluteDamageRoiCap.toFixed(1)}; yüksek kaldıraçta SL sonunu bekleme`
+    };
+  }
+
+  // R41: 20x/25 USDT gibi ayarlarda %2 coin SL = yaklaşık -%40 ROI demek.
+  // AIGENSYN benzeri ters akışta tüm SL'yi beklemek yerine erken hasar kes.
+  // Trend sağlığı hâlâ pozisyon yönündeyse dokunmaz; veri nötr/zayıfsa küçük SL'den önce kaçar.
+  const r41EarlyDamageRoiCap = -Math.min(22, Math.max(14, slPct * leverage * 0.45));
+  if (!action && openMinutes <= 30 && pnlPct <= r41EarlyDamageRoiCap && !isCvdTrendHealthyForSide()) {
+    action = {
+      type:'EMERGENCY_EXIT', urgency:'HIGH',
+      reason:`R41 erken hasar kes: ROI %${pnlPct.toFixed(1)} <= %${r41EarlyDamageRoiCap.toFixed(1)} ve CVD/tick trend sağlığı yok`
     };
   }
 
@@ -6872,12 +6966,22 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
-    autoScanState.scanSource = 'R39_5M_SR_PIVOT_AUTO_SYNC';
+    autoScanState.scanSource = 'R42_PRIORITY_SANITY_AUTO_SYNC';
     autoScanState.scanLimit = scanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
       hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
     }).format(new Date());
+    // R42: Analiz başlamadan önce ilk 24 aday için CVD/tick WS prewarm.
+    // Bu REST isteği değildir; Binance ban riskini artırmadan CVD=0/UNKNOWN kaynaklı kör kararları azaltır.
+    try {
+      for (const c of (scanList||[]).slice(0,24)) {
+        const fs = normalizeSymbol(c.fullSymbol || c.symbol);
+        startCVDStream(fs);
+        startTickStream(fs);
+      }
+      await sleep(900);
+    } catch(_e) {}
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
     // 3. Her coini analiz et
@@ -7304,15 +7408,22 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   const sl = parseFloat(state?.currentSL || state?.stop || state?.sl || 0);
   const tp = parseFloat(state?.targetTP || state?.target || state?.tp || 0);
 
-  // Stop-market fill kayması olabilir; bu yüzden %0.45 tolerans kullanılır.
-  const tol = 0.45;
+  // Stop-market fill kayması olabilir; düşük likidite/top-mover coinlerde kayma %0.45'i aşabilir.
+  // R41: directional SL/TP sınıflandırması da yapılır; 'manuel' diye yanlış yazmasın.
+  const tol = 1.25;
   let code = 'BINANCE_CLOSED_UNKNOWN';
   let label = 'Binance kapanışı';
   let emoji = '🔍';
 
-  if (closePrice > 0 && tp > 0 && pctDiff(closePrice, tp) <= tol) {
+  const nearTP = closePrice > 0 && tp > 0 && pctDiff(closePrice, tp) <= tol;
+  const nearSL = closePrice > 0 && sl > 0 && (
+    pctDiff(closePrice, sl) <= tol ||
+    (isLong && closePrice <= sl * (1 + tol/100)) ||
+    (!isLong && closePrice >= sl * (1 - tol/100))
+  );
+  if (nearTP) {
     code = 'TAKE_PROFIT'; label = 'TP ile kapandı'; emoji = '🎯';
-  } else if (closePrice > 0 && sl > 0 && pctDiff(closePrice, sl) <= tol) {
+  } else if (nearSL) {
     if (state?.step3Set || state?.step2Set || state?.step1Set) {
       code = 'KAR_TASIMA_SL'; label = 'Kâr taşıma SL ile kapandı'; emoji = '📈';
     } else if (state?.breakEvenSet) {
