@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R34_AUTO_TARGET_SYNC_NO_BLIND';
+const LAZARUS_BUILD = 'R35_SCALPER_BRIDGE_NO_BLIND';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -2394,7 +2394,7 @@ app.get('/api/scan-candidates', async (req, res) => {
   try {
     const limit = Number(req.query.limit || 24);
     const coins = await getUnifiedScanCandidates(limit);
-    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R34_TOP24_AUTO_SYNC_SCAN_LIST' });
+    res.json({ ok:true, count:coins.length, limit:Math.max(10, Math.min(24, limit)), coins, source:'R35_TOP24_SCALPER_BRIDGE_SCAN_LIST' });
   } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
 });
 
@@ -4611,6 +4611,30 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const pdSameSide=isL ? (pd1h?.forLong||pd4h?.forLong) : (pd1h?.forShort||pd4h?.forShort);
         const pdOpposite=isL ? (pd1h?.zone==='PREMIUM_HIGH') : (pd1h?.zone==='DISCOUNT_LOW');
 
+        // R35: 5m botun kör kalmaması için taze mikro mum/15m teyit köprüsü.
+        // Ek Binance çağrısı yok; eldeki k5m/k15m, sweep ve hunt verisi kullanılır.
+        const _r35k5 = Array.isArray(k5m) ? k5m : [];
+        const _r35Last5 = _r35k5.at(-1);
+        const _r35Prev5 = _r35k5.at(-2);
+        const _r35Close = Number(_r35Last5?.[4] || 0);
+        const _r35Open  = Number(_r35Last5?.[1] || 0);
+        const _r35PrevClose = Number(_r35Prev5?.[4] || _r35Open || 0);
+        const _r35Vol = Number(_r35Last5?.[5] || 0);
+        const _r35AvgVol = _r35k5.length > 12
+          ? _r35k5.slice(-12,-1).reduce((a,k)=>a+Number(k?.[5]||0),0)/11
+          : 0;
+        const fresh5mImpulse = !!(_r35Close > 0 && _r35Open > 0 && _r35PrevClose > 0 && (
+          isL
+            ? (_r35Close > _r35Open && _r35Close >= _r35PrevClose * 0.999 && (!_r35AvgVol || _r35Vol >= _r35AvgVol * 0.70))
+            : (_r35Close < _r35Open && _r35Close <= _r35PrevClose * 1.001 && (!_r35AvgVol || _r35Vol >= _r35AvgVol * 0.70))
+        ));
+        const fresh15mConfirm = !!(
+          (sweep15m?.confirmed && (isL ? sweep15m.direction==='BULL_SWEEP' : sweep15m.direction==='BEAR_SWEEP')) ||
+          (hunt15m?.hunted && (isL ? hunt15m.direction==='BULL_HUNT' : hunt15m.direction==='BEAR_HUNT')) ||
+          (tickData?.tickSweep?.fresh && tickData?.tickSweep?.type === (isL ? 'BULL_SWEEP' : 'BEAR_SWEEP')) ||
+          (amd5m?.tickConfirm && amd5m?.signal === (isL ? 'AMD_LONG' : 'AMD_SHORT'))
+        );
+
         // ── R22: Teraziye bağlanan ileri okuma katmanları ────────────────────
         const r22Side = isL ? 'LONG' : 'SHORT';
         const r22Rotation = r22RotationBias(full, r22Side);
@@ -4667,9 +4691,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           };
         })();
 
-        const rvolVeryLow = !!(rvol1h && (rvol1h.signal === 'VERY_LOW' || Number(rvol1h.rvol || 0) < 0.15));
+        // R36: RVOL VERY_LOW etiketi (<0.7x) 5m top-gainer scalper için fazla genişti.
+        // Sadece gerçekten ölü hacim (<0.20x) otomatik köprüyü kilitler; 0.20-0.70 arası ceza/uyarı olarak kalır.
+        const rvolVeryLow = !!(rvol1h && Number(rvol1h.rvol || 0) < 0.20);
         const _slPctEval = parseFloat(autoConfig?.slPct || 2);
-        const atrBlocking = atrGateBlock || atrPct > _slPctEval * 2.5;
+        // R35: 1h ATR top gainer coinlerde doğal olarak yüksek olur.
+        // Önceki R34 bunu hard-veto yaptığı için 5m fırsatlarını öldürüyordu.
+        // Artık sadece aşırı uç volatilite hard block; normal yüksek ATR priority cezası/uyarıdır.
+        const atrWarnForAuto = !!(atrGateBlock || atrPct > _slPctEval * 2.5);
+        const atrExtremeBlock = atrPct > Math.max(14, _slPctEval * 7.0);
+        const atrBlocking = !!atrExtremeBlock;
         const poorLiquidity = !!(liqQual?.quality==='POOR' || (liqQual?.slippageRisk && Number(liqQual?.spread||0)>0.10));
 
         let priorityScore=0;
@@ -4718,7 +4749,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         subP(mmStrongOpposite,18,'MMters');
         if(isL && rsi4h>75) subP(true, rsi4h>82?12:7, 'RSI4h');
         if(!isL && rsi4h<25) subP(true, rsi4h<18?12:7, 'RSI4h');
-        if(atrGateWarn&&!atrBlocking) subP(true,5,'ATRwarn');
+        if((atrGateWarn||atrWarnForAuto)&&!atrBlocking) subP(true,5,'ATRwarn');
 
         // R32: Pattern + Renko priorityScore katkısı
         // Sadece mevcut yönün yapısal kalitesini ölçer; hard veto ve mikro teyitleri bypass etmez.
@@ -4782,16 +4813,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         const bridgeCount=[mtfBridgeOk,fundBridgeOk,oiBridgeOk,huntBridgeOk].filter(Boolean).length;
         const cvdWarmingBridge=cvdMissing && (hasEntry||hardSweepForBridge) && sc>=Math.min(72,minAutoScore) && bridgeCount>=2;
-        const cvdBridgePass = deltaOkStrict || (!cvdValid && priorityScore>=58 && hardSweepForBridge && (huntBridgeOk||mmSameSide||oiBridgeOk));
+        const cvdBridgePass = deltaOkStrict || (!cvdValid && priorityScore>=58 && hardSweepForBridge && (huntBridgeOk||mmSameSide||oiBridgeOk||fundBridgeOk));
         const deltaOk = deltaOkStrict || cvdBridgePass;
-        const microConfirm = deltaOkStrict || (hardSweepForBridge && (tickData?.tickSweep?.fresh || huntBridgeOk || obSameSide || oiBridgeOk));
+        const microConfirm = deltaOkStrict || (hardSweepForBridge && (tickData?.tickSweep?.fresh || huntBridgeOk || obSameSide || oiBridgeOk || fundBridgeOk));
+        const microConfirmR35 = microConfirm || (fresh5mImpulse && (huntBridgeOk || obSameSide || oiBridgeOk || fundBridgeOk || mmSameSide || mtfBridgeOk));
         const cvdBridgeQualityOk = !cvdWarmingBridge || cvdBridgePass;
 
         // Hard veto: bunlar skor değil, güvenlik frenidir.
         const fundOk=isL?fundSig!=='EXTREME_POSITIVE':fundSig!=='EXTREME_NEGATIVE';
         const rsiOk = isL ? rsi4h < 82 : rsi4h > 18; // Aşırı uçta otomatik açma yok, 78/22 artık yumuşak ceza.
         const mmOk = !mmVeryStrongOpposite;
-        const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk));
+        const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk) && !fresh15mConfirm && !fresh5mImpulse);
         const r29CtxBlock = isL ? !!r29Context.longAutoBlock : !!r29Context.shortAutoBlock;
         const hardVeto = !!(poorLiquidity || atrBlocking || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
         const hardVetoReasons=[];
@@ -4803,12 +4835,24 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(signalDecayAutoBlock) hardVetoReasons.push(`Signal decay ${r22Decay.label}`);
         if(r29CtxBlock) hardVetoReasons.push(`R29 bağlam riski ${isL ? r29Context.longRisk : r29Context.shortRisk}`);
 
-        // A: temiz otomatik. B+: CVD eksik/orta sinyal ama ağırlıklı terazi güçlü; kontrollü otomatik.
-        // R22: 10dk+ bayat sweep A/B+ otomatik açamaz; panelde B olarak kalır.
-        const isTierA = !hardVeto && !signalDecayAutoBlock && hasEntry && deltaOk && microConfirm && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        // R30: B+ canlı emir artık sadece bağlam/yumuşak sinyal ile açılmaz.
-        // Mutlaka gerçek entry izi + mikro teyit + güçlü terazi gerekir.
-        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && hasEntry && cvdBridgePass && microConfirm && sc>=minAutoScore && priorityScore>=58;
+        // R35: 5m fırsat köprüsü. Bu kör giriş değildir: gerçek entry/soft-entry +
+        // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
+        // Amacı R34'teki 'her şey B, hiç emir yok' kilidini açmak.
+        const r35ScalperBridge = !!(
+          !hardVeto && !signalDecayAutoBlock && !rvolVeryLow && !poorLiquidity &&
+          sc >= minAutoScore && priorityScore >= 64 &&
+          (hasEntry || (softEntry && fresh5mImpulse)) &&
+          microConfirmR35 &&
+          (bridgeCount >= 2 || priorityScore >= 72) &&
+          !mtfStrongOpposite && !mmVeryStrongOpposite
+        );
+
+        // A: temiz otomatik. B+: kontrollü otomatik. R35 scalper bridge yüksek kaliteli B'leri B+ yapar.
+        const isTierA = !hardVeto && !signalDecayAutoBlock && hasEntry && deltaOk && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
+        const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && sc>=minAutoScore && (
+          (hasEntry && cvdBridgePass && microConfirmR35 && priorityScore>=58) ||
+          r35ScalperBridge
+        );
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry) && fundOk && sc>=55;
 
         const reasons=[], blocks=[];
@@ -4849,14 +4893,14 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         const tier=isTierA?'A':isTierBPlus?'B+':isTierB?'B':'WAIT';
         if((tier==='B'||tier==='WAIT') && softEntry && !hasEntry) blocks.push('Yumuşak bağlam var ama canlı emir için gerçek giriş izi yok');
-        if((isTierA||isTierBPlus) && !microConfirm) blocks.push('Mikro teyit eksik');
+        if((isTierA||isTierBPlus) && !microConfirmR35) blocks.push('Mikro teyit eksik');
         const passCount=[hasEntry||softEntry,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
         const autoOk=isTierA||isTierBPlus;
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, microConfirm,
-          rvolVeryLow, atrBlocking, poorLiquidity, signalDecayAutoBlock,
+          rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
             favorable:    r25WickTrapMap ? (isL ? r25WickTrapMap.lowerTrap : r25WickTrapMap.upperTrap) : false,
@@ -6167,7 +6211,7 @@ app.post('/api/close', async (req, res) => {
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
-const AUTO_SCAN_INTERVAL_MS = 2 * 60 * 1000; // R34: 5m grafikte fırsatı kaçırmamak için 3dk -> 2dk; request governor korur
+const AUTO_SCAN_INTERVAL_MS = 2 * 60 * 1000; // R35: 5m grafikte fırsatı kaçırmamak için 2dk; request governor korur
 const autoLog = []; // Son 50 otomatik işlem logu
 
 // ── CANLI TARAMA TELEMETRİSİ ────────────────────────────────────────────────
@@ -6401,7 +6445,7 @@ async function runAutoScan() {
 
     // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
     // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
-    const scanLimit = 24; // R34: Panel /api/scan-candidates ve auto aynı 24 hedef havuzunu kullanır; A-tier dışarıda kalmaz
+    const scanLimit = 24; // R35: R34 top24 korunur; scalper bridge ile kaliteli B fırsatlar B+ auto adaya döner
     let scanList = await getUnifiedScanCandidates(scanLimit);
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
@@ -6436,7 +6480,7 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
-    autoScanState.scanSource = 'R34_TOP24_PANEL_AUTO_SYNC';
+    autoScanState.scanSource = 'R35_SCALPER_BRIDGE_AUTO_SYNC';
     autoScanState.scanLimit = scanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
@@ -6486,7 +6530,7 @@ async function runAutoScan() {
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
-        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.tier==='B+'?'Kontrollü':'Aday'):'İzle'});
+        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.scalperBridge?'R35 Köprü':(decisionChain?.tier==='B+'?'Kontrollü':'Aday')):'İzle'});
 
         // Yön izni
         if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
@@ -6610,9 +6654,19 @@ async function runAutoScan() {
         // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
         const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
         if (coinAtrPct > 0 && coinAtrPct > userSLPct * 2.5) {
-          logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — volatilite riski yüksek, atlandı`);
-          markAutoSkip(coin.symbol, `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score});
-          continue;
+          const atrBridgeAllowed = !!(decisionChain?.scalperBridge) || (
+            ['A','B+'].includes(String(decisionChain?.tier||'')) &&
+            Number(decisionChain?.priorityScore||0) >= 68 &&
+            Number(score||0) >= Number(effectiveMinScore||0) &&
+            !decisionChain?.poorLiquidity && !decisionChain?.rvolVeryLow
+          );
+          const atrExtreme = coinAtrPct > Math.max(14, userSLPct * 7.0);
+          if (atrExtreme || !atrBridgeAllowed) {
+            logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — volatilite riski yüksek, atlandı`);
+            markAutoSkip(coin.symbol, `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore});
+            continue;
+          }
+          logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama R35 scalper köprüsü geçti — user SL/TP korunarak devam`);
         }
         // Likidite kalitesi çok düşükse skip
         if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
