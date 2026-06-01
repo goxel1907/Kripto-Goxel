@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R54_FAST6_MICRO_PROBE_PRIORITY';
+const LAZARUS_BUILD = 'R55_SCANMODE_UI_SYNC';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -2685,10 +2685,13 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
 
 app.get('/api/scan-candidates', async (req, res) => {
   try {
-    const mode = normalizeR54ScanMode(req.query.mode || req.query.scanMode || req.query.limit || 'FAST6');
-    const limit = r54ScanLimitForMode(mode, req.query.limit || 6);
+    // R55: Long/Short ekranı ile Otomatik İşlem paneli aynı tarama modunu görsün.
+    // Eski kod limit=40 gönderildiğinde modu yanlışlıkla FAST6'a düşürüyordu.
+    const serverMode = autoConfig?.scanMode || autoScanState?.settings?.scanMode || autoScanState?.scanMode || 'FAST6';
+    const mode = normalizeR54ScanMode(req.query.mode || req.query.scanMode || serverMode);
+    const limit = r54ScanLimitForMode(mode, req.query.limit || r54ScanLimitForMode(mode, 6));
     const coins = await getUnifiedScanCandidates(limit, mode);
-    res.json({ ok:true, count:coins.length, limit, scanMode:mode, coins, source:'R54_FAST6_TOP3_PLUS_CANDIDATE3_SCAN_LIST' });
+    res.json({ ok:true, count:coins.length, limit, scanMode:mode, coins, source:'R55_SYNCED_SCANMODE_LIST' });
   } catch(e) { res.status(400).json({ ok:false, error:e.message }); }
 });
 
@@ -7219,8 +7222,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R48 Gate: Sweep ACIK / DIRECT_SWEEP gerekli'
-          : 'R54 Gate: Sweep KAPALI / FAST6-TOP10-TOP24 + R47/P50 smart-edge + micro-probe aktif',
-        note: 'sweepOnly=false iken R47/R48/R49/R50/R51/R53/R54 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+          : 'R55 Gate: Sweep KAPALI / Long/Auto tarama modu senkron + R47/P50 smart-edge + micro-probe aktif',
+        note: 'sweepOnly=false iken R47/R48/R49/R50/R51/R53/R54/R55 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7385,7 +7388,7 @@ async function runAutoScan() {
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R54 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 R55 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
