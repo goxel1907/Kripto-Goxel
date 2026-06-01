@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R46_COMPOSITE_PATTERN_SCORE';
+const LAZARUS_BUILD = 'R47_DECISION_CHAIN_BALANCE';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5298,18 +5298,68 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           !r41OppositeWyckoff && !r37LateChaseBlock && !r39TargetNearBlock
         );
         const r45CvdOkForBridge = !!(deltaOkStrict || r45CvdAlternativeOk);
-        const nonSweepQualityOk = !!(
+
+        // R47: Fazla sıkı karar zinciri dengesi.
+        // Eski non-sweep kapısı çok fazla AND koşulu istiyordu: CVD yoksa veya RVOL düşükse,
+        // top-gainer 5m fırsatları B'de kalabiliyordu. R47 hard güvenliği bozmaz; yalnızca
+        // timing + flow + context + yapı + RVOL parçalarını bileşik readiness skoru olarak okur.
+        const r47CvdMissingBridge = !!(
+          cvdMissing && (fresh5mImpulse || r37EarlyOk || r38RetestBridgeOk) &&
+          (oiBridgeOk || obSameSide || mmSameSide || fundBridgeOk) &&
+          priorityScore >= (r38TopMoverStrong ? 68 : 72) &&
+          !r41OppositeWyckoff && !r37LateChaseBlock && !r39TargetNearBlock
+        );
+        const r47TimingPts = Math.min(4,
+          (fresh5mImpulse ? 2 : 0) +
+          (r37EarlyOk ? 2 : 0) +
+          (r38RetestBridgeOk ? 1 : 0) +
+          (r39Side?.breakConfirmed ? 1 : 0)
+        );
+        const r47FlowPts = Math.min(4,
+          (deltaOkStrict ? 3 : 0) +
+          (r45CvdAlternativeOk ? 2 : 0) +
+          (r47CvdMissingBridge ? 1 : 0) +
+          (tickData?.tickSweep?.fresh ? 1 : 0) +
+          (obSameSide ? 1 : 0)
+        );
+        const r47ContextPts = Math.min(5,
+          (oiBridgeOk ? 1 : 0) +
+          (mmSameSide ? 1 : 0) +
+          (fundBridgeOk ? 1 : 0) +
+          (mtfBridgeOk ? 1 : 0) +
+          (chochSameSide ? 1 : 0) +
+          (weisSameSide ? 1 : 0)
+        );
+        const r47StructurePts = Math.min(4,
+          (r39Confluence ? 2 : 0) +
+          (r39Side?.breakConfirmed ? 1 : 0) +
+          (!r39TargetNearBlock && !r37LateChaseBlock ? 1 : 0) +
+          (r46PerfectAlignCount >= 3 ? 1 : 0)
+        );
+        const r47RvolPts = r45RvolTradable ? 2
+          : r45RvolLowButWatch ? 1
+          : (r45RvolUnknown && (r38TopMoverStrong || priorityScore >= 76)) ? 1
+          : r45TopMoverSecondImpulseWatch ? 1
+          : 0;
+        const r47Readiness = r47TimingPts + r47FlowPts + r47ContextPts + r47StructurePts + r47RvolPts;
+        const r47Needed = r38TopMoverStrong ? 8 : 10;
+        const r47FlowEnough = !!(
+          r47FlowPts >= 2 ||
+          (r47FlowPts >= 1 && r38TopMoverStrong && priorityScore >= 70 && r47ContextPts >= 2) ||
+          (r47FlowPts >= 1 && priorityScore >= 76 && r47ContextPts >= 3)
+        );
+        const r47CompositeNonSweepOk = !!(
           !directSweepOk && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r37LateChaseBlock && !r39TargetNearBlock &&
           !poorLiquidity && !mtfStrongOpposite && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
-          sc >= minAutoScore && priorityScore >= (r38TopMoverStrong ? 68 : 72) &&
-          (fresh5mImpulse || r37EarlyOk || r38RetestBridgeOk) && microConfirmR35 && r45CvdOkForBridge && r45RvolOkForBridge &&
-          (oiBridgeOk || obSameSide || mmSameSide || mtfBridgeOk || fundBridgeOk || chochSameSide || weisSameSide)
+          sc >= minAutoScore && priorityScore >= (r38TopMoverStrong ? 64 : 68) &&
+          r47TimingPts >= 2 && r47ContextPts >= 2 && r47RvolPts >= 1 && r47FlowEnough && r47Readiness >= r47Needed
         );
+        const nonSweepQualityOk = r47CompositeNonSweepOk;
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk);
         const entryPermissionReason = directSweepOk ? 'DIRECT_SWEEP'
-          : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE'
+          : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE_R47'
           : sweepRequired ? 'SWEEP_REQUIRED_FAIL'
-          : 'ENTRY_PERMISSION_FAIL';
+          : 'ENTRY_PERMISSION_FAIL_R47';
 
         // R35: 5m fırsat köprüsü. Bu kör giriş değildir: gerçek entry/soft-entry +
         // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
@@ -5367,13 +5417,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         else if(!cvdValid && cvdBridgePass) reasons.push(`🟡 CVD yok ama terazi güçlü ${priorityScore}`);
         else if(!cvdValid) reasons.push('📊 CVD ısınma/veri yok');
         if(directSweepOk) reasons.push(`🔐 Sweep kapısı: ${sweepRequired?'AÇIK':'KAPALI'} / DIRECT_SWEEP`);
-        else if(!sweepRequired && nonSweepQualityOk) reasons.push('🟦 Sweep kapalı: 5m non-sweep köprü');
+        else if(!sweepRequired && nonSweepQualityOk) reasons.push(`🟦 R47 non-sweep köprü ${r47Readiness}/${r47Needed} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
         if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
         if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
         if(r45RvolDead) reasons.push(`📊 RVOL ölü/ikinci impuls izleme ${r45Rvol.toFixed(2)}x`);
         if(softEntry&&!hasEntry) reasons.push('👁 Yumuşak sinyal');
 
-        if(!entryPermissionOk) blocks.push(`R45 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}`);
+        if(!entryPermissionOk) {
+          const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
+          blocks.push(`R47 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+        }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
         if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, terazi ${priorityScore})`);
@@ -5399,6 +5452,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
+          r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -6892,6 +6946,90 @@ app.post('/api/diagnostics/clear', (_req, res) => {
   res.json({ ok:true, message:'Kritik hata ekran kayıtları temizlendi' });
 });
 
+
+
+// ── R46B HEALTH + SWEEP DEBUG ENDPOINT ───────────────────────────────────────
+// Amaç: 1-2 saat beklemeden gerçek server ayarını görmek.
+// /api/health içinde sweepOnly true/false, son loglar, son tarama, adaylar ve cooldownlar görünür.
+app.get('/api/health', (_req, res) => {
+  try {
+    const cfg = autoConfig || {};
+    const scan = autoScanState || {};
+    const logs = Array.isArray(autoLog) ? autoLog.slice(-30) : [];
+    const cooldowns = (typeof getCooldownList === 'function') ? getCooldownList() : [];
+    const recentCritical = Array.isArray(criticalEvents) ? criticalEvents.slice(-10).reverse() : [];
+    const sweepOnly = cfg.sweepOnly !== false; // Eski davranışla uyumlu: undefined ise zorunlu kabul edilir.
+    const positionRisk = (typeof positionRiskState !== 'undefined') ? {
+      cooldownMs: (typeof getPositionRiskCooldownMs === 'function') ? getPositionRiskCooldownMs() : null,
+      cacheAgeMs: positionRiskState.cache ? Date.now() - positionRiskState.cache.ts : null,
+      cacheTtlMs: positionRiskState.cache?.ttl || null,
+      openCount: positionRiskState.cache?.openCount || 0,
+      source: positionRiskState.lastSource || null,
+      lastError: positionRiskState.lastError || null,
+      inflight: !!positionRiskState.inflight,
+    } : null;
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      ok: true,
+      service: 'Kripto Sinyal PRO',
+      build: LAZARUS_BUILD,
+      timeISO: new Date().toISOString(),
+      serverTime: Date.now(),
+      uptimeSec: Math.round(process.uptime()),
+      node: process.version,
+      auto: {
+        enabled: !!cfg.enabled,
+        running: !!autoRunning,
+        phase: scan.phase || null,
+        currentSymbol: scan.currentSymbol || null,
+        checked: scan.checked ?? 0,
+        opened: scan.opened ?? 0,
+        skipped: scan.skipped ?? 0,
+        livePositions: scan.livePositions ?? null,
+        positionCount: scan.positionCount ?? null,
+        maxPositions: cfg.maxPositions ?? scan.maxPositions ?? scan.settings?.maxPositions ?? null,
+        minScore: cfg.minScore ?? scan.settings?.minScore ?? null,
+        usdtAmount: cfg.usdtAmount ?? scan.settings?.usdtAmount ?? null,
+        leverage: cfg.leverage ?? scan.settings?.leverage ?? null,
+        allowLong: cfg.allowLong ?? scan.settings?.allowLong ?? null,
+        allowShort: cfg.allowShort ?? scan.settings?.allowShort ?? null,
+        sweepOnly,
+        sweepMode: sweepOnly
+          ? 'SWEEP_ZORUNLU_ACIK_DIRECT_SWEEP_GEREKIR'
+          : 'SWEEP_ZORUNLU_KAPALI_NON_SWEEP_BRIDGE_AKTIF',
+        nextScanDue: scan.nextScanDue || null,
+        lastScanStart: scan.lastScanStart || null,
+        lastScanEnd: scan.lastScanEnd || null,
+      },
+      gate: {
+        sweepRequired: sweepOnly,
+        expectedAutoLog: sweepOnly
+          ? 'R47 Gate: Sweep ACIK / SWEEP_REQUIRED_FAIL gorulebilir'
+          : 'R47 Gate: Sweep KAPALI / NON_SWEEP_5M_BRIDGE_R47 aktif olmali',
+        note: 'sweepOnly=false iken R47 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+      },
+      lastScan: {
+        source: scan.scanSource || null,
+        scanLimit: scan.scanLimit ?? null,
+        scanList: Array.isArray(scan.scanList) ? scan.scanList : [],
+        lastAction: scan.lastAction || null,
+        skipReasons: scan.skipReasons || {},
+        topCandidates: Array.isArray(scan.topCandidates) ? scan.topCandidates.slice(0, 12) : [],
+      },
+      safety: {
+        cooldowns,
+        criticalCount: Array.isArray(criticalEvents) ? criticalEvents.length : 0,
+        recentCritical,
+        positionRisk,
+      },
+      recentLogs: logs,
+    });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:e.message, build: typeof LAZARUS_BUILD !== 'undefined' ? LAZARUS_BUILD : 'UNKNOWN' });
+  }
+});
+
 app.post('/api/auto/config', (req, res) => {
   autoConfig = req.body;
   if (autoConfig.enabled) {
@@ -7058,7 +7196,7 @@ async function runAutoScan() {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
-    autoScanState.scanSource = 'R45_5M_SWEEPONLY_REAL_GATE';
+    autoScanState.scanSource = LAZARUS_BUILD;
     autoScanState.scanLimit = scanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
       timeZone:'Europe/Istanbul', day:'2-digit', month:'2-digit',
