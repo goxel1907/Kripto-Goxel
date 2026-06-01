@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R50_AUTO_PERMISSION_MATRIX';
+const LAZARUS_BUILD = 'R52_ORDERFLOW_AUDIT_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -892,7 +892,10 @@ function createTickEngine(tickSize = 0.01, volatilePct = 5) {
     lastPrice: 0,
     totalBuy: 0,
     totalSell: 0,
-    bigTrades: [],        // $10K+ işlemler
+    bigTrades: [],        // $50K+ büyük işlemler
+    // R52: getTickAnalysis VPIN hesabı engine.lastTicks okuyordu ama createTickEngine içinde yoktu.
+    // Büyük trade geldikten sonra bu undefined kalırsa tick/orderflow analizi sessizce patlayabilirdi.
+    lastTicks: [],        // son 500 aggTrade; VPIN + mikro akış için
     ws: null,
   };
 }
@@ -965,6 +968,10 @@ function processTick(engine, trade) {
   const ts     = trade.T || Date.now();
 
   engine.lastPrice = price;
+  // R52: ham tick ring buffer. VPIN ve mikro-akış bu listeyi okur.
+  if (!Array.isArray(engine.lastTicks)) engine.lastTicks = [];
+  engine.lastTicks.push({ price, isBuy, usdt, ts });
+  if (engine.lastTicks.length > 500) engine.lastTicks.shift();
 
   // Footprint güncelle — tickSize'a yuvarla
   const level = roundToTick(price, engine.tickSize).toFixed(8);
@@ -1368,8 +1375,12 @@ function getTickAnalysis(symbol) {
   const tickSweep = engine.sweepDet.confirmed;
 
   // VPIN hesapla — son 200 tick'ten
-  const vpinResult = calcVPIN(engine.bigTrades.length > 0
-    ? engine.lastTicks.slice(-500).map(t => ({...t, usdt:t.usdt||0}))
+  // R52: defensive read; eski state/WS objesi gelirse engine.lastTicks yok diye analiz düşmesin.
+  const rawTicksForVpin = Array.isArray(engine.lastTicks)
+    ? engine.lastTicks
+    : (Array.isArray(engine.sweepDet?.lastTicks) ? engine.sweepDet.lastTicks : []);
+  const vpinResult = calcVPIN(rawTicksForVpin.length > 0
+    ? rawTicksForVpin.slice(-500).map(t => ({...t, usdt:t.usdt||0}))
     : [], 30);
 
   // Delta microstructure
@@ -5429,11 +5440,28 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r47Readiness >= r47Needed && r50EffectivePriority >= (r38TopMoverStrong ? 64 : 70) &&
           r47TimingPts >= 2 && r47FlowEnough && r47ContextPts >= 2 && r50RvolUsable
         );
-        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk);
+
+        // R51: Direct sweep + stop-hunt adayında minimum edge kilidi.
+        // /api/health R50'de HYPE gibi adaylarda sc=72, direct sweep+stop-hunt, R47=8/8,
+        // S/V yapısı temiz olmasına rağmen P50=28 olduğu için R50:NO kalıyordu.
+        // Bu, sweep kapalı 5m scalper modunda fazla sıkı logic kilidiydi.
+        // R51 kör gevşetme yapmaz: hard veto, geç chase, hedef yakın, CVD karşıtlığı, RVOL,
+        // yapı ve canlı flow/context kontrolleri hâlâ zorunlu. Sadece P50 top-mover direct-sweep
+        // eşiği 32 yerine pratik minimum edge 24 olarak ayrı bir B+ yolu açar.
+        const r51DirectSweepMinEdgeOk = !!(
+          !sweepRequired && directSweepOk && (hasEntry || huntBridgeOk || hardSweepForBridge) && r50HardClean &&
+          sc >= minAutoScore && r47Readiness >= r50MinReadiness &&
+          r50EffectivePriority >= (r38TopMoverStrong ? 24 : 34) &&
+          r47StructurePts >= 2 && r47RvolPts >= 1 &&
+          (r47FlowPts >= 1 || r47ContextPts >= 2 || deltaOkStrict || obSameSide || oiBridgeOk || mmSameSide || fundBridgeOk) &&
+          r50StructureOrTimingOk && r49CvdSafe
+        );
+        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk);
 
         const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk;
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
         const entryPermissionReason = r50DirectSweepMatrixOk ? 'R50_DIRECT_SWEEP_MATRIX'
+          : r51DirectSweepMinEdgeOk ? 'R51_DIRECT_SWEEP_MIN_EDGE'
           : r50NonSweepMatrixOk ? 'R50_NON_SWEEP_MATRIX'
           : directSweepOk ? (r49DirectSweepUnlockOk ? 'DIRECT_SWEEP_BPLUS_R49' : 'DIRECT_SWEEP')
           : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE_R47'
@@ -5503,6 +5531,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!sweepRequired && r48DirectSweepBalanceOk) reasons.push(`🟪 R48 direct-sweep denge köprüsü ${r47Readiness}/${r38TopMoverStrong?6:7} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
         if(!sweepRequired && r49DirectSweepUnlockOk) reasons.push(`🟣 R49 direct-sweep B+ unlock ${r47Readiness}/${r38TopMoverStrong?8:10} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
         if(!sweepRequired && r50DirectSweepMatrixOk) reasons.push(`🧩 R50 direct-sweep matrix ${r47Readiness}/${r50MinReadiness} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
+        if(!sweepRequired && r51DirectSweepMinEdgeOk) reasons.push(`🧩 R51 direct-sweep min-edge ${r47Readiness}/${r50MinReadiness} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
         if(!sweepRequired && r50NonSweepMatrixOk) reasons.push(`🧩 R50 non-sweep matrix ${r47Readiness}/${r47Needed} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
         if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
         if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
@@ -5511,7 +5540,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R50 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R51 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -5539,7 +5568,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst, r49DirectSweepUnlockOk, r49CvdSafe, r49ContextOk, r49TimingOk, r49StructureOk,
-          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
+          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -6867,7 +6896,11 @@ function mapRiskRowsToManagerPositions(rows=[]) {
       const amt = parseFloat(p.positionAmt || 0);
       const ep  = parseFloat(p.entryPrice || 0);
       const mp  = parseFloat(p.markPrice || 0);
-      const lev = parseInt(p.leverage) || 1;
+      // R52: fast manager da dashboard gibi leverage fallback kullanmalı.
+      // Binance positionRisk bazı cevaplarda leverage boş/1 döndüğünde hasar-kes ROI yanlış hesaplanıyordu.
+      const full = normalizeSymbol(p.symbol);
+      const st = trailingState.get(full) || trailingState.get(String(p.symbol||'')) || {};
+      const lev = parseInt(p.leverage) || parseInt(st.leverage) || parseInt(autoConfig?.leverage) || 1;
       const side = amt > 0 ? 'LONG' : 'SHORT';
       const pnlPct = ep > 0 ? ((mp - ep) / ep * 100 * lev * (side === 'SHORT' ? -1 : 1)) : 0;
       return {
@@ -6990,6 +7023,7 @@ function pushAutoCandidate(row) {
     r50AutoPermissionOk: !!row.r50AutoPermissionOk,
     r50DirectSweepMatrixOk: !!row.r50DirectSweepMatrixOk,
     r50NonSweepMatrixOk: !!row.r50NonSweepMatrixOk,
+    r51DirectSweepMinEdgeOk: !!row.r51DirectSweepMinEdgeOk,
     r50EffectivePriority: Number(row.r50EffectivePriority || 0),
     autoOk: !!row.autoOk
   };
@@ -7101,8 +7135,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R48 Gate: Sweep ACIK / DIRECT_SWEEP gerekli'
-          : 'R50 Gate: Sweep KAPALI / R47 readiness + R48/R49 + R50 auto permission matrix aktif',
-        note: 'sweepOnly=false iken R47/R48/R49/R50 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+          : 'R51 Gate: Sweep KAPALI / R47 readiness + R48/R49/R50 + R51 direct-sweep min-edge aktif',
+        note: 'sweepOnly=false iken R47/R48/R49/R50/R51 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7300,12 +7334,14 @@ async function runAutoScan() {
     // R42: Analiz başlamadan önce ilk 24 aday için CVD/tick WS prewarm.
     // Bu REST isteği değildir; Binance ban riskini artırmadan CVD=0/UNKNOWN kaynaklı kör kararları azaltır.
     try {
+      const tickWarmups = [];
       for (const c of (scanList||[]).slice(0,24)) {
         const fs = normalizeSymbol(c.fullSymbol || c.symbol);
         startCVDStream(fs);
-        startTickStream(fs);
+        tickWarmups.push(startTickStream(fs).catch(()=>null));
       }
-      await sleep(900);
+      // R52: 5m scalper hızlı kalsın ama ilk analiz tamamen tickData=null başlamasın.
+      await Promise.race([Promise.allSettled(tickWarmups), sleep(1500)]);
     } catch(_e) {}
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
@@ -7362,6 +7398,7 @@ async function runAutoScan() {
           r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk,
           r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk,
           r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk,
+          r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk,
           r50EffectivePriority:decisionChain?.r50EffectivePriority,
           r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}
         });
@@ -7386,26 +7423,26 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R50 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'}`;
+          const why = `R51 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
           const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
         // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur; B+ autoOk ise boğma.
         if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk) {
           const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
