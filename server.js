@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R47_DECISION_CHAIN_BALANCE';
+const LAZARUS_BUILD = 'R48_DIRECT_SWEEP_BALANCE_DEBUG';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5354,7 +5354,23 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           sc >= minAutoScore && priorityScore >= (r38TopMoverStrong ? 64 : 68) &&
           r47TimingPts >= 2 && r47ContextPts >= 2 && r47RvolPts >= 1 && r47FlowEnough && r47Readiness >= r47Needed
         );
-        const nonSweepQualityOk = r47CompositeNonSweepOk;
+        // R48: Direct sweep varken de karar zinciri B'de kilitlenebiliyordu.
+        // Eski direct-sweep B+ kapısı r42FlowGate + priority>=58 istiyordu; top-gainer 5m'de
+        // sweep+stop-hunt doğru olsa bile CVD nötr/eksik veya terazi düşükse saatlerce bekliyordu.
+        // Bu köprü kör giriş değildir: hard veto/late chase/hedef yakın/ters MM-MTF hâlâ yasak;
+        // ayrıca 5m yapı + flow/context + RVOL okunur. Sweep kapalı modda kontrollü B+ üretir.
+        const r48CvdNotAgainst = !!(!cvdValid || deltaOkStrict || r47FlowPts >= 2 || (priorityScore >= 50 && r47ContextPts >= 3));
+        const r48DirectSweepBalanceOk = !!(
+          !sweepRequired && directSweepOk && !hardVeto && !signalDecayAutoBlock && !r37RetestWait &&
+          !r37LateChaseBlock && !r39TargetNearBlock && !poorLiquidity && !mtfStrongOpposite &&
+          !mmVeryStrongOpposite && !r41OppositeWyckoff && r48CvdNotAgainst &&
+          sc >= minAutoScore && priorityScore >= (r38TopMoverStrong ? 24 : 34) &&
+          r47StructurePts >= 1 && r47RvolPts >= 1 &&
+          (r47TimingPts >= 1 || fresh15mConfirm || r39Confluence || r39Side?.breakConfirmed) &&
+          (r47FlowPts >= 1 || r47ContextPts >= 3) &&
+          r47Readiness >= (r38TopMoverStrong ? 6 : 7)
+        );
+        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk;
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk);
         const entryPermissionReason = directSweepOk ? 'DIRECT_SWEEP'
           : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE_R47'
@@ -5380,6 +5396,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const isTierBPlus = !isTierA && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && sc>=minAutoScore && (
           (directSweepOk && hasEntry && cvdBridgePass && r42FlowGate && microConfirmR35 && priorityScore>=58) ||
           (!sweepRequired && nonSweepQualityOk) ||
+          r48DirectSweepBalanceOk ||
           r35ScalperBridge
         );
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry||nonSweepQualityOk) && fundOk && sc>=55;
@@ -5417,7 +5434,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         else if(!cvdValid && cvdBridgePass) reasons.push(`🟡 CVD yok ama terazi güçlü ${priorityScore}`);
         else if(!cvdValid) reasons.push('📊 CVD ısınma/veri yok');
         if(directSweepOk) reasons.push(`🔐 Sweep kapısı: ${sweepRequired?'AÇIK':'KAPALI'} / DIRECT_SWEEP`);
-        else if(!sweepRequired && nonSweepQualityOk) reasons.push(`🟦 R47 non-sweep köprü ${r47Readiness}/${r47Needed} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
+        else if(!sweepRequired && r47CompositeNonSweepOk) reasons.push(`🟦 R47 non-sweep köprü ${r47Readiness}/${r47Needed} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
+        if(!sweepRequired && r48DirectSweepBalanceOk) reasons.push(`🟪 R48 direct-sweep denge köprüsü ${r47Readiness}/${r38TopMoverStrong?6:7} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
         if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
         if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
         if(r45RvolDead) reasons.push(`📊 RVOL ölü/ikinci impuls izleme ${r45Rvol.toFixed(2)}x`);
@@ -5452,7 +5470,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
-          r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk,
+          r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -6896,7 +6914,10 @@ function pushAutoCandidate(row) {
     sweepRequired: row.sweepRequired,
     entryPermissionReason: row.entryPermissionReason || '',
     cvdMissing: !!row.cvdMissing,
-    r45RvolStatus: row.r45RvolStatus || ''
+    r45RvolStatus: row.r45RvolStatus || '',
+    r47: row.r47 || null,
+    r48DirectSweepBalanceOk: !!row.r48DirectSweepBalanceOk,
+    autoOk: !!row.autoOk
   };
   // R34: Aynı sembol aynı taramada iki satır görünmesin. Önce aday, sonra atlandı gelirse son durum yazılır.
   const key = `${r.symbol}_${r.rec}`;
@@ -7005,9 +7026,9 @@ app.get('/api/health', (_req, res) => {
       gate: {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
-          ? 'R47 Gate: Sweep ACIK / SWEEP_REQUIRED_FAIL gorulebilir'
-          : 'R47 Gate: Sweep KAPALI / NON_SWEEP_5M_BRIDGE_R47 aktif olmali',
-        note: 'sweepOnly=false iken R47 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+          ? 'R48 Gate: Sweep ACIK / DIRECT_SWEEP gerekli'
+          : 'R48 Gate: Sweep KAPALI / NON_SWEEP_5M_BRIDGE_R47 + DIRECT_SWEEP_BALANCE_R48 aktif',
+        note: 'sweepOnly=false iken R47/R48 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7256,7 +7277,15 @@ async function runAutoScan() {
         const score = recommendation==='LONG'?longScore:shortScore;
         const isLong = recommendation==='LONG';
         const isShort = recommendation==='SHORT';
-        pushAutoCandidate({symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore, priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason, action:decisionChain?.autoOk?(decisionChain?.entryPermissionReason||'Aday'):'İzle', sweepRequired:decisionChain?.sweepRequired, entryPermissionReason:decisionChain?.entryPermissionReason, cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus});
+        pushAutoCandidate({
+          symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore,
+          priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason,
+          action:decisionChain?.autoOk?(decisionChain?.entryPermissionReason||'Aday'):'İzle',
+          sweepRequired:decisionChain?.sweepRequired, entryPermissionReason:decisionChain?.entryPermissionReason,
+          cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk,
+          r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk,
+          r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}
+        });
 
         // Yön izni
         if (isLong  && !allowLong)  { markAutoSkip(coin.symbol, 'Long kapalı', {rec:recommendation, score}); continue; }
@@ -7277,25 +7306,27 @@ async function runAutoScan() {
 
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
-          const why = `R45 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
+          const why = `R48 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'}`;
+          const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
         // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur; B+ autoOk ise boğma.
         if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk) {
           const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
