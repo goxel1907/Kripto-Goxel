@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R49_DIRECT_SWEEP_BPLUS_UNLOCK';
+const LAZARUS_BUILD = 'R50_AUTO_PERMISSION_MATRIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5398,12 +5398,47 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r47Readiness >= (r38TopMoverStrong ? 8 : 10)
         );
 
-        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk;
-        const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk);
-        const entryPermissionReason = directSweepOk ? (r49DirectSweepUnlockOk ? 'DIRECT_SWEEP_BPLUS_R49' : 'DIRECT_SWEEP')
+        // R50: Otomatik emir izin matrisi.
+        // R49'da /api/health HYPE gibi adaylarda R47=10/8 hazır gösterirken R48/R49=NO kaldığı
+        // için karar B'de kilitleniyordu. Sweep kapalı modda bu sessiz logic kilididir:
+        // R47 hazırsa, hard güvenlikler temizse ve fiyat chase/targetNear değilse B+ auto izni alır.
+        // UB gibi R47=2/8 adaylar ise yine açılmaz.
+        const r50PriorityBoost = r47Readiness >= 10 ? 15 : r47Readiness >= 8 ? 8 : 0;
+        const r50EffectivePriority = Math.max(0, Number(priorityScore || 0) + r50PriorityBoost);
+        const r50HardClean = !!(
+          !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r37LateChaseBlock && !r39TargetNearBlock &&
+          !poorLiquidity && !mtfStrongOpposite && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
+          !r41TrapBlock && !r41FallingKnifeBlock && !r41RisingKnifeBlock
+        );
+        const r50MinReadiness = r38TopMoverStrong ? 8 : 10;
+        const r50FlowOrContextOk = !!(
+          r47FlowPts >= 1 || r47ContextPts >= 3 || deltaOkStrict || obSameSide || oiBridgeOk || mmSameSide || fundBridgeOk
+        );
+        const r50StructureOrTimingOk = !!(
+          r47TimingPts >= 1 || r47StructurePts >= 1 || fresh5mImpulse || r37EarlyOk || fresh15mConfirm || r39Confluence || r39Side?.breakConfirmed
+        );
+        const r50RvolUsable = !!(r47RvolPts >= 1 || r45RvolUnknown || (r38TopMoverStrong && r45RvolLowButWatch));
+        const r50DirectSweepMatrixOk = !!(
+          !sweepRequired && directSweepOk && (hasEntry || huntBridgeOk || hardSweepForBridge) && r50HardClean &&
+          sc >= minAutoScore && r47Readiness >= r50MinReadiness &&
+          r50EffectivePriority >= (r38TopMoverStrong ? 32 : 42) &&
+          r50FlowOrContextOk && r50StructureOrTimingOk && r50RvolUsable && r49CvdSafe
+        );
+        const r50NonSweepMatrixOk = !!(
+          !sweepRequired && !directSweepOk && r50HardClean && sc >= minAutoScore &&
+          r47Readiness >= r47Needed && r50EffectivePriority >= (r38TopMoverStrong ? 64 : 70) &&
+          r47TimingPts >= 2 && r47FlowEnough && r47ContextPts >= 2 && r50RvolUsable
+        );
+        const r50AutoPermissionOk = !!(r50DirectSweepMatrixOk || r50NonSweepMatrixOk);
+
+        const nonSweepQualityOk = r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk;
+        const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
+        const entryPermissionReason = r50DirectSweepMatrixOk ? 'R50_DIRECT_SWEEP_MATRIX'
+          : r50NonSweepMatrixOk ? 'R50_NON_SWEEP_MATRIX'
+          : directSweepOk ? (r49DirectSweepUnlockOk ? 'DIRECT_SWEEP_BPLUS_R49' : 'DIRECT_SWEEP')
           : (!sweepRequired && nonSweepQualityOk) ? 'NON_SWEEP_5M_BRIDGE_R47'
           : sweepRequired ? 'SWEEP_REQUIRED_FAIL'
-          : 'ENTRY_PERMISSION_FAIL_R47';
+          : 'ENTRY_PERMISSION_FAIL_R50';
 
         // R35: 5m fırsat köprüsü. Bu kör giriş değildir: gerçek entry/soft-entry +
         // taze 5m/15m mikro teyit + en az iki ağırlıklı bağlam ister.
@@ -5426,6 +5461,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (!sweepRequired && nonSweepQualityOk) ||
           r48DirectSweepBalanceOk ||
           r49DirectSweepUnlockOk ||
+          r50AutoPermissionOk ||
           r35ScalperBridge
         );
         const isTierB = !isTierA && !isTierBPlus && (softEntry||hasEntry||nonSweepQualityOk) && fundOk && sc>=55;
@@ -5466,6 +5502,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         else if(!sweepRequired && r47CompositeNonSweepOk) reasons.push(`🟦 R47 non-sweep köprü ${r47Readiness}/${r47Needed} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
         if(!sweepRequired && r48DirectSweepBalanceOk) reasons.push(`🟪 R48 direct-sweep denge köprüsü ${r47Readiness}/${r38TopMoverStrong?6:7} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
         if(!sweepRequired && r49DirectSweepUnlockOk) reasons.push(`🟣 R49 direct-sweep B+ unlock ${r47Readiness}/${r38TopMoverStrong?8:10} (T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts})`);
+        if(!sweepRequired && r50DirectSweepMatrixOk) reasons.push(`🧩 R50 direct-sweep matrix ${r47Readiness}/${r50MinReadiness} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
+        if(!sweepRequired && r50NonSweepMatrixOk) reasons.push(`🧩 R50 non-sweep matrix ${r47Readiness}/${r47Needed} P${priorityScore}+${r50PriorityBoost}=${r50EffectivePriority}`);
         if(r45CvdAlternativeOk) reasons.push('🟡 CVD eksik ama OI/Book/5m güçlü köprü');
         if(r45RvolLowButWatch) reasons.push(`📊 RVOL düşük izleme ${r45Rvol.toFixed(2)}x`);
         if(r45RvolDead) reasons.push(`📊 RVOL ölü/ikinci impuls izleme ${r45Rvol.toFixed(2)}x`);
@@ -5473,7 +5511,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R47 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R50 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -5501,6 +5539,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst, r49DirectSweepUnlockOk, r49CvdSafe, r49ContextOk, r49TimingOk, r49StructureOk,
+          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -6947,6 +6986,11 @@ function pushAutoCandidate(row) {
     r45RvolStatus: row.r45RvolStatus || '',
     r47: row.r47 || null,
     r48DirectSweepBalanceOk: !!row.r48DirectSweepBalanceOk,
+    r49DirectSweepUnlockOk: !!row.r49DirectSweepUnlockOk,
+    r50AutoPermissionOk: !!row.r50AutoPermissionOk,
+    r50DirectSweepMatrixOk: !!row.r50DirectSweepMatrixOk,
+    r50NonSweepMatrixOk: !!row.r50NonSweepMatrixOk,
+    r50EffectivePriority: Number(row.r50EffectivePriority || 0),
     autoOk: !!row.autoOk
   };
   // R34: Aynı sembol aynı taramada iki satır görünmesin. Önce aday, sonra atlandı gelirse son durum yazılır.
@@ -7057,8 +7101,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R48 Gate: Sweep ACIK / DIRECT_SWEEP gerekli'
-          : 'R49 Gate: Sweep KAPALI / R47 non-sweep + R48 denge + R49 direct-sweep B+ unlock aktif',
-        note: 'sweepOnly=false iken R47/R48/R49 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
+          : 'R50 Gate: Sweep KAPALI / R47 readiness + R48/R49 + R50 auto permission matrix aktif',
+        note: 'sweepOnly=false iken R47/R48/R49/R50 readiness debug T/F/C/S/V ile hangi parcanin eksik oldugu gorunur.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7315,6 +7359,10 @@ async function runAutoScan() {
           cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk,
           r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk,
           r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk,
+          r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk,
+          r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk,
+          r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk,
+          r50EffectivePriority:decisionChain?.r50EffectivePriority,
           r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}
         });
 
@@ -7338,26 +7386,26 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R48 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg}`;
+          const why = `R50 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
           const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
         // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur; B+ autoOk ise boğma.
         if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk) {
           const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
 
