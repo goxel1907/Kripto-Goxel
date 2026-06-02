@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R82_SIDE_ROTATION_COUNTER_TRAP';
+const LAZARUS_BUILD = 'R84_5M_TURKCE_BEKLEME_AKILLI_YON';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -356,12 +356,22 @@ async function freshOpenPositionForSymbol(apiKey, apiSecret, symbol, attempts=3)
   }
   return { open:false, pos:null };
 }
-async function cleanupClosedPositionState(symbol, reason='POSITION_ALREADY_CLOSED') {
+async function cleanupClosedPositionState(symbol, reason='POSITION_ALREADY_CLOSED', state={}) {
   const sym = String(symbol||'').toUpperCase();
+  const st = state || (typeof trailingState !== 'undefined' ? trailingState.get(sym) : null) || (lastKnownPositions && lastKnownPositions[sym]) || {};
   try { trailingState.delete(sym); } catch(_) {}
   try { invalidatePositionRiskCache(reason); } catch(_) {}
-  try { setCooldown(sym, 30*1000, reason); } catch(_) {}
-  try { logAuto(`⚠️ ${sym.replace('USDT','')} pozisyon kapanmış — SLTP rescue atlandı (${reason})`); } catch(_) {}
+  try {
+    const cls = { code:'EXTERNAL_OR_MANUAL', label:'Kullanıcı/Binance kapanışı algılandı', emoji:'👁️', closePrice:null, realizedPnl:null, side:st?.side };
+    const cdMs = setCloseCooldown(sym, cls, st);
+    cls.cooldownMs = cdMs;
+    try { recordTradeClose(sym, st, cls); } catch(_) {}
+    try { forgetKnownPosition(sym); saveLastKnownPositions(); } catch(_) {}
+    logAuto(`👁️ ${sym.replace('USDT','')} pozisyon zaten kapalı göründü; koruma emri yazılmadı. Aynı yön ${Math.ceil(cdMs/60000)}dk beklemede, temiz ters yön açık.`);
+  } catch(e) {
+    try { setCooldown(sym, CD_MANUAL_MS, 'Pozisyon kapalı algılandı; aynı yön bekleme'); } catch(_) {}
+    try { logAuto(`⚠️ ${sym.replace('USDT','')} pozisyon kapanmış — koruma emri atlandı (${reason})`); } catch(_) {}
+  }
 }
 
 // ── SL/TP ÇİFTİ YAZ + İSPAT AL — install_live_sltp_pair_with_proof ──────────
@@ -1649,11 +1659,11 @@ function buildResultNote(cls={}, state={}) {
   if (Number.isFinite(pnl) && pnl < 0) {
     const er = JSON.stringify(state?.openReason||'').toLowerCase();
     if (er.includes('fitil')||er.includes('premium')||er.includes('vah'))
-      return 'Zarar: fitil/likidite bölgesi ters MM; 90dk kilit.';
-    return 'Zarar: SL/ters akış; 90dk re-entry kilidi.';
+      return 'Zarar: fitil/likidite bölgesi ters piyasa yapıcı izi; 25-35dk aynı yön bekleme.';
+    return 'Zarar: zarar kes/ters akış; 25-35dk aynı yön bekleme.';
   }
   if (Number.isFinite(pnl) && pnl > 0) return 'Kâr: plan çalıştı.';
-  if (cls.code==='EXTERNAL_OR_MANUAL') return 'Manuel kapanış: 45dk kilit.';
+  if (cls.code==='EXTERNAL_OR_MANUAL') return 'Kullanıcı/Binance kapanışı: 15dk aynı yön bekleme, temiz ters yön serbest.';
   return cls.label || 'Binance senkronu.';
 }
 function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
@@ -1698,11 +1708,17 @@ function recordTradeClose(symbol, state={}, cls={}) {
   saveTradeLedger(); return row;
 }
 
-// ── R25: COOLDOWN SABİTLERİ — kapanış türüne göre farklı süreler ──────────
-const CD_PROFIT_MS  = 35 * 60 * 1000;  // TP / kâr taşıma SL: 35dk
-const CD_MANUAL_MS  = 45 * 60 * 1000;  // Manuel / Binance dış kapanış: 45dk
-const CD_LOSS_MS    = 90 * 60 * 1000;  // SL ile zarar: 90dk
-const CD_ERR_MS_R25 = 20 * 60 * 1000;  // Emir hatası: 20dk
+// ── R84: 5 DAKİKA UYUMLU BEKLEME SÜRELERİ — botu kilitlemez, tekrar hatayı önler ──
+// 90dk 5m scalp için ağırdı. Yeni mantık mum sayısına göre çalışır:
+// kâr = 2 mum, manuel/dış kapanış = 3 mum, zarar = 5-7 mum, emir hatası = 2 mum.
+const R84_MUM_MS = 5 * 60 * 1000;
+const CD_PROFIT_MS  = 10 * 60 * 1000;  // TP / kâr taşıma: 2 mum
+const CD_BE_MS      =  8 * 60 * 1000;  // başabaş / küçük koruma kapanışı: yaklaşık 1-2 mum
+const CD_MANUAL_MS  = 15 * 60 * 1000;  // kullanıcı/Binance dış kapanış: 3 mum
+const CD_LOSS_MS    = 25 * 60 * 1000;  // normal zarar: 5 mum
+const CD_HARD_LOSS_MS = 35 * 60 * 1000; // sert zarar/acil koruma: 7 mum
+const CD_ERR_MS_R25 = 10 * 60 * 1000;  // emir hatası: 2 mum
+const CD_AFTER_CLOSE_PAUSE_MS = 45 * 1000; // kapanış sonrası aynı tarama döngüsünde yeni emir açma
 
 function entryPatternKeyFromText(txt='') {
   const t = String(txt||'').toLowerCase();
@@ -5948,7 +5964,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R82 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R84 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -6660,9 +6676,80 @@ const trailingState = new Map(); // symbol → pozisyon durumu
 // Aynı coine tekrar tekrar girmesini önler. Manuel/SL/TP kapanışında,
 // hata durumunda ve açık pozisyon varken cooldown eklenir.
 const cooldownMap = new Map(); // symbol (FULLSYM) → expiry timestamp
-const COOLDOWN_CLOSE_MS   = 30 * 60 * 1000; // Manuel/SL/TP kapanış: 30dk
-const COOLDOWN_ERR_MS     = 20 * 60 * 1000; // Emir hatası: 20dk
+const COOLDOWN_CLOSE_MS   = CD_MANUAL_MS; // R84: genel kapanış bekleme yedeği
+const COOLDOWN_ERR_MS     = CD_ERR_MS_R25; // R84: emir hatası bekleme
 // NOT: POSOPEN cooldown kaldırıldı — açık pozisyon koruması alreadyOpen kontrolüyle yapılır
+let autoPauseUntil = 0;
+let autoPauseReason = '';
+function trSideLabel(side) {
+  const s = normalizeSide(side);
+  if (s === 'LONG') return 'YÜKSELİŞ';
+  if (s === 'SHORT') return 'DÜŞÜŞ';
+  return 'BEKLE';
+}
+function trTierLabel(t) {
+  const v = String(t || '').toUpperCase();
+  if (v === 'A') return 'A kalite';
+  if (v === 'B+') return 'B artı';
+  if (v === 'B') return 'B izleme';
+  if (v === 'WAIT') return 'Bekle';
+  if (v === 'CD') return 'Beklemede';
+  if (v === 'ERR') return 'Hata';
+  return v || 'Bekle';
+}
+function trEntryLabel(x='') {
+  return toTurkishText(String(x || ''));
+}
+function toTurkishText(txt='') {
+  let s = String(txt || '');
+  const pairs = [
+    [/ENTRY_PERMISSION_FAIL_R68/g, 'giriş izni yok'],
+    [/POSITION_ALREADY_CLOSED/g, 'pozisyon zaten kapanmış'],
+    [/SYNC_POSITION_ALREADY_CLOSED_BEFORE_SLTP_RESCUE/g, 'pozisyon kapalı; koruma emri yazılmadı'],
+    [/EXTERNAL_OR_MANUAL/g, 'kullanıcı veya Binance kapanışı'],
+    [/TAKE_PROFIT/g, 'kâr hedefi'],
+    [/BREAK_EVEN_SL/g, 'başabaş koruma'],
+    [/KAR_TASIMA_SL/g, 'kâr taşıma koruması'],
+    [/STOP_LOSS/g, 'zarar kes'],
+    [/R14_HARD_LOSS_GUARD/g, 'sert zarar koruması'],
+    [/cooldown/ig, 'bekleme'],
+    [/re-entry/ig, 'yeniden giriş'],
+    [/side-rotation/ig, 'karşı yön radarı'],
+    [/geç giriş riski/ig, 'geç giriş riski'],
+    [/karşı tuzak/ig, 'karşı tuzak'],
+    [/soft-pass/ig, 'kontrollü geçiş'],
+    [/hard-gate/ig, 'sert kapı'],
+    [/hard/ig, 'sert'],
+    [/score-floor/ig, 'puan tabanı'],
+    [/floor/ig, 'taban'],
+    [/zone:/ig, 'bölge:'],
+    [/tier:/ig, 'kademe:'],
+    [/score:/ig, 'puan:'],
+    [/entry:/ig, 'giriş izi:'],
+    [/trap:/ig, 'tuzak:'],
+    [/risk/ig, 'risk'],
+    [/WAIT-Tier/ig, 'bekleme kademesi'],
+    [/WAIT/g, 'BEKLE'],
+    [/LONG/g, 'YÜKSELİŞ'],
+    [/SHORT/g, 'DÜŞÜŞ'],
+    [/OK/g, 'GEÇTİ'],
+    [/NO/g, 'KALDI'],
+    [/YES/g, 'EVET'],
+  ];
+  for (const [re, rep] of pairs) s = s.replace(re, rep);
+  return s;
+}
+function pauseAutoAfterClose(ms=CD_AFTER_CLOSE_PAUSE_MS, reason='Kapanış sonrası kısa sakinleşme') {
+  const until = Date.now() + Math.max(0, Number(ms)||0);
+  if (until > autoPauseUntil) {
+    autoPauseUntil = until;
+    autoPauseReason = reason;
+  }
+}
+function getAutoPauseRemainMs() {
+  return Math.max(0, Number(autoPauseUntil||0) - Date.now());
+}
+function isAutoPauseActive() { return getAutoPauseRemainMs() > 0; }
 
 function normalizeSymbol(s) {
   const str = String(s || '').toUpperCase().trim();
@@ -6710,21 +6797,34 @@ function canBypassCooldownForReverse(info, desiredSide, decisionChain) {
 function setCooldown(symbol, ms, reason, meta={}) {
   const sym = normalizeSymbol(symbol);
   const exp = Date.now() + ms;
-  const info = { exp, reason:String(reason||''), mode:meta.mode||'FULL',
+  const info = { exp, reason:toTurkishText(String(reason||'')), rawReason:String(reason||''), mode:meta.mode||'FULL',
                  side:normalizeSide(meta.side), createdAt:Date.now() };
   cooldownMap.set(sym, info);
-  logAuto(`⏳ ${sym.replace('USDT','')} cooldown ${Math.round(ms/60000)}dk: ${reason}${
-    info.side ? ` (${info.side})` : ''}${
-    info.mode==='SAME_SIDE_AFTER_CLOSE' ? ' • ters flip serbest' : ''}`);
+  const sideTxt = info.side ? ` (${trSideLabel(info.side)})` : '';
+  const revTxt = info.mode==='SAME_SIDE_AFTER_CLOSE' ? ' • temiz ters yön serbest' : '';
+  logAuto(`⏳ ${sym.replace('USDT','')} bekleme ${Math.ceil(ms/60000)}dk: ${info.reason}${sideTxt}${revTxt}`);
+}
+function closeCooldownMs(cls={}, state={}) {
+  const code = String(cls?.code || '').toUpperCase();
+  const pnl  = Number(cls?.realizedPnl);
+  if (code === 'TAKE_PROFIT') return CD_PROFIT_MS;
+  if (code === 'KAR_TASIMA_SL' || code === 'BREAK_EVEN_SL') return CD_BE_MS;
+  if (code === 'EXTERNAL_OR_MANUAL') return CD_MANUAL_MS;
+  if (code === 'R14_HARD_LOSS_GUARD') return CD_HARD_LOSS_MS;
+  if (code === 'STOP_LOSS') return CD_LOSS_MS;
+  if (Number.isFinite(pnl) && pnl < 0) return Math.abs(pnl) >= 3 ? CD_HARD_LOSS_MS : CD_LOSS_MS;
+  if (Number.isFinite(pnl) && pnl > 0) return CD_PROFIT_MS;
+  return CD_MANUAL_MS;
 }
 function setCloseCooldown(symbol, cls={}, state={}) {
   const side = normalizeSide(state?.side || cls?.side);
-  const pnl  = Number(cls?.realizedPnl);
-  const isLoss = (Number.isFinite(pnl) && pnl < 0) ||
-    ['STOP_LOSS','R14_HARD_LOSS_GUARD'].includes(String(cls?.code||''));
-  const ms = isLoss ? CD_LOSS_MS : (cls?.code==='EXTERNAL_OR_MANUAL' ? CD_MANUAL_MS : CD_PROFIT_MS);
-  setCooldown(symbol, ms, `${cls?.code||'CLOSED'} sonrası aynı yön re-entry kilidi`,
+  const ms = closeCooldownMs(cls, state);
+  const codeTR = toTurkishText(cls?.code || 'kapanış');
+  setCooldown(symbol, ms, `${codeTR} sonrası aynı yön bekleme`,
     { mode:'SAME_SIDE_AFTER_CLOSE', side });
+  const code = String(cls?.code || '').toUpperCase();
+  const pauseMs = (code === 'EXTERNAL_OR_MANUAL' || code === 'STOP_LOSS' || code === 'R14_HARD_LOSS_GUARD') ? 45*1000 : 20*1000;
+  pauseAutoAfterClose(pauseMs, `${symbol.replace('USDT','')} kapanış sonrası bot aynı döngüde acele etmiyor`);
   return ms;
 }
 function getCooldownRemainMs(symbol, desiredSide=null, decisionChain=null) {
@@ -6742,7 +6842,7 @@ function getCooldownList() {
     if (rem > 0) {
       list.push({
         symbol: sym.replace('USDT',''), remainMs: rem, remainMin: Math.ceil(rem/60000),
-        reason: info?.reason || '', mode: info?.mode || 'FULL', side: info?.side || null
+        reason: toTurkishText(info?.reason || ''), reasonTR: toTurkishText(info?.reason || ''), mode: info?.mode || 'FULL', modeTR: info?.mode==='SAME_SIDE_AFTER_CLOSE'?'Aynı yön beklemede / ters yön serbest':'Tam bekleme', side: info?.side || null, sideTR: trSideLabel(info?.side)
       });
     } else {
       cooldownMap.delete(sym);
@@ -7413,13 +7513,16 @@ function pushAutoCandidate(row) {
   const r = {
     ts:Date.now(),
     symbol:String(row.symbol||'').replace('USDT',''),
-    rec:row.rec||'WAIT', tier:row.tier||'WAIT', score:Number(row.score||0),
+    rec:row.rec||'WAIT', recTR:trSideLabel(row.rec), tier:row.tier||'WAIT', tierTR:trTierLabel(row.tier||'WAIT'), score:Number(row.score||0),
     longScore:Number(row.longScore||0), shortScore:Number(row.shortScore||0),
     priorityScore:Number(row.priorityScore||0),
-    reason:String(row.reason||row.block||'—').slice(0,160),
-    action:String(row.action||'İzle').slice(0,90),
+    reason:toTurkishText(String(row.reason||row.block||'—')).slice(0,220),
+    reasonTR:toTurkishText(String(row.reason||row.block||'—')).slice(0,220),
+    action:toTurkishText(String(row.action||'İzle')).slice(0,120),
+    actionTR:toTurkishText(String(row.action||'İzle')).slice(0,120),
     sweepRequired: row.sweepRequired,
     entryPermissionReason: row.entryPermissionReason || '',
+    entryPermissionReasonTR: toTurkishText(row.entryPermissionReason || ''),
     cvdMissing: !!row.cvdMissing,
     r45RvolStatus: row.r45RvolStatus || '',
     r47: row.r47 || null,
@@ -7475,7 +7578,7 @@ function pushAutoCandidate(row) {
     .slice(0,12);
 }
 function markAutoSkip(symbol, reason, row={}) {
-  const key = String(reason||'Bilinmeyen').slice(0,60);
+  const key = toTurkishText(String(reason||'Bilinmeyen')).slice(0,90);
   autoScanState.skipped = (autoScanState.skipped||0) + 1;
   autoScanState.skipReasons[key] = (autoScanState.skipReasons[key]||0) + 1;
   if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
@@ -7573,8 +7676,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R82 Gate: Sweep KAPALI / B+ floor + side-rotation counter-trap',
-        note: 'R82 R80 score-floor ve R81 soft-pass korunur; anti-chase sonrası coin karşı yön COUNTER-TRAP radarına alınır, sadece temiz A/B+ karşı taraf açılır.'
+          : 'R84 Karar: Süpürme kapalı / B artı puan tabanı + karşı yön radarı',
+        note: 'R84 R80 score-floor ve R81 soft-pass korunur; geç giriş riski sonrası coin karşı yön karşı tuzak radarına alınır, sadece temiz A/B+ karşı taraf açılır.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7611,8 +7714,14 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
-    config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40),
-    cooldowns: getCooldownList() });
+    config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
+    cooldowns: getCooldownList(),
+    turkceDurum:{
+      faz: toTurkishText(autoScanState?.phase || ''),
+      sonIslem: toTurkishText(autoScanState?.lastAction || ''),
+      kisaDinlenme:{aktif:isAutoPauseActive(), kalanSaniye:Math.ceil(getAutoPauseRemainMs()/1000), sebep:autoPauseReason||''},
+      aciklama:'Bot R82 çekirdeğiyle fırsat arar; kapanış sonrası kısa dinlenir, aynı yönde kısa süre bekler, temiz ters yön fırsatını kapatmaz.'
+    } });
 });
 
 function logAuto(msg) {
@@ -7620,7 +7729,7 @@ function logAuto(msg) {
   const ts = new Intl.DateTimeFormat('tr-TR', {
     timeZone:'Europe/Istanbul', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
   }).format(new Date());
-  const entry = `${ts} ${msg}`;
+  const entry = `${ts} ${toTurkishText(msg)}`;
   autoLog.push(entry);
   if (autoLog.length > 80) autoLog.shift();
   autoScanState.lastAction = entry;
@@ -7681,13 +7790,21 @@ async function runAutoScan() {
     // R18: positionRisk rate-limit aktifken yeni emir açma. Cache ile panel/pozisyon
     // görünür kalır ama taze pozisyon doğrulaması gelene kadar giriş güvenli değildir.
     if (isPositionRiskCooldownActive()) {
-      autoScanState.phase = 'RATE_LIMIT_COOLDOWN';
-      autoScanState.lastAction = `positionRisk REST cooldown ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn — yeni emir bekletiliyor`;
-      logAuto(`⏳ RATE_LIMIT_COOLDOWN: positionRisk ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn dinleniyor, yeni emir açılmayacak`);
+      autoScanState.phase = 'VERİ_İSTEĞİ_DİNLENİYOR';
+      autoScanState.lastAction = `Pozisyon verisi yoğunluk beklemesi ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn — yeni emir bekletiliyor`;
+      logAuto(`⏳ Pozisyon verisi yoğunluğu: ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn dinleniyor, yeni emir açılmayacak`);
       return;
     }
 
-    // Trailing SL kontrol
+    if (isAutoPauseActive()) {
+      const rem = Math.ceil(getAutoPauseRemainMs()/1000);
+      autoScanState.phase = 'KISA_DİNLENME';
+      autoScanState.lastAction = `Kapanış sonrası ${rem}sn kısa dinlenme — ${autoPauseReason || 'aynı döngüde acele emir yok'}`;
+      logAuto(`⏸️ Kapanış sonrası kısa dinlenme: ${rem}sn — yeni emir bekletiliyor`);
+      return;
+    }
+
+    // Kâr takibi / koruma kontrol
     if (openPos.length > 0) {
       const mapped = openPos.map(p=>{
         const amt = parseFloat(p.positionAmt);
@@ -7739,7 +7856,7 @@ async function runAutoScan() {
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R82 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 R84 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
@@ -7804,7 +7921,7 @@ async function runAutoScan() {
       const preCd = getCooldownInfo(fullSymCheck);
       if (preCd && preCd.mode !== 'SAME_SIDE_AFTER_CLOSE') {
         const remMin = Math.ceil(getCooldownRemainMs(fullSymCheck)/60000);
-        markAutoSkip(coin.symbol, `Cooldown ${remMin}dk kaldı`, {rec:'CD', tier:'CD', reason:`Cooldown ${remMin}dk`});
+        markAutoSkip(coin.symbol, `Bekleme süresi ${remMin}dk kaldı`, {rec:'CD', tier:'CD', reason:`Bekleme süresi ${remMin}dk`});
         continue;
       }
 
@@ -7880,16 +7997,16 @@ async function runAutoScan() {
           const bypass = canBypassCooldownForReverse(postCd, recommendation, decisionChain);
           if (!bypass) {
             const remMin = Math.ceil(getCooldownRemainMs(fullSymCheck, recommendation, decisionChain)/60000);
-            markAutoSkip(coin.symbol, `Cooldown ${remMin}dk: ${postCd.reason||'aynı yön kilit'}`, {rec:recommendation, tier:'CD', score, reason:postCd.reason});
+            markAutoSkip(coin.symbol, `Bekleme ${remMin}dk: ${postCd.reason||'aynı yön beklemede'}`, {rec:recommendation, tier:'CD', score, reason:postCd.reason});
             continue;
           }
-          logAuto(`🔁 ${coin.symbol} cooldown ters flip bypass: eski ${postCd.side}, yeni ${recommendation}, terazi ${decisionChain?.priorityScore||0}`);
+          logAuto(`🔁 ${coin.symbol} bekleme ters yön izni: eski ${trSideLabel(postCd.side)}, yeni ${trSideLabel(recommendation)}, terazi ${decisionChain?.priorityScore||0}`);
         }
 
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R82 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
+          const why = `R84 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk:decisionChain?.r61TrendContinuationBridgeOk, r62CounterTrendTrapBridgeOk:decisionChain?.r62CounterTrendTrapBridgeOk, r74Top10ProScalperOk:decisionChain?.r74Top10ProScalperOk, r74ImpulseEntryOk:decisionChain?.r74ImpulseEntryOk, r74Top10ContextBypassOk:decisionChain?.r74Top10ContextBypassOk, r74ScoreFloor:decisionChain?.r74ScoreFloor, r68UnifiedScalperCoreOk:decisionChain?.r68UnifiedScalperCoreOk, r68EntryEventOk:decisionChain?.r68EntryEventOk, r68TrendContextOk:decisionChain?.r68TrendContextOk, r68CounterTrapContextOk:decisionChain?.r68CounterTrapContextOk, r68CriticalHardBlock:decisionChain?.r68CriticalHardBlock, r69PriorityContextOverrideOk:decisionChain?.r69PriorityContextOverrideOk, r69ContextOk:decisionChain?.r69ContextOk, r69PriorityExecutionOk:decisionChain?.r69PriorityExecutionOk, r65ScalperCoreOk:decisionChain?.r65ScalperCoreOk, r65ScalperCoreTrendOk:decisionChain?.r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk:decisionChain?.r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto:decisionChain?.r65ScalperCoreHardVeto, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
@@ -7984,13 +8101,13 @@ async function runAutoScan() {
           continue;
         }
         if (score < effectiveMinScore && r80ControlledBPlusScoreOk) {
-          logAuto(`🟢 ${coin.symbol} R82 B+ score-floor geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
+          logAuto(`🟢 ${coin.symbol} R84 B artı puan tabanı geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
         }
 
-        // R82 SIDE-AWARE ANTI-CHASE:
+        // R84 SIDE-AWARE ANTI-CHASE:
         // Eski R80 mantığı zone=PREMIUM veya RSI4h>=72 gördüğü anda B+ adayı da öldürüyordu.
         // Bu RIF/FLNC gibi TOP10 5m devam/retest fırsatlarını boğdu.
-        // Artık anti-chase üçe ayrılır:
+        // Artık geç giriş riski üçe ayrılır:
         // 1) Hard: bağlam riski yüksek, hedef yakın, veya premium+RSI var ama güçlü B+/retest/sweep yok.
         // 2) Soft-pass: B+/A, R47 güçlü, score-floor geçti, hard block yok ve retest/sweep/entry izi var.
         // 3) Side-aware: LONG kovalanıyorsa sadece LONG engellenir; coin karşı yön setup'ı için sonraki taramada yaşamaya devam eder.
@@ -8020,9 +8137,9 @@ async function runAutoScan() {
           (sideCtxRisk >= 45 || decisionChain?.r39TargetNearBlock || (antiChaseZone && antiChaseRsi) || !r81EntryTraceOk)
         );
         if (r81AntiChaseHard) {
-          // R82 SIDE ROTATION COUNTER-TRAP:
-          // LONG premium/RSI/anti-chase yediğinde coin komple atılmaz; SHORT karşı-trap tarafı kontrol edilir.
-          // SHORT dip/discount anti-chase yediğinde LONG reclaim/retest tarafı kontrol edilir.
+          // R84 SIDE ROTATION karşı tuzak:
+          // LONG premium/RSI/geç giriş riski yediğinde coin komple atılmaz; SHORT karşı-trap tarafı kontrol edilir.
+          // SHORT dip/discount geç giriş riski yediğinde LONG reclaim/retest tarafı kontrol edilir.
           // Bu kör ters işlem değildir: karşı tarafta A/B+, entryPermission, R47>=5, counter-trap izi ve hard güvenlik temizliği gerekir.
           const rotateSide = isLong ? 'SHORT' : 'LONG';
           const rotateAllowed = rotateSide === 'LONG' ? !!allowLong : !!allowShort;
@@ -8065,21 +8182,21 @@ async function runAutoScan() {
 
           if (r82CounterTrapOk) {
             const oldSide = recommendation;
-            logAuto(`🔁 ${coin.symbol} R82 side-rotation: ${oldSide} anti-chase → ${rotateSide} COUNTER-TRAP aktif | ${rotateDC?.tier} skor ${rotateScore}/${effectiveMinScore}, floor ${rotateFloor}, R47 ${rotateDC?.r47Readiness||0}/8, risk ${rotateRisk}`);
+            logAuto(`🔁 ${coin.symbol} R84 karşı yön radarı: ${oldSide} geç giriş riski → ${rotateSide} karşı tuzak aktif | ${rotateDC?.tier} skor ${rotateScore}/${effectiveMinScore}, floor ${rotateFloor}, R47 ${rotateDC?.r47Readiness||0}/8, risk ${rotateRisk}`);
             recommendation = rotateSide;
             decisionChain = rotateDC;
             score = rotateScore;
             isLong = rotateSide === 'LONG';
             isShort = rotateSide === 'SHORT';
           } else {
-            const why = `R82 side anti-chase hard: ${recommendation} için risk ${sideCtxRisk}, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}; ${rotateSide} radar=${rotateAllowed?'kontrol':'kapalı'} tier:${rotateDC?.tier||'YOK'} score:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 trap:${rotateTrapEvidenceOk?'OK':'NO'} entry:${rotateEntryTraceOk?'OK':'NO'}`;
+            const why = `R84 side geç giriş riski hard: ${recommendation} için risk ${sideCtxRisk}, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}; ${rotateSide} radar=${rotateAllowed?'kontrol':'kapalı'} tier:${rotateDC?.tier||'YOK'} score:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 trap:${rotateTrapEvidenceOk?'OK':'NO'} entry:${rotateEntryTraceOk?'OK':'NO'}`;
             logAuto(`⛔ ${coin.symbol} ${why}`);
             markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r81EntryTraceOk, r81StrongBPlusSoftPass, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
             continue;
           }
         }
         if (antiChase && !eliteOverride && r81StrongBPlusSoftPass) {
-          logAuto(`🟡 ${coin.symbol} R82 anti-chase soft-pass: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}`);
+          logAuto(`🟡 ${coin.symbol} R84 geç giriş riski soft-pass: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}`);
         }
 
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
@@ -8506,7 +8623,7 @@ async function syncPositions() {
         try { rememberOpenPositionForReentry(p, trailingState.get(sym)||{}); saveLastKnownPositions(); } catch(_) {}
         const freshPosCheck = await freshOpenPositionForSymbol(autoConfig.apiKey, autoConfig.apiSecret, sym, 2);
         if (freshPosCheck.open === false) {
-          await cleanupClosedPositionState(sym, 'SYNC_POSITION_ALREADY_CLOSED_BEFORE_SLTP_RESCUE');
+          await cleanupClosedPositionState(sym, 'SYNC_POSITION_ALREADY_CLOSED_BEFORE_SLTP_RESCUE', trailingState.get(sym)||lastKnownPositions?.[sym]||{});
           continue;
         }
 
