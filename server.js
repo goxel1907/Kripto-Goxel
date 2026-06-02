@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R84_5M_TURKCE_BEKLEME_AKILLI_YON';
+const LAZARUS_BUILD = 'R86_FORMASYON_VERI_TEYIT_DENGESI';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -2377,6 +2377,37 @@ function renkoSignal(klines, lastPrice, atrVal) {
   const trend = bulls >= 4 ? 'STRONG_UP' : bulls >= 3 ? 'UP' : bears >= 4 ? 'STRONG_DOWN' : bears >= 3 ? 'DOWN' : ranging ? 'RANGING' : 'FLAT';
   const signal = trend === 'STRONG_UP' ? 'STRONG_BULL' : trend === 'UP' ? 'BULL' : trend === 'STRONG_DOWN' ? 'STRONG_BEAR' : trend === 'DOWN' ? 'BEAR' : ranging ? 'RANGING' : 'NEUTRAL';
   return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
+}
+
+
+// ── R86: FORMASYON ADI TÜRKÇELEŞTİRME ───────────────────────────────────────
+// R32 formasyon motoruna dokunmaz; sadece karar/ekran dilini Türkçeleştirir.
+function trPatternName(name='') {
+  const n = String(name || '');
+  const map = {
+    Hammer:'Çekiç', HangingMan:'Asılı adam', ShootingStar:'Kayan yıldız', InvHammer:'Ters çekiç',
+    Doji:'Doji', DragonflyDoji:'Ejder doji', GravestoneDoji:'Mezar taşı doji',
+    BullMarubozu:'Güçlü yeşil gövde', BearMarubozu:'Güçlü kırmızı gövde',
+    BullEngulfing:'Yükseliş yutan mum', BearEngulfing:'Düşüş yutan mum',
+    BullHarami:'Yükseliş harami', BearHarami:'Düşüş harami', BullHaramiCross:'Yükseliş harami doji', BearHaramiCross:'Düşüş harami doji',
+    TweezerBottom:'Cımbız dip', TweezerTop:'Cımbız tepe', BullKicking:'Yükseliş tekmesi', BearKicking:'Düşüş tekmesi',
+    DarkCloudCover:'Kara bulut', PiercingLine:'Delici çizgi', MorningStar:'Sabah yıldızı', EveningStar:'Akşam yıldızı',
+    MorningDojiStar:'Sabah doji yıldızı', EveningDojiStar:'Akşam doji yıldızı',
+    ThreeWhiteSoldiers:'Üç beyaz asker', ThreeBlackCrows:'Üç siyah karga',
+    ThreeOutsideUp:'Dıştan yükseliş dönüşü', ThreeOutsideDown:'Dıştan düşüş dönüşü',
+    ThreeInsideUp:'İçten yükseliş dönüşü', ThreeInsideDown:'İçten düşüş dönüşü',
+    AbandonedBabyBull:'Terk edilmiş bebek yükseliş', AbandonedBabyBear:'Terk edilmiş bebek düşüş',
+    DoubleBottom:'İkili dip', DoubleBottomForming:'İkili dip oluşuyor', DoubleTop:'İkili tepe', DoubleTopForming:'İkili tepe oluşuyor',
+    InvHeadShoulders:'Ters omuz baş omuz', InvHSForming:'Ters OBO oluşuyor', HeadShoulders:'Omuz baş omuz', HSForming:'OBO oluşuyor',
+    BullFlag:'Yükseliş bayrağı', BearFlag:'Düşüş bayrağı',
+    BullGartley:'Yükseliş Gartley', BearGartley:'Düşüş Gartley', BullButterfly:'Yükseliş kelebek', BearButterfly:'Düşüş kelebek',
+    BullBat:'Yükseliş yarasa', BearBat:'Düşüş yarasa', BullCrab:'Yükseliş yengeç', BearCrab:'Düşüş yengeç',
+    BullShark:'Yükseliş köpekbalığı', BearShark:'Düşüş köpekbalığı'
+  };
+  return map[n] || n.replace(/Bull/g,'Yükseliş ').replace(/Bear/g,'Düşüş ');
+}
+function trPatternList(arr) {
+  return (Array.isArray(arr) ? arr : []).map(x => trPatternName(x?.name || x)).filter(Boolean).slice(0,3).join(' + ');
 }
 
 
@@ -5845,11 +5876,80 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // node --check bunu yakalamaz ama canlı analizde "Cannot access ... before initialization" üretir.
         const r75RetestBridgeOk = !!(r37Side?.retestOk && r74ImpulseEntryOk && r38TopMoverStrong && !r75LateChaseHard);
 
-        const r50AutoPermissionOk = !!(r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R77/R75: r75RetestBridgeOk eklendi
+        // R86: Formasyon + veri teyidi köprüsü.
+        // R32 formasyon motoruna dokunmaz; sadece formasyon veriyle desteklenince otomatik girişe yol verir.
+        // Tek başına mum/formasyon emir açtırmaz. En az 3 gerçek teyit + canlı 5m giriş izi + güvenlik temizliği ister.
+        const r86CdlBull5 = (_cdl5m?.bull || []).reduce((s,p)=>s+Number(p.str||0),0);
+        const r86CdlBear5 = (_cdl5m?.bear || []).reduce((s,p)=>s+Number(p.str||0),0);
+        const r86CdlSame = isL ? r86CdlBull5 : r86CdlBear5;
+        const r86CdlOpp  = isL ? r86CdlBear5 : r86CdlBull5;
+        const r86ChartSame = isL ? Number(_chart?.bullScore||0) : Number(_chart?.bearScore||0);
+        const r86ChartOpp  = isL ? Number(_chart?.bearScore||0) : Number(_chart?.bullScore||0);
+        const r86HarmSame  = isL ? Number(_harm?.bullScore||0) : Number(_harm?.bearScore||0);
+        const r86HarmOpp   = isL ? Number(_harm?.bearScore||0) : Number(_harm?.bullScore||0);
+        const r86HaSame = isL
+          ? (_ha5m?.signal === 'STRONG_BULL' ? 3 : _ha5m?.signal === 'BULL' ? 1 : 0)
+          : (_ha5m?.signal === 'STRONG_BEAR' ? 3 : _ha5m?.signal === 'BEAR' ? 1 : 0);
+        const r86HaOpp = isL
+          ? (_ha5m?.signal === 'STRONG_BEAR' ? 3 : _ha5m?.signal === 'BEAR' ? 1 : 0)
+          : (_ha5m?.signal === 'STRONG_BULL' ? 3 : _ha5m?.signal === 'BULL' ? 1 : 0);
+        const r86RenkoSame = isL
+          ? (_renko?.signal === 'STRONG_BULL' ? 3 : _renko?.signal === 'BULL' ? 1 : 0)
+          : (_renko?.signal === 'STRONG_BEAR' ? 3 : _renko?.signal === 'BEAR' ? 1 : 0);
+        const r86RenkoOpp = isL
+          ? (_renko?.signal === 'STRONG_BEAR' ? 3 : _renko?.signal === 'BEAR' ? 1 : 0)
+          : (_renko?.signal === 'STRONG_BULL' ? 3 : _renko?.signal === 'BULL' ? 1 : 0);
+        const r86FormasyonPuan = Math.min(12,
+          (r86CdlSame >= 8 ? 4 : r86CdlSame >= 5 ? 3 : r86CdlSame >= 3 ? 1 : 0) +
+          r86HaSame +
+          (r86ChartSame >= 16 ? 3 : r86ChartSame >= 8 ? 2 : r86ChartSame > 0 ? 1 : 0) +
+          (r86HarmSame >= 18 ? 3 : r86HarmSame >= 10 ? 2 : r86HarmSame > 0 ? 1 : 0) +
+          r86RenkoSame
+        );
+        const r86KarsiFormasyonPuan = Math.min(12,
+          (r86CdlOpp >= 8 ? 4 : r86CdlOpp >= 5 ? 3 : r86CdlOpp >= 3 ? 1 : 0) +
+          r86HaOpp +
+          (r86ChartOpp >= 16 ? 3 : r86ChartOpp >= 8 ? 2 : r86ChartOpp > 0 ? 1 : 0) +
+          (r86HarmOpp >= 18 ? 3 : r86HarmOpp >= 10 ? 2 : r86HarmOpp > 0 ? 1 : 0) +
+          r86RenkoOpp
+        );
+        const r86CanliTetikOk = !!(
+          directSweepOk || hardSweepForBridge || huntBridgeOk || tickData?.tickSweep?.fresh ||
+          fresh5mImpulseOrRecent || r37EarlyOk || r37Side?.retestOk || r39Confluence || r39Side?.breakConfirmed
+        );
+        const r86VeriTeyitleri = [
+          ['canlı akış', deltaOkStrict || r45CvdAlternativeOk || r47FlowPts >= 2],
+          ['açık ilgi', oiBridgeOk],
+          ['emir defteri', obSameSide],
+          ['piyasa yapıcı', mmSameSide],
+          ['çoklu zaman', mtfBridgeOk || r61MtfFullTrendOk],
+          ['para akışı', fundBridgeOk],
+          ['destek/direnç', r39Confluence || r39Side?.breakConfirmed],
+          ['canlı tetik', r86CanliTetikOk]
+        ];
+        const r86VeriTeyitSayisi = r86VeriTeyitleri.filter(([,ok])=>!!ok).length;
+        const r86FormasyonAdlari = [
+          ...((isL ? (_cdl5m?.bull||[]) : (_cdl5m?.bear||[])).slice().sort((a,b)=>b.str-a.str).map(p=>p.name)),
+          ...((isL ? (_chart?.patterns||[]).filter(p=>p.dir==='BULL') : (_chart?.patterns||[]).filter(p=>p.dir==='BEAR')).map(p=>p.name)),
+          ...((isL ? (_harm?.patterns||[]).filter(p=>p.dir==='BULL') : (_harm?.patterns||[]).filter(p=>p.dir==='BEAR')).map(p=>p.name))
+        ];
+        const r86KarsiFormasyonGucu = !!(r86KarsiFormasyonPuan >= r86FormasyonPuan + 4 || _renko?.spikeTrap);
+        const r86FormasyonVeriTeyitOk = !!(
+          !sweepRequired && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r75LateChaseHard &&
+          !poorLiquidity && !atrExtremeBlock && !r39TargetNearBlock && !r41FallingKnifeBlock && !r41RisingKnifeBlock &&
+          r86FormasyonPuan >= 5 && !r86KarsiFormasyonGucu &&
+          r86CanliTetikOk && r86VeriTeyitSayisi >= 3 &&
+          r47Readiness >= 5 && r47ContextPts >= 2 && (r47FlowPts >= 1 || deltaOkStrict || obSameSide || oiBridgeOk) &&
+          Number(sc || 0) >= Math.max(40, Number(minAutoScore || 68) - 30) &&
+          !mmVeryStrongOpposite && (!mtfStrongOpposite || r62CounterTrendTrapContextOk || r86FormasyonPuan >= 8)
+        );
 
-        const nonSweepQualityOk = r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk; // R77/R75: r75RetestBridgeOk eklendi
+        const r50AutoPermissionOk = !!(r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R86/R77/R75
+
+        const nonSweepQualityOk = r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk; // R86/R77/R75
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
-        const entryPermissionReason = r74Top10ProScalperOk ? 'R74_TOP10_5M_PRO_SCALPER'
+        const entryPermissionReason = r86FormasyonVeriTeyitOk ? 'R86_FORMASYON_VERI_TEYIT'
+          : r74Top10ProScalperOk ? 'R74_TOP10_5M_PRO_SCALPER'
           // R75-FIX6: Retest ile giriş — hareket ilerlemiş ama fiyat EMA/VWAP bölgesine döndüyse
           : r75RetestBridgeOk ? 'R75_RETEST_BRIDGE'
           : r69PriorityExecutionOk ? 'R69_PRIORITY_CONTEXT_EXECUTION'
@@ -5887,8 +5987,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R41: A-tier artık CVD/tick tamamen köprüyle varsayılarak geçemez; gerçek canlı flow ister.
         // Flow eksikse en fazla B+ kontrollü adaya düşer, A-tier otomatik güven etiketi alamaz.
         const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && directSweepOk && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        const r53TierScoreOk = !!(sc >= minAutoScore || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R75
-        const isTierBPlus = !isTierA && (r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || (!hardVeto && !signalDecayAutoBlock && !r37RetestWait)) && entryPermissionOk && r53TierScoreOk && ( // R75: r75RetestBridgeOk eklendi
+        const r53TierScoreOk = !!(sc >= minAutoScore || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R75
+        const isTierBPlus = !isTierA && (r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || (!hardVeto && !signalDecayAutoBlock && !r37RetestWait)) && entryPermissionOk && r53TierScoreOk && ( // R75: r75RetestBridgeOk eklendi
+          r86FormasyonVeriTeyitOk ||
           r75RetestBridgeOk ||
           r74Top10ProScalperOk ||
           r68UnifiedScalperCoreOk ||
@@ -5950,6 +6051,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!sweepRequired && r54MicroProbeOk) reasons.push(`🧪 R54 micro-probe B+ score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
         if(!sweepRequired && r57ScalperBTierBridgeOk) reasons.push(`🦅 R57 scalper B→B+ score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
         if(!sweepRequired && r61TrendContinuationBridgeOk) reasons.push(`🚀 R61 trend devamı score ${sc}+${r61TrendContinuationBoost}=${r61TrendEffectiveScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
+        if(r86FormasyonVeriTeyitOk) reasons.push(`🕯️ R86 formasyon+veri teyidi: ${trPatternList(r86FormasyonAdlari)||'formasyon'} · veri ${r86VeriTeyitSayisi}/8`);
         if(!sweepRequired && r69PriorityExecutionOk) reasons.push(`⚡ R69 priority scalper core score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
         else if(!sweepRequired && r74Top10ProScalperOk) reasons.push(`⚡ R74 TOP10 5m impulse core skor ${sc}/${r74ScoreFloor} R47 ${r47Readiness}/${r75R47MinBypass}`);
         else if(r75RetestBridgeOk) reasons.push(`↩ R75 retest köprüsü skor ${sc}/${r74ScoreFloor} earlyScore ${r37Side?.earlyScore||0}`);
@@ -5964,7 +6066,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R84 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R86 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -5992,7 +6094,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst, r49DirectSweepUnlockOk, r49CvdSafe, r49ContextOk, r49TimingOk, r49StructureOk,
-          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk, r61TrendEffectiveScore, r61TrendContinuationBoost, r61TrendPriorityOk, r61MtfFullTrendOk, r60StrongTrendContinuation, r62CounterTrendTrapBridgeOk, r62TrapHardClean, r62CounterTrendTrapContextOk, r62CounterTrendTrapFlowOk, r62SideTrapEventOk, r75RetestBridgeOk, r75LateChaseHard, r75R47MinBypass, r74Top10ProScalperOk, r74ImpulseEntryOk, r74Top10ContextBypassOk, r74ScoreFloor, r68UnifiedScalperCoreOk, r68EntryEventOk, r68TrendContextOk, r68CounterTrapContextOk, r68ReadinessOk, r68ScoreOk, r68CriticalHardBlock, r69PriorityContextOverrideOk, r69ContextOk, r69PriorityExecutionOk, r67ScalperCoreHuntEntryOk, r65ScalperCoreOk, r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto, r66WyckoffTrapReclaimOk, r66WyckoffHardVeto, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
+          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk, r61TrendEffectiveScore, r61TrendContinuationBoost, r61TrendPriorityOk, r61MtfFullTrendOk, r60StrongTrendContinuation, r62CounterTrendTrapBridgeOk, r62TrapHardClean, r62CounterTrendTrapContextOk, r62CounterTrendTrapFlowOk, r62SideTrapEventOk, r86FormasyonVeriTeyitOk, r86FormasyonPuan, r86KarsiFormasyonPuan, r86VeriTeyitSayisi, r86CanliTetikOk, r86KarsiFormasyonGucu, r75RetestBridgeOk, r75LateChaseHard, r75R47MinBypass, r74Top10ProScalperOk, r74ImpulseEntryOk, r74Top10ContextBypassOk, r74ScoreFloor, r68UnifiedScalperCoreOk, r68EntryEventOk, r68TrendContextOk, r68CounterTrapContextOk, r68ReadinessOk, r68ScoreOk, r68CriticalHardBlock, r69PriorityContextOverrideOk, r69ContextOk, r69PriorityExecutionOk, r67ScalperCoreHuntEntryOk, r65ScalperCoreOk, r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto, r66WyckoffTrapReclaimOk, r66WyckoffHardVeto, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh5mImpulse2Bridge, fresh5mImpulseOrRecent, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -6002,6 +6104,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
                           : r25WickTrapMap?.dominant==='LOWER_REJECTION_TRAP' ? 'LONG' : null,
             strength:     r25WickTrapMap?.strength || 0,
             notes:        r25WickTrapMap?.notes || [],
+          },
+          r86PatternConfirm: {
+            ok: r86FormasyonVeriTeyitOk,
+            puan: r86FormasyonPuan,
+            karsiPuan: r86KarsiFormasyonPuan,
+            veriTeyitSayisi: r86VeriTeyitSayisi,
+            canliTetik: r86CanliTetikOk,
+            karsiFormasyonGucu: r86KarsiFormasyonGucu,
+            formasyonlar: trPatternList(r86FormasyonAdlari),
+            teyitler: r86VeriTeyitleri.filter(([,ok])=>!!ok).map(([name])=>name),
+            not: r86FormasyonVeriTeyitOk ? 'Formasyon veriyle desteklendi; tek başına emir değildir.' : 'Formasyon tek başına yeterli değil; veri teyidi beklenir.'
           },
           r22: {
             sector: r22Rotation.sector,
@@ -7676,8 +7789,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R84 Karar: Süpürme kapalı / B artı puan tabanı + karşı yön radarı',
-        note: 'R84 R80 score-floor ve R81 soft-pass korunur; geç giriş riski sonrası coin karşı yön karşı tuzak radarına alınır, sadece temiz A/B+ karşı taraf açılır.'
+          : 'R86 Karar: Süpürme kapalı / formasyon+veri teyidi + giriş disiplini + karşı yön radarı',
+        note: 'R86 R82/R84/R85 çekirdeği korunur; mum/formasyon tek başına emir açmaz, veri desteklerse B+ köprüsüne alınır; karşı yön radarı aktif kalır.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7856,7 +7969,7 @@ async function runAutoScan() {
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R84 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 R86 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
@@ -8006,7 +8119,7 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R84 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
+          const why = `R86 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R86Formasyon:${decisionChain?.r86FormasyonVeriTeyitOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk:decisionChain?.r61TrendContinuationBridgeOk, r62CounterTrendTrapBridgeOk:decisionChain?.r62CounterTrendTrapBridgeOk, r74Top10ProScalperOk:decisionChain?.r74Top10ProScalperOk, r74ImpulseEntryOk:decisionChain?.r74ImpulseEntryOk, r74Top10ContextBypassOk:decisionChain?.r74Top10ContextBypassOk, r74ScoreFloor:decisionChain?.r74ScoreFloor, r68UnifiedScalperCoreOk:decisionChain?.r68UnifiedScalperCoreOk, r68EntryEventOk:decisionChain?.r68EntryEventOk, r68TrendContextOk:decisionChain?.r68TrendContextOk, r68CounterTrapContextOk:decisionChain?.r68CounterTrapContextOk, r68CriticalHardBlock:decisionChain?.r68CriticalHardBlock, r69PriorityContextOverrideOk:decisionChain?.r69PriorityContextOverrideOk, r69ContextOk:decisionChain?.r69ContextOk, r69PriorityExecutionOk:decisionChain?.r69PriorityExecutionOk, r65ScalperCoreOk:decisionChain?.r65ScalperCoreOk, r65ScalperCoreTrendOk:decisionChain?.r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk:decisionChain?.r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto:decisionChain?.r65ScalperCoreHardVeto, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
@@ -8016,7 +8129,7 @@ async function runAutoScan() {
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R86Formasyon:${decisionChain?.r86FormasyonVeriTeyitOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
           const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
@@ -8077,12 +8190,45 @@ async function runAutoScan() {
           decisionChain?.r68CriticalHardBlock || decisionChain?.r65ScalperCoreHardVeto ||
           decisionChain?.poorLiquidity || decisionChain?.atrExtremeBlock || decisionChain?.r41FallingKnifeBlock || decisionChain?.r41RisingKnifeBlock
         );
+        // R85: B artı puan tabanı tek başına emir açtırmaz.
+        // R84'te HYUNDAI örneğinde görülen hata: funding + 5m destek + bağlam ile
+        // skor tabanı geçildi ama canlı 5m giriş olayı/terazi yeterli değildi.
+        // Yeni disiplin: score-floor sadece canlı hareket izi + yeterli terazi varsa çalışır.
+        const r85Terazi = Number(decisionChain?.priorityScore ?? decisionChain?.r50EffectivePriority ?? 0);
+        const r85R47 = Number(decisionChain?.r47Readiness || 0);
+        const r85TimingPts = Number(decisionChain?.r47TimingPts || 0);
+        const r85FlowPts = Number(decisionChain?.r47FlowPts || 0);
+        const r85ReasonText = String(decisionChain?.reason || '');
+        const r85CanliGirisIziOk = !!(
+          decisionChain?.directSweepOk || decisionChain?.hardSweepForBridge ||
+          decisionChain?.r51DirectSweepMinEdgeOk || decisionChain?.r75RetestBridgeOk ||
+          decisionChain?.r66WyckoffTrapReclaimOk || decisionChain?.r67ScalperCoreHuntEntryOk ||
+          decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent ||
+          decisionChain?.r62CounterTrendTrapBridgeOk || decisionChain?.r65ScalperCoreCounterTrapOk ||
+          decisionChain?.r86FormasyonVeriTeyitOk ||
+          (decisionChain?.r74Top10ProScalperOk && r85TimingPts >= 1)
+        );
+        const r85SadeceFundingDestek = !!(
+          /funding/i.test(r85ReasonText) &&
+          /(R39|destek|swing_low|swing high|SWING_LOW|SWING_HIGH)/i.test(r85ReasonText) &&
+          !r85CanliGirisIziOk
+        );
+        const r85TeraziDisiplinOk = !!(
+          r85Terazi >= 45 ||
+          (r85Terazi >= 38 && r85R47 >= 8 && r85TimingPts >= 1) ||
+          decisionChain?.r75RetestBridgeOk || decisionChain?.r51DirectSweepMinEdgeOk ||
+          decisionChain?.directSweepOk
+        );
+        const r85BartiDisiplinOk = !!(
+          r85CanliGirisIziOk && r85TeraziDisiplinOk && !r85SadeceFundingDestek
+        );
         const r80ControlledBPlusScoreOk = !!(
           ['A','B+'].includes(String(decisionChain?.tier || '')) &&
-          (decisionChain?.autoOk === true || decisionChain?.entryPermissionOk === true || decisionChain?.r50AutoPermissionOk || decisionChain?.r75RetestBridgeOk || decisionChain?.r74Top10ProScalperOk) &&
-          Number(decisionChain?.r47Readiness || 0) >= 5 &&
+          (decisionChain?.autoOk === true || decisionChain?.entryPermissionOk === true || decisionChain?.r50AutoPermissionOk || decisionChain?.r86FormasyonVeriTeyitOk || decisionChain?.r75RetestBridgeOk || decisionChain?.r74Top10ProScalperOk) &&
+          r85R47 >= 5 &&
           Number(score || 0) >= r80BPlusScoreFloor &&
-          !r80RealHardBlock
+          !r80RealHardBlock &&
+          r85BartiDisiplinOk
         );
         const r78BridgeScoreFloor = Math.max(40, Number(effectiveMinScore || 68) - 25, Number(decisionChain?.r74ScoreFloor || 0));
         const r78BridgeScoreBypassOk = !!(
@@ -8095,16 +8241,24 @@ async function runAutoScan() {
           Number(score || 0) >= r78BridgeScoreFloor &&
           (decisionChain?.r75RetestBridgeOk || decisionChain?.r74Top10ProScalperOk || decisionChain?.r68UnifiedScalperCoreOk || decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk || decisionChain?.r50AutoPermissionOk)
         );
+        // R85: düşük skor floor ile geçecekse önce giriş disiplini raporlanır.
+        if (score < effectiveMinScore && ['A','B+'].includes(String(decisionChain?.tier || '')) && Number(score || 0) >= r80BPlusScoreFloor && !r85BartiDisiplinOk) {
+          const why = `R86 bekle: B artı puan tabanı tek başına yetmedi — canlı giriş izi:${r85CanliGirisIziOk?'VAR':'YOK'} terazi:${r85Terazi} R47:${r85R47}/8 zaman:${r85TimingPts} akış:${r85FlowPts} sadeceFundingDestek:${r85SadeceFundingDestek?'EVET':'HAYIR'}`;
+          logAuto(`⏳ ${coin.symbol} ${why}`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, r85CanliGirisIziOk, r85Terazi, r85R47, r85TimingPts, r85FlowPts, r85SadeceFundingDestek, r85BartiDisiplinOk});
+          continue;
+        }
+
         if (score < effectiveMinScore && !r80ControlledBPlusScoreOk && !r78BridgeScoreBypassOk && !r78PermissionScoreBypassOk) {
           logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore} — atlandı`);
           markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, r80BPlusScoreFloor, r80ControlledBPlusScoreOk, r78BridgeScoreFloor, r78BridgeScoreBypassOk, r78PermissionScoreBypassOk});
           continue;
         }
         if (score < effectiveMinScore && r80ControlledBPlusScoreOk) {
-          logAuto(`🟢 ${coin.symbol} R84 B artı puan tabanı geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
+          logAuto(`🟢 ${coin.symbol} R86 B artı puan tabanı geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
         }
 
-        // R84 SIDE-AWARE ANTI-CHASE:
+        // R85 AKILLI GEÇ GİRİŞ + GİRİŞ DİSİPLİNİ:
         // Eski R80 mantığı zone=PREMIUM veya RSI4h>=72 gördüğü anda B+ adayı da öldürüyordu.
         // Bu RIF/FLNC gibi TOP10 5m devam/retest fırsatlarını boğdu.
         // Artık geç giriş riski üçe ayrılır:
@@ -8137,7 +8291,7 @@ async function runAutoScan() {
           (sideCtxRisk >= 45 || decisionChain?.r39TargetNearBlock || (antiChaseZone && antiChaseRsi) || !r81EntryTraceOk)
         );
         if (r81AntiChaseHard) {
-          // R84 SIDE ROTATION karşı tuzak:
+          // R85 KARŞI YÖN RADARI karşı tuzak:
           // LONG premium/RSI/geç giriş riski yediğinde coin komple atılmaz; SHORT karşı-trap tarafı kontrol edilir.
           // SHORT dip/discount geç giriş riski yediğinde LONG reclaim/retest tarafı kontrol edilir.
           // Bu kör ters işlem değildir: karşı tarafta A/B+, entryPermission, R47>=5, counter-trap izi ve hard güvenlik temizliği gerekir.
@@ -8182,21 +8336,21 @@ async function runAutoScan() {
 
           if (r82CounterTrapOk) {
             const oldSide = recommendation;
-            logAuto(`🔁 ${coin.symbol} R84 karşı yön radarı: ${oldSide} geç giriş riski → ${rotateSide} karşı tuzak aktif | ${rotateDC?.tier} skor ${rotateScore}/${effectiveMinScore}, floor ${rotateFloor}, R47 ${rotateDC?.r47Readiness||0}/8, risk ${rotateRisk}`);
+            logAuto(`🔁 ${coin.symbol} R86 karşı yön radarı: ${oldSide} geç giriş riski → ${rotateSide} karşı tuzak aktif | ${rotateDC?.tier} skor ${rotateScore}/${effectiveMinScore}, floor ${rotateFloor}, R47 ${rotateDC?.r47Readiness||0}/8, risk ${rotateRisk}`);
             recommendation = rotateSide;
             decisionChain = rotateDC;
             score = rotateScore;
             isLong = rotateSide === 'LONG';
             isShort = rotateSide === 'SHORT';
           } else {
-            const why = `R84 side geç giriş riski hard: ${recommendation} için risk ${sideCtxRisk}, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}; ${rotateSide} radar=${rotateAllowed?'kontrol':'kapalı'} tier:${rotateDC?.tier||'YOK'} score:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 trap:${rotateTrapEvidenceOk?'OK':'NO'} entry:${rotateEntryTraceOk?'OK':'NO'}`;
+            const why = `R86 geç giriş riski sert: ${recommendation} için risk ${sideCtxRisk}, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}; ${rotateSide} radar=${rotateAllowed?'kontrol':'kapalı'} tier:${rotateDC?.tier||'YOK'} score:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 trap:${rotateTrapEvidenceOk?'OK':'NO'} entry:${rotateEntryTraceOk?'OK':'NO'}`;
             logAuto(`⛔ ${coin.symbol} ${why}`);
             markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r81EntryTraceOk, r81StrongBPlusSoftPass, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
             continue;
           }
         }
         if (antiChase && !eliteOverride && r81StrongBPlusSoftPass) {
-          logAuto(`🟡 ${coin.symbol} R84 geç giriş riski soft-pass: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}`);
+          logAuto(`🟡 ${coin.symbol} R86 geç giriş riski izlemeye alındı: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}`);
         }
 
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
@@ -8299,7 +8453,7 @@ async function runAutoScan() {
           ? +(entryRef * (1 - userSLPct/100)).toFixed(8)
           : +(entryRef * (1 + userSLPct/100)).toFixed(8);
 
-        logAuto(`🎯 Sinyal: ${coin.symbol} ${recommendation} skor:${score} — marj:${usdtAmount} USDT lev:${leverage}x SL:%${userSLPct} TP:%${userTPPct} RR:${userRR.toFixed(2)} — emir açılıyor`);
+        logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT kaldıraç:${leverage}x zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)} — emir açılıyor`);
 
         // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -8319,7 +8473,7 @@ async function runAutoScan() {
           markAutoOpened(coin.fullSymbol, recommendation);
           invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
-          logAuto(`✅ ${coin.symbol} ${recommendation} açıldı — ${orderResp.message}`);
+          logAuto(`✅ ${coin.symbol} ${trSideLabel(recommendation)} açıldı — ${toTurkishText(orderResp.message||'Emir açıldı')}`);
           // Trailing state başlat + açılış sebebi kaydet (Pos kartında görünür)
           trailingState.set(coin.fullSymbol, {
             side: recommendation,
@@ -8346,7 +8500,8 @@ async function runAutoScan() {
               funding: analysis.funding?.current,
               panel:{ usdtAmount, leverage, slPct:userSLPct, tpPct:userTPPct },
             },
-            managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${recommendation} açıldı — skor:${score}`, urgency:'LOW', lastCheck:Date.now() },
+            entryDiscipline:{ canliGirisIziOk:r85CanliGirisIziOk, terazi:r85Terazi, r47:r85R47, timing:r85TimingPts, flow:r85FlowPts, sadeceFundingDestek:r85SadeceFundingDestek, bartiDisiplinOk:r85BartiDisiplinOk },
+            managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${trSideLabel(recommendation)} açıldı — skor:${score} terazi:${r85Terazi}`, urgency:'LOW', lastCheck:Date.now() },
           });
           try {
             const _stOpen = trailingState.get(coin.fullSymbol) || {};
