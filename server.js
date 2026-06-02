@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R77_R75_TDZ_SAFE_RETEST_FIX';
+const LAZARUS_BUILD = 'R79_R50_HARDCLEAN_SWEEP_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5542,8 +5542,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // UB gibi R47=2/8 adaylar ise yine açılmaz.
         const r50PriorityBoost = r47Readiness >= 10 ? 15 : r47Readiness >= 8 ? 8 : 0;
         const r50EffectivePriority = Math.max(0, Number(priorityScore || 0) + r50PriorityBoost);
+        // R79-FIX1: R75 retest-soft late chase bütün zincire yansıtıldı.
+        // Eski r50HardClean ham r37LateChaseBlock kullanıyordu; retestOk=true olsa bile RIF gibi
+        // Sweep+Teyit + R47 10/8 adayları R50/R51'de ölüyordu.
         const r50HardClean = !!(
-          !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r37LateChaseBlock && !r39TargetNearBlock &&
+          !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r75LateChaseHard && !r39TargetNearBlock &&
           !poorLiquidity && !mtfStrongOpposite && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
           !r41TrapBlock && !r41FallingKnifeBlock && !r41RisingKnifeBlock
         );
@@ -5574,8 +5577,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R51 kör gevşetme yapmaz: hard veto, geç chase, hedef yakın, CVD karşıtlığı, RVOL,
         // yapı ve canlı flow/context kontrolleri hâlâ zorunlu. Sadece P50 top-mover direct-sweep
         // eşiği 32 yerine pratik minimum edge 24 olarak ayrı bir B+ yolu açar.
+        // R79-FIX2: R51 direct-sweep min-edge yolu r50HardClean'e kör bağımlı değil.
+        // Sweep+retest geldiğinde lateChase artık soft olmalı; r50HardClean içindeki diğer context
+        // sıkılıkları R51'i tekrar boğmasın diye gerçek hard güvenlikler ayrı tutulur.
+        const r51DirectSweepRetestClean = !!((!r75LateChaseHard || r37Side?.retestOk) &&
+          !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r39TargetNearBlock &&
+          !poorLiquidity && !r41TrapBlock && !r41FallingKnifeBlock && !r41RisingKnifeBlock
+        );
         const r51DirectSweepMinEdgeOk = !!(
-          !sweepRequired && directSweepOk && (hasEntry || huntBridgeOk || hardSweepForBridge) && r50HardClean &&
+          !sweepRequired && directSweepOk && (hasEntry || huntBridgeOk || hardSweepForBridge) && r51DirectSweepRetestClean &&
           sc >= minAutoScore && r47Readiness >= r50MinReadiness &&
           r50EffectivePriority >= (r38TopMoverStrong ? 24 : 34) &&
           r47StructurePts >= 2 && r47RvolPts >= 1 &&
@@ -5712,7 +5722,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         );
         const r66WyckoffHardVeto = !!(r41TrapBlock && !r42TrapReclaimOk && !r66WyckoffTrapReclaimOk);
         const r65ScalperCoreHardVeto = !!(
-          poorLiquidity || atrExtremeBlock || r37LateChaseBlock || r39TargetNearBlock ||
+          poorLiquidity || atrExtremeBlock || r75LateChaseHard || r39TargetNearBlock ||
           r66WyckoffHardVeto || r41FallingKnifeBlock || r41RisingKnifeBlock
         );
         const r65ScalperCoreTrendOk = !!(
@@ -5746,7 +5756,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (directSweepOk || hardSweepForBridge || huntBridgeOk) &&
           mtfBridgeOk &&
           r47Readiness >= 5 &&
-          !poorLiquidity && !r37LateChaseBlock && !r39TargetNearBlock && !atrExtremeBlock &&
+          !poorLiquidity && !r75LateChaseHard && !r39TargetNearBlock && !atrExtremeBlock &&
           !r41FallingKnifeBlock && !r41RisingKnifeBlock
         );
 
@@ -7562,8 +7572,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R74 Gate: Sweep KAPALI / TOP10_5M_IMPULSE_PRO_SCALPER + WAIT_DIAGNOSTIC',
-        note: 'R74 TOP10 gainer impulse yolunu açar; WAIT teşhis ve Auto/Long/Short tek kaynak korunur.'
+          : 'R79 Gate: Sweep KAPALI / R50 hardclean + R51 direct-sweep retest fix + TOP10 impulse',
+        note: 'R79 R75 retest-soft lateChase düzeltmesini R50/R51 zincirine taşır; RIF tipi sweep+R47 adaylarını ham lateChase yüzünden öldürmez.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7937,8 +7947,25 @@ async function runAutoScan() {
           : fund?.signal !== 'EXTREME_NEGATIVE';
         if (!fundOk) { logAuto(`${coin.symbol} Funding aşırı karşı (${fund?.current}) — atlandı`); markAutoSkip(coin.symbol, `Funding aşırı karşı ${fund?.current}`, {rec:recommendation, score}); continue; }
 
-        // Skor filtresi
-        if (score < effectiveMinScore) { logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore} — atlandı`); markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason}); continue; }
+        // R78: R37/R35 B+ restore için skor filtresi artık ikinci kez öldürücü değil.
+        // R37'de B+ olmuş bir aday R77'de burada tekrar minScore'a takılıyordu (ör: FLNC B+ skor 52<72).
+        // Eğer karar çekirdeği B+/auto köprü üretmişse, TOP10 scalper floor kullanılır; aksi halde panel minScore korunur.
+        const r78BridgeScoreFloor = Math.max(40, Number(effectiveMinScore || 68) - 25, Number(decisionChain?.r74ScoreFloor || 0));
+        const r78BridgeScoreBypassOk = !!(
+          String(decisionChain?.tier || '').includes('B+') &&
+          Number(score || 0) >= r78BridgeScoreFloor &&
+          !decisionChain?.r68CriticalHardBlock &&
+          !decisionChain?.r65ScalperCoreHardVeto
+        );
+        const r78PermissionScoreBypassOk = !!(
+          Number(score || 0) >= r78BridgeScoreFloor &&
+          (decisionChain?.r75RetestBridgeOk || decisionChain?.r74Top10ProScalperOk || decisionChain?.r68UnifiedScalperCoreOk || decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk || decisionChain?.r50AutoPermissionOk)
+        );
+        if (score < effectiveMinScore && !r78BridgeScoreBypassOk && !r78PermissionScoreBypassOk) {
+          logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore} — atlandı`);
+          markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, r78BridgeScoreFloor, r78BridgeScoreBypassOk, r78PermissionScoreBypassOk});
+          continue;
+        }
 
         // R30 ANTI-CHASE: tepeden LONG / dipten SHORT kovalamayı azalt.
         // Risk orta düzeydeyse B+ emir açmaz; ancak A-tier + çok yüksek terazi + mikro teyit varsa MM treni kabul edilir.
