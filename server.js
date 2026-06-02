@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R80_BPLUS_SCORE_AND_LABEL_FIX';
+const LAZARUS_BUILD = 'R82_SIDE_ROTATION_COUNTER_TRAP';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -5948,7 +5948,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R80 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R82 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -6104,6 +6104,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         atrGate: { atrPct:+atrPct.toFixed(2), slPct:slPctForGate, warn:atrGateWarn, block:atrGateBlock },
       },
       longScore, shortScore, recommendation, decisionChain,
+      sideDecisions: { LONG: longDecision, SHORT: shortDecision },
       r22: decisionChain?.r22 || null,
       r29: r29Context,
       r37: r37Timing,
@@ -7572,8 +7573,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R80 Gate: Sweep KAPALI / B+ score floor + R79 hardclean + side-aware logs',
-        note: 'R80 R79 hardclean fixlerini korur; B+ kontrollü adayların minScore ikinci filtresinde boğulmasını azaltır ve log etiketlerini günceller.'
+          : 'R82 Gate: Sweep KAPALI / B+ floor + side-rotation counter-trap',
+        note: 'R82 R80 score-floor ve R81 soft-pass korunur; anti-chase sonrası coin karşı yön COUNTER-TRAP radarına alınır, sadece temiz A/B+ karşı taraf açılır.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -7738,7 +7739,7 @@ async function runAutoScan() {
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
-    logAuto(`🔥 R80 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
+    logAuto(`🔥 R82 ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
     const effectiveMinScore = minScore;
@@ -7817,17 +7818,18 @@ async function runAutoScan() {
           continue;
         }
 
-        const { longScore, shortScore, recommendation, isExpired, freshness } = analysis;
-        const decisionChain = analysis.decisionChain || {};
+        const { longScore, shortScore, isExpired, freshness } = analysis;
+        let recommendation = analysis.recommendation;
+        let decisionChain = analysis.decisionChain || {};
         if (isExpired || freshness === 'EXPIRED') { markAutoSkip(coin.symbol, 'Sinyal süresi geçmiş'); continue; }
 
         // ── PRO TRADER KARAR ZİNCİRİ — A-Tier ana karar, toksik filtreler veto ──
         // Skor kafadan üretilmez: /api/analyze içindeki MM + CVD + OI + Funding + Tick + Sweep + Wyckoff katmanlarından gelir.
         // Otomatik işlemde tekrar tekrar aynı şeyi sert kapı yapıp botu boğma; A-Tier karar zaten hasEntry + delta + funding + skor kontrolü yapar.
 
-        const score = recommendation==='LONG'?longScore:shortScore;
-        const isLong = recommendation==='LONG';
-        const isShort = recommendation==='SHORT';
+        let score = recommendation==='LONG'?longScore:shortScore;
+        let isLong = recommendation==='LONG';
+        let isShort = recommendation==='SHORT';
         pushAutoCandidate({
           symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore,
           priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason,
@@ -7887,7 +7889,7 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R80 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
+          const why = `R82 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk:decisionChain?.r61TrendContinuationBridgeOk, r62CounterTrendTrapBridgeOk:decisionChain?.r62CounterTrendTrapBridgeOk, r74Top10ProScalperOk:decisionChain?.r74Top10ProScalperOk, r74ImpulseEntryOk:decisionChain?.r74ImpulseEntryOk, r74Top10ContextBypassOk:decisionChain?.r74Top10ContextBypassOk, r74ScoreFloor:decisionChain?.r74ScoreFloor, r68UnifiedScalperCoreOk:decisionChain?.r68UnifiedScalperCoreOk, r68EntryEventOk:decisionChain?.r68EntryEventOk, r68TrendContextOk:decisionChain?.r68TrendContextOk, r68CounterTrapContextOk:decisionChain?.r68CounterTrapContextOk, r68CriticalHardBlock:decisionChain?.r68CriticalHardBlock, r69PriorityContextOverrideOk:decisionChain?.r69PriorityContextOverrideOk, r69ContextOk:decisionChain?.r69ContextOk, r69PriorityExecutionOk:decisionChain?.r69PriorityExecutionOk, r65ScalperCoreOk:decisionChain?.r65ScalperCoreOk, r65ScalperCoreTrendOk:decisionChain?.r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk:decisionChain?.r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto:decisionChain?.r65ScalperCoreHardVeto, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
@@ -7982,24 +7984,102 @@ async function runAutoScan() {
           continue;
         }
         if (score < effectiveMinScore && r80ControlledBPlusScoreOk) {
-          logAuto(`🟢 ${coin.symbol} R80 B+ score-floor geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
+          logAuto(`🟢 ${coin.symbol} R82 B+ score-floor geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
         }
 
-        // R30 ANTI-CHASE: tepeden LONG / dipten SHORT kovalamayı azalt.
-        // Risk orta düzeydeyse B+ emir açmaz; ancak A-tier + çok yüksek terazi + mikro teyit varsa MM treni kabul edilir.
+        // R82 SIDE-AWARE ANTI-CHASE:
+        // Eski R80 mantığı zone=PREMIUM veya RSI4h>=72 gördüğü anda B+ adayı da öldürüyordu.
+        // Bu RIF/FLNC gibi TOP10 5m devam/retest fırsatlarını boğdu.
+        // Artık anti-chase üçe ayrılır:
+        // 1) Hard: bağlam riski yüksek, hedef yakın, veya premium+RSI var ama güçlü B+/retest/sweep yok.
+        // 2) Soft-pass: B+/A, R47 güçlü, score-floor geçti, hard block yok ve retest/sweep/entry izi var.
+        // 3) Side-aware: LONG kovalanıyorsa sadece LONG engellenir; coin karşı yön setup'ı için sonraki taramada yaşamaya devam eder.
         const ctx = analysis.r29 || {};
         const sideCtxRisk = isLong ? Number(ctx.longRisk||0) : Number(ctx.shortRisk||0);
         const pdZone = String(analysis?.premiumDiscount?.['1h']?.zone || analysis?.premiumDiscount?.['4h']?.zone || '');
         const antiChaseZone = isLong ? pdZone.includes('PREMIUM') : pdZone.includes('DISCOUNT');
         const rsi4hNow = Number(analysis?.timeframes?.['4h']?.rsi || 50);
         const antiChaseRsi = isLong ? rsi4hNow >= 72 : rsi4hNow <= 28;
-        const antiChase = (sideCtxRisk >= 45 || antiChaseZone || antiChaseRsi) && String(decisionChain?.tier||'') !== 'A';
+        const antiChase = !!((sideCtxRisk >= 45 || antiChaseZone || antiChaseRsi) && String(decisionChain?.tier||'') !== 'A');
         const eliteOverride = String(decisionChain?.tier||'') === 'A' && Number(decisionChain?.priorityScore||0) >= 82 && decisionChain?.microConfirm && !decisionChain?.cvdMissing;
-        if (antiChase && !eliteOverride) {
-          const why = `Anti-chase: ${recommendation} için risk ${sideCtxRisk}, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}`;
-          logAuto(`⛔ ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore});
-          continue;
+        const r81EntryTraceOk = !!(
+          decisionChain?.r75RetestBridgeOk || decisionChain?.r51DirectSweepMinEdgeOk ||
+          decisionChain?.r50AutoPermissionOk || decisionChain?.r74Top10ProScalperOk ||
+          decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk ||
+          decisionChain?.directSweepOk || decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent
+        );
+        const r81StrongBPlusSoftPass = !!(
+          ['A','B+'].includes(String(decisionChain?.tier || '')) &&
+          (r80ControlledBPlusScoreOk || r78BridgeScoreBypassOk || r78PermissionScoreBypassOk || decisionChain?.autoOk === true) &&
+          Number(decisionChain?.r47Readiness || 0) >= 7 &&
+          Number(score || 0) >= r80BPlusScoreFloor &&
+          !r80RealHardBlock && r81EntryTraceOk
+        );
+        const r81AntiChaseHard = !!(
+          antiChase && !eliteOverride && !(r81StrongBPlusSoftPass && sideCtxRisk < 45) &&
+          (sideCtxRisk >= 45 || decisionChain?.r39TargetNearBlock || (antiChaseZone && antiChaseRsi) || !r81EntryTraceOk)
+        );
+        if (r81AntiChaseHard) {
+          // R82 SIDE ROTATION COUNTER-TRAP:
+          // LONG premium/RSI/anti-chase yediğinde coin komple atılmaz; SHORT karşı-trap tarafı kontrol edilir.
+          // SHORT dip/discount anti-chase yediğinde LONG reclaim/retest tarafı kontrol edilir.
+          // Bu kör ters işlem değildir: karşı tarafta A/B+, entryPermission, R47>=5, counter-trap izi ve hard güvenlik temizliği gerekir.
+          const rotateSide = isLong ? 'SHORT' : 'LONG';
+          const rotateAllowed = rotateSide === 'LONG' ? !!allowLong : !!allowShort;
+          const rotateDC = analysis?.sideDecisions?.[rotateSide] || null;
+          const rotateScore = rotateSide === 'LONG' ? Number(longScore || 0) : Number(shortScore || 0);
+          const rotateFloor = Math.max(32, Number(effectiveMinScore || 68) - 40, Math.min(40, Number(rotateDC?.r74ScoreFloor || 40)));
+          const rotateRealHardBlock = !!(
+            rotateDC?.r68CriticalHardBlock || rotateDC?.r65ScalperCoreHardVeto ||
+            rotateDC?.poorLiquidity || rotateDC?.atrExtremeBlock || rotateDC?.r41FallingKnifeBlock || rotateDC?.r41RisingKnifeBlock
+          );
+          const rotateEntryTraceOk = !!(
+            rotateDC?.r75RetestBridgeOk || rotateDC?.r51DirectSweepMinEdgeOk ||
+            rotateDC?.r50AutoPermissionOk || rotateDC?.r74Top10ProScalperOk ||
+            rotateDC?.r67ScalperCoreHuntEntryOk || rotateDC?.r65ScalperCoreOk ||
+            rotateDC?.directSweepOk || rotateDC?.r37EarlyOk || rotateDC?.fresh5mImpulseOrRecent
+          );
+          const rotateControlledBPlusOk = !!(
+            ['A','B+'].includes(String(rotateDC?.tier || '')) &&
+            (rotateDC?.autoOk === true || rotateDC?.entryPermissionOk === true || rotateDC?.r50AutoPermissionOk || rotateDC?.r75RetestBridgeOk || rotateDC?.r74Top10ProScalperOk || rotateDC?.r62CounterTrendTrapBridgeOk || rotateDC?.r65ScalperCoreCounterTrapOk) &&
+            Number(rotateDC?.r47Readiness || 0) >= 5 &&
+            rotateScore >= rotateFloor && !rotateRealHardBlock
+          );
+          const rotateTrapEvidenceOk = !!(
+            rotateDC?.r62CounterTrendTrapBridgeOk || rotateDC?.r65ScalperCoreCounterTrapOk ||
+            rotateDC?.r46ExhaustionShort || rotateDC?.wickTrapFlip?.favorable ||
+            rotateDC?.r39SR?.breakConfirmed || rotateDC?.r39Confluence ||
+            (rotateDC?.r41TrapBlock && rotateDC?.r42TrapReclaimOk) ||
+            (rotateSide === 'SHORT' && (pdZone.includes('PREMIUM') || rsi4hNow >= 72)) ||
+            (rotateSide === 'LONG' && (pdZone.includes('DISCOUNT') || rsi4hNow <= 28))
+          );
+          const rotateRisk = rotateSide === 'LONG' ? Number(ctx.longRisk||0) : Number(ctx.shortRisk||0);
+          const rotateAntiChaseZone = rotateSide === 'LONG' ? pdZone.includes('PREMIUM') : pdZone.includes('DISCOUNT');
+          const rotateAntiChaseRsi = rotateSide === 'LONG' ? rsi4hNow >= 72 : rsi4hNow <= 28;
+          const rotateAntiChaseHard = !!((rotateRisk >= 45 || (rotateAntiChaseZone && rotateAntiChaseRsi)) && String(rotateDC?.tier||'') !== 'A');
+          const r82CounterTrapOk = !!(
+            rotateAllowed && rotateDC && rotateDC.pass && rotateControlledBPlusOk &&
+            rotateDC.entryPermissionOk !== false && rotateEntryTraceOk && rotateTrapEvidenceOk &&
+            !rotateAntiChaseHard
+          );
+
+          if (r82CounterTrapOk) {
+            const oldSide = recommendation;
+            logAuto(`🔁 ${coin.symbol} R82 side-rotation: ${oldSide} anti-chase → ${rotateSide} COUNTER-TRAP aktif | ${rotateDC?.tier} skor ${rotateScore}/${effectiveMinScore}, floor ${rotateFloor}, R47 ${rotateDC?.r47Readiness||0}/8, risk ${rotateRisk}`);
+            recommendation = rotateSide;
+            decisionChain = rotateDC;
+            score = rotateScore;
+            isLong = rotateSide === 'LONG';
+            isShort = rotateSide === 'SHORT';
+          } else {
+            const why = `R82 side anti-chase hard: ${recommendation} için risk ${sideCtxRisk}, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}; ${rotateSide} radar=${rotateAllowed?'kontrol':'kapalı'} tier:${rotateDC?.tier||'YOK'} score:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 trap:${rotateTrapEvidenceOk?'OK':'NO'} entry:${rotateEntryTraceOk?'OK':'NO'}`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r81EntryTraceOk, r81StrongBPlusSoftPass, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
+            continue;
+          }
+        }
+        if (antiChase && !eliteOverride && r81StrongBPlusSoftPass) {
+          logAuto(`🟡 ${coin.symbol} R82 anti-chase soft-pass: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, zone:${pdZone||'-'}, RSI4h:${rsi4hNow}`);
         }
 
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
