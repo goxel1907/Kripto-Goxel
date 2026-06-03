@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R97_DALGALI_ZEMIN_BAGLANTI_FIX';
+const LAZARUS_BUILD = 'R97_DALGALI_ZEMIN_BAGLANTI_FIX_TDZ_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -6268,6 +6268,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (!r39TargetNearBlock || r39Side?.breakConfirmed || r62CounterTrendTrapContextOk || (r89SuperMikroYapiOk && r88CanliHamleIzi)) &&
           !mmVeryStrongOpposite && !r86KarsiFormasyonGucu)
         );
+        // R97-TDZ-FIX: Terazi r96 köprüsünden önce hesaplanmalı.
+        // Önceki pakette r96DalgaliZeminVurKacOk, r92Terazi const'u tanımlanmadan okuduğu için
+        // DEXE/PORTAL analizlerinde "Cannot access 'r92Terazi' before initialization" sessiz hatası oluşuyordu.
+        const r92Terazi = Number(r50EffectivePriority || priorityScore || 0);
         // R97: r92VurKacAdayOk skor tabanı veya r38TopMoverStrong engeli nedeniyle KALDI kalsa da,
         // piyasa etiketi "DALGALI AMA İŞLEM YAPILABİLİR" ise bu köprü emir yolunu açar.
         // Kaynak: ChatGPT R97 mimarisi; r92NormalVurKacOk eşikleri R95 orijinalinde korundu (R47>=8, timingPts>=2).
@@ -6283,7 +6287,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         );
         // R94: mikro marjlı deneme YOK. Defter inceyse ya da makas/oynaklık bozuksa işlem açılmaz.
         // Vur-kaç adayı; terazi, canlı kanıt ve piyasa kalitesine göre GÜÇLÜ / NORMAL / İZLE olarak sınıflanır.
-        const r92Terazi = Number(r50EffectivePriority || priorityScore || 0);
         const r92DefterSaglam = !!(!poorLiquidity && !r88SpreadWide && !r88DefterInce && !r88OynaklikAsiri && !atrExtremeBlock);
         const r93EmirZeminiOk = !!(r92DefterSaglam || r93DalgaliAmaIslemYapilabilir);
         const r93PiyasaEtiketi = r92DefterSaglam ? 'SAĞLAM' : r93DalgaliAmaIslemYapilabilir ? 'DALGALI AMA İŞLEM YAPILABİLİR' : r93PiyasaTehlikeli ? 'TEHLİKELİ' : r88PiyasaBozuk ? 'BOZUK' : 'SAĞLAM';
@@ -8306,8 +8309,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R97 Karar: Binance 418 kurtarma + dalgalı zemin bağlantı köprüsü / merdiven-dönüş radarı',
-        note: 'R97 R94 çekirdeğini korur; Binance 418/429 gelirse merkezi istek freni, takılan positionRisk temizleme ve scan watchdog çalışır; yeni emir veri tazelenene kadar kapalıdır.'
+          : 'R97 TDZ-FIX Karar: Binance 418 kurtarma + dalgalı zemin bağlantı köprüsü / merdiven-dönüş radarı',
+        note: 'R97 TDZ-FIX; R94/R95 çekirdeğini korur, r92Terazi sessiz analiz hatası giderildi; Binance 418/429 koruması ve dalgalı zemin köprüsü aktiftir.'
       },
       lastScan: {
         source: scan.scanSource || null,
