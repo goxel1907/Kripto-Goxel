@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R107_WATCHDOG_EVENT_LIKIDITE_AVI_GEC_KALMA_FRENI';
+const LAZARUS_BUILD = 'R107_FIX1_WATCHDOG_EVENT_LIKIDITE_AVI_GEC_KALMA_FRENI';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -6558,7 +6558,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // güçlü R47 + teyit + terazi/mikro yapı piyasa etiketini TEHLİKELİ'den DALGALI'ya çeker.
         const r94CanliTrendZeminKurtarmaOk = !!(
           r88VurKacEnabled && !r93PiyasaHamTehlikeli && r88PiyasaBozuk &&
-          (r38TopMoverStrong || Math.abs(Number(coin?.change24h||0)) >= 8 || Number(coin?.volume||0) >= 10000000) &&
+          (r38TopMoverStrong || Math.abs(Number(r38MarketCtx?.change24h||0)) >= 8 || Number(r38MarketCtx?.volume||0) >= 10000000) &&
           Number(r47Readiness || 0) >= 8 && Number(r88AkisTeyidiSayisi || 0) >= 4 &&
           (Number(r88MikroSkor || 0) >= 13 || Number(r50EffectivePriority || priorityScore || 0) >= 45 || r89SuperMikroYapiOk || r93DonusSkor >= 6) &&
           r88Spread <= 0.18 && !r88OynaklikAsiri && !atrExtremeBlock
@@ -6603,7 +6603,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r93PiyasaEtiketi = r92DefterSaglam ? 'SAĞLAM' : r93DalgaliAmaIslemYapilabilir ? 'DALGALI AMA İŞLEM YAPILABİLİR' : r93PiyasaTehlikeli ? 'TEHLİKELİ' : r88PiyasaBozuk ? 'BOZUK' : 'SAĞLAM';
         // R107: olay bazlı likidite avı. Mum kapanışını beklemez; sweep→reclaim→yakıt fazını okur.
         const r107Event = r107AnalyzeEventLiquidity({
-          symbol: coin?.fullSymbol || coin?.symbol, side: isL ? 'LONG' : 'SHORT', klines5m: k5m, tickData,
+          symbol: full, side: isL ? 'LONG' : 'SHORT', klines5m: k5m, tickData,
           fuel: r105FuelWave, stair: r93Merdiven,
           r47Readiness, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts,
           mikroSkor: r88MikroSkor, teyitSayisi: r88AkisTeyidiSayisi, terazi: r92Terazi,
