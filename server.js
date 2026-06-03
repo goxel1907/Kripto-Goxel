@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R94_CANLI_TREND_ZEMIN_VE_DONUS_FIX';
+const LAZARUS_BUILD = 'R95_BINANCE_418_RECOVERY_WATCHDOG';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -125,6 +125,26 @@ function registerBinanceBackoff(reason='rate-limit', seconds=45) {
   binanceGov.last429At = Date.now();
   try { pushCritical('BINANCE_BACKOFF', `${reason}: ${sec}sn istek bekleme`, {seconds:sec, reason}, 'WARNING'); } catch(_) {}
 }
+// R95: Binance 418/429 geldiğinde istek bekleyip taramayı kilitleme; merkezi frenle güvenli dur.
+function isBinanceBackoffActive() {
+  return Date.now() < Number(binanceGov.backoffUntil || 0);
+}
+function getBinanceBackoffMs() {
+  return Math.max(0, Number(binanceGov.backoffUntil || 0) - Date.now());
+}
+function makeBinanceBackoffError(reason='Binance istek freni', seconds=45, status=null) {
+  const e = new Error(`${reason}: ${Math.ceil(Number(seconds)||0)}sn merkezi istek freni`);
+  e.code = 'BINANCE_BACKOFF_ACTIVE';
+  e.status = status;
+  e.retryAfter = Number(seconds)||0;
+  return e;
+}
+function registerHttpBackoffAndThrow(scope, status, retryHeader) {
+  const retry = parseInt(retryHeader || (Number(status) === 418 ? '180' : '60'), 10);
+  const sec = Math.max(Number(status) === 418 ? 180 : 30, Math.min(180, Number(retry)||60));
+  registerBinanceBackoff(`HTTP ${status} ${scope}`, sec);
+  throw makeBinanceBackoffError(`HTTP ${status} ${scope}`, sec, status);
+}
 
 // ── RATE LIMIT ────────────────────────────────────────────────────────────────
 let reqCount=0, reqWindow=Date.now();
@@ -147,10 +167,7 @@ async function bAlgo(apiKey, apiSecret, params, _retry=false) {
     signal: AbortSignal.timeout(10000),
   });
   if (res.status === 429 || res.status === 418) {
-    const retry = parseInt(res.headers.get('Retry-After') || '45', 10);
-    registerBinanceBackoff(`HTTP ${res.status} algoOrder`, retry);
-    await sleep(retry * 1000);
-    if (!_retry) return bAlgo(apiKey, apiSecret, params, true);
+    registerHttpBackoffAndThrow('algoOrder', res.status, res.headers.get('Retry-After'));
   }
   const text = await res.text();
   let data;
@@ -490,7 +507,7 @@ async function bPub(path, qs='') {
   await binanceThrottle('PUBLIC_REST', path.includes('/ticker/24hr') ? 5 : 1, 0);
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
-  if(r.status===429||r.status===418){const retry=parseInt(r.headers.get('Retry-After')||'45',10);registerBinanceBackoff(`HTTP ${r.status} ${path}`, retry);await sleep(retry*1000);return bPub(path,qs);}
+  if(r.status===429||r.status===418){registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'));}
   const text=await r.text();
   try{
     const data = JSON.parse(text);
@@ -567,10 +584,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   if (!isGet) options.body = fullQs;
   const res = await fetch(finalUrl, options);
   if (res.status === 429 || res.status === 418) {
-    const retry = parseInt(res.headers.get('Retry-After') || '45', 10);
-    registerBinanceBackoff(`HTTP ${res.status} ${path}`, retry);
-    await sleep(retry * 1000);
-    if (!_retry) return bReq(apiKey,apiSecret,method,path,params,timeout,true);
+    registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
   }
   const text = await res.text();
   let data;
@@ -595,6 +609,7 @@ const posRiskCache = {
   ts: 0,
   fetching: false,
   inflight: null,
+  inflightStartedAt: 0,
   rateLimitUntil: 0,
   lastApiKey: null,
   lastSource: null,
@@ -603,6 +618,7 @@ const posRiskCache = {
 const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
 const POS_RISK_TTL_ACTIVE =  4000;   //  4sn (R30: pozisyon açıkken BE/trailing daha hızlı)
 const POS_RISK_RATELIMIT_MS = 60000; // -1003 sonrası 60sn dur
+const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
 
 function keyFingerprint(apiKey) {
   const k = String(apiKey || '').trim();
@@ -610,13 +626,25 @@ function keyFingerprint(apiKey) {
 }
 function isPositionRiskRateLimitError(err) {
   const m = String(err && (err.message || err) || '');
-  return m.includes('-1003') || /too many requests/i.test(m);
+  return m.includes('-1003') || m.includes('BINANCE_BACKOFF_ACTIVE') || m.includes('HTTP 418') || m.includes('HTTP 429') || /too many requests/i.test(m) || /merkezi istek freni/i.test(m);
 }
 function isPositionRiskCooldownActive() {
   return Date.now() < Number(posRiskCache.rateLimitUntil || 0);
 }
 function getPositionRiskCooldownMs() {
   return Math.max(0, Number(posRiskCache.rateLimitUntil || 0) - Date.now());
+}
+function resetStuckPositionRiskInflight(reason='watchdog') {
+  const age = posRiskCache.fetching ? Date.now() - Number(posRiskCache.inflightStartedAt || 0) : 0;
+  if (posRiskCache.fetching && age > POS_RISK_INFLIGHT_TIMEOUT_MS) {
+    try { pushCritical('POSITION_RISK_INFLIGHT_RESET', `positionRisk isteği ${Math.round(age/1000)}sn takıldı; kilit temizlendi`, {reason, ageMs:age}, 'WARNING'); } catch(_) {}
+    posRiskCache.fetching = false;
+    posRiskCache.inflight = null;
+    posRiskCache.inflightStartedAt = 0;
+    posRiskCache.lastError = 'positionRisk isteği takıldı; R95 kilit temizledi';
+    return true;
+  }
+  return false;
 }
 function positionRowsOpenCount(rows) {
   return Array.isArray(rows) ? rows.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).length : 0;
@@ -647,8 +675,15 @@ async function getPositionRisk(apiKey, apiSecret, params={}) {
 }
 
 async function getPositionRiskCached(apiKey, apiSecret, params={}) {
+  resetStuckPositionRiskInflight('getPositionRiskCached');
   const now = Date.now();
   const apiFp = keyFingerprint(apiKey);
+
+  // R95: Binance 418/429 merkezi istek freni aktifken yeni positionRisk isteği açma.
+  if (isBinanceBackoffActive()) {
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
+    throw makeBinanceBackoffError('Binance geçici istek freni', Math.ceil(getBinanceBackoffMs()/1000), 418);
+  }
 
   // -1003 cooldown aktifse cache döndür; cache yoksa yeni emir akışını güvenli durdur.
   if (now < posRiskCache.rateLimitUntil) {
@@ -682,6 +717,7 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   }
 
   posRiskCache.fetching = true;
+  posRiskCache.inflightStartedAt = Date.now();
   posRiskCache.inflight = (async () => {
     try {
       const data = await getPositionRisk(apiKey, apiSecret, {});
@@ -693,16 +729,18 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
     } catch(e) {
       const msg = e.message || '';
       posRiskCache.lastError = safeErrMsg(e);
-      if (msg.includes('-1003') || msg.includes('Too many requests')) {
-        posRiskCache.rateLimitUntil = Date.now() + POS_RISK_RATELIMIT_MS;
-        pushCritical('POSITION_RISK_RATELIMIT', e, {}, 'WARNING');
-        console.log('⛔ positionRisk rate-limit: 60sn bekleniyor');
+      if (msg.includes('-1003') || msg.includes('Too many requests') || msg.includes('BINANCE_BACKOFF_ACTIVE') || msg.includes('HTTP 418') || msg.includes('HTTP 429')) {
+        const extraMs = Math.max(POS_RISK_RATELIMIT_MS, getBinanceBackoffMs());
+        posRiskCache.rateLimitUntil = Date.now() + extraMs;
+        pushCritical('POSITION_RISK_RATELIMIT', e, {cooldownMs:extraMs}, 'WARNING');
+        console.log(`⛔ positionRisk / Binance istek freni: ${Math.ceil(extraMs/1000)}sn bekleniyor`);
       }
       if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
       throw e;
     } finally {
       posRiskCache.fetching = false;
       posRiskCache.inflight = null;
+      posRiskCache.inflightStartedAt = 0;
     }
   })();
 
@@ -733,7 +771,7 @@ const positionRiskState = {
       fp: posRiskCache.lastApiKey,
     };
   },
-  get inflight() { return posRiskCache.fetching; },
+  get inflight() { resetStuckPositionRiskInflight('state getter'); return posRiskCache.fetching; },
   get cooldownUntil() { return posRiskCache.rateLimitUntil; },
   get lastError() { return posRiskCache.lastError; },
   get lastSource() { return posRiskCache.lastSource; },
@@ -6385,7 +6423,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R94 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(`R95 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
         }
         if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
@@ -8177,6 +8215,12 @@ app.get('/api/diagnostics/status', (_req, res) => {
       lastError: positionRiskState.lastError || null,
       inflight: !!positionRiskState.inflight,
     },
+    binanceRest: {
+      backoffActive: isBinanceBackoffActive(),
+      backoffMs: getBinanceBackoffMs(),
+      usedWeight: binanceGov.usedWeight,
+      queueActive: !!binanceGov.q,
+    },
     serverTime: Date.now(),
   });
 });
@@ -8248,8 +8292,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R94 Karar: canlı trend zemin düzeltme + merdiven/dönüş radarı / mikro işlem yok',
-        note: 'R94 R82/R90/R92/R94 çekirdeği korunur; piyasa zemini canlı Top Gainers için akıllı sınıflanır, merdiven ve dönüş radarı sertleşmeden çalışır; mikro marjlı deneme yoktur.'
+          : 'R95 Karar: Binance 418 kurtarma + canlı trend zemin / merdiven-dönüş radarı',
+        note: 'R95 R94 çekirdeğini korur; Binance 418/429 gelirse merkezi istek freni, takılan positionRisk temizleme ve scan watchdog çalışır; yeni emir veri tazelenene kadar kapalıdır.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -8265,6 +8309,14 @@ app.get('/api/health', (_req, res) => {
         criticalCount: Array.isArray(criticalEvents) ? criticalEvents.length : 0,
         recentCritical,
         positionRisk,
+        binanceRest: {
+          backoffActive: isBinanceBackoffActive(),
+          backoffMs: getBinanceBackoffMs(),
+          backoffUntil: Number(binanceGov.backoffUntil || 0),
+          usedWeight: binanceGov.usedWeight,
+          usedOrders: binanceGov.usedOrders,
+          minuteStart: binanceGov.minuteStart,
+        },
       },
       recentLogs: logs,
     });
@@ -8322,7 +8374,24 @@ function stopAutoTrader(silent=false) {
 }
 
 async function runAutoScan() {
-  if (autoRunning || !autoConfig?.enabled) return;
+  // R95: Scan promise eski Binance 418 uykusunda takılı kalırsa yeni scan'i sonsuza kadar engellemesin.
+  if (autoRunning) {
+    const age = Date.now() - Number(autoScanState.lastScanStart || 0);
+    if (age > 75_000) {
+      pushCritical('AUTO_SCAN_WATCHDOG', `Tarama ${Math.round(age/1000)}sn takıldı; kilit temizlendi`, {ageMs:age, phase:autoScanState.phase}, 'WARNING');
+      autoRunning = false;
+      autoScanState.running = false;
+      autoScanState.currentSymbol = null;
+      autoScanState.lastScanEnd = Date.now();
+      autoScanState.phase = isBinanceBackoffActive() ? 'BINANCE_İSTEK_FRENİ' : 'TARAMA_RESETLENDI';
+      autoScanState.lastAction = isBinanceBackoffActive()
+        ? `Binance geçici istek freni ${Math.ceil(getBinanceBackoffMs()/1000)}sn — yeni işlem yok`
+        : 'Takılan tarama temizlendi; yeni tarama sıraya alınacak';
+    } else {
+      return;
+    }
+  }
+  if (!autoConfig?.enabled) return;
   autoRunning = true;
   resetAutoScanState({
     enabled:true, running:true, phase:'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
@@ -8344,6 +8413,16 @@ async function runAutoScan() {
     autoScanState.scanMode = r54ScanMode;
     autoScanState.maxPositions = Number(maxPositions||0);
     autoScanState.phase = 'POZİSYON_KONTROL';
+
+    // R95: Binance 418/429 merkezi freni aktifken yeni REST yükü bindirme, taramayı güvenli beklet.
+    if (isBinanceBackoffActive()) {
+      const rem = Math.ceil(getBinanceBackoffMs()/1000);
+      resetStuckPositionRiskInflight('auto-scan-backoff');
+      autoScanState.phase = 'BINANCE_İSTEK_FRENİ';
+      autoScanState.lastAction = `Binance geçici istek freni ${rem}sn — yeni işlem kapalı, açık pozisyon varsa takipte`;
+      logAuto(`⏳ Binance geçici istek freni: ${rem}sn — yeni tarama/emir bekletiliyor`);
+      return;
+    }
 
     // 1. Mevcut pozisyonları kontrol et
     const posData = await getPositionRiskCached(apiKey,apiSecret);
@@ -8579,7 +8658,7 @@ async function runAutoScan() {
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
         if (decisionChain && decisionChain.entryPermissionOk === false) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
-          const why = `R94 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R94VurKac:${decisionChain?.r88VurKacOk?'OK':'NO'} R94[aktif:${decisionChain?.r88VurKacEnabled?'EVET':'HAYIR'} canlı:${decisionChain?.r88CanliHamleIzi?'VAR':'YOK'} merdiven:${decisionChain?.r93MerdivenDevamOk?'VAR':'YOK'} dönüş:${decisionChain?.r93DonusRadariOk?'VAR':'YOK'} kopma:${decisionChain?.r90CanliKopmaOk?'VAR':'YOK'} süper:${decisionChain?.r89SuperMikroYapiOk?'VAR':'YOK'} mikro:${decisionChain?.r88MikroSkor??0} teyit:${decisionChain?.r88AkisTeyidiSayisi??0} taban:${decisionChain?.r89ScoreFloor??decisionChain?.r88ScoreFloor??0} piyasa:${decisionChain?.r93PiyasaEtiketi||'-'} işlem:${decisionChain?.r92IslemTipi||'-'} risk:${decisionChain?.r92RiskDurumu||'-'} terazi:${decisionChain?.r92Terazi??0} dönüşSkor:${decisionChain?.r93DonusSkor??0} sonMum:${decisionChain?.r93Merdiven?.sonMum||'-'}] R86Formasyon:${decisionChain?.r86FormasyonVeriTeyitOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
+          const why = `R95 giriş izni yok: Sweep ${decisionChain.sweepRequired?'AÇIK':'KAPALI'} / ${decisionChain.entryPermissionReason||'FAIL'}${r47Dbg} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R95VurKac:${decisionChain?.r88VurKacOk?'OK':'NO'} R95[aktif:${decisionChain?.r88VurKacEnabled?'EVET':'HAYIR'} canlı:${decisionChain?.r88CanliHamleIzi?'VAR':'YOK'} merdiven:${decisionChain?.r93MerdivenDevamOk?'VAR':'YOK'} dönüş:${decisionChain?.r93DonusRadariOk?'VAR':'YOK'} kopma:${decisionChain?.r90CanliKopmaOk?'VAR':'YOK'} süper:${decisionChain?.r89SuperMikroYapiOk?'VAR':'YOK'} mikro:${decisionChain?.r88MikroSkor??0} teyit:${decisionChain?.r88AkisTeyidiSayisi??0} taban:${decisionChain?.r89ScoreFloor??decisionChain?.r88ScoreFloor??0} piyasa:${decisionChain?.r93PiyasaEtiketi||'-'} işlem:${decisionChain?.r92IslemTipi||'-'} risk:${decisionChain?.r92RiskDurumu||'-'} terazi:${decisionChain?.r92Terazi??0} dönüşSkor:${decisionChain?.r93DonusSkor??0} sonMum:${decisionChain?.r93Merdiven?.sonMum||'-'}] R86Formasyon:${decisionChain?.r86FormasyonVeriTeyitOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, sweepRequired:decisionChain?.sweepRequired, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk:decisionChain?.r61TrendContinuationBridgeOk, r62CounterTrendTrapBridgeOk:decisionChain?.r62CounterTrendTrapBridgeOk, r74Top10ProScalperOk:decisionChain?.r74Top10ProScalperOk, r74ImpulseEntryOk:decisionChain?.r74ImpulseEntryOk, r74Top10ContextBypassOk:decisionChain?.r74Top10ContextBypassOk, r74ScoreFloor:decisionChain?.r74ScoreFloor, r68UnifiedScalperCoreOk:decisionChain?.r68UnifiedScalperCoreOk, r68EntryEventOk:decisionChain?.r68EntryEventOk, r68TrendContextOk:decisionChain?.r68TrendContextOk, r68CounterTrapContextOk:decisionChain?.r68CounterTrapContextOk, r68CriticalHardBlock:decisionChain?.r68CriticalHardBlock, r69PriorityContextOverrideOk:decisionChain?.r69PriorityContextOverrideOk, r69ContextOk:decisionChain?.r69ContextOk, r69PriorityExecutionOk:decisionChain?.r69PriorityExecutionOk, r65ScalperCoreOk:decisionChain?.r65ScalperCoreOk, r65ScalperCoreTrendOk:decisionChain?.r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk:decisionChain?.r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto:decisionChain?.r65ScalperCoreHardVeto, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
@@ -8589,7 +8668,7 @@ async function runAutoScan() {
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
         if (!tierOk) {
-          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R94VurKac:${decisionChain?.r88VurKacOk?'OK':'NO'} R94[aktif:${decisionChain?.r88VurKacEnabled?'EVET':'HAYIR'} canlı:${decisionChain?.r88CanliHamleIzi?'VAR':'YOK'} merdiven:${decisionChain?.r93MerdivenDevamOk?'VAR':'YOK'} dönüş:${decisionChain?.r93DonusRadariOk?'VAR':'YOK'} kopma:${decisionChain?.r90CanliKopmaOk?'VAR':'YOK'} süper:${decisionChain?.r89SuperMikroYapiOk?'VAR':'YOK'} mikro:${decisionChain?.r88MikroSkor??0} teyit:${decisionChain?.r88AkisTeyidiSayisi??0} taban:${decisionChain?.r89ScoreFloor??decisionChain?.r88ScoreFloor??0} piyasa:${decisionChain?.r93PiyasaEtiketi||'-'} işlem:${decisionChain?.r92IslemTipi||'-'} risk:${decisionChain?.r92RiskDurumu||'-'} terazi:${decisionChain?.r92Terazi??0} dönüşSkor:${decisionChain?.r93DonusSkor??0} sonMum:${decisionChain?.r93Merdiven?.sonMum||'-'}] R86Formasyon:${decisionChain?.r86FormasyonVeriTeyitOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
+          const r47Dbg = decisionChain?.sweepRequired ? '' : ` · R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0} R48:${decisionChain?.r48DirectSweepBalanceOk?'OK':'NO'} R49:${decisionChain?.r49DirectSweepUnlockOk?'OK':'NO'} R50:${decisionChain?.r50AutoPermissionOk?'OK':'NO'} R51:${decisionChain?.r51DirectSweepMinEdgeOk?'OK':'NO'} R53:${decisionChain?.r53SmartEdgeScoreOk?'OK':'NO'} R54:${decisionChain?.r54MicroProbeOk?'OK':'NO'} R57:${decisionChain?.r57ScalperBTierBridgeOk?'OK':'NO'} R61:${decisionChain?.r61TrendContinuationBridgeOk?'OK':'NO'} R62:${decisionChain?.r62CounterTrendTrapBridgeOk?'OK':'NO'} R95VurKac:${decisionChain?.r88VurKacOk?'OK':'NO'} R95[aktif:${decisionChain?.r88VurKacEnabled?'EVET':'HAYIR'} canlı:${decisionChain?.r88CanliHamleIzi?'VAR':'YOK'} merdiven:${decisionChain?.r93MerdivenDevamOk?'VAR':'YOK'} dönüş:${decisionChain?.r93DonusRadariOk?'VAR':'YOK'} kopma:${decisionChain?.r90CanliKopmaOk?'VAR':'YOK'} süper:${decisionChain?.r89SuperMikroYapiOk?'VAR':'YOK'} mikro:${decisionChain?.r88MikroSkor??0} teyit:${decisionChain?.r88AkisTeyidiSayisi??0} taban:${decisionChain?.r89ScoreFloor??decisionChain?.r88ScoreFloor??0} piyasa:${decisionChain?.r93PiyasaEtiketi||'-'} işlem:${decisionChain?.r92IslemTipi||'-'} risk:${decisionChain?.r92RiskDurumu||'-'} terazi:${decisionChain?.r92Terazi??0} dönüşSkor:${decisionChain?.r93DonusSkor??0} sonMum:${decisionChain?.r93Merdiven?.sonMum||'-'}] R86Formasyon:${decisionChain?.r86FormasyonVeriTeyitOk?'OK':'NO'} R75Retest:${decisionChain?.r75RetestBridgeOk?'OK':'NO'} R75LCHard:${decisionChain?.r75LateChaseHard?'YES':'no'} R74:${decisionChain?.r74Top10ProScalperOk?'OK':'NO'} R69:${decisionChain?.r69PriorityExecutionOk?'OK':'NO'} R68:${decisionChain?.r68UnifiedScalperCoreOk?'OK':'NO'} R67:${decisionChain?.r67ScalperCoreHuntEntryOk?'OK':'NO'} R65:${decisionChain?.r65ScalperCoreOk?'OK':'NO'} R66Reclaim:${decisionChain?.r66WyckoffTrapReclaimOk?'OK':'NO'} P50:${decisionChain?.r50EffectivePriority||decisionChain?.priorityScore||0}`;
           const why = `B/WAIT-Tier: ${decisionChain?.reason||'A/B+ değil'}${r47Dbg}`;
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
@@ -8715,7 +8794,7 @@ async function runAutoScan() {
           continue;
         }
         if (score < effectiveMinScore && r80ControlledBPlusScoreOk) {
-          logAuto(`🟢 ${coin.symbol} R94 B artı puan tabanı geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
+          logAuto(`🟢 ${coin.symbol} R95 B artı puan tabanı geçti: skor ${score}/${effectiveMinScore}, floor ${r80BPlusScoreFloor}, R47 ${decisionChain?.r47Readiness||0}/8`);
         }
 
         // R85 AKILLI GEÇ GİRİŞ + GİRİŞ DİSİPLİNİ:
@@ -8829,14 +8908,14 @@ async function runAutoScan() {
             isLong = rotateSide === 'LONG';
             isShort = rotateSide === 'SHORT';
           } else {
-            const why = `R94 riskli yön freni: ${recommendation} için risk ${sideCtxRisk}, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}; devam onayı:${r88DevamOnayiOk?'VAR':'YOK'} geri-test:${r88GeriTestOnayiOk?'VAR':'YOK'} kırılım:${r88KirilimOnayiOk?'VAR':'YOK'} geri-kazanım:${r88GeriKazanimOnayiOk?'VAR':'YOK'} taze-impuls:${r88TazeImpulsOnayiOk?'VAR':'YOK'} sweep-zaman:${r88SweepZamanlamaOnayiOk?'VAR':'YOK'}; ${rotateSide} radarı=${rotateAllowed?'kontrol':'kapalı'} kademe:${rotateDC?.tier||'YOK'} skor:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 tuzak:${rotateTrapEvidenceOk?'VAR':'YOK'} giriş-izi:${rotateEntryTraceOk?'VAR':'YOK'}`;
+            const why = `R95 riskli yön freni: ${recommendation} için risk ${sideCtxRisk}, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}; devam onayı:${r88DevamOnayiOk?'VAR':'YOK'} geri-test:${r88GeriTestOnayiOk?'VAR':'YOK'} kırılım:${r88KirilimOnayiOk?'VAR':'YOK'} geri-kazanım:${r88GeriKazanimOnayiOk?'VAR':'YOK'} taze-impuls:${r88TazeImpulsOnayiOk?'VAR':'YOK'} sweep-zaman:${r88SweepZamanlamaOnayiOk?'VAR':'YOK'}; ${rotateSide} radarı=${rotateAllowed?'kontrol':'kapalı'} kademe:${rotateDC?.tier||'YOK'} skor:${rotateScore} R47:${rotateDC?.r47Readiness||0}/8 tuzak:${rotateTrapEvidenceOk?'VAR':'YOK'} giriş-izi:${rotateEntryTraceOk?'VAR':'YOK'}`;
             logAuto(`⛔ ${coin.symbol} ${why}`);
             markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r81EntryTraceOk, r81StrongBPlusSoftPass, r88DevamOnayiOk, r88GeriTestOnayiOk, r88KirilimOnayiOk, r88GeriKazanimOnayiOk, r88TazeImpulsOnayiOk, r88SweepZamanlamaOnayiOk, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
             continue;
           }
         }
         if (antiChase && !eliteOverride && r81StrongBPlusSoftPass) {
-          logAuto(`🟡 ${coin.symbol} R94 riskli yön izlemeye alındı: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}, devam onayı:${r88DevamOnayiOk?'VAR':'YOK'}`);
+          logAuto(`🟡 ${coin.symbol} R95 riskli yön izlemeye alındı: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}, devam onayı:${r88DevamOnayiOk?'VAR':'YOK'}`);
         }
 
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
@@ -9043,7 +9122,12 @@ async function runAutoScan() {
     }
 
   } catch(e) {
-    if (isPositionRiskRateLimitError(e) || String(e?.message||'').includes('RATE_LIMIT_COOLDOWN')) {
+    if (String(e?.code||'') === 'BINANCE_BACKOFF_ACTIVE' || String(e?.message||'').includes('merkezi istek freni')) {
+      const rem = Math.max(Math.ceil(getBinanceBackoffMs()/1000), Math.ceil(getPositionRiskCooldownMs()/1000));
+      autoScanState.phase = 'BINANCE_İSTEK_FRENİ';
+      autoScanState.lastAction = `Binance geçici istek freni — ${rem}sn bekleniyor; yeni emir kapalı`;
+      logAuto(`⏳ Binance istek freni — ${rem}sn yeni emir yok: ${String(e.message||'').slice(0,120)}`);
+    } else if (isPositionRiskRateLimitError(e) || String(e?.message||'').includes('RATE_LIMIT_COOLDOWN')) {
       autoScanState.phase = 'RATE_LIMIT_COOLDOWN';
       autoScanState.lastAction = `positionRisk limit/cooldown — ${Math.ceil(getPositionRiskCooldownMs()/1000)}sn bekleniyor`;
       logAuto(`⏳ positionRisk limit/cooldown — yeni emir bekletiliyor: ${e.message?.substring(0,120)}`);
@@ -9205,6 +9289,11 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
 async function syncPositions() {
   if (!autoConfig?.enabled || !autoConfig?.apiKey || !autoConfig?.apiSecret) return;
   try {
+    if (isBinanceBackoffActive()) {
+      resetStuckPositionRiskInflight('syncPositions-backoff');
+      autoScanState.lastAction = `Binance geçici istek freni ${Math.ceil(getBinanceBackoffMs()/1000)}sn — pozisyon senkronu bekliyor`;
+      return;
+    }
     const posData = await getPositionRiskCached(autoConfig.apiKey, autoConfig.apiSecret);
     const openMap = new Map();
     if (Array.isArray(posData)) {
