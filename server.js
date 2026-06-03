@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R103_5M_LIKIDITE_AVI_VUR_KAC_TETIK';
+const LAZARUS_BUILD = 'R104_COK_ZAMANLI_LIKIDITE_DESTEK_DIRENC_YAKIT_HARITASI';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1788,6 +1788,147 @@ function r103Analyze5mLiquidityHunt(klines5m, lastPrice=0) {
   if (shortDevam) out.notlar.push('5m alt av kırıldı, düşüş devamı');
   out.oz = out.notlar.length ? out.notlar.join(' · ') : '5m av tetik bekliyor';
   return out;
+}
+
+
+// ── R104: ÇOK ZAMANLI DESTEK/DİRENÇ + LİKİDİTE + YAKIT HARİTASI ─────────────
+// Ek Binance isteği yapmaz. Mevcut k5m/k15m/k1h/k4h/k1d, R101 yakıt,
+// R102 likidite haritası ve R103 5m av tetiklerini tek Türkçe karar haritasında toplar.
+// Amaç kapı eklemek değil: botu körleştirmeden destek/direnç/av/yakıt bilgisini terazide kullanmak.
+function r104BuildDecisionMap({ side='LONG', r101=null, r102=null, r103=null, lastPrice=0, r39Side=null } = {}) {
+  const isLong = String(side || 'LONG').toUpperCase() !== 'SHORT';
+  const out = {
+    ok: true,
+    side: isLong ? 'LONG' : 'SHORT',
+    sideTR: isLong ? 'YÜKSELİŞ' : 'DÜŞÜŞ',
+    long:{score:0, ok:false, risk:'ORTA', neden:[], mod:'İZLE'},
+    short:{score:0, ok:false, risk:'ORTA', neden:[], mod:'İZLE'},
+    ustAv: r102?.ust || {}, altAv: r102?.alt || {},
+    direncte: false, destekte: false, ustHedefYakin:false, altHedefYakin:false,
+    yon:{score:0, ok:false, risk:'ORTA', neden:[], mod:'İZLE'},
+    karsi:{score:0, ok:false, risk:'ORTA', neden:[], mod:'İZLE'},
+    riskUyarilari:[], notlar:[], oz:'çok zamanlı harita izleniyor'
+  };
+  const up = r102?.ust || {};
+  const dn = r102?.alt || {};
+  const r103L = r103?.long || {};
+  const r103S = r103?.short || {};
+  const nearUp = !!(up.yaklaşma || (up.nearest && Number(up.nearest.distPct||99) <= Math.max(0.25, Number(up.nearest.reachPct||0.6))));
+  const nearDn = !!(dn.yaklaşma || (dn.nearest && Number(dn.nearest.distPct||99) <= Math.max(0.25, Number(dn.nearest.reachPct||0.6))));
+  out.direncte = nearUp;
+  out.destekte = nearDn;
+  out.ustHedefYakin = nearUp;
+  out.altHedefYakin = nearDn;
+
+  function add(dst, pts, txt) { dst.score += Number(pts)||0; if (txt) dst.neden.push(txt); }
+  const L = out.long, S = out.short;
+
+  if (r102?.long?.donusOk) add(L, 5, 'çok zamanlı alt av geri alındı');
+  if (r102?.long?.devamOk) add(L, 4, 'üst likidite kırıldı ve üstte kalma var');
+  if (r103L.donusOk) add(L, 6, '5dk alt likidite alınıp geri kazanıldı');
+  if (r103L.devamOk) add(L, 4, '5dk üst hedef kırılıp devam etti');
+  if (r101?.longDoldu) add(L, 4, 'yükseliş yakıtı doldu');
+  if (r101?.longDevamOk) add(L, 3, 'yükseliş yakıtı devam ediyor');
+  if (r101?.shorttanLongaYakit) add(L, 5, 'düşüş yakıtı bitti, yükseliş dönüş yakıtı geldi');
+  if (r39Side?.breakConfirmed && isLong) add(L, 2, 'yakın destek/direnç kırılım onayı var');
+
+  if (r102?.short?.donusOk) add(S, 5, 'çok zamanlı üst av geri düştü');
+  if (r102?.short?.devamOk) add(S, 4, 'alt likidite kırıldı ve altta kalma var');
+  if (r103S.donusOk) add(S, 6, '5dk üst likidite alınıp geri düşüldü');
+  if (r103S.devamOk) add(S, 4, '5dk alt hedef kırılıp devam etti');
+  if (r101?.shortDoldu) add(S, 4, 'düşüş yakıtı doldu');
+  if (r101?.shortDevamOk) add(S, 3, 'düşüş yakıtı devam ediyor');
+  if (r101?.longdanShortaYakit) add(S, 5, 'yükseliş yakıtı bitti, düşüş dönüş yakıtı geldi');
+  if (r39Side?.breakConfirmed && !isLong) add(S, 2, 'yakın destek/direnç kırılım onayı var');
+
+  // Direnç/destek içi risk: yasak değil, işlem tipi ve çıkış hassasiyetini değiştirir.
+  if (nearUp && !r102?.long?.devamOk) { L.score -= 2; L.risk = 'DİRENÇ İÇİ VUR-KAÇ'; L.neden.push('üst direnç/av bölgesindeyiz'); }
+  if (nearDn && !r102?.short?.devamOk) { S.score -= 2; S.risk = 'DESTEK İÇİ VUR-KAÇ'; S.neden.push('alt destek/av bölgesindeyiz'); }
+  if (nearUp && (r102?.short?.donusOk || r103S.donusOk || r101?.longdanShortaYakit)) { add(S, 3, 'dirençte yakıt boşalma/düşüş radarı'); }
+  if (nearDn && (r102?.long?.donusOk || r103L.donusOk || r101?.shorttanLongaYakit)) { add(L, 3, 'destekte yakıt dolma/yükseliş radarı'); }
+  if (r101?.longBitti && !r101?.shorttanLongaYakit) { L.score -= 4; L.neden.push('yükseliş yakıtı bitiyor'); }
+  if (r101?.shortBitti && !r101?.longdanShortaYakit) { S.score -= 4; S.neden.push('düşüş yakıtı bitiyor'); }
+
+  for (const x of [L,S]) {
+    x.score = Math.max(0, Math.round(x.score));
+    x.ok = x.score >= 6;
+    x.mod = x.score >= 12 ? 'GÜÇLÜ HARİTA' : x.score >= 8 ? 'HARİTA DESTEKLİ' : x.score >= 6 ? 'İZLEMEDE HAZIR' : 'İZLE';
+    if (!x.risk || x.risk === 'ORTA') x.risk = x.score >= 12 ? 'DÜŞÜK' : x.score >= 8 ? 'ORTA' : 'YÜKSEK';
+  }
+
+  out.yon = isLong ? L : S;
+  out.karsi = isLong ? S : L;
+  if (nearUp) out.notlar.push(`üst av/direnç yakında${up.nearest?.price ? ': '+up.nearest.price : ''}`);
+  if (nearDn) out.notlar.push(`alt av/destek yakında${dn.nearest?.price ? ': '+dn.nearest.price : ''}`);
+  if (out.yon.ok) out.notlar.push(`${out.sideTR} haritası veriyle destekli`);
+  if (out.karsi.score >= out.yon.score + 4) out.riskUyarilari.push('karşı yön av/yakıt puanı daha güçlü');
+  out.oz = out.notlar.length ? out.notlar.join(' · ') : 'destek/direnç ve yakıt haritası nötr';
+  return out;
+}
+
+// Açık pozisyon yönetimi için hafif R104 haritası. Sadece açık pozisyonda, önbellekle çalışır.
+async function r104PositionFuelSnapshot(symbol, side, curPrice) {
+  const sym = normalizeSymbol(symbol);
+  try {
+    const [k5m,k15m,k1h,k4h,k1d] = await Promise.all([
+      cached(`r104_pos_k5m_${sym}`, 25*1000, ()=>bPub('/fapi/v1/klines',`symbol=${sym}&interval=5m&limit=80`)),
+      cached(`r104_pos_k15m_${sym}`, 60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${sym}&interval=15m&limit=120`)),
+      cached(`r104_pos_k1h_${sym}`, 4*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${sym}&interval=1h&limit=160`)),
+      cached(`r104_pos_k4h_${sym}`, 15*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${sym}&interval=4h&limit=160`)),
+      cached(`r104_pos_k1d_${sym}`, 60*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${sym}&interval=1d&limit=90`)),
+    ]);
+    const r101 = r101AnalyzeFuelWave(k5m);
+    const r102 = r102AnalyzeMultiTfLiquidityMap({k5m,k15m,k1h,k4h,k1d,lastPrice:curPrice});
+    const r103 = r103Analyze5mLiquidityHunt(k5m, curPrice);
+    const map = r104BuildDecisionMap({side,r101,r102,r103,lastPrice:curPrice});
+    const isLong = normalizeSide(side) === 'LONG';
+    const yakitBosaliyor = !!(isLong ? (r101.longBosaltiyor || r101.longBitti) : (r101.shortBosaltiyor || r101.shortBitti));
+    const yakitDoluyor = !!(isLong ? (r101.longDolduruyor || r101.longDoldu || r101.longDevamOk) : (r101.shortDolduruyor || r101.shortDoldu || r101.shortDevamOk));
+    const tersAv = !!(map.karsi?.score >= map.yon?.score + 4 || (isLong ? (r103.short?.donusOk || r102.short?.donusOk || r101.longdanShortaYakit) : (r103.long?.donusOk || r102.long?.donusOk || r101.shorttanLongaYakit)));
+    const yonDevam = !!(map.yon?.ok || (isLong ? (r103.long?.devamOk || r102.long?.devamOk || r101.longDevamOk) : (r103.short?.devamOk || r102.short?.devamOk || r101.shortDevamOk)));
+    return {ok:true, map, r101, r102, r103, yakitBosaliyor, yakitDoluyor, tersAv, yonDevam,
+      not:`${map.oz}; yakıt:${isLong?r101.longFaz:r101.shortFaz}; karşıSkor:${map.karsi?.score||0}; yönSkor:${map.yon?.score||0}`};
+  } catch(e) {
+    return {ok:false, error:e.message};
+  }
+}
+
+// ── R104: KALDIRAÇ / LİKİDASYON EMNİYETİ ────────────────────────────────────
+function r104CalcSafeLeverageFromStop({ side='LONG', entryPrice=0, stopPrice=0, requestedLeverage=1, bracketMaxLeverage=null, minLeverage=1 } = {}) {
+  const req = Math.max(1, Math.floor(Number(requestedLeverage)||1));
+  const entry = Number(entryPrice||0), stop = Number(stopPrice||0);
+  const bracket = Number(bracketMaxLeverage||0) > 0 ? Math.floor(Number(bracketMaxLeverage)) : 125;
+  if (!(entry > 0) || !(stop > 0)) return {leverage:Math.min(req, bracket), changed:false, reason:'giriş/zarar-kes fiyatı okunamadı'};
+  const isLong = normalizeSide(side) !== 'SHORT';
+  const invalid = isLong ? stop >= entry : stop <= entry;
+  if (invalid) return {leverage:Math.min(req, bracket), changed:false, reason:'zarar-kes yönü geçersiz; ana kontrol düzeltecek'};
+  const slDistPct = Math.abs(entry - stop) / entry * 100;
+  const safetyPct = Math.max(0.28, Math.min(1.20, slDistPct * 0.18 + 0.12));
+  // Yaklaşık emniyet: likidasyon mesafesi zarar-kes mesafesinden güven payı kadar uzak olsun.
+  const safeByStop = Math.max(minLeverage, Math.floor(78 / Math.max(0.25, slDistPct + safetyPct)));
+  const lev = Math.max(minLeverage, Math.min(req, bracket, safeByStop));
+  return {
+    leverage: lev,
+    changed: lev < req,
+    requested:req,
+    bracketMax:bracket,
+    slDistPct:+slDistPct.toFixed(3),
+    safetyPct:+safetyPct.toFixed(3),
+    reason: lev < req ? `zarar-kes mesafesi %${slDistPct.toFixed(2)}; likidasyon zarar-kesten önce gelmesin diye kaldıraç ${req}x → ${lev}x` : `kaldıraç emniyetli: zarar-kes mesafesi %${slDistPct.toFixed(2)}`
+  };
+}
+function r104IsLiquidationBeforeStop(row, stopPrice, isLong) {
+  const liq = Number(row?.liquidationPrice || 0);
+  const sl = Number(stopPrice || 0);
+  if (!(liq > 0) || !(sl > 0)) return {unsafe:false, liq, sl, reason:'likidasyon veya zarar-kes fiyatı okunamadı'};
+  const buffer = 0.0015;
+  const unsafe = isLong ? liq >= sl * (1 - buffer) : liq <= sl * (1 + buffer);
+  return {unsafe, liq, sl, reason: unsafe ? 'Binance gerçek likidasyon fiyatı zarar-kesin önünde/çok yakınında' : 'Binance gerçek likidasyon fiyatı zarar-kesin güvenli tarafında'};
+}
+async function r104GetOpenPositionRow(apiKey, apiSecret, symbol) {
+  const sym = normalizeSymbol(symbol);
+  const rows = await getPositionRisk(apiKey, apiSecret, {symbol:sym});
+  return Array.isArray(rows) ? rows.find(x => String(x.symbol).toUpperCase()===sym && Math.abs(Number(x.positionAmt||0))>0) : null;
 }
 
 function updateSweepDetector(det, price, isBuy, usdt) {
@@ -6723,6 +6864,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r103YonDonusOk = !!(r103YonAvi.donusOk);
         const r103YonDevamOk = !!(r103YonAvi.devamOk);
         const r103KarsiAvUyariOk = !!(r103KarsiAviSkoru >= 10 && !r103YonDonusOk && !r103YonDevamOk);
+        const r104Harita = r104BuildDecisionMap({ side: rawRec, r101:r101Yakit, r102:r102LikiditeHaritasi, r103:r103LikiditeAvi, lastPrice, r39Side });
+        const r104YonHarita = r104Harita.yon || {};
+        const r104KarsiHarita = r104Harita.karsi || {};
+        const r104YonHaritaOk = !!(r104YonHarita.ok || Number(r104YonHarita.score||0) >= 6);
+        const r104KarsiBaskiOk = !!(Number(r104KarsiHarita.score||0) >= Number(r104YonHarita.score||0) + 5 && !r104YonHaritaOk);
         const r102YonHaritaOk = !!(r102YonHarita.haritaOk || r102YonAvSkoru >= 6 || r103YonAvTetikOk);
         const r102YonDevamOk = !!(r102YonHarita.devamOk);
         const r102YonDonusOk = !!(r102YonHarita.donusOk);
@@ -6754,7 +6900,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (r102YonDonusOk ? 3 : 0) +
           (r103YonAvTetikOk ? 4 : 0) +
           (r103YonDonusOk ? 4 : 0) +
-          (r103YonDevamOk ? 3 : 0) -
+          (r103YonDevamOk ? 3 : 0) +
+          (r104YonHaritaOk ? 3 : 0) +
+          (Number(r104YonHarita?.score||0) >= 10 ? 2 : 0) -
           (r101YakitBittiOk && !r101YakitTersDonusOk && !r102YonDonusOk && !r103YonDonusOk ? 4 : 0) -
           (r102KarsiAvUyariOk ? 3 : 0) - (r103KarsiAvUyariOk ? 4 : 0) - r88RiskEksi;
         const r93TrendCanliOk = !!(r93MerdivenDevamOk || r93DonusRadariOk || r101YakitDevamOk || r101YakitTersDonusOk || r102YonHaritaOk || r103YonAvTetikOk || r89SuperMikroYapiOk || (r88CanliHamleIzi && Number(r47Readiness||0) >= 8));
@@ -6832,6 +6980,19 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           !r41FallingKnifeBlock && !r41RisingKnifeBlock &&
           (!r39TargetNearBlock || r39Side?.breakConfirmed || r62CounterTrendTrapContextOk || r103YonDonusOk || r103YonDevamOk || Number(r47TimingPts || 0) >= 1)
         );
+        // R104: Çok zamanlı destek/direnç/likidite/yakıt haritası.
+        // Bu yeni bir sert kapı değildir; R102/R103/R101 kanıtlarını destek/direnç bağlamıyla birleştirir.
+        const r104HaritaVurKacOk = !!(
+          r88VurKacEnabled && !sweepRequired && !hardVeto && r93PiyasaIslemYapilabilir && !r93SonMumKoru &&
+          r104YonHaritaOk && !r104KarsiBaskiOk &&
+          (r102YonHaritaOk || r103YonAvTetikOk || r101YakitDevamOk || r101YakitTersDonusOk || r93MerdivenDevamOk || r93DonusRadariOk) &&
+          Number(r47Readiness || 0) >= 7 && Number(r88MikroSkor || 0) >= 10 &&
+          Number(r88AkisTeyidiSayisi || 0) >= 3 && Number(r92Terazi || 0) >= 32 &&
+          Number(sc || 0) >= Math.max(42, Number(minAutoScore || 70) - 24) &&
+          !atrExtremeBlock && !r88OynaklikAsiri && !mmVeryStrongOpposite && !r86KarsiFormasyonGucu &&
+          !r41FallingKnifeBlock && !r41RisingKnifeBlock &&
+          (!r39TargetNearBlock || r39Side?.breakConfirmed || r62CounterTrendTrapContextOk || r104Harita.direncte || r104Harita.destekte || Number(r47TimingPts || 0) >= 2)
+        );
         // R97: r92VurKacAdayOk skor tabanı veya r38TopMoverStrong engeli nedeniyle KALDI kalsa da,
         // piyasa etiketi "DALGALI AMA İŞLEM YAPILABİLİR" ise bu köprü emir yolunu açar.
         // R98: son mum tersse piyasa emriyle kovalamaz; yeniden güçlenmeyi bekler.
@@ -6898,26 +7059,27 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r93EmirZeminiOk = !!(r92DefterSaglam || r93DalgaliAmaIslemYapilabilir);
         const r93PiyasaEtiketi = r92DefterSaglam ? 'SAĞLAM' : r93DalgaliAmaIslemYapilabilir ? 'DALGALI AMA İŞLEM YAPILABİLİR' : r93PiyasaTehlikeli ? 'TEHLİKELİ' : r88PiyasaBozuk ? 'BOZUK' : 'SAĞLAM';
         const r92GucluVurKacOk = !!(
-          (r92VurKacAdayOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk) && r93EmirZeminiOk && !r93SonMumKoru && Number(r88MikroSkor || 0) >= 15 &&
+          (r92VurKacAdayOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk) && r93EmirZeminiOk && !r93SonMumKoru && Number(r88MikroSkor || 0) >= 15 &&
           Number(r88AkisTeyidiSayisi || 0) >= 4 && Number(r47Readiness || 0) >= 9 &&
           Number(r47TimingPts || 0) >= 2 && r92Terazi >= 45
         );
         const r92NormalVurKacOk = !!(
-          (r92VurKacAdayOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk) && r93EmirZeminiOk && !r93SonMumKoru && !r92GucluVurKacOk &&
+          (r92VurKacAdayOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk) && r93EmirZeminiOk && !r93SonMumKoru && !r92GucluVurKacOk &&
           Number(r88MikroSkor || 0) >= 12 && Number(r88AkisTeyidiSayisi || 0) >= 3 &&
-          Number(r47Readiness || 0) >= 8 && (Number(r47TimingPts || 0) >= 2 || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk) &&
-          (r92Terazi >= 25 || r89SuperMikroYapiOk || r90CanliKopmaOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk)
+          Number(r47Readiness || 0) >= 8 && (Number(r47TimingPts || 0) >= 2 || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk) &&
+          (r92Terazi >= 25 || r89SuperMikroYapiOk || r90CanliKopmaOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk)
         );
-        const r92SadeceIzleOk = !!((r92VurKacAdayOk || r98MerdivenTeraziHazirOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk) && !r92GucluVurKacOk && !r92NormalVurKacOk && !r98MerdivenTeraziBridgeOk && !r99YakinAdayDevamOk && !r101YakitKoprusuOk);
+        const r92SadeceIzleOk = !!((r92VurKacAdayOk || r98MerdivenTeraziHazirOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk) && !r92GucluVurKacOk && !r92NormalVurKacOk && !r98MerdivenTeraziBridgeOk && !r99YakinAdayDevamOk && !r101YakitKoprusuOk);
         const r92IslemTipi = r92GucluVurKacOk ? 'GÜÇLÜ VUR-KAÇ' : r92NormalVurKacOk ? 'NORMAL VUR-KAÇ' : r92SadeceIzleOk ? 'SADECE İZLE' : 'YOK';
         const r92RiskDurumu = !r93EmirZeminiOk ? 'PİYASA ZEMİNİ BOZUK' : r92Terazi >= 45 ? 'DÜŞÜK' : r92Terazi >= 25 ? 'ORTA' : 'YÜKSEK';
-        const r88VurKacOk = !!(r92GucluVurKacOk || r92NormalVurKacOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk);
+        const r88VurKacOk = !!(r92GucluVurKacOk || r92NormalVurKacOk || r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk);
 
         const r50AutoPermissionOk = !!(r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R86/R77/R75
 
         const nonSweepQualityOk = r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk; // R86/R77/R75
         const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
-        const entryPermissionReason = r103LikiditeAvVurKacOk ? 'R103_5M_LIKIDITE_AVI_VUR_KAC_TETIK'
+        const entryPermissionReason = r104HaritaVurKacOk ? 'R104_COK_ZAMANLI_LIKIDITE_DESTEK_DIRENC_YAKIT'
+          : r103LikiditeAvVurKacOk ? 'R103_5M_LIKIDITE_AVI_VUR_KAC_TETIK'
           : r102LikiditeYakitKoprusuOk ? 'R102_COK_ZAMANLI_LIKIDITE_YAKIT_KOPRUSU'
           : r101YakitKoprusuOk ? 'R101_YAKIT_DOLDUR_BOSALT_KOPRUSU'
           : r99YakinAdayDevamOk ? 'R100_YAKIN_ADAY_DEVAM'
@@ -7038,6 +7200,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r99YakinAdayDevamOk) reasons.push(`⚡ R100 yakın aday devam bağlantısı: terazi ${r92Terazi} · mikro ${r88MikroSkor} · teyit ${r88AkisTeyidiSayisi} · son mum ${r93Merdiven?.sonMum||'-'}`);
         if(r101YakitKoprusuOk) reasons.push(`⛽ R101 yakıt dalga köprüsü: ${r101YonYakitFaz} · yakıtSkor ${r101YonYakitSkor} · dönüşSkor ${r101YakitDonusSkor} · teyit ${r88AkisTeyidiSayisi}`);
         if(r102LikiditeYakitKoprusuOk) reasons.push(`🧲 R102 çok zamanlı likidite-yakıt: ${r102LikiditeHaritasi?.oz||'-'} · yönSkor ${r102YonAvSkoru} · üstAv ${r102UstAv?.score||0} · altAv ${r102AltAv?.score||0}`);
+        if(r104HaritaVurKacOk) reasons.push(`🗺️ R104 destek/direnç/yakıt haritası: ${r104Harita?.oz||'-'} · yönSkor ${r104YonHarita?.score||0} · karşıSkor ${r104KarsiHarita?.score||0} · mod ${r104YonHarita?.mod||'-'}`);
         if(r103LikiditeAvVurKacOk) reasons.push(`🎯 R103 5m likidite avı: ${r103LikiditeAvi?.oz||'-'} · yönSkor ${r103YonAviSkoru} · faz ${r103YonAvi?.faz||'-'} · altAv ${r103LikiditeAvi?.altAv?.score||0} · üstAv ${r103LikiditeAvi?.ustAv?.score||0}`);
         if(r88VurKacOk) reasons.push(`⚡ R103 akıllı vur-kaç terazisi: skor ${r88MikroSkor}/8 · teyit ${r88AkisTeyidiSayisi}/8 · taban ${r89ScoreFloor}${r89SuperMikroYapiOk?' · süper-mikro':''}`);
         if(r86FormasyonVeriTeyitOk) reasons.push(`🕯️ R86 formasyon+veri teyidi: ${trPatternList(r86FormasyonAdlari)||'formasyon'} · veri ${r86VeriTeyitSayisi}/8`);
@@ -7084,7 +7247,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           cvdMissing, cvdWarmingBridge, bridgeCount, cvdBridgeQualityOk, cvdBridgePass, r42FlowGate, microConfirm,
           sweepRequired, directSweepOk, nonSweepQualityOk, entryPermissionOk, entryPermissionReason, r45CvdAlternativeOk, r45CvdOkForBridge, r45RvolStatus, r45Rvol, r45RvolOkForBridge, r45TopMoverSecondImpulseWatch,
           r47Readiness, r47Needed, r47TimingPts, r47FlowPts, r47ContextPts, r47StructurePts, r47RvolPts, r47FlowEnough, r47CompositeNonSweepOk, r48DirectSweepBalanceOk, r48CvdNotAgainst, r49DirectSweepUnlockOk, r49CvdSafe, r49ContextOk, r49TimingOk, r49StructureOk,
-          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk, r61TrendEffectiveScore, r61TrendContinuationBoost, r61TrendPriorityOk, r61MtfFullTrendOk, r60StrongTrendContinuation, r62CounterTrendTrapBridgeOk, r62TrapHardClean, r62CounterTrendTrapContextOk, r62CounterTrendTrapFlowOk, r62SideTrapEventOk, r88VurKacOk, r90CanliKopmaOk, r88VurKacEnabled, r92VurKacAdayOk, r92GucluVurKacOk, r92NormalVurKacOk, r92SadeceIzleOk, r92IslemTipi, r92RiskDurumu, r92Terazi, r92DefterSaglam, r93EmirZeminiOk, r93PiyasaEtiketi, r93PiyasaTehlikeli, r93PiyasaDalgali, r93DalgaliAmaIslemYapilabilir, r93PiyasaIslemYapilabilir, r93MerdivenDevamOk, r93DonusRadariOk, r93DonusSkor, r93MerdivenSkor, r93SonMumKoru, r93Merdiven, r89SuperMikroYapiOk, r94CanliTrendZeminKurtarmaOk, r96DalgaliZeminVurKacOk, r98MerdivenTeraziHazirOk, r98MerdivenTeraziBridgeOk, r99YakinAdayDevamOk, r99SonMumYonUyumlu, r101YakitKoprusuOk, r101Yakit, r101YonYakitFaz, r101YonYakitSkor, r101YakitDoluyorOk, r101YakitDolduOk, r101YakitBosaltiyorOk, r101YakitBittiOk, r101YakitDevamOk, r101YakitTersDonusOk, r101YakitDonusSkor, r101YakitBekleOk, r102LikiditeYakitKoprusuOk, r102LikiditeHaritasi, r102YonAvSkoru, r102KarsiAvSkoru, r102YonHaritaOk, r102YonDevamOk, r102YonDonusOk, r102KarsiAvUyariOk, r102UstAv, r102AltAv, r103LikiditeAvVurKacOk, r103LikiditeAvi, r103YonAviSkoru, r103KarsiAviSkoru, r103YonAvTetikOk, r103YonDonusOk, r103YonDevamOk, r103KarsiAvUyariOk, r103YonAviFaz: (r103YonAvi?.faz || '-'), r88MikroSkor, r88AkisTeyidiSayisi, r88ScoreFloor, r89ScoreFloor, r88PiyasaBozuk, r88SpreadWide, r88DefterInce, r88OynaklikAsiri, r88CanliHamleIzi, r86FormasyonVeriTeyitOk, r86FormasyonPuan, r86KarsiFormasyonPuan, r86VeriTeyitSayisi, r86CanliTetikOk, r86KarsiFormasyonGucu, r75RetestBridgeOk, r75LateChaseHard, r75R47MinBypass, r74Top10ProScalperOk, r74ImpulseEntryOk, r74Top10ContextBypassOk, r74ScoreFloor, r68UnifiedScalperCoreOk, r68EntryEventOk, r68TrendContextOk, r68CounterTrapContextOk, r68ReadinessOk, r68ScoreOk, r68CriticalHardBlock, r69PriorityContextOverrideOk, r69ContextOk, r69PriorityExecutionOk, r67ScalperCoreHuntEntryOk, r65ScalperCoreOk, r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto, r66WyckoffTrapReclaimOk, r66WyckoffHardVeto, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
+          r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk, r61TrendEffectiveScore, r61TrendContinuationBoost, r61TrendPriorityOk, r61MtfFullTrendOk, r60StrongTrendContinuation, r62CounterTrendTrapBridgeOk, r62TrapHardClean, r62CounterTrendTrapContextOk, r62CounterTrendTrapFlowOk, r62SideTrapEventOk, r88VurKacOk, r90CanliKopmaOk, r88VurKacEnabled, r92VurKacAdayOk, r92GucluVurKacOk, r92NormalVurKacOk, r92SadeceIzleOk, r92IslemTipi, r92RiskDurumu, r92Terazi, r92DefterSaglam, r93EmirZeminiOk, r93PiyasaEtiketi, r93PiyasaTehlikeli, r93PiyasaDalgali, r93DalgaliAmaIslemYapilabilir, r93PiyasaIslemYapilabilir, r93MerdivenDevamOk, r93DonusRadariOk, r93DonusSkor, r93MerdivenSkor, r93SonMumKoru, r93Merdiven, r89SuperMikroYapiOk, r94CanliTrendZeminKurtarmaOk, r96DalgaliZeminVurKacOk, r98MerdivenTeraziHazirOk, r98MerdivenTeraziBridgeOk, r99YakinAdayDevamOk, r99SonMumYonUyumlu, r101YakitKoprusuOk, r101Yakit, r101YonYakitFaz, r101YonYakitSkor, r101YakitDoluyorOk, r101YakitDolduOk, r101YakitBosaltiyorOk, r101YakitBittiOk, r101YakitDevamOk, r101YakitTersDonusOk, r101YakitDonusSkor, r101YakitBekleOk, r102LikiditeYakitKoprusuOk, r102LikiditeHaritasi, r102YonAvSkoru, r102KarsiAvSkoru, r102YonHaritaOk, r102YonDevamOk, r102YonDonusOk, r102KarsiAvUyariOk, r102UstAv, r102AltAv, r103LikiditeAvVurKacOk, r103LikiditeAvi, r103YonAviSkoru, r103KarsiAviSkoru, r103YonAvTetikOk, r103YonDonusOk, r103YonDevamOk, r103KarsiAvUyariOk, r104HaritaVurKacOk, r104Harita, r104YonHaritaOk, r104YonHaritaSkor:Number(r104YonHarita?.score||0), r104KarsiHaritaSkor:Number(r104KarsiHarita?.score||0), r103YonAviFaz: (r103YonAvi?.faz || '-'), r88MikroSkor, r88AkisTeyidiSayisi, r88ScoreFloor, r89ScoreFloor, r88PiyasaBozuk, r88SpreadWide, r88DefterInce, r88OynaklikAsiri, r88CanliHamleIzi, r86FormasyonVeriTeyitOk, r86FormasyonPuan, r86KarsiFormasyonPuan, r86VeriTeyitSayisi, r86CanliTetikOk, r86KarsiFormasyonGucu, r75RetestBridgeOk, r75LateChaseHard, r75R47MinBypass, r74Top10ProScalperOk, r74ImpulseEntryOk, r74Top10ContextBypassOk, r74ScoreFloor, r68UnifiedScalperCoreOk, r68EntryEventOk, r68TrendContextOk, r68CounterTrapContextOk, r68ReadinessOk, r68ScoreOk, r68CriticalHardBlock, r69PriorityContextOverrideOk, r69ContextOk, r69PriorityExecutionOk, r67ScalperCoreHuntEntryOk, r65ScalperCoreOk, r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto, r66WyckoffTrapReclaimOk, r66WyckoffHardVeto, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh5mImpulse2Bridge, fresh5mImpulseOrRecent, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
           wickTrapFlip: {
@@ -7097,7 +7260,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           },
           r88VurKac: {
             aktif: r88VurKacEnabled, ok: r88VurKacOk, aday: r92VurKacAdayOk, islemTipi: r92IslemTipi, riskDurumu: r92RiskDurumu, terazi: r92Terazi, defterSaglam: r92DefterSaglam, emirZeminiOk: r93EmirZeminiOk, guclu: r92GucluVurKacOk, normal: r92NormalVurKacOk, sadeceIzle: r92SadeceIzleOk, canliKopma: r90CanliKopmaOk, superMikro: r89SuperMikroYapiOk, mikroSkor: r88MikroSkor, teyitSayisi: r88AkisTeyidiSayisi, puanTabani: r89ScoreFloor,
-            canliHamleIzi: r88CanliHamleIzi, zeminKurtarma: r94CanliTrendZeminKurtarmaOk, dalgaliBaglanti: (r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk), yakinAdayDevam: r99YakinAdayDevamOk, yakitKoprusu: r101YakitKoprusuOk, likiditeYakitKoprusu: r102LikiditeYakitKoprusuOk, besDkLikiditeAvi: r103LikiditeAvVurKacOk, besDkLikiditeAviHaritasi: r103LikiditeAvi, likiditeHaritasi: r102LikiditeHaritasi, yonAvSkoru: r102YonAvSkoru, karsiAvSkoru: r102KarsiAvSkoru, besDkYonAvSkoru: r103YonAviSkoru, besDkKarsiAvSkoru: r103KarsiAviSkoru, ustAv: r102UstAv, altAv: r102AltAv, yakitFaz: r101YonYakitFaz, yakitSkor: r101YonYakitSkor, yakitDonusSkor: r101YakitDonusSkor, yakitDoluyor: r101YakitDoluyorOk, yakitDoldu: r101YakitDolduOk, yakitBosaltiyor: r101YakitBosaltiyorOk, yakitBitti: r101YakitBittiOk, sonMumYonUyumlu: r99SonMumYonUyumlu, merdivenTeraziHazir: r98MerdivenTeraziHazirOk, merdivenTeraziBaglanti: r98MerdivenTeraziBridgeOk, piyasaBozuk: r88PiyasaBozuk, piyasaEtiketi: r93PiyasaEtiketi, piyasaTehlikeli: r93PiyasaTehlikeli, piyasaDalgali: r93PiyasaDalgali, dalgaliAmaIslemYapilabilir: r93DalgaliAmaIslemYapilabilir, makasGenis: r88SpreadWide, defterInce: r88DefterInce, oynaklikAsiri: r88OynaklikAsiri,
+            canliHamleIzi: r88CanliHamleIzi, zeminKurtarma: r94CanliTrendZeminKurtarmaOk, dalgaliBaglanti: (r96DalgaliZeminVurKacOk || r98MerdivenTeraziBridgeOk || r99YakinAdayDevamOk || r101YakitKoprusuOk || r102LikiditeYakitKoprusuOk || r103LikiditeAvVurKacOk || r104HaritaVurKacOk), yakinAdayDevam: r99YakinAdayDevamOk, yakitKoprusu: r101YakitKoprusuOk, likiditeYakitKoprusu: r102LikiditeYakitKoprusuOk, besDkLikiditeAvi: r103LikiditeAvVurKacOk, cokZamanliDestekDirencYakit: r104HaritaVurKacOk, r104Harita, besDkLikiditeAviHaritasi: r103LikiditeAvi, likiditeHaritasi: r102LikiditeHaritasi, yonAvSkoru: r102YonAvSkoru, karsiAvSkoru: r102KarsiAvSkoru, besDkYonAvSkoru: r103YonAviSkoru, besDkKarsiAvSkoru: r103KarsiAviSkoru, ustAv: r102UstAv, altAv: r102AltAv, yakitFaz: r101YonYakitFaz, yakitSkor: r101YonYakitSkor, yakitDonusSkor: r101YakitDonusSkor, yakitDoluyor: r101YakitDoluyorOk, yakitDoldu: r101YakitDolduOk, yakitBosaltiyor: r101YakitBosaltiyorOk, yakitBitti: r101YakitBittiOk, sonMumYonUyumlu: r99SonMumYonUyumlu, merdivenTeraziHazir: r98MerdivenTeraziHazirOk, merdivenTeraziBaglanti: r98MerdivenTeraziBridgeOk, piyasaBozuk: r88PiyasaBozuk, piyasaEtiketi: r93PiyasaEtiketi, piyasaTehlikeli: r93PiyasaTehlikeli, piyasaDalgali: r93PiyasaDalgali, dalgaliAmaIslemYapilabilir: r93DalgaliAmaIslemYapilabilir, makasGenis: r88SpreadWide, defterInce: r88DefterInce, oynaklikAsiri: r88OynaklikAsiri,
             merdivenDevam: r93MerdivenDevamOk, donusRadari: r93DonusRadariOk, donusSkor: r93DonusSkor, merdivenSkor: r93MerdivenSkor, sonMumKoru: r93SonMumKoru,
             not: r93PiyasaTehlikeli ? 'Piyasa zemini tehlikeli; işlem yok.' : (r93DalgaliAmaIslemYapilabilir ? 'Piyasa dalgalı ama canlı trend/dönüş kanıtı işlem yapılabilir düzeyde.' : (r88VurKacOk ? 'Vur-kaç motoru veriyle desteklenen 5m hamle gördü.' : 'Vur-kaç için canlı hamle veya teyit yetersiz.'))
           },
@@ -7483,6 +7646,9 @@ app.post('/api/account', async (req, res) => {
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
   const{apiKey,apiSecret,symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
+  let requestedLeverage = Math.max(1, parseInt(leverage)||1);
+  let effectiveLeverage = requestedLeverage;
+  let r104LeverageSafety = null;
   if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!usdtAmount)
     return res.status(400).json({error:'Eksik parametre'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
@@ -7503,7 +7669,7 @@ app.post('/api/order', async (req, res) => {
       if (autoConfig?.enabled) throw new Error(`Pozisyon limiti doğrulanamadı: ${limitErr.message}`);
     }
     if(marginType){try{await bReq(apiKey,apiSecret,'POST','/fapi/v1/marginType',{symbol:sym,marginType:marginType.toUpperCase()});}catch(e){if(!e.message.includes('No need'))console.log('MarginType:',e.message);}}
-    await bReq(apiKey,apiSecret,'POST','/fapi/v1/leverage',{symbol:sym,leverage:parseInt(leverage)});
+    // R104: kaldıraç, fiyat/SL mesafesi ve Binance kaldıraç sınırı görüldükten sonra ayarlanır.
     let stepSize=0.001,tickSize=0.01,minNot=5;
     try{
       const si=await bPub('/fapi/v1/exchangeInfo','symbol='+sym);
@@ -7520,9 +7686,14 @@ app.post('/api/order', async (req, res) => {
     const pr=await bPub('/fapi/v1/ticker/price','symbol='+sym);
     const curPrice=parseFloat(pr.price)||0;
     if(!curPrice)throw new Error('Fiyat alınamadı');
+    const bracketMaxForOrder = await getSymbolMaxInitialLeverage(apiKey, apiSecret, sym, Number(usdtAmount||0) * requestedLeverage).catch(()=>null);
+    r104LeverageSafety = r104CalcSafeLeverageFromStop({ side, entryPrice:curPrice, stopPrice:Number(stopPrice), requestedLeverage, bracketMaxLeverage:bracketMaxForOrder, minLeverage:1 });
+    effectiveLeverage = Math.max(1, Math.floor(Number(r104LeverageSafety.leverage || requestedLeverage)));
+    await bReq(apiKey,apiSecret,'POST','/fapi/v1/leverage',{symbol:sym,leverage:effectiveLeverage});
+    if (r104LeverageSafety.changed) logAuto(`🛡️ ${sym.replace('USDT','')} R104 kaldıraç güvenliği: ${r104LeverageSafety.reason}`);
     const qp=stepSize<1?-Math.floor(Math.log10(stepSize)):0;
     const pp=tickSize<1?-Math.floor(Math.log10(tickSize)):0;
-    const qty=parseFloat(((parseFloat(usdtAmount)*parseInt(leverage))/curPrice).toFixed(qp));
+    const qty=parseFloat(((parseFloat(usdtAmount)*effectiveLeverage)/curPrice).toFixed(qp));
     const rnd=p=>parseFloat(parseFloat(p).toFixed(pp));
     if(qty*curPrice<minNot)throw new Error(`Min işlem $${minNot}. Miktarı artır.`);
     const main=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
@@ -7539,7 +7710,7 @@ app.post('/api/order', async (req, res) => {
     const realTP=rnd(parseFloat(targetPrice)*ratio);
     const realSL=rnd(parseFloat(stopPrice)*ratio);
     const ps=realTP.toString(),ss=realSL.toString(),qs=qty.toString();
-    console.log(`${sym} giriş:${execPrice} TP:${realTP} SL:${realSL} lev:${leverage}`);
+    console.log(`${sym} giriş:${execPrice} TP:${realTP} SL:${realSL} lev:${effectiveLeverage}`);
 
     // ── TP/SL ────────────────────────────────────────────────────────────────
     // "Target strategy invalid" = fiyat yanlış yönde
@@ -7556,7 +7727,7 @@ app.post('/api/order', async (req, res) => {
     }
     finalTP = rnd(finalTP);
     finalSL = rnd(finalSL);
-    console.log(`${sym} lev:${leverage} giriş:${execPrice} TP:${finalTP} SL:${finalSL} (isLong:${isLong})`);
+    console.log(`${sym} lev:${effectiveLeverage} giriş:${execPrice} TP:${finalTP} SL:${finalSL} (isLong:${isLong})`);
 
     async function placeSLTP(marketType, price) {
       const p  = price.toString();
@@ -7660,6 +7831,32 @@ app.post('/api/order', async (req, res) => {
       });
     }
 
+    // R104: Emir açıldıktan sonra gerçek Binance likidasyon fiyatı SL'nin önünde mi kontrol edilir.
+    let r104LiveLiquidation = null;
+    try {
+      const liveRow = await r104GetOpenPositionRow(apiKey, apiSecret, sym);
+      r104LiveLiquidation = r104IsLiquidationBeforeStop(liveRow, finalSL, isLong);
+      if (r104LiveLiquidation.unsafe) {
+        const safer = r104CalcSafeLeverageFromStop({ side, entryPrice:execPrice, stopPrice:finalSL, requestedLeverage:effectiveLeverage, bracketMaxLeverage:effectiveLeverage, minLeverage:1 });
+        if (safer.leverage < effectiveLeverage) {
+          await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/leverage', {symbol:sym, leverage:safer.leverage});
+          effectiveLeverage = safer.leverage;
+          await sleep(500);
+          const row2 = await r104GetOpenPositionRow(apiKey, apiSecret, sym);
+          r104LiveLiquidation = r104IsLiquidationBeforeStop(row2, finalSL, isLong);
+          logAuto(`🛡️ ${sym.replace('USDT','')} gerçek likidasyon kontrolü: kaldıraç ${requestedLeverage}x yerine ${effectiveLeverage}x; ${r104LiveLiquidation.reason}`);
+        }
+      }
+      if (r104LiveLiquidation.unsafe) {
+        await cancelAlgoOrders(apiKey, apiSecret, sym).catch(()=>{});
+        await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {symbol:sym, side:cSide, type:'MARKET', quantity:qty, reduceOnly:'true', positionSide:'BOTH'}).catch(()=>{});
+        throw new Error(`${sym} R104 likidasyon güvenliği: ${r104LiveLiquidation.reason}; korumasız pozisyon kapatıldı`);
+      }
+    } catch(e) {
+      if (String(e.message||'').includes('korumasız pozisyon kapatıldı')) throw e;
+      pushCritical('R104_LIQUIDATION_CHECK', `${sym}: ${e.message}`, {}, 'WARNING');
+    }
+
     res.json({ok:true,
       message:`${sym} ${side} açıldı ✅ SL/TP Binance doğrulandı ✅`,
       mainOrderId:main.orderId,
@@ -7668,7 +7865,7 @@ app.post('/api/order', async (req, res) => {
       tpSuccess:true,slSuccess:true,
       slProof:slResult.proof,
       executedPrice:execPrice,
-      details:{symbol:sym,side,quantity:qty,leverage,entry:execPrice,target:finalTP,stop:finalSL}
+      details:{symbol:sym,side,quantity:qty,leverage:effectiveLeverage,requestedLeverage,r104LeverageSafety,r104LiveLiquidation,entry:execPrice,target:finalTP,stop:finalSL}
     });
   }catch(e){
     pushCritical('ORDER_ROUTE_ERROR', `${sym}: ${e.message}`);
@@ -8198,6 +8395,7 @@ async function managePosition(apiKey, apiSecret, pos) {
       pnlPct:Number(pnlPct||0), peakPnl:Number(state.peakPnl||0), peakRealPct:Number(state.peakRealPct||0),
       currentSL:state.currentSL||null, targetTP:state.targetTP||null, lastCheck:state.lastCheck,
       r91Exit: state.r91Exit || null,
+      r104YakitHaritasi: state.r104YakitHaritasi || null,
       exitMode: state.exitMode || null,
       profitLockLevel: state.profitLockLevel || null
     };
@@ -8271,6 +8469,9 @@ async function managePosition(apiKey, apiSecret, pos) {
     if (extra.trappedExit) { exitScore += 2; reasons.push('tuzak izi var'); }
     if (adverseCascade) { exitScore += 2; reasons.push('ters likidasyon baskısı'); }
     if (div.divergence) { exitScore += 1.5; reasons.push('fiyat gidiyor ama veri desteklemiyor'); }
+    if (extra.r104?.yakitBosaliyor) { exitScore += 1.5; reasons.push('R104 yakıt boşalıyor'); }
+    if (extra.r104?.tersAv) { exitScore += 2; reasons.push('R104 karşı likidite avı/dönüş riski'); }
+    if (extra.r104?.yonDevam) { exitScore = Math.max(0, exitScore - 1); reasons.push('R104 yön haritası hâlâ destekli'); }
     if (pullbackPct >= 0.25) { exitScore += 1; reasons.push(`tepeden geri verme %${pullbackPct.toFixed(2)}`); }
     if (pullbackPct >= 0.45) { exitScore += 1; }
     if (givebackRoi >= 5) { exitScore += 1; reasons.push(`kârdan geri verme ROI %${givebackRoi.toFixed(1)}`); }
@@ -8395,8 +8596,10 @@ async function managePosition(apiKey, apiSecret, pos) {
 
   // ── R94 AKTİF VUR-KAÇ ÇIKIŞ — TP beklemeden ama net kâr güvenli bölgeye gelince çıkış ────────
   const r91VurKacAktif = cfg.vurKacEnabled !== false; // panelde kapatılırsa sadece klasik SL/TP+BE kalır
-  const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade });
+  const r104PosFuel = await r104PositionFuelSnapshot(sym, side, curPrice).catch(e => ({ok:false,error:e.message}));
+  const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade, r104:r104PosFuel });
   state.r91Exit = r91Brain;
+  state.r104YakitHaritasi = r104PosFuel?.ok ? { not:r104PosFuel.not, yakitBosaliyor:r104PosFuel.yakitBosaliyor, yakitDoluyor:r104PosFuel.yakitDoluyor, tersAv:r104PosFuel.tersAv, yonDevam:r104PosFuel.yonDevam } : null;
   state.exitMode = r91Brain.mode;
 
   if (!action && r91VurKacAktif) {
@@ -8407,7 +8610,7 @@ async function managePosition(apiKey, apiSecret, pos) {
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
       if (better) action = {
         type:'R97_KAR_KILIDI', urgency:'LOW', newSL:lockSL,
-        reason:`R100 güvenli kâr kilidi: ROI %${pnlPct.toFixed(1)} → komisyon/kayma payı geçildi, SL kâr bölgesine alındı`,
+        reason:`R104 güvenli kâr kilidi: ROI %${pnlPct.toFixed(1)} → komisyon/kayma payı geçildi, SL kâr bölgesine alındı`,
         stateUpdates:{ r91FirstLock:true, profitLockLevel:1, breakEvenSet:true }
       };
     }
@@ -8419,7 +8622,7 @@ async function managePosition(apiKey, apiSecret, pos) {
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
       if (better) action = {
         type:'R97_KAR_KILIDI', urgency:'LOW', newSL:lockSL,
-        reason:`R100 ikinci kâr kilidi: ROI %${pnlPct.toFixed(1)}, net kâr korundu`,
+        reason:`R104 ikinci kâr kilidi: ROI %${pnlPct.toFixed(1)}, net kâr korundu`,
         stateUpdates:{ r91SecondLock:true, profitLockLevel:2, breakEvenSet:true }
       };
     }
@@ -8434,7 +8637,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     if (!action && r91ExitNow) {
       action = {
         type:'R97_VUR_KAC_KAPAT', urgency:'HIGH',
-        reason:`R103 vur-kaç çıkışı: ROI %${pnlPct.toFixed(1)}, zirve %${r91Brain.peakPnl.toFixed(1)}, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ') || 'kâr geri verilmeden alındı'}`
+        reason:`R104 vur-kaç çıkışı: ROI %${pnlPct.toFixed(1)}, zirve %${r91Brain.peakPnl.toFixed(1)}, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ') || 'kâr geri verilmeden alındı'}`
       };
     }
 
@@ -8442,7 +8645,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     if (!action && openMinutes >= 3 && pnlPct <= -6 && r91Brain.exitScore >= 6 && !r91Brain.devamGucu) {
       action = {
         type:'R97_FIKIR_BOZULDU_KAPAT', urgency:'HIGH',
-        reason:`R100 fikir bozuldu: ROI %${pnlPct.toFixed(1)}, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ')}`
+        reason:`R104 fikir bozuldu: ROI %${pnlPct.toFixed(1)}, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ')}`
       };
     }
 
@@ -8450,7 +8653,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     if (!action && openMinutes >= 12 && pnlPct > -5 && pnlPct < 4 && r91Brain.exitScore >= 5 && !r91Brain.devamGucu) {
       action = {
         type:'R97_VUR_KAC_KAPAT', urgency:'MEDIUM',
-        reason:`R100 süre doldu: ${openMinutes.toFixed(0)}dk geçti, hareket zayıf, veri tersleşti — pozisyon yormadan kapatılıyor`
+        reason:`R104 süre doldu: ${openMinutes.toFixed(0)}dk geçti, hareket zayıf, veri tersleşti — pozisyon yormadan kapatılıyor`
       };
     }
   }
@@ -8924,8 +9127,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? 'R68 Gate: Sweep AÇIK / direct sweep gerekli'
-          : 'R103 Karar: 5m likidite avı tetik + çok zamanlı harita + yakıt dalgası + eşit long/short terazisi',
-        note: 'R103; R101 yakıt motoru ve R102 çok zamanlı harita korunur, 5m likidite avı ana tetik olur; alt av geri alınırsa yükseliş, üst av geri düşerse düşüş eşit terazide değerlendirilir.'
+          : 'R104 Karar: çok zamanlı destek/direnç + likidite avı + yakıt haritası + likidasyon güvenliği',
+        note: 'R104; R103 5m likidite avı korunur. 5dk/15dk/1s/4s/1g destek-direnc-likidite haritası ve yakıt dolum/boşaltım çıkış motoru eklenir; EMA sert kapı değildir, botu boğacak ek istek fırtınası yoktur.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -9805,7 +10008,7 @@ async function runAutoScan() {
             highWater: orderResp.executedPrice||analysis.price,
             breakEvenSet:false, currentSL:orderResp.details?.stop||stopPrice,
             targetTP:orderResp.details?.target||targetPrice,
-            leverage:parseInt(executeLeverage)||parseInt(leverage)||1,
+            leverage:parseInt(orderResp.details?.leverage||executeLeverage)||parseInt(leverage)||1,
             sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
             openedAt: Date.now(),
                 openReason: decisionChain?.reason || '',
@@ -9824,7 +10027,7 @@ async function runAutoScan() {
               mm: analysis.marketMaker?.target,
               cvd: analysis.cvd?.momentum,
               funding: analysis.funding?.current,
-              panel:{ usdtAmount, leverage:executeLeverage, panelLeverage:leverage, slPct:userSLPct, tpPct:userTPPct, leverageNote },
+              panel:{ usdtAmount, leverage:orderResp.details?.leverage||executeLeverage, panelLeverage:leverage, slPct:userSLPct, tpPct:userTPPct, leverageNote, r104LeverageSafety:orderResp.details?.r104LeverageSafety||null },
             },
             entryDiscipline:{ canliGirisIziOk:r85CanliGirisIziOk, terazi:r85Terazi, r47:r85R47, timing:r85TimingPts, flow:r85FlowPts, sadeceFundingDestek:r85SadeceFundingDestek, bartiDisiplinOk:r85BartiDisiplinOk },
             managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${trSideLabel(recommendation)} açıldı — skor:${score} terazi:${r85Terazi}`, urgency:'LOW', lastCheck:Date.now() },
