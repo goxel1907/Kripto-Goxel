@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R134_FAST_EDGE_PASS_UNLOCK';
+const LAZARUS_BUILD = 'R135_MAXPOS_LOSS_GAP_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1279,8 +1279,8 @@ function r130CombinedSummary() {
     const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
     const noTick = (rs === WebSocket.OPEN && !r130CombinedTickLastMsgTs && openAge != null && openAge > 12000) ? ' noTickRestartBekliyor' : '';
     const err = r130CombinedTickLastErr ? ` err:${r130CombinedTickLastErr}` : '';
-    return `R134 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
-  } catch(_) { return 'R134 combined:bilinmiyor'; }
+    return `R135 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
+  } catch(_) { return 'R135 combined:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -3025,34 +3025,54 @@ const CD_AFTER_CLOSE_PAUSE_MS = 45 * 1000; // kapanış sonrası aynı tarama d�
 function entryPatternKeyFromText(txt='') {
   const t = String(txt||'').toLowerCase();
   const parts = [];
-  if (t.includes('sweep')) parts.push('SWEEP');
+  if (t.includes('r134') || t.includes('hızlı edge') || t.includes('fast edge') || t.includes('mikro-scalp')) parts.push('R134_FAST');
+  if (t.includes('trend devam')) parts.push('TREND_CONT');
+  if (t.includes('tuzak dönüş') || t.includes('counter_trap')) parts.push('COUNTER_TRAP');
+  if (t.includes('5m momentum')) parts.push('MOMENTUM');
+  if (t.includes('5m akış') || t.includes('flow_scalp')) parts.push('FLOW');
+  if (t.includes('sweep') || t.includes('süpür')) parts.push('SWEEP');
+  if (t.includes('body-reclaim') || t.includes('body geri') || t.includes('gövde')) parts.push('BODY_RECLAIM');
+  if (t.includes('htf:karşı') || t.includes('karşı 15m') || t.includes('karşı 1h') || t.includes('karşı 4h')) parts.push('HTF_COUNTER');
   if (t.includes('stop hunt') || t.includes('stophunt')) parts.push('STOPHUNT');
   if (t.includes('wyckoff') || t.includes('spring') || t.includes('utad')) parts.push('WYCKOFF');
   if (t.includes('mm genuine_up') || t.includes('mm up_sweep')) parts.push('MM_UP');
   if (t.includes('mm genuine_down') || t.includes('mm down_sweep')) parts.push('MM_DOWN');
-  if (t.includes('funding')) parts.push('FUNDING');
+  if (t.includes('funding') || t.includes('fonlama')) parts.push('FUNDING');
   if (t.includes('vwap')) parts.push('VWAP');
   if (t.includes('rvol')) parts.push('RVOL');
-  return parts.length ? parts.join('+') : 'GENERIC';
+  return parts.length ? [...new Set(parts)].join('+') : 'GENERIC';
 }
-function recentLossPatternGuard(side, decisionChain={}, lookbackMs=24*60*60*1000) {
+function recentLossPatternGuard(symbolOrSide, sideMaybe, decisionChain={}, lookbackMs=24*60*60*1000) {
+  // R135: öğrenme freni artık kör GENERIC değil. Aynı coin + aynı playbook/setup tekrar zarar yazarsa keser;
+  // globalde ise ancak aynı setup 3 kez zarar yazarsa devreye girer. Böylece bot boğulmaz ama WLD/OPN boşluğu kapanır.
+  let sym = '', side = '';
+  if (sideMaybe) { sym = normalizeSymbol(symbolOrSide); side = normalizeSide(sideMaybe); }
+  else { side = normalizeSide(symbolOrSide); }
   const now = Date.now();
-  const key = entryPatternKeyFromText(decisionChain?.reason || decisionChain?.reasons?.join(' ') || '');
-  const losses = tradeLedger.filter(x => {
+  const rawText = [decisionChain?.reason, decisionChain?.brainSummary, decisionChain?.entryPermissionReason, decisionChain?.brainMode].filter(Boolean).join(' ');
+  let key = entryPatternKeyFromText(rawText);
+  if (key === 'GENERIC') {
+    const bm = String(decisionChain?.brainMode || '').toUpperCase();
+    const ep = String(decisionChain?.entryPermissionReason || '').toUpperCase();
+    key = [bm, ep].filter(Boolean).join('+') || 'GENERIC';
+  }
+  const rows = tradeLedger.filter(x => {
     const closedAt = Number(x.closedAt || 0);
     if (!closedAt || now - closedAt > lookbackMs) return false;
-    if (normalizeSide(x.side) !== normalizeSide(side)) return false;
+    if (normalizeSide(x.side) !== side) return false;
     const pnl = Number(x.pnlUSDT);
     if (!(Number.isFinite(pnl) && pnl < 0)) return false;
-    return entryPatternKeyFromText(x.entryReason || x.exitReason || x.resultNote || '') === key;
+    const tx = [x.entryReason, x.exitReason, x.resultNote].filter(Boolean).join(' ');
+    return entryPatternKeyFromText(tx) === key;
   });
-  if (losses.length >= 2) {
-    return { block:true, key, count:losses.length, reason:`Son 24s aynı ${side} setup paterni ${losses.length} kez zarar yazdı (${key})` };
+  const sameSymLosses = sym ? rows.filter(x => normalizeSymbol(x.symbol || '') === sym || normalizeSymbol((x.symbol||'')+'USDT') === sym) : [];
+  if (sameSymLosses.length >= 1) {
+    return { block:true, key, count:sameSymLosses.length, scope:'SYMBOL', reason:`${sym.replace('USDT','')} aynı ${side} setup bugün zarar yazdı (${key}); tekrar giriş için yeni yapı/ters akış bekleniyor` };
   }
-  if (losses.length === 1 && String(decisionChain?.tier||'') !== 'A') {
-    return { block:true, key, count:1, reason:`Aynı ${side} setup bugün zarar yazdı; B+ tekrar açmaz (${key})` };
+  if (rows.length >= 3) {
+    return { block:true, key, count:rows.length, scope:'GLOBAL', reason:`Son 24s aynı ${side} setup paterni ${rows.length} kez zarar yazdı (${key}); global kalite freni` };
   }
-  return { block:false, key, count:losses.length };
+  return { block:false, key, count:rows.length, scope:'NONE' };
 }
 
 
@@ -4070,7 +4090,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R134 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R135 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${sensorSummary?' · '+sensorSummary:''}`;
 
   d.brainMode = primaryMode;
@@ -4092,10 +4112,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.brainFatalDanger = fatalDanger;
   d.brainHardDanger = hardDanger;
   d.r133FastScalpOverride = r133FastScalpOverride;
-  d.r133FastScalpWhy = r133FastScalpOverride ? `R134 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}` : '';
+  d.r133FastScalpWhy = r133FastScalpOverride ? `R135 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}` : '';
   d.r134FastScalpOverride = r133FastScalpOverride;
   d.r134FastScalpWhy = d.r133FastScalpWhy;
-  d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R134_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
+  d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
   d.pass = ok;
@@ -8611,8 +8631,8 @@ app.post('/api/order', async (req, res) => {
       const openRows = Array.isArray(rows) ? rows.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0) : [];
       const sameSym = openRows.find(p=>String(p.symbol||'').toUpperCase()===sym);
       if (sameSym) throw new Error(`${sym} zaten açık pozisyon var; ikinci emir engellendi`);
-      const maxP = parseInt(maxPositions || autoConfig?.maxPositions || 0) || 0;
-      if (maxP > 0 && openRows.length >= maxP) throw new Error(`Max pozisyon dolu (${openRows.length}/${maxP}); emir engellendi`);
+      const maxP = normalizeUserMaxPositions(maxPositions || autoConfig?.maxPositions || 1, 1);
+      if (openRows.length >= maxP) throw new Error(`Max pozisyon dolu (${openRows.length}/${maxP}); emir engellendi`);
     } catch(limitErr) {
       if (String(limitErr.message||'').includes('engellendi') || String(limitErr.message||'').includes('Max pozisyon')) throw limitErr;
       // PositionRisk okunamazsa güvenli tarafta kal: canlı otomatik emir açma.
@@ -9036,13 +9056,15 @@ function setCooldown(symbol, ms, reason, meta={}) {
 function closeCooldownMs(cls={}, state={}) {
   const code = String(cls?.code || '').toUpperCase();
   const pnl  = Number(cls?.realizedPnl);
+  // R135: Binance dış/manuel gibi görünen ama realizedPnl negatif olan kapanış aslında risk olayıdır.
+  // 15dk manuel beklemesiyle geçiştirme; zarar/hard-loss cooldown uygula.
+  if (Number.isFinite(pnl) && pnl < 0) return Math.abs(pnl) >= 3 ? CD_HARD_LOSS_MS : CD_LOSS_MS;
   if (code === 'TAKE_PROFIT') return CD_PROFIT_MS;
   if (code === 'KAR_TASIMA_SL' || code === 'BREAK_EVEN_SL') return CD_BE_MS;
-  if (code === 'EXTERNAL_OR_MANUAL') return CD_MANUAL_MS;
   if (code === 'R14_HARD_LOSS_GUARD') return CD_HARD_LOSS_MS;
   if (code === 'STOP_LOSS') return CD_LOSS_MS;
-  if (Number.isFinite(pnl) && pnl < 0) return Math.abs(pnl) >= 3 ? CD_HARD_LOSS_MS : CD_LOSS_MS;
   if (Number.isFinite(pnl) && pnl > 0) return CD_PROFIT_MS;
+  if (code === 'EXTERNAL_OR_MANUAL') return CD_MANUAL_MS;
   return CD_MANUAL_MS;
 }
 function setCloseCooldown(symbol, cls={}, state={}) {
@@ -10069,7 +10091,7 @@ app.get('/api/health', (_req, res) => {
         opened: scan.opened ?? 0,
         skipped: scan.skipped ?? 0,
         livePositions: scan.livePositions ?? null,
-        positionCount: scan.positionCount ?? null,
+        positionCount: (positionRisk && Number.isFinite(Number(positionRisk.openCount))) ? Number(positionRisk.openCount) : (scan.positionCount ?? null),
         maxPositions: cfg.maxPositions ?? scan.maxPositions ?? scan.settings?.maxPositions ?? null,
         minScore: cfg.minScore ?? scan.settings?.minScore ?? null,
         usdtAmount: cfg.usdtAmount ?? scan.settings?.usdtAmount ?? null,
@@ -10091,8 +10113,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R134 5m Fırsat Beyni: canlı tick + HTF sweep uyumlu hızlı geçiş; legacy sensör veto yumuşatma',
-        note: 'R134; R133 canlı tick stabilizasyonu korunur. Eski R65/R68 sensörleri ölümcül veto olmaktan çıkarılır; canlı flow + HTF sweep + yüksek edge birleşince kontrollü mikro-scalp PASS üretir.'
+          : 'R135 5m Fırsat Beyni: kullanıcı max pozisyon özgürlüğü + zarar boşluğu/öğrenme freni',
+        note: 'R135; R134 canlı tick ve hızlı edge korunur. Max pozisyon kullanıcının verdiği değere uyar; aynı scan içinde SL/TP doğrulanırsa maxPositions dolana kadar yeni fırsat aranır. Negatif dış kapanışlar zarar gibi soğutulur ve aynı coin/setup tekrarları öğrenme freniyle kesilir.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10125,7 +10147,8 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.post('/api/auto/config', (req, res) => {
-  autoConfig = req.body;
+  autoConfig = { ...(req.body||{}) };
+  autoConfig.maxPositions = normalizeUserMaxPositions(autoConfig.maxPositions, 3);
   if (autoConfig.enabled) {
     startAutoTrader();
     res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:autoConfig });
@@ -10173,6 +10196,14 @@ function stopAutoTrader(silent=false) {
   }
 }
 
+
+function normalizeUserMaxPositions(v, def=3) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return Math.max(1, def|0 || 1);
+  // R135: kullanıcı özgürlüğü. Gizli 1/3/10 tavanı yok; sadece anlamsız/negatif değer 1'e çekilir.
+  return Math.max(1, n);
+}
+
 async function runAutoScan(prioritySymbol=null) {
   // R95: Scan promise eski Binance 418 uykusunda takılı kalırsa yeni scan'i sonsuza kadar engellemesin.
   if (autoRunning) {
@@ -10195,18 +10226,19 @@ async function runAutoScan(prioritySymbol=null) {
   autoRunning = true;
   resetAutoScanState({
     enabled:true, running:true, phase:'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
-    currentSymbol:null, scanList:[], checked:0, opened:0, skipped:0, livePositions:0,
+    currentSymbol:null, scanList:[], checked:0, opened:0, skipped:0, livePositions:0, positionCount:0,
     topCandidates:[], skipReasons:{}, lastAction:'Tarama başlıyor'
   });
 
   try {
     const cfg = autoConfig;
     const { apiKey, apiSecret, usdtAmount, leverage, marginType,
-      maxPositions=3, minScore=70, allowLong=true, allowShort=true,
+      maxPositions:rawMaxPositions=3, minScore=70, allowLong=true, allowShort=true,
       sweepOnly=false, scanMode='FAST6', scanLimit=null,
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[],
       vurKacEnabled=false, vurKacAutoLev=false, vurKacMaxLev=50 } = cfg;
 
+    const maxPositions = normalizeUserMaxPositions(rawMaxPositions, 3);
     const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'FAST6');
     const r54ScanLimit = r54ScanLimitForMode(r54ScanMode, scanLimit || 6);
     autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:Number(vurKacMaxLev||50)};
@@ -10230,6 +10262,7 @@ async function runAutoScan(prioritySymbol=null) {
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
     autoScanState.livePositions = openPos.length;
+    autoScanState.positionCount = openPos.length;
     // R30: aynı yönde korele coinlere yığılmayı azalt. Max pozisyon 3 olsa bile
     // bot her scan'de sadece bir yeni işlem açar; aynı yönde ikinci pozisyon için kalite çıtası yükselir.
     const openSideCounts = openPos.reduce((acc,p)=>{
@@ -10805,9 +10838,13 @@ async function runAutoScan(prioritySymbol=null) {
             !decisionChain?.poorLiquidity && !decisionChain?.rvolVeryLow
           );
           const atrExtreme = coinAtrPct > Math.max(14, userSLPct * 7.0);
-          if (atrExtreme || !atrBridgeAllowed) {
+          const atrLossGap = coinAtrPct > userSLPct * 3.2 &&
+            String(decisionChain?.entryPermissionReason||'').includes('R135_FAST_EDGE_PASS') &&
+            !(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r118CandleOk) &&
+            Number(decisionChain?.brainConfidence||0) < 96;
+          if (atrExtreme || atrLossGap || !atrBridgeAllowed) {
             logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — volatilite riski yüksek, atlandı`);
-            markAutoSkip(coin.symbol, `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
+            markAutoSkip(coin.symbol, atrLossGap ? `R135 ATR boşluk freni: ATR %${coinAtrPct.toFixed(1)} / SL %${userSLPct} hızlı-edge için fazla geniş` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
             continue;
           }
           logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama 5m Fırsat Beyni kontrollü girişe izin verdi — user SL/TP korunarak devam`);
@@ -10826,23 +10863,14 @@ async function runAutoScan(prioritySymbol=null) {
           continue;
         }
 
-        // R30: ZEC+FET gibi aynı yönde ardışık zararları azaltmak için korelasyon/yön yığılması freni.
+        // R135: pozisyon sayısı ve aynı yön serbestliği kullanıcı ayarıdır. Aynı yönde açık pozisyonu
+        // sadece bilgi olarak not et; toplam maxPositions ve aynı sembol koruması zaten emir endpoint'inde korunur.
         const sameSideAlready = Number(openSideCounts?.[recommendation] || 0);
         if (sameSideAlready > 0) {
-          const allowSecondSameSide = String(decisionChain?.tier||'') === 'A'
-            && Number(decisionChain?.priorityScore||0) >= 76
-            && score >= Number(effectiveMinScore||0) + 8
-            && !decisionChain?.cvdMissing
-            && decisionChain?.microConfirm;
-          if (!allowSecondSameSide) {
-            const why = `Aynı yönde açık pozisyon var (${recommendation}:${sameSideAlready}); ikinci giriş için A/76+ terazi + canlı CVD gerekir`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
-            continue;
-          }
+          logAuto(`ℹ️ ${coin.symbol} aynı yönde ${sameSideAlready} açık pozisyon var; kullanıcı max pozisyon hakkı korunuyor (${recommendation})`);
         }
 
-        const lossGuard = recentLossPatternGuard(recommendation, decisionChain);
+        const lossGuard = recentLossPatternGuard(coin.fullSymbol || coin.symbol, recommendation, decisionChain);
         if (lossGuard.block) {
           logAuto(`🧠 ${coin.symbol} öğrenme freni: ${lossGuard.reason}`);
           markAutoSkip(coin.symbol, lossGuard.reason, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore});
@@ -10957,11 +10985,24 @@ async function runAutoScan(prioritySymbol=null) {
             rememberOpenPositionForReentry({symbol:coin.fullSymbol, positionAmt: recommendation==='LONG' ? 1 : -1, entryPrice:orderResp.executedPrice||analysis.price, leverage:parseInt(executeLeverage)||parseInt(leverage)||1}, _stOpen);
             saveLastKnownPositions();
           } catch(_e) { logAuto(`⚠️ Trade ledger açılış kaydı yazılamadı: ${String(_e.message||_e).slice(0,80)}`); }
-          // R30: Aynı scan içinde ikinci/üçüncü emir yok. Binance pozisyon/SLTP senkronu otursun;
-          // yeni fırsat bir sonraki taramada, taze verilerle tekrar değerlendirilsin.
+          // R135: kullanıcı maxPositions ne verdiyse ona kadar tarama devam edebilir.
+          // Fakat SL/TP doğrulanmadıysa yeni emir açma; önce koruma zinciri oturmalı.
           openSideCounts[recommendation] = Number(openSideCounts[recommendation]||0) + 1;
-          autoScanState.lastAction = `${coin.symbol} ${recommendation} açıldı; R30 tek-emir/scan koruması nedeniyle tarama durdu`;
-          return;
+          const freshCntAfterOpen = await getNewPosCount();
+          autoScanState.positionCount = freshCntAfterOpen;
+          autoScanState.livePositions = freshCntAfterOpen;
+          if (!orderResp.slSuccess || !orderResp.tpSuccess) {
+            autoScanState.lastAction = `${coin.symbol} ${recommendation} açıldı ama SL/TP tam doğrulanmadı; güvenlik için tarama durdu`;
+            return;
+          }
+          if (freshCntAfterOpen >= maxPositions) {
+            autoScanState.phase = 'MAX_POZİSYON_DOLU';
+            autoScanState.lastAction = `${coin.symbol} ${recommendation} açıldı; max pozisyon doldu (${freshCntAfterOpen}/${maxPositions})`;
+            return;
+          }
+          autoScanState.lastAction = `${coin.symbol} ${recommendation} açıldı; max pozisyon ${freshCntAfterOpen}/${maxPositions}, tarama devam ediyor`;
+          await sleep(650);
+          continue;
         } else {
           logAuto(`❌ ${coin.symbol} hata: ${orderResp.error}`);
           // Hata durumunda kısa cooldown — aynı coine 20dk tekrar girme
@@ -11003,7 +11044,7 @@ async function runAutoScan(prioritySymbol=null) {
     if (autoScanState.phase === 'MAX_POZİSYON_DOLU') {
       try {
         const cnt = await getNewPosCount();
-        const maxP = parseInt(autoConfig?.maxPositions || autoScanState?.settings?.maxPositions || 1) || 1;
+        const maxP = normalizeUserMaxPositions(autoConfig?.maxPositions || autoScanState?.settings?.maxPositions || 1, 1);
         autoScanState.positionCount = cnt;
         if (cnt < maxP) autoScanState.phase = autoScanState.opened>0 ? 'EMİR_AÇILDI' : 'BEKLİYOR';
       } catch(e) {}
@@ -11181,6 +11222,7 @@ async function syncPositions() {
       }
     }
     autoScanState.livePositions = openMap.size;
+    autoScanState.positionCount = openMap.size;
 
     // trailingState'de kayıtlı ama Binance'te artık olmayan = kapanmış.
     // Eski log "manuel/SL/TP" diye geneldi; şimdi mümkünse BE/TP/SL ayrıştırılır.
