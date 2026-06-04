@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R135_MAXPOS_LOSS_GAP_FIX';
+const LAZARUS_BUILD = 'R137_LEVERAGE_CAP_FALLBACK_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -354,7 +354,7 @@ async function getSymbolFilters(symbol) {
 const leverageBracketCache = new Map();
 async function getSymbolMaxInitialLeverage(apiKey, apiSecret, symbol, targetNotional=0) {
   const sym = normalizeSymbol(symbol);
-  const key = `${keyFingerprint(apiKey)}:${sym}`;
+  const key = `${keyFingerprint(apiKey)}:${sym}:${Math.round(Number(targetNotional||0)/50)*50}`;
   const now = Date.now();
   const cached = leverageBracketCache.get(key);
   if (cached && now - cached.ts < 10 * 60 * 1000) return cached.value;
@@ -379,6 +379,55 @@ async function getSymbolMaxInitialLeverage(apiKey, apiSecret, symbol, targetNoti
   } catch(e) {
     return null;
   }
+}
+
+
+// ── R137: Binance sembol kaldıraç sınırı / -4028 fallback ───────────────────
+function normalizeRequestedLeverage(v, fallback=1) {
+  const n = Math.floor(Number(v || fallback));
+  return Math.max(1, Math.min(125, Number.isFinite(n) ? n : fallback));
+}
+
+async function setSymbolLeverageSafe(apiKey, apiSecret, symbol, requestedLeverage, targetNotional=0) {
+  const sym = normalizeSymbol(symbol);
+  const requested = normalizeRequestedLeverage(requestedLeverage, 1);
+  const maxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, sym, targetNotional).catch(()=>null);
+  const first = maxLev ? Math.min(requested, normalizeRequestedLeverage(maxLev, requested)) : requested;
+  const ladder = [125,100,75,50,40,30,25,20,15,12,10,8,7,6,5,4,3,2,1];
+  const candidates = [];
+  const add = (x) => {
+    const n = normalizeRequestedLeverage(x, 1);
+    if (maxLev && n > maxLev) return;
+    if (n > requested && !maxLev) return;
+    if (!candidates.includes(n)) candidates.push(n);
+  };
+  add(first);
+  for (const x of ladder) add(Math.min(x, first));
+  add(1);
+
+  let lastErr = null;
+  for (const lev of candidates) {
+    try {
+      await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/leverage', {symbol:sym, leverage:lev});
+      return {
+        ok:true,
+        leverage:lev,
+        requested,
+        maxLeverage:maxLev || null,
+        adjusted:lev !== requested,
+        reason: lev !== requested
+          ? `Binance ${sym} için ${requested}x kabul etmedi/izin vermedi; ${lev}x ile devam edildi${maxLev ? ` (izinli max ${maxLev}x)` : ''}`
+          : ''
+      };
+    } catch(e) {
+      lastErr = e;
+      const msg = String(e?.message || '');
+      if (!(msg.includes('-4028') || msg.toLowerCase().includes('leverage') || msg.toLowerCase().includes('not valid'))) {
+        throw e;
+      }
+    }
+  }
+  throw lastErr || new Error(`${sym}: kaldıraç ayarlanamadı`);
 }
 
 async function normalizeSLTPToTick(symbol, slPrice, tpPrice) {
@@ -8639,7 +8688,6 @@ app.post('/api/order', async (req, res) => {
       if (autoConfig?.enabled) throw new Error(`Pozisyon limiti doğrulanamadı: ${limitErr.message}`);
     }
     if(marginType){try{await bReq(apiKey,apiSecret,'POST','/fapi/v1/marginType',{symbol:sym,marginType:marginType.toUpperCase()});}catch(e){if(!e.message.includes('No need'))console.log('MarginType:',e.message);}}
-    await bReq(apiKey,apiSecret,'POST','/fapi/v1/leverage',{symbol:sym,leverage:parseInt(leverage)});
     let stepSize=0.001,tickSize=0.01,minNot=5;
     try{
       const si=await bPub('/fapi/v1/exchangeInfo','symbol='+sym);
@@ -8656,9 +8704,14 @@ app.post('/api/order', async (req, res) => {
     const pr=await bPub('/fapi/v1/ticker/price','symbol='+sym);
     const curPrice=parseFloat(pr.price)||0;
     if(!curPrice)throw new Error('Fiyat alınamadı');
+    const levSet = await setSymbolLeverageSafe(apiKey, apiSecret, sym, leverage, Number(usdtAmount||0) * normalizeRequestedLeverage(leverage, 1));
+    const safeLeverage = normalizeRequestedLeverage(levSet.leverage, 1);
+    if (levSet.adjusted) {
+      logAuto(`⚙️ ${sym} kaldıraç düzeltildi: panel ${levSet.requested}x → Binance izinli ${safeLeverage}x. Emir iptal edilmedi.`);
+    }
     const qp=stepSize<1?-Math.floor(Math.log10(stepSize)):0;
     const pp=tickSize<1?-Math.floor(Math.log10(tickSize)):0;
-    const qty=parseFloat(((parseFloat(usdtAmount)*parseInt(leverage))/curPrice).toFixed(qp));
+    const qty=parseFloat(((parseFloat(usdtAmount)*safeLeverage)/curPrice).toFixed(qp));
     const rnd=p=>parseFloat(parseFloat(p).toFixed(pp));
     if(qty*curPrice<minNot)throw new Error(`Min işlem $${minNot}. Miktarı artır.`);
     const main=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
@@ -8675,7 +8728,7 @@ app.post('/api/order', async (req, res) => {
     const realTP=rnd(parseFloat(targetPrice)*ratio);
     const realSL=rnd(parseFloat(stopPrice)*ratio);
     const ps=realTP.toString(),ss=realSL.toString(),qs=qty.toString();
-    console.log(`${sym} giriş:${execPrice} TP:${realTP} SL:${realSL} lev:${leverage}`);
+    console.log(`${sym} giriş:${execPrice} TP:${realTP} SL:${realSL} lev:${safeLeverage}`);
 
     // ── TP/SL ────────────────────────────────────────────────────────────────
     // "Target strategy invalid" = fiyat yanlış yönde
@@ -8692,7 +8745,7 @@ app.post('/api/order', async (req, res) => {
     }
     finalTP = rnd(finalTP);
     finalSL = rnd(finalSL);
-    console.log(`${sym} lev:${leverage} giriş:${execPrice} TP:${finalTP} SL:${finalSL} (isLong:${isLong})`);
+    console.log(`${sym} lev:${safeLeverage} giriş:${execPrice} TP:${finalTP} SL:${finalSL} (isLong:${isLong})`);
 
     async function placeSLTP(marketType, price) {
       const p  = price.toString();
@@ -8804,7 +8857,7 @@ app.post('/api/order', async (req, res) => {
       tpSuccess:true,slSuccess:true,
       slProof:slResult.proof,
       executedPrice:execPrice,
-      details:{symbol:sym,side,quantity:qty,leverage,entry:execPrice,target:finalTP,stop:finalSL}
+      details:{symbol:sym,side,quantity:qty,leverage:safeLeverage,requestedLeverage:levSet.requested,leverageAdjusted:levSet.adjusted,leverageReason:levSet.reason,entry:execPrice,target:finalTP,stop:finalSL}
     });
   }catch(e){
     pushCritical('ORDER_ROUTE_ERROR', `${sym}: ${e.message}`);
@@ -9538,8 +9591,16 @@ async function managePosition(apiKey, apiSecret, pos) {
   state.exitMode = r91Brain.mode;
 
   if (!action && r91VurKacAktif) {
-    // 1) İlk kâr görünür görünmez BE'den önce küçük kâr kilidi. 20x'te ROI +4 yaklaşık coin +%0.20 demek.
-    if (pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock) {
+    // 1) İlk kâr görünür görünmez BE'den önce küçük kâr kilidi.
+    // R136: 5m kaldıraçlı TOP10'da çok erken SL sıkıştırmak, EPIC gibi işlemi
+    // +0.06$ küçük kâra boğabiliyor. Akış hâlâ pozisyon yönündeyse ilk kilidi
+    // birkaç döngü nefeslendir; ters teyit gelirse eski emniyet yine çalışır.
+    const r136RunnerBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 2.5 && realProfitPct < 1.45);
+    if (!action && pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
+      state.r136FirstLockBreath = Number(state.r136FirstLockBreath||0) + 1;
+      trailingState.set(sym, state);
+      logAuto(`⏳ ${sym} R136 kâr nefesi: erken ilk kâr kilidi bekletildi [${state.r136FirstLockBreath}/4] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
+    } else if (pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock) {
       const lockPct = Math.max(0.22, Math.min(0.55, realProfitPct * 0.45));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -9551,7 +9612,13 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
 
     // 2) Kâr büyüdüyse SL kâr bölgesine daha agresif taşınır.
-    if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock) {
+    // R136: ikinci kilit de trend/flow sağlıklıysa %1.15 altında acele sıkışmasın.
+    const r136SecondBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 3.0 && realProfitPct < 1.15);
+    if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
+      state.r136SecondLockBreath = Number(state.r136SecondLockBreath||0) + 1;
+      trailingState.set(sym, state);
+      logAuto(`⏳ ${sym} R136 ikinci kâr kilidi nefesi [${state.r136SecondLockBreath}/3] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
+    } else if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock) {
       const lockPct = Math.max(0.35, Math.min(0.85, realProfitPct * 0.55));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -9632,9 +9699,19 @@ async function managePosition(apiKey, apiSecret, pos) {
       stepReason = `Kâr taşıma 2: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
       stepUpdate = { step2Set:true };
     } else if (realProfitPct >= karTasima1 && !state.step1Set) {
-      stepSL = isLong ? +(entryPrice*(1+0.003)).toFixed(8) : +(entryPrice*(1-0.003)).toFixed(8);
-      stepReason = `Kâr taşıma 1: %${realProfitPct.toFixed(2)} → SL giriş üstü +%0.3`;
-      stepUpdate = { step1Set:true };
+      // R136: Kâr taşıma 1, erken çıkış gibi davranmasın.
+      // Akış hâlâ pozisyon yönündeyse ve ters çıkış puanı düşükse ilk taşıma için
+      // %1.60'a kadar veya en fazla 6 yönetim döngüsü nefes ver. BE emniyeti zaten aktif.
+      const r136KarBreathOk = !!(r91Brain?.devamGucu && Number(r91Brain?.exitScore||0) < 2.5 && realProfitPct < 1.60 && Number(state.r136KarTasimaBreath||0) < 6);
+      if (r136KarBreathOk) {
+        state.r136KarTasimaBreath = Number(state.r136KarTasimaBreath||0) + 1;
+        trailingState.set(sym, state);
+        logAuto(`⏳ ${sym} R136 kâr taşıma nefesi: step1 bekletildi [${state.r136KarTasimaBreath}/6] · kâr %${realProfitPct.toFixed(2)} · trend/flow devam`);
+      } else {
+        stepSL = isLong ? +(entryPrice*(1+0.003)).toFixed(8) : +(entryPrice*(1-0.003)).toFixed(8);
+        stepReason = `Kâr taşıma 1: %${realProfitPct.toFixed(2)} → SL giriş üstü +%0.3`;
+        stepUpdate = { step1Set:true };
+      }
     }
     if (stepSL) {
       const better = isLong ? (!state.currentSL||stepSL>state.currentSL) : (!state.currentSL||stepSL<state.currentSL);
@@ -10113,8 +10190,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R135 5m Fırsat Beyni: kullanıcı max pozisyon özgürlüğü + zarar boşluğu/öğrenme freni',
-        note: 'R135; R134 canlı tick ve hızlı edge korunur. Max pozisyon kullanıcının verdiği değere uyar; aynı scan içinde SL/TP doğrulanırsa maxPositions dolana kadar yeni fırsat aranır. Negatif dış kapanışlar zarar gibi soğutulur ve aynı coin/setup tekrarları öğrenme freniyle kesilir.'
+          : 'R137 5m Fırsat Beyni: Binance sembol kaldıraç sınırı fallback + R136 çıkış nefesi korunur',
+        note: 'R137; R136 çıkış zamanlaması korunur. Binance -4028 kaldıraç geçersiz hatasında sembolün izin verdiği maksimum kaldıraç okunur, gerekirse kademeli fallback ile emir boşa düşmeden güvenli kaldıraçla denenir.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10881,8 +10958,13 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R88: Normal otomatik işlem panel kaldıracını kullanır. Vur-kaç otomatik kaldıraç açık ise
         // Binance izinli maksimum okunur; piyasa güvenliği bozuksa zaten işlem kovalanmaz.
-        let executeLeverage = parseInt(leverage) || 1;
+        let executeLeverage = normalizeRequestedLeverage(leverage, 1);
         let leverageNote = `panel kaldıracı ${executeLeverage}x`;
+        const r137BaseMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * executeLeverage).catch(()=>null);
+        if (r137BaseMaxLev && executeLeverage > r137BaseMaxLev) {
+          leverageNote = `panel ${executeLeverage}x → Binance izinli ${r137BaseMaxLev}x`;
+          executeLeverage = r137BaseMaxLev;
+        }
         if (cfg.vurKacEnabled && cfg.vurKacAutoLev && decisionChain?.r88VurKacOk) {
           const structuralAutoLevOk = !!(
             !decisionChain?.r116HtfGuardBlock &&
@@ -10941,6 +11023,9 @@ async function runAutoScan(prioritySymbol=null) {
         }).then(r=>r.json());
 
         if (orderResp.ok) {
+          if (orderResp?.details?.leverageAdjusted) {
+            logAuto(`⚙️ ${coin.symbol} R137 kaldıraç fallback: panel ${orderResp.details.requestedLeverage}x → ${orderResp.details.leverage}x`);
+          }
           markAutoOpened(coin.fullSymbol, recommendation);
           invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
