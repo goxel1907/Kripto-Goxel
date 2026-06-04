@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R133_FAST_EDGE_AND_WS_STABILITY_FIX';
+const LAZARUS_BUILD = 'R134_FAST_EDGE_PASS_UNLOCK';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1279,8 +1279,8 @@ function r130CombinedSummary() {
     const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
     const noTick = (rs === WebSocket.OPEN && !r130CombinedTickLastMsgTs && openAge != null && openAge > 12000) ? ' noTickRestartBekliyor' : '';
     const err = r130CombinedTickLastErr ? ` err:${r130CombinedTickLastErr}` : '';
-    return `R133 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
-  } catch(_) { return 'R133 combined:bilinmiyor'; }
+    return `R134 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
+  } catch(_) { return 'R134 combined:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -3977,11 +3977,13 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? (/BSL_ALINDI_CHOCH_BEKLENIYOR|BSL\s*wick\+body-reclaim|SUPPLY_OB|supply/i.test(ictText) && counterDist <= 0.95 && !d.r116AcceptedCounterBreak)
     : (/SSL_ALINDI_CHOCH_BEKLENIYOR|SSL\s*wick\+body-reclaim|DEMAND_OB|demand/i.test(ictText) && counterDist <= 0.95 && !d.r116AcceptedCounterBreak)
   );
-  // R133: ölümcül güvenlik ile kalite/teyit riskini ayır. 5m kaldıraçlı scalper beyin
-  // çok güçlü canlı edge gördüğünde zayıf mum puanı yüzünden tamamen körleşmesin; fakat
-  // likidite/ATR/trap/knife gibi hesabı yakabilecek riskler asla bypass edilmez.
+  // R134: ölümcül güvenlik ile legacy sensör vetosunu ayır.
+  // Eski R65/R68 modülleri artık tek beynin ham sensörüdür; canlı tick + HTF sweep + yüksek edge varsa
+  // bu eski modül vetoları hesabı koruyan gerçek risk gibi davranamaz. Fakat likidite/ATR/trap/knife
+  // gibi hesabı yakabilecek riskler hâlâ asla bypass edilmez.
+  const r134LegacySensorVeto = r120Bool(d.r68CriticalHardBlock || d.r65ScalperCoreHardVeto || d.r66WyckoffHardVeto);
   const fatalDanger = r120Bool(
-    d.hardVeto || d.r114TrapBlock || htfOpposite || d.r68CriticalHardBlock || d.r65ScalperCoreHardVeto ||
+    d.hardVeto || d.r114TrapBlock || htfOpposite ||
     d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock || d.rvolVeryLow ||
     (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock)
   );
@@ -4036,18 +4038,39 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     : /BSL_ALINDI|BSL_SWEEP|HTF_BSL|BSL_.*BODY_RECLAIM/i.test(ictText)
   );
   const r133LiveTradeCount = r120BrainNum(d.r125Flow?.trades, 0);
-  const r133LiveDeltaAbs = Math.abs(r120BrainNum(d.r125Flow?.deltaPct, 0));
+  const r133LiveDeltaPct = r120BrainNum(d.r125Flow?.deltaPct, 0);
+  const r133LiveDeltaAbs = Math.abs(r133LiveDeltaPct);
+  const r134LiveDeltaAligned = r120Bool(side === 'LONG' ? r133LiveDeltaPct >= 12 : r133LiveDeltaPct <= -12);
+  const r134LiveDeltaAgainst = r120Bool(side === 'LONG' ? r133LiveDeltaPct <= -16 : r133LiveDeltaPct >= 16);
+  const r134ForecastAligned = r120Bool(d.r125Flow?.r126?.forecast?.side === side && r120BrainNum(d.r125Flow?.r126?.forecast?.confidence,0) >= 60);
+  const r134AggressionAligned = r120Bool(d.r125Flow?.r126?.aggressionTrend?.side === side && r120BrainNum(d.r125Flow?.r126?.aggressionTrend?.strength,0) >= 55);
+  const r134FlowAligned = r120Bool(
+    r125SideFlow.strong ||
+    (r125SideFlow.ok && r133LiveTradeCount >= 20) ||
+    (r134LiveDeltaAligned && r133LiveTradeCount >= 40) ||
+    r134ForecastAligned || r134AggressionAligned
+  );
+  const r134OpposingLiveFlow = r120Bool(
+    r125OpposingFlow ||
+    (r134LiveDeltaAgainst && r133LiveTradeCount >= 35 && r125SideFlow.against >= Math.max(3, r125SideFlow.edge)) ||
+    (d.r125Flow?.bestSide && d.r125Flow.bestSide !== 'NEUTRAL' && d.r125Flow.bestSide !== side && r125SideFlow.against >= 7 && r133LiveTradeCount >= 80)
+  );
+  const r134HtfOrCandleProof = r120Bool(
+    r133HtfSweepAligned || d.r117BodyReclaimOk || d.r117MssOk || d.r118CandleOk ||
+    (d.r118Candle?.score >= 4) || htfReclaim || htfReverse || squeeze
+  );
   const r133FastScalpOverride = r120Bool(
-    !fatalDanger && !r125OpposingFlow && !htfCounterWait && r133HtfSweepAligned &&
-    r125SideFlow.strong && r133LiveTradeCount >= 12 && r133LiveDeltaAbs >= 18 &&
-    score >= minScore && edge >= 88 && (side === d.r125Flow?.bestSide || r125SideFlow.edge >= 9)
+    !fatalDanger && !r134OpposingLiveFlow && !htfCounterWait && r134HtfOrCandleProof && r134FlowAligned &&
+    r133LiveTradeCount >= 12 && r133LiveDeltaAbs >= 12 &&
+    score >= Math.max(50, minScore - 22) && edge >= 82 &&
+    !(d.r116HtfGuardBlock && !d.r116AcceptedCounterBreak && !r133HtfSweepAligned)
   );
   const ok = r120Bool((!hardDanger && !modeQualityBlock && dataMinimum && score >= adaptiveFloor && edge >= edgeNeed) || r133FastScalpOverride);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R133 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R134 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${sensorSummary?' · '+sensorSummary:''}`;
 
   d.brainMode = primaryMode;
@@ -4062,11 +4085,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.brainLiveFlowOk = liveFlowOk;
   d.brainR125FlowOk = r125SideFlow.ok;
   d.brainR125OpposingFlow = r125OpposingFlow;
+  d.brainR134OpposingLiveFlow = r134OpposingLiveFlow;
+  d.brainR134LegacySensorVeto = r134LegacySensorVeto;
+  d.brainR134FlowAligned = r134FlowAligned;
+  d.brainR134HtfOrCandleProof = r134HtfOrCandleProof;
   d.brainFatalDanger = fatalDanger;
   d.brainHardDanger = hardDanger;
   d.r133FastScalpOverride = r133FastScalpOverride;
-  d.r133FastScalpWhy = r133FastScalpOverride ? `R133 hızlı 5m scalp: HTF sweep hizalı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}` : '';
-  d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R133_FAST_EDGE_MICRO_SCALP' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
+  d.r133FastScalpWhy = r133FastScalpOverride ? `R134 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}` : '';
+  d.r134FastScalpOverride = r133FastScalpOverride;
+  d.r134FastScalpWhy = d.r133FastScalpWhy;
+  d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R134_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
   d.pass = ok;
@@ -10062,8 +10091,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R133 5m Fırsat Beyni: canlı tick stabilizasyonu + yüksek-edge mikro scalp override',
-        note: 'R133; R132 routed WS korunur. Combined aggTrade stabilize edilir; canlı tick/HTF sweep/edge çok güçlüyse mum zayıflığında kontrollü mikro-scalp izinlenir.'
+          : 'R134 5m Fırsat Beyni: canlı tick + HTF sweep uyumlu hızlı geçiş; legacy sensör veto yumuşatma',
+        note: 'R134; R133 canlı tick stabilizasyonu korunur. Eski R65/R68 sensörleri ölümcül veto olmaktan çıkarılır; canlı flow + HTF sweep + yüksek edge birleşince kontrollü mikro-scalp PASS üretir.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10379,7 +10408,7 @@ async function runAutoScan(prioritySymbol=null) {
           priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason,
           action:decisionChain?.autoOk?(decisionChain?.entryPermissionReason||'Aday'):'İzle',
           sweepRequired:decisionChain?.sweepRequired, entryPermissionReason:decisionChain?.entryPermissionReason,
-          cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk, brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction, brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary, r133FastScalpOverride:decisionChain?.r133FastScalpOverride, r133FastScalpWhy:decisionChain?.r133FastScalpWhy,
+          cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk, brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction, brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary, r133FastScalpOverride:decisionChain?.r133FastScalpOverride, r133FastScalpWhy:decisionChain?.r133FastScalpWhy, r134FastScalpOverride:decisionChain?.r134FastScalpOverride, r134FastScalpWhy:decisionChain?.r134FastScalpWhy,
           r125Flow:decisionChain?.r125Flow, r125OrderflowSummary:decisionChain?.r125OrderflowSummary, r126FlowSummary:decisionChain?.r126FlowSummary,
           ...r119BuildAutoDiag(decisionChain),
           r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk,
@@ -10418,7 +10447,7 @@ async function runAutoScan(prioritySymbol=null) {
             : `WAIT_DIAG: skor ${waitScore}<${minScore} / ${waitSide} izleme`));
           markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, tier:'WAIT', score:waitScore, longScore, shortScore, reason:waitReason, waitSide, waitDiagnostic:true,
             priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, autoOk:false,
-            brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction || 'WATCH', brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary, r133FastScalpOverride:decisionChain?.r133FastScalpOverride, r133FastScalpWhy:decisionChain?.r133FastScalpWhy,
+            brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction || 'WATCH', brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary, r133FastScalpOverride:decisionChain?.r133FastScalpOverride, r133FastScalpWhy:decisionChain?.r133FastScalpWhy, r134FastScalpOverride:decisionChain?.r134FastScalpOverride, r134FastScalpWhy:decisionChain?.r134FastScalpWhy,
             r125Flow:decisionChain?.r125Flow, r125OrderflowSummary:decisionChain?.r125OrderflowSummary, r126FlowSummary:decisionChain?.r126FlowSummary,
             ...r119BuildAutoDiag(decisionChain)
           });
