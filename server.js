@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R129_FLOW_WARMUP_REAL_EDGE_FIX';
+const LAZARUS_BUILD = 'R130_COMBINED_AGGTRADE_FLOW_ENGINE_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1026,7 +1026,8 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
   const tpLong = clusters.above && clusters.above.distPct > 0.18 && clusters.above.distPct < 8 ? clusters.above : null;
   const tpShort = clusters.below && clusters.below.distPct < -0.18 && clusters.below.distPct > -8 ? clusters.below : null;
   const flowState = flowWarmup ? 'ISINIYOR' : (tickFresh ? 'CANLI_TICK' : 'CVD_FALLBACK');
-  const summary = `${flowState} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
+  const r130sum = (typeof r130CombinedSummary === 'function') ? r130CombinedSummary() : '';
+  const summary = `${flowState} · ${r130sum} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
   return { ok:true, liveReady, tickFresh, cvdValid, flowWarmup, liveSource, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
 }
 function r125FlowForSide(ctx, side='LONG') {
@@ -1153,6 +1154,102 @@ function r126OrderflowExtras(symbol, lastPrice, book={}, tickData={}) {
     aggr?.phase === 'ACCELERATING' ? `aggr:${aggr.side} ${aggr.strength}` : 'aggr:flat'
   ].filter(Boolean).join(' · ');
   return { bidAbsorb, askAbsorb, forecast, imprint, aggressionTrend:aggr, summary };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R130 — COMBINED AGGTRADE FLOW ENGINE FIX
+// Sorun: R129'da panelde bütün coinlerde tr:0 / delta:0 kalabiliyordu. Sebep,
+// per-symbol WS'lerin geç ısınması veya aynı anda çok sayıda ayrı bağlantının
+// Railway/Binance tarafında gecikmesiydi. TOP10 scalper için tek combined stream
+// daha hızlı ve daha az bağlantılıdır.
+// ─────────────────────────────────────────────────────────────────────────────
+let r130CombinedTickWS = null;
+let r130CombinedTickKey = '';
+let r130CombinedTickSymbols = new Set();
+let r130CombinedTickLastMsgTs = 0;
+let r130CombinedTickLastOpenTs = 0;
+
+function r130EnsureTickEngine(symbol) {
+  const full = normalizeSymbol ? normalizeSymbol(symbol) : r125NormSymbol(symbol);
+  if (!full || !full.endsWith('USDT')) return null;
+  let engine = tickStore.get(full);
+  if (!engine) {
+    const tickSz = full.startsWith('BTC')?0.1:full.startsWith('ETH')?0.01:full.startsWith('BNB')?0.01:0.0001;
+    engine = createTickEngine(tickSz, 5);
+    engine.tickSize = tickSz;
+    engine.r130Combined = true;
+    tickStore.set(full, engine);
+  }
+  if (!Array.isArray(engine.lastTicks)) engine.lastTicks = [];
+  if (!Array.isArray(engine.candles)) engine.candles = [];
+  return engine;
+}
+
+function r130StreamName(symbol) {
+  const full = normalizeSymbol ? normalizeSymbol(symbol) : r125NormSymbol(symbol);
+  if (!full || !full.endsWith('USDT')) return '';
+  // Binance stream isimleri küçük harf olur. Unicode semboller de JS içinde bozulmasın diye encode edilir.
+  return encodeURIComponent(full.toLowerCase() + '@aggTrade');
+}
+
+function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
+  try {
+    const clean = [];
+    for (const s0 of (Array.isArray(symbols)?symbols:[symbols])) {
+      const full = normalizeSymbol ? normalizeSymbol(s0) : r125NormSymbol(s0);
+      if (!full || !full.endsWith('USDT')) continue;
+      if (!clean.includes(full)) clean.push(full);
+      r130EnsureTickEngine(full);
+    }
+    if (!clean.length) return;
+
+    let next = opts?.replace ? new Set(clean) : new Set([...(r130CombinedTickSymbols||[]), ...clean]);
+    // Bağlantı şişmesin. TOP10/TOP24 yeterli; eski scan sembolleri replace:true ile temizlenir.
+    const arr = Array.from(next).slice(0, 30);
+    const streams = arr.map(r130StreamName).filter(Boolean).sort();
+    const key = streams.join('/');
+    const rs = r130CombinedTickWS?.readyState;
+    if (r130CombinedTickWS && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) && key === r130CombinedTickKey) return;
+
+    try { if (r130CombinedTickWS) r130CombinedTickWS.terminate?.(); } catch(_) {}
+    r130CombinedTickSymbols = new Set(arr);
+    r130CombinedTickKey = key;
+    if (!key) return;
+
+    const url = `wss://fstream.binance.com/stream?streams=${key}`;
+    const ws = new WebSocket(url);
+    r130CombinedTickWS = ws;
+    ws.on('open', () => { r130CombinedTickLastOpenTs = Date.now(); });
+    ws.on('message', data => {
+      try {
+        const msg = JSON.parse(data.toString());
+        const t = msg?.data || msg;
+        const full = String(t?.s || '').toUpperCase();
+        if (!full) return;
+        const eng = r130EnsureTickEngine(full);
+        if (!eng) return;
+        r130CombinedTickLastMsgTs = Date.now();
+        eng.r130LastMsgTs = r130CombinedTickLastMsgTs;
+        eng.r130Source = 'combinedAggTrade';
+        processTick(eng, t);
+      } catch(_) {}
+    });
+    ws.on('close', () => {
+      const restart = Array.from(r130CombinedTickSymbols || []);
+      setTimeout(() => { try { r130StartCombinedAggTradeStream(restart, {replace:true}); } catch(_) {} }, 2500);
+    });
+    ws.on('error', () => {});
+  } catch(_) {}
+}
+
+function r130CombinedSummary() {
+  try {
+    const age = r130CombinedTickLastMsgTs ? Date.now() - r130CombinedTickLastMsgTs : null;
+    const rs = r130CombinedTickWS?.readyState;
+    const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
+    return `R130 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}`;
+  } catch(_) { return 'R130 combined:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -1326,11 +1423,24 @@ function detectAbsorption(footprint, currentPrice, tickSize, isLong) {
 
 // Tick işleme — her trade gelince çağrılır
 function processTick(engine, trade) {
+  // R130: aynı aggTrade hem combined hem legacy WS'den gelirse delta iki kez yazılmasın.
+  try {
+    const aid = trade?.a ?? trade?.t;
+    if (aid !== undefined && aid !== null) {
+      if (!engine._r130SeenAggIds) { engine._r130SeenAggIds = new Set(); engine._r130SeenAggQueue = []; }
+      const k = String(aid);
+      if (engine._r130SeenAggIds.has(k)) return;
+      engine._r130SeenAggIds.add(k); engine._r130SeenAggQueue.push(k);
+      while (engine._r130SeenAggQueue.length > 1200) engine._r130SeenAggIds.delete(engine._r130SeenAggQueue.shift());
+    }
+  } catch(_) {}
   const price  = parseFloat(trade.p);
   const qty    = parseFloat(trade.q);
   const usdt   = price * qty;
   const isBuy  = !trade.m; // maker=true → taker SATTI (bear), maker=false → taker ALDI (bull)
   const ts     = trade.T || Date.now();
+  engine.lastTickTs = ts;
+  engine.lastTickWallTs = Date.now();
   if (trade.s && usdt >= 12000) r125RegisterPriorityWake(trade.s, `aggTrade ${isBuy?'BUY':'SELL'} $${Math.round(usdt)}`, Math.min(100, usdt/1000));
 
   engine.lastPrice = price;
@@ -2490,7 +2600,7 @@ function calcDeltaMicrostructure(candles) {
 // Tick analiz sonucu al
 function getTickAnalysis(symbol) {
   const full = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
-  startTickStream(full);
+  r130StartCombinedAggTradeStream([full]);
   const engine = tickStore.get(full);
   if (!engine) return null;
 
@@ -4528,8 +4638,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
 
     // Tick sweep detector'ına 5m swing seviyeleri besle
-    await startTickStream(full); // await: stream kurulduktan sonra devam et
-    const tickEng = tickStore.get(full);
+    r130StartCombinedAggTradeStream([full]); // R130: tek combined aggTrade stream, ayrı WS bekleme yok
+    const tickEng = r130EnsureTickEngine(full);
     if (tickEng && k5m.length > 0) {
       updateSwingLevels(tickEng.sweepDet, k5m); // Dinamik lookback, volatiliteye göre
     }
@@ -9900,8 +10010,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R129 5m Fırsat Beyni: gerçek canlı flow ısınma/edge ayrımı + tick stream erken motor fix',
-        note: 'R129; R128 circular-safe korunur. Tick/CVD akışı ısınmadan defter imbalance tek başına trade yakıtı sayılmaz; canlı orderflow gerçek edge olarak beyne bağlanır.'
+          : 'R130 5m Fırsat Beyni: combined aggTrade motoru + gerçek tick flow bağlantısı',
+        note: 'R130; R129 warmup ayrımı korunur. TOP10 için tek combined aggTrade WS kurulur, tick/delta/aggression verisi tek beyne gerçek canlı edge olarak akar.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10161,14 +10271,11 @@ async function runAutoScan(prioritySymbol=null) {
     // R42: Analiz başlamadan önce ilk 24 aday için CVD/tick WS prewarm.
     // Bu REST isteği değildir; Binance ban riskini artırmadan CVD=0/UNKNOWN kaynaklı kör kararları azaltır.
     try {
-      const tickWarmups = [];
-      for (const c of (scanList||[]).slice(0,24)) {
-        const fs = normalizeSymbol(c.fullSymbol || c.symbol);
-        startCVDStream(fs);
-        tickWarmups.push(startTickStream(fs).catch(()=>null));
-      }
-      // R52: 5m scalper hızlı kalsın ama ilk analiz tamamen tickData=null başlamasın.
-      await Promise.race([Promise.allSettled(tickWarmups), sleep(1500)]);
+      const warmSymbols = (scanList||[]).slice(0,24).map(c => normalizeSymbol(c.fullSymbol || c.symbol)).filter(Boolean);
+      r130StartCombinedAggTradeStream(warmSymbols, {replace:true});
+      for (const fs of warmSymbols) startCVDStream(fs);
+      // R130: WS açılışını uzun bekletme; combined stream arka planda akacak.
+      await sleep(900);
     } catch(_e) {}
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
@@ -10844,6 +10951,11 @@ function startAutoTrader() {
     r125FastWakeTimer = setInterval(() => {
       try {
         if (!autoConfig?.enabled || autoRunning || isBinanceBackoffActive() || isPositionRiskCooldownActive()) return;
+        try {
+          const lastList = (autoScanState?.scanList||[]).map(x=>normalizeSymbol(x)).filter(Boolean);
+          const stale = r130CombinedTickWS && r130CombinedTickWS.readyState === WebSocket.OPEN && r130CombinedTickLastMsgTs && Date.now()-r130CombinedTickLastMsgTs > 20000;
+          if (lastList.length && (!r130CombinedTickWS || r130CombinedTickWS.readyState > WebSocket.OPEN || stale)) r130StartCombinedAggTradeStream(lastList, {replace:true});
+        } catch(_) {}
         const now = Date.now();
         for (const [sym, ev] of r125PriorityWake.entries()) {
           if (now - ev.ts > 15000) { r125PriorityWake.delete(sym); continue; }
