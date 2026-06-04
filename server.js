@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R113_KLINES5M_RUNTIME_FIX';
+const LAZARUS_BUILD = 'R118_HTF_CANDLE_REVERSAL_PLAYBOOK';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1427,203 +1427,291 @@ function r111AnalyzeSiksmaFlow(k5m, k1h, k4h, lastPrice, fundingData, lsData, ls
   };
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R114: 5M SHIFT / MM TUZAK KORUMASI
+// Amaç: Top-gainer coinde sırf "Sweep + Stop Hunt + MM_UP_SWEEP" gördü diye
+// düşen 5m body-shift içine LONG basmamak. Bu yeni bir kural yığını değildir;
+// tek disiplin: yön değişimi/reclaim yoksa sweep sadece "avlandı" bilgisidir, emir değildir.
+// ─────────────────────────────────────────────────────────────────────────────
+function r114Analyze5mShift(k5m) {
+  const no = {
+    ok:false, bullShift:false, bearShift:false, longReclaim:false, shortReclaim:false,
+    net4Pct:0, net9Pct:0, net14Pct:0, red4:0, green4:0, avgRangePct:0,
+    fromHighPct:0, fromLowPct:0, lastClosePos:0.5, ozet:'5m veri yok'
+  };
+  const rows = (Array.isArray(k5m) ? k5m : []).slice(-30)
+    .map(k => ({ o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }))
+    .filter(k => k.o > 0 && k.h > 0 && k.l > 0 && k.c > 0 && Number.isFinite(k.c));
+  if (rows.length < 10) return no;
+  const R = (x, d=2) => +Number(x || 0).toFixed(d);
+  const pct = (a,b) => b > 0 ? ((a-b)/b)*100 : 0;
+  const last = rows.at(-1), prev = rows.at(-2);
+  const lastRange = Math.max(last.h - last.l, 0);
+  const lastClosePos = lastRange > 0 ? (last.c - last.l) / lastRange : 0.5;
+  const avgRangePct = rows.slice(-12).reduce((s,k)=>s+((k.h-k.l)/k.c*100),0) / Math.min(12, rows.length);
+  const fastThr = Math.max(0.55, avgRangePct * 0.80);
+  const medThr  = Math.max(1.05, avgRangePct * 1.35);
+  const net4Pct  = pct(last.c, rows.at(-5)?.c || rows[0].c);
+  const net9Pct  = pct(last.c, rows.at(-10)?.c || rows[0].c);
+  const net14Pct = pct(last.c, rows.at(-15)?.c || rows[0].c);
+  const last4 = rows.slice(-4);
+  const red4 = last4.filter(k => k.c < k.o).length;
+  const green4 = last4.filter(k => k.c > k.o).length;
+  const last2Down = rows.slice(-2).every(k => k.c < k.o) && last.c < prev.c;
+  const last2Up   = rows.slice(-2).every(k => k.c > k.o) && last.c > prev.c;
+  const prev5 = rows.slice(-7, -1);
+  const prevSwingHigh = Math.max(...prev5.map(k=>k.h));
+  const prevSwingLow  = Math.min(...prev5.map(k=>k.l));
+  const recent14 = rows.slice(-14);
+  const recentHigh = Math.max(...recent14.map(k=>k.h));
+  const recentLow  = Math.min(...recent14.map(k=>k.l));
+  const fromHighPct = recentHigh > 0 ? (recentHigh - last.c) / recentHigh * 100 : 0;
+  const fromLowPct  = recentLow  > 0 ? (last.c - recentLow) / recentLow * 100 : 0;
+
+  // Body-shift: sadece tek kırmızı/yeşil mum değil; 4-9 mumluk gövde akışı.
+  const bearShift = !!(
+    net4Pct <= -fastThr || net9Pct <= -medThr ||
+    (red4 >= 3 && fromHighPct >= fastThr) ||
+    (last2Down && last.c < prevSwingLow * 1.001)
+  );
+  const bullShift = !!(
+    net4Pct >= fastThr || net9Pct >= medThr ||
+    (green4 >= 3 && fromLowPct >= fastThr) ||
+    (last2Up && last.c > prevSwingHigh * 0.999)
+  );
+
+  // Reclaim/shift onayı: Wick değil, gövde gerçekten yönü geri almalı.
+  const longReclaim = !!(
+    (last.c > last.o && lastClosePos >= 0.60 && last.c > prev.h * 0.999) ||
+    (last.c > prevSwingHigh * 1.0005 && lastClosePos >= 0.55)
+  );
+  const shortReclaim = !!(
+    (last.c < last.o && lastClosePos <= 0.40 && last.c < prev.l * 1.001) ||
+    (last.c < prevSwingLow * 0.9995 && lastClosePos <= 0.45)
+  );
+
+  const ozet = `5m shift net4:${R(net4Pct)}% net9:${R(net9Pct)}% red:${red4}/4 green:${green4}/4 pos:${R(lastClosePos*100,0)}% ${bearShift?'BEAR_SHIFT':''}${bullShift?'BULL_SHIFT':''}${longReclaim?' LONG_RECLAIM':''}${shortReclaim?' SHORT_RECLAIM':''}`.trim();
+  return { ok:true, bullShift, bearShift, longReclaim, shortReclaim,
+    net4Pct:R(net4Pct), net9Pct:R(net9Pct), net14Pct:R(net14Pct), red4, green4,
+    avgRangePct:R(avgRangePct), fromHighPct:R(fromHighPct), fromLowPct:R(fromLowPct),
+    lastClosePos:R(lastClosePos,3), ozet };
+}
+
 function r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice) {
+  // R115: HTF Likidite Haritası + 5m Body-Reclaim İcra Motoru
+  // Bu fonksiyon R110 adını korur ki eski entegrasyon kırılmasın; içerik R115 mantığıdır.
+  // Ana disiplin: 15m/1H/4H güçlü SSL/BSL seviyesi yoksa 5m wick arama yok.
+  // Sweep mumu: wick dışarı taşar, 5m kapanış/gövde tekrar seviyenin içine veya güvenli tarafına döner.
   const lp = Number(lastPrice);
   const no = { ok: false, phase: 'BEKLE', direction: null, sslLevel: null, bslLevel: null,
     swept: false, bodyClose: false, choch: false, fvg: null, entryOk: false,
-    longOk: false, shortOk: false, dashboardText: '' };
+    longOk: false, shortOk: false, dashboardText: '', liquidityMapText: '' };
   if (!lp || lp <= 0) return no;
 
   function rows(klines, limit) {
     return (Array.isArray(klines) ? klines : []).slice(-limit)
-      .map(k => ({ o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }))
-      .filter(k => k.h > 0 && Number.isFinite(k.h));
+      .map(k => ({ t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }))
+      .filter(k => k.o > 0 && k.h > 0 && k.l > 0 && k.c > 0 && Number.isFinite(k.c));
   }
-  const R = v => +Number(v).toFixed(8);
-  const pct = (a, b) => b > 0 ? Math.abs(a - b) / b * 100 : 999;
+  const R = (v, d=8) => +Number(v || 0).toFixed(d);
+  const pctAbs = (a, b) => b > 0 ? Math.abs(a - b) / b * 100 : 999;
+  const pctSigned = (a, b) => b > 0 ? ((a - b) / b) * 100 : 0;
 
-  const r5  = rows(k5m,  60);
-  const r15 = rows(k15m, 80);
-  const r1h = rows(k1h,  60);
-  const r4h = rows(k4h,  40);
-  if (r5.length < 10 || r15.length < 10) return no;
+  const r5  = rows(k5m,  80);
+  const r15 = rows(k15m, 120);
+  const r1h = rows(k1h,  120);
+  const r4h = rows(k4h,   80);
+  if (r5.length < 12 || r15.length < 12) return no;
 
-  // ── ADIM 1: 1H/15m'den SSL/BSL Seviyeleri ────────────────────────────────
-  function findLiqLevels(rows, label) {
-    const levels = { ssl: [], bsl: [] };
-    if (rows.length < 6) return levels;
+  function avgRangePct(rs, n=20) {
+    const a = rs.slice(-n);
+    if (!a.length) return 0.35;
+    return a.reduce((s,k)=>s+((k.h-k.l)/k.c*100),0) / a.length;
+  }
+  const ar5 = avgRangePct(r5, 20);
+  // Top-gainer 5m çok oynak olabilir; zone çok dar olursa gerçek sweep kaçırır, çok geniş olursa rastgele wick sayar.
+  const zonePct = Math.min(0.55, Math.max(0.14, ar5 * 0.22));
+  const piercePct = Math.min(0.50, Math.max(0.08, ar5 * 0.18));
 
-    // Equal Lows (SSL): İki veya daha fazla dip aynı seviyede (±%0.2)
-    // Equal Highs (BSL): İki veya daha fazla tepe aynı seviyede
-    const swingLows = [], swingHighs = [];
-
-    for (let i = 2; i < rows.length - 2; i++) {
-      const r = rows[i];
-      if (r.l < rows[i-1].l && r.l < rows[i-2].l &&
-          r.l <= rows[i+1].l && r.l <= rows[i+2].l) {
-        swingLows.push({ price: R(r.l), idx: i, label });
-      }
-      if (r.h > rows[i-1].h && r.h > rows[i-2].h &&
-          r.h >= rows[i+1].h && r.h >= rows[i+2].h) {
-        swingHighs.push({ price: R(r.h), idx: i, label });
-      }
+  function detectSwings(rs) {
+    const lows = [], highs = [];
+    for (let i = 2; i < rs.length - 2; i++) {
+      const k = rs[i];
+      if (k.l <= rs[i-1].l && k.l <= rs[i-2].l && k.l <= rs[i+1].l && k.l <= rs[i+2].l) lows.push({ price:R(k.l), idx:i });
+      if (k.h >= rs[i-1].h && k.h >= rs[i-2].h && k.h >= rs[i+1].h && k.h >= rs[i+2].h) highs.push({ price:R(k.h), idx:i });
     }
+    return { lows, highs };
+  }
 
-    // Equal grouping — aynı seviyede birden fazla swing
-    function clusterLevels(swings, type) {
-      const clusters = [];
+  function buildLevels(rs, tf) {
+    const tfWeight = tf === '4H' ? 4 : tf === '1H' ? 3 : 2;
+    const minClusterPct = tf === '4H' ? 0.45 : tf === '1H' ? 0.35 : 0.28;
+    const { lows, highs } = detectSwings(rs);
+    function cluster(swings, type) {
+      const out = [];
       for (const sw of swings) {
-        const match = clusters.find(c => pct(c.price, sw.price) <= 0.25);
-        if (match) {
-          match.count++;
-          match.strength = Math.min(5, match.count);
-          match.price = R((match.price * (match.count - 1) + sw.price) / match.count);
+        let c = out.find(x => pctAbs(x.price, sw.price) <= minClusterPct);
+        if (!c) {
+          out.push({ price: sw.price, touches: 1, lastIdx: sw.idx, type, tf, tfWeight, age: rs.length - 1 - sw.idx });
         } else {
-          clusters.push({ price: sw.price, count: 1, strength: 1, type, label });
+          c.price = R((c.price * c.touches + sw.price) / (c.touches + 1));
+          c.touches += 1;
+          c.lastIdx = Math.max(c.lastIdx, sw.idx);
+          c.age = rs.length - 1 - c.lastIdx;
         }
       }
-      return clusters.filter(c => c.price > 0);
+      return out.map(x => {
+        // Güç: HTF ağırlığı + temas sayısı + tazelik. Tek 15m swing zayıf; 1H/4H tek swing yine bilgi taşır.
+        const touchScore = Math.min(4, x.touches);
+        const freshScore = x.age <= 12 ? 1 : 0;
+        const strength = Math.min(10, x.tfWeight + touchScore + freshScore);
+        return { ...x, strength, label: x.tf, dist: R(pctAbs(lp, x.price), 3) };
+      });
     }
-
-    levels.ssl = clusterLevels(swingLows, 'SSL');
-    levels.bsl = clusterLevels(swingHighs, 'BSL');
-    return levels;
+    return { ssl: cluster(lows, 'SSL'), bsl: cluster(highs, 'BSL') };
   }
 
-  const lev15 = findLiqLevels(r15, '15m');
-  const lev1h = findLiqLevels(r1h, '1H');
-  const lev4h = findLiqLevels(r4h, '4H');
+  const lev4h = buildLevels(r4h, '4H');
+  const lev1h = buildLevels(r1h, '1H');
+  const lev15 = buildLevels(r15, '15m');
 
-  // Tüm seviyeleri birleştir, yakın olanları çakıştır
-  const allSSL = [...lev4h.ssl, ...lev1h.ssl, ...lev15.ssl]
-    .filter(l => l.price < lp)               // Sadece fiyat altındaki SSL
-    .sort((a, b) => b.price - a.price);      // En yakın önce
+  function mergeAndRank(list, side) {
+    // Yakın kümeleri birleştir; 4H/1H seviyeyi 15m gürültüsünden üstün tut.
+    const clusters = [];
+    for (const l of list) {
+      const m = clusters.find(c => pctAbs(c.price, l.price) <= Math.max(0.18, zonePct));
+      if (!m) clusters.push({ ...l, sources:[`${l.tf}:${l.touches}`], score:l.strength });
+      else {
+        const w1 = m.score || 1, w2 = l.strength || 1;
+        m.price = R((m.price*w1 + l.price*w2)/(w1+w2));
+        m.score += l.strength;
+        m.strength = Math.min(10, Math.max(m.strength, l.strength) + 1);
+        m.sources.push(`${l.tf}:${l.touches}`);
+        if (l.tfWeight > m.tfWeight) { m.tf = l.tf; m.tfWeight = l.tfWeight; m.label = l.tf; }
+      }
+    }
+    return clusters
+      .filter(l => side === 'SSL' ? l.price < lp * 1.006 : l.price > lp * 0.994)
+      .filter(l => l.strength >= 4 || l.tf === '1H' || l.tf === '4H')
+      .map(l => ({ ...l, dist: R(pctAbs(lp, l.price), 3), zoneLow:R(l.price*(1-zonePct/100)), zoneHigh:R(l.price*(1+zonePct/100)) }))
+      .sort((a,b)=> side === 'SSL' ? b.price - a.price : a.price - b.price);
+  }
 
-  const allBSL = [...lev4h.bsl, ...lev1h.bsl, ...lev15.bsl]
-    .filter(l => l.price > lp)               // Sadece fiyat üstündeki BSL
-    .sort((a, b) => a.price - b.price);      // En yakın önce
+  const allSSL = mergeAndRank([...lev4h.ssl, ...lev1h.ssl, ...lev15.ssl], 'SSL');
+  const allBSL = mergeAndRank([...lev4h.bsl, ...lev1h.bsl, ...lev15.bsl], 'BSL');
+  const nearSSL = allSSL[0] || null;
+  const nearBSL = allBSL[0] || null;
 
-  const nearSSL = allSSL[0] || null;   // En yakın alt likidite
-  const nearBSL = allBSL[0] || null;   // En yakın üst likidite
+  const nearSSLDist = nearSSL ? nearSSL.dist : 999;
+  const nearBSLDist = nearBSL ? nearBSL.dist : 999;
+  const approachingSSL = !!(nearSSL && nearSSLDist <= Math.max(0.75, ar5 * 1.15));
+  const approachingBSL = !!(nearBSL && nearBSLDist <= Math.max(0.75, ar5 * 1.15));
 
-  // ── ADIM 2: Fiyat seviyeye yaklaşıyor mu? (±%1.5) ────────────────────────
-  const nearSSLDist = nearSSL ? pct(lp, nearSSL.price) : 999;
-  const nearBSLDist = nearBSL ? pct(lp, nearBSL.price) : 999;
-  const approachingSSL = nearSSLDist <= 1.5;
-  const approachingBSL = nearBSLDist <= 1.5;
+  const last5 = r5.at(-1), prev5 = r5.at(-2);
+  let sslSwept = false, sslSweepLevel = 0, sslSweepMumIdx = -1, sslSweepQuality = 0;
+  let bslSwept = false, bslSweepLevel = 0, bslSweepMumIdx = -1, bslSweepQuality = 0;
 
-  // ── ADIM 3: 5m GÖVDE KAPANIŞI (Altın Kural) ──────────────────────────────
-  // Bullish sweep: 5m mum gövdesi SSL seviyesinin altına kapandı SONRA geri döndü
-  // Bearish sweep: 5m mum gövdesi BSL seviyesinin üstüne kapandı SONRA geri döndü
-  const last5  = r5.at(-1);
-  const prev5  = r5.at(-2);
-  const prev52 = r5.at(-3);
-  const prev53 = r5.at(-4);
-  const prev54 = r5.at(-5);
+  function candleStats(m) {
+    const range = Math.max(m.h - m.l, 0);
+    const body = Math.abs(m.c - m.o);
+    const bodyLow = Math.min(m.o, m.c);
+    const bodyHigh = Math.max(m.o, m.c);
+    const lowerWick = Math.max(0, bodyLow - m.l);
+    const upperWick = Math.max(0, m.h - bodyHigh);
+    const closePos = range > 0 ? (m.c - m.l) / range : 0.5;
+    return { range, body, bodyLow, bodyHigh, lowerWick, upperWick, closePos };
+  }
 
-  // Son 5 mumda SSL sweep tespiti (gövde kapanışı!)
-  let sslSwept = false, sslSweepLevel = 0, sslSweepMumIdx = -1;
-  let bslSwept = false, bslSweepLevel = 0, bslSweepMumIdx = -1;
-
-  if (nearSSL) {
-    for (let i = 0; i < Math.min(5, r5.length); i++) {
-      const mum = r5.at(-(i+1));
-      // GÖVDE (min(o,c)) seviyenin altında kapandıysa → gerçek sweep
-      if (Math.min(mum.o, mum.c) < nearSSL.price * 0.999) {
-        sslSwept = true;
-        sslSweepLevel = nearSSL.price;
-        sslSweepMumIdx = i;
+  // Altın kural: seviye önceden çizili olacak; 5m mumu o seviyeyi wick ile aşacak;
+  // kapanış/gövde tekrar seviye içine veya güvenli tarafa dönecek. Gövde dışarıda kapatırsa kırılım sayılır, sweep girişi değildir.
+  if (nearSSL && approachingSSL) {
+    for (let i = 0; i < Math.min(6, r5.length); i++) {
+      const m = r5.at(-(i+1));
+      const st = candleStats(m);
+      const pierced = m.l < nearSSL.zoneLow * (1 - piercePct/100);
+      const reclaimedClose = m.c >= nearSSL.zoneLow;              // kapanış zone içine/üstüne döndü
+      const bodyNotBroken = st.bodyHigh >= nearSSL.zoneLow && m.c >= nearSSL.zoneLow;
+      const wickDominant = st.range > 0 && st.lowerWick / st.range >= 0.28 && st.lowerWick >= Math.max(st.body * 0.65, nearSSL.price * 0.00025);
+      if (pierced && reclaimedClose && bodyNotBroken && wickDominant) {
+        sslSwept = true; sslSweepLevel = nearSSL.price; sslSweepMumIdx = i;
+        sslSweepQuality = (wickDominant?2:0) + (m.c > m.o ? 1 : 0) + (st.closePos >= 0.55 ? 1 : 0) + Math.min(3, Math.floor(nearSSL.strength/3));
         break;
       }
     }
   }
 
-  if (nearBSL) {
-    for (let i = 0; i < Math.min(5, r5.length); i++) {
-      const mum = r5.at(-(i+1));
-      // GÖVDE (max(o,c)) seviyenin üstünde kapandıysa → gerçek sweep
-      if (Math.max(mum.o, mum.c) > nearBSL.price * 1.001) {
-        bslSwept = true;
-        bslSweepLevel = nearBSL.price;
-        bslSweepMumIdx = i;
+  if (nearBSL && approachingBSL) {
+    for (let i = 0; i < Math.min(6, r5.length); i++) {
+      const m = r5.at(-(i+1));
+      const st = candleStats(m);
+      const pierced = m.h > nearBSL.zoneHigh * (1 + piercePct/100);
+      const reclaimedClose = m.c <= nearBSL.zoneHigh;              // kapanış zone içine/altına döndü
+      const bodyNotBroken = st.bodyLow <= nearBSL.zoneHigh && m.c <= nearBSL.zoneHigh;
+      const wickDominant = st.range > 0 && st.upperWick / st.range >= 0.28 && st.upperWick >= Math.max(st.body * 0.65, nearBSL.price * 0.00025);
+      if (pierced && reclaimedClose && bodyNotBroken && wickDominant) {
+        bslSwept = true; bslSweepLevel = nearBSL.price; bslSweepMumIdx = i;
+        bslSweepQuality = (wickDominant?2:0) + (m.c < m.o ? 1 : 0) + (st.closePos <= 0.45 ? 1 : 0) + Math.min(3, Math.floor(nearBSL.strength/3));
         break;
       }
     }
   }
 
-  // ── ADIM 4: ChoCH / MSS (Market Structure Shift) tespiti ─────────────────
-  // Bullish ChoCH: SSL sweep sonrası son mum önceki mumun HIGH'ını geçti
-  // Bearish ChoCH: BSL sweep sonrası son mum önceki mumun LOW'unu kırdı
+  const lastStats = candleStats(last5);
+  const prevSwingHigh = Math.max(...r5.slice(-8, -1).map(k => k.h));
+  const prevSwingLow  = Math.min(...r5.slice(-8, -1).map(k => k.l));
+  const avgBody = r5.slice(-12).reduce((s,k)=>s+Math.abs(k.c-k.o),0) / Math.min(12, r5.length);
 
-  let bullishChoCH = false, bearishChoCH = false;
+  const bullishChoCH = !!(
+    sslSwept && sslSweepMumIdx >= 1 &&
+    last5.c > last5.o && lastStats.closePos >= 0.55 &&
+    (last5.c > prev5.h * 0.999 || last5.c > prevSwingHigh * 0.999) &&
+    last5.c > sslSweepLevel
+  );
+  const bearishChoCH = !!(
+    bslSwept && bslSweepMumIdx >= 1 &&
+    last5.c < last5.o && lastStats.closePos <= 0.45 &&
+    (last5.c < prev5.l * 1.001 || last5.c < prevSwingLow * 1.001) &&
+    last5.c < bslSweepLevel
+  );
 
-  if (sslSwept && sslSweepMumIdx >= 1) {
-    // SSL alındıktan sonra geri dönüş teyidi
-    const afterSweep = r5.slice(-(sslSweepMumIdx + 1));
-    // Son mum önceki swing high'ı geçti mi?
-    const recentHigh = afterSweep.length > 0 ? Math.max(...afterSweep.map(k => k.h)) : 0;
-    bullishChoCH = last5.c > prev5.h &&         // Son mum önceki mumun high'ını geçti
-                   last5.c > last5.o &&           // Yeşil mum
-                   last5.c > sslSweepLevel;       // SSL'nin üzerinde kapandı
-  }
-
-  if (bslSwept && bslSweepMumIdx >= 1) {
-    bearishChoCH = last5.c < prev5.l &&          // Son mum önceki mumun low'unu kırdı
-                   last5.c < last5.o &&           // Kırmızı mum
-                   last5.c < bslSweepLevel;       // BSL'nin altında kapandı
-  }
-
-  // ── ADIM 5: FVG (Fair Value Gap) tespiti ─────────────────────────────────
-  // Bullish FVG: 3 mum serisi — mum1.high < mum3.low (gap)
-  // Bearish FVG: mum1.low > mum3.high
   let bullishFVG = null, bearishFVG = null;
-
-  // Son 6 mumda FVG ara
-  for (let i = 1; i < Math.min(6, r5.length - 1); i++) {
+  for (let i = 1; i < Math.min(7, r5.length - 1); i++) {
     const m1 = r5.at(-(i+2));
-    const m2 = r5.at(-(i+1));
     const m3 = r5.at(-i);
-    if (!m1 || !m2 || !m3) continue;
-
-    if (m1.h < m3.l) {   // Bullish FVG
-      if (!bullishFVG) bullishFVG = { low: R(m1.h), high: R(m3.l), midpoint: R((m1.h + m3.l) / 2) };
-    }
-    if (m1.l > m3.h) {   // Bearish FVG
-      if (!bearishFVG) bearishFVG = { low: R(m3.h), high: R(m1.l), midpoint: R((m3.h + m1.l) / 2) };
-    }
+    if (!m1 || !m3) continue;
+    if (m1.h < m3.l && !bullishFVG) bullishFVG = { low:R(m1.h), high:R(m3.l), midpoint:R((m1.h+m3.l)/2) };
+    if (m1.l > m3.h && !bearishFVG) bearishFVG = { low:R(m3.h), high:R(m1.l), midpoint:R((m3.h+m1.l)/2) };
   }
-
-  // FVG retest: fiyat FVG bölgesine girdi mi?
   const inBullishFVG = bullishFVG && lp >= bullishFVG.low && lp <= bullishFVG.high;
   const inBearishFVG = bearishFVG && lp <= bearishFVG.high && lp >= bearishFVG.low;
 
-  // ── SONUÇ: Sıralı karar ──────────────────────────────────────────────────
-  // Bullish: SSL swept + ChoCH + (FVG retest OR fresh BOS)
-  const longEntryOk = !!(sslSwept && bullishChoCH && (bullishFVG || inBullishFVG));
+  // FVG yoksa bile güçlü MSS gövdesi yeterli olabilir; ama wick-only asla yeterli değildir.
+  const bullMssBody = bullishChoCH && lastStats.body >= avgBody * 1.05 && lastStats.closePos >= 0.60;
+  const bearMssBody = bearishChoCH && lastStats.body >= avgBody * 1.05 && lastStats.closePos <= 0.40;
+  const longEntryOk = !!(sslSwept && bullishChoCH && (bullishFVG || inBullishFVG || bullMssBody) && sslSweepQuality >= 3);
+  const shortEntryOk = !!(bslSwept && bearishChoCH && (bearishFVG || inBearishFVG || bearMssBody) && bslSweepQuality >= 3);
 
-  // Bearish: BSL swept + ChoCH + (FVG retest OR fresh BOS)
-  const shortEntryOk = !!(bslSwept && bearishChoCH && (bearishFVG || inBearishFVG));
-
-  // Faz bilgisi
   const phase =
-    longEntryOk  ? 'SSL_SWEEP_CHOCH_LONG_HAZIR' :
-    shortEntryOk ? 'BSL_SWEEP_CHOCH_SHORT_HAZIR' :
-    bullishChoCH ? 'SSL_CHOCH_FVG_BEKLENIYOR' :
-    bearishChoCH ? 'BSL_CHOCH_FVG_BEKLENIYOR' :
+    longEntryOk  ? 'HTF_SSL_SWEEP_BODY_RECLAIM_LONG_HAZIR' :
+    shortEntryOk ? 'HTF_BSL_SWEEP_BODY_RECLAIM_SHORT_HAZIR' :
+    bullishChoCH ? 'SSL_ALINDI_MSS_VAR_FVG_VEYA_GOVDE_BEKLE' :
+    bearishChoCH ? 'BSL_ALINDI_MSS_VAR_FVG_VEYA_GOVDE_BEKLE' :
     sslSwept     ? 'SSL_ALINDI_CHOCH_BEKLENIYOR' :
     bslSwept     ? 'BSL_ALINDI_CHOCH_BEKLENIYOR' :
-    approachingSSL ? 'SSL_YAKLASILIYOR' :
-    approachingBSL ? 'BSL_YAKLASILIYOR' :
-    'BEKLE';
+    approachingSSL ? 'HTF_SSL_SEVIYESINDE_5M_MUM_IZLENIYOR' :
+    approachingBSL ? 'HTF_BSL_SEVIYESINDE_5M_MUM_IZLENIYOR' :
+    'SEVIYE_UZAK_BEKLE';
 
-  // Dashboard metni
-  const dashParts = [];
-  if (nearSSL) dashParts.push(`SSL:${nearSSL.price}(${nearSSL.label},güç:${nearSSL.strength},uzak:${R(nearSSLDist)}%)`);
-  if (nearBSL) dashParts.push(`BSL:${nearBSL.price}(${nearBSL.label},güç:${nearBSL.strength},uzak:${R(nearBSLDist)}%)`);
-  if (sslSwept) dashParts.push(`✅SSL_ALINDI`);
-  if (bslSwept) dashParts.push(`✅BSL_ALINDI`);
-  if (bullishChoCH) dashParts.push(`✅BullishChoCH`);
-  if (bearishChoCH) dashParts.push(`✅BearishChoCH`);
+  const mapParts = [];
+  if (nearSSL) mapParts.push(`SSL:${nearSSL.price}(${nearSSL.tf},g:${nearSSL.strength},u:${nearSSLDist}%,z:${nearSSL.zoneLow}-${nearSSL.zoneHigh})`);
+  if (nearBSL) mapParts.push(`BSL:${nearBSL.price}(${nearBSL.tf},g:${nearBSL.strength},u:${nearBSLDist}%,z:${nearBSL.zoneLow}-${nearBSL.zoneHigh})`);
+  const dashParts = [`R115:${phase}`];
+  if (mapParts.length) dashParts.push(mapParts.join(' | '));
+  if (sslSwept) dashParts.push(`✅SSL wick+body-reclaim q${sslSweepQuality}`);
+  if (bslSwept) dashParts.push(`✅BSL wick+body-reclaim q${bslSweepQuality}`);
+  if (bullishChoCH) dashParts.push('✅BullishMSS');
+  if (bearishChoCH) dashParts.push('✅BearishMSS');
   if (bullishFVG) dashParts.push(`FVG_bull:${bullishFVG.low}-${bullishFVG.high}`);
   if (bearishFVG) dashParts.push(`FVG_bear:${bearishFVG.low}-${bearishFVG.high}`);
 
@@ -1634,14 +1722,16 @@ function r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice) {
     shortOk: shortEntryOk,
     entryOk: longEntryOk || shortEntryOk,
     direction: longEntryOk ? 'LONG' : shortEntryOk ? 'SHORT' : null,
-    nearSSL: nearSSL ? { price: nearSSL.price, dist: R(nearSSLDist), strength: nearSSL.strength, label: nearSSL.label } : null,
-    nearBSL: nearBSL ? { price: nearBSL.price, dist: R(nearBSLDist), strength: nearBSL.strength, label: nearBSL.label } : null,
+    nearSSL: nearSSL ? { price: nearSSL.price, dist: R(nearSSLDist,3), strength: nearSSL.strength, label: nearSSL.tf, zoneLow:nearSSL.zoneLow, zoneHigh:nearSSL.zoneHigh } : null,
+    nearBSL: nearBSL ? { price: nearBSL.price, dist: R(nearBSLDist,3), strength: nearBSL.strength, label: nearBSL.tf, zoneLow:nearBSL.zoneLow, zoneHigh:nearBSL.zoneHigh } : null,
     sslSwept, bslSwept,
+    sslSweepQuality, bslSweepQuality,
     bullishChoCH, bearishChoCH,
     bullishFVG, bearishFVG,
     inBullishFVG, inBearishFVG,
     approachingSSL, approachingBSL,
     dashboardText: dashParts.join(' · '),
+    liquidityMapText: mapParts.join(' | '),
     allSSL: allSSL.slice(0, 3),
     allBSL: allBSL.slice(0, 3),
   };
@@ -3125,6 +3215,117 @@ function renkoSignal(klines, lastPrice, atrVal) {
   const trend = bulls >= 4 ? 'STRONG_UP' : bulls >= 3 ? 'UP' : bears >= 4 ? 'STRONG_DOWN' : bears >= 3 ? 'DOWN' : ranging ? 'RANGING' : 'FLAT';
   const signal = trend === 'STRONG_UP' ? 'STRONG_BULL' : trend === 'UP' ? 'BULL' : trend === 'STRONG_DOWN' ? 'STRONG_BEAR' : trend === 'DOWN' ? 'BEAR' : ranging ? 'RANGING' : 'NEUTRAL';
   return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
+}
+
+
+// ── R118: HTF bölgeye özel 5m mum formasyon playbook'u ─────────────────────
+// Amaç: 1H/4H BSL/SSL bölgesinde kör ters işlem açmak değil; 5m mumun gerçekten
+// reddettiğini/geri aldığını görmek. Bu motor gösterge değil, sadece OHLC gövde-fitil
+// matematiği kullanır. R117 ters-köşe hedefinde kanıt kalitesi olarak kullanılır.
+function r118AnalyzeCandlePlaybook(klines, dir='LONG', level=null) {
+  const out = { ok:false, dir, score:0, strong:false, names:[], trNames:[], reject:false, rejectReason:'', ozet:'formasyon yok' };
+  const rows = (Array.isArray(klines) ? klines : []).slice(-14).map(k => ({
+    t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5]
+  })).filter(k => [k.o,k.h,k.l,k.c].every(Number.isFinite) && k.h > 0 && k.l > 0 && k.c > 0);
+  if (rows.length < 5) return out;
+  const R = (v,d=3) => +Number(v||0).toFixed(d);
+  const pctAbs = (a,b) => b > 0 ? Math.abs(a-b)/b*100 : 999;
+  function st(k) {
+    const range = Math.max(k.h-k.l, 1e-12);
+    const body = Math.abs(k.c-k.o);
+    const bodyLow = Math.min(k.o,k.c), bodyHigh = Math.max(k.o,k.c);
+    const upper = Math.max(0, k.h-bodyHigh);
+    const lower = Math.max(0, bodyLow-k.l);
+    return { range, body, bodyLow, bodyHigh, upper, lower,
+      bull:k.c>k.o, bear:k.c<k.o, bodyPct:body/range, upperPct:upper/range, lowerPct:lower/range, closePos:(k.c-k.l)/range };
+  }
+  const a = rows.map(st);
+  const n = rows.length;
+  const k0 = rows[n-1], k1 = rows[n-2], k2 = rows[n-3], k3 = rows[n-4];
+  const s0 = a[n-1], s1 = a[n-2], s2 = a[n-3], s3 = a[n-4];
+  const avgBody = a.slice(-10,-1).reduce((x,y)=>x+y.body,0) / Math.max(1, a.slice(-10,-1).length);
+  const avgRange = a.slice(-10,-1).reduce((x,y)=>x+y.range,0) / Math.max(1, a.slice(-10,-1).length);
+  const avgVol = rows.slice(-11,-1).reduce((x,y)=>x+Number(y.v||0),0) / Math.max(1, rows.slice(-11,-1).length);
+  const volBoost = Number(k0.v||0) > avgVol * 1.25;
+  const bigBody0 = s0.body >= avgBody * 0.85 || s0.bodyPct >= 0.48;
+  const impulse0 = s0.body >= avgBody * 1.10 || s0.range >= avgRange * 1.15;
+  const zH = Number(level?.zoneHigh || level?.price || 0);
+  const zL = Number(level?.zoneLow || level?.price || 0);
+  const levelPrice = Number(level?.price || 0);
+  const touchedLongZone = !levelPrice || !zL || rows.slice(-4).some(k => k.l <= zH && k.c >= zL*0.998);
+  const touchedShortZone = !levelPrice || !zH || rows.slice(-4).some(k => k.h >= zL && k.c <= zH*1.002);
+  const add = (name, score, why='') => { out.names.push(name); out.score += score; };
+
+  // Güçlü karşı formasyon varsa o yönü kovalamayı engelle. Bu blok emir öldürücü değil;
+  // R117 kanıtını zayıflatır ve loga sebep verir.
+  const oppositeBear = (
+    (s1.bull && s0.bear && k0.o >= k1.c*0.999 && k0.c <= k1.o*1.001 && s0.body >= s1.body*0.95 && s0.closePos <= 0.40) ||
+    (s0.upperPct >= 0.55 && s0.closePos <= 0.45 && s0.bodyPct <= 0.38) ||
+    (s2.bull && s1.bodyPct <= 0.34 && s0.bear && k0.c <= k2.o + (k2.c-k2.o)*0.50)
+  );
+  const oppositeBull = (
+    (s1.bear && s0.bull && k0.o <= k1.c*1.001 && k0.c >= k1.o*0.999 && s0.body >= s1.body*0.95 && s0.closePos >= 0.60) ||
+    (s0.lowerPct >= 0.55 && s0.closePos >= 0.55 && s0.bodyPct <= 0.38) ||
+    (s2.bear && s1.bodyPct <= 0.34 && s0.bull && k0.c >= k2.o + (k2.c-k2.o)*0.50)
+  );
+
+  if (dir === 'LONG') {
+    if (!touchedLongZone) { out.reject = true; out.rejectReason = 'HTF SSL/demand bölgesi mumla temas etmedi'; return out; }
+    const bullEngulf = s1.bear && s0.bull && k0.o <= k1.c*1.001 && k0.c >= k1.o*0.999 && s0.body >= s1.body*0.95 && s0.closePos >= 0.60;
+    const piercing = s1.bear && s1.bodyPct >= 0.42 && s0.bull && k0.c > (k1.o+k1.c)/2 && k0.c < k1.o*1.006 && s0.closePos >= 0.58;
+    const morningStar = s2.bear && s2.bodyPct >= 0.42 && s1.bodyPct <= 0.36 && s0.bull && k0.c >= k2.o + (k2.c-k2.o)*0.50;
+    const hammer = s0.lowerPct >= 0.48 && s0.upperPct <= 0.25 && s0.closePos >= 0.58 && s0.bodyPct <= 0.45;
+    const hammerConfirm = s1.lowerPct >= 0.48 && s1.bodyPct <= 0.45 && s0.bull && k0.c > Math.max(k1.o,k1.c);
+    const dragonfly = s0.lowerPct >= 0.62 && s0.bodyPct <= 0.20 && s0.closePos >= 0.62;
+    const tweezerBottom = pctAbs(k0.l, k1.l) <= 0.16 && (s0.bull || k0.c > Math.max(k1.o,k1.c)) && s1.lowerPct >= 0.25;
+    const threeOutsideUp = s2.bear && s1.bull && s1.body >= s2.body*0.85 && k1.c >= k2.o*0.999 && s0.bull && k0.c > k1.c;
+    const closeMicroHigh = k0.c > Math.max(k1.h, k2.h) * 0.999 && s0.closePos >= 0.55;
+    const strongBullBody = s0.bull && bigBody0 && s0.closePos >= 0.66 && (volBoost || impulse0);
+
+    if (bullEngulf) add('BullEngulfingConfirmed', 5);
+    if (piercing) add('PiercingLineConfirmed', 4);
+    if (morningStar) add('MorningStarConfirmed', 5);
+    if (hammer || hammerConfirm) add(hammerConfirm ? 'HammerConfirmed' : 'HammerReclaim', hammerConfirm ? 4 : 3);
+    if (dragonfly) add('DragonflyReclaim', 4);
+    if (tweezerBottom) add('TweezerBottomConfirmed', 3);
+    if (threeOutsideUp) add('ThreeOutsideUpConfirmed', 4);
+    if (strongBullBody && closeMicroHigh) add('BullImpulseReclaim', 3);
+    if (oppositeBear && out.score < 6) { out.reject = true; out.rejectReason = 'karşı bearish mum baskın'; }
+  } else {
+    if (!touchedShortZone) { out.reject = true; out.rejectReason = 'HTF BSL/supply bölgesi mumla temas etmedi'; return out; }
+    const bearEngulf = s1.bull && s0.bear && k0.o >= k1.c*0.999 && k0.c <= k1.o*1.001 && s0.body >= s1.body*0.95 && s0.closePos <= 0.40;
+    const darkCloud = s1.bull && s1.bodyPct >= 0.42 && s0.bear && k0.c < (k1.o+k1.c)/2 && k0.c > k1.o*0.994 && s0.closePos <= 0.42;
+    const eveningStar = s2.bull && s2.bodyPct >= 0.42 && s1.bodyPct <= 0.36 && s0.bear && k0.c <= k2.o + (k2.c-k2.o)*0.50;
+    const shooting = s0.upperPct >= 0.48 && s0.lowerPct <= 0.25 && s0.closePos <= 0.42 && s0.bodyPct <= 0.45;
+    const shootingConfirm = s1.upperPct >= 0.48 && s1.bodyPct <= 0.45 && s0.bear && k0.c < Math.min(k1.o,k1.c);
+    const gravestone = s0.upperPct >= 0.62 && s0.bodyPct <= 0.20 && s0.closePos <= 0.38;
+    const tweezerTop = pctAbs(k0.h, k1.h) <= 0.16 && (s0.bear || k0.c < Math.min(k1.o,k1.c)) && s1.upperPct >= 0.25;
+    const threeOutsideDown = s2.bull && s1.bear && s1.body >= s2.body*0.85 && k1.c <= k2.o*1.001 && s0.bear && k0.c < k1.c;
+    const closeMicroLow = k0.c < Math.min(k1.l, k2.l) * 1.001 && s0.closePos <= 0.45;
+    const strongBearBody = s0.bear && bigBody0 && s0.closePos <= 0.34 && (volBoost || impulse0);
+
+    if (bearEngulf) add('BearEngulfingConfirmed', 5);
+    if (darkCloud) add('DarkCloudConfirmed', 4);
+    if (eveningStar) add('EveningStarConfirmed', 5);
+    if (shooting || shootingConfirm) add(shootingConfirm ? 'ShootingStarConfirmed' : 'ShootingStarReclaim', shootingConfirm ? 4 : 3);
+    if (gravestone) add('GravestoneReclaim', 4);
+    if (tweezerTop) add('TweezerTopConfirmed', 3);
+    if (threeOutsideDown) add('ThreeOutsideDownConfirmed', 4);
+    if (strongBearBody && closeMicroLow) add('BearImpulseReclaim', 3);
+    if (oppositeBull && out.score < 6) { out.reject = true; out.rejectReason = 'karşı bullish mum baskın'; }
+  }
+
+  // Kontekst kalitesi: formasyon tek başına değil, gövde+fitil kalitesiyle puanlanır.
+  if (volBoost) out.score += 1;
+  if (impulse0) out.score += 1;
+  out.score = Math.min(12, out.score);
+  out.strong = out.score >= 7;
+  out.ok = out.score >= 5 && !out.reject;
+  out.trNames = out.names.map(n => trPatternName(n));
+  out.ozet = out.ok
+    ? `${dir} mum teyidi: ${out.trNames.slice(0,3).join(' + ')} · puan ${out.score}/12 · vol:${volBoost?'VAR':'yok'} impuls:${impulse0?'VAR':'yok'}`
+    : `${dir} mum teyidi zayıf: ${out.trNames.slice(0,3).join(' + ') || 'net formasyon yok'} · puan ${out.score}/12${out.rejectReason ? ' · '+out.rejectReason : ''}`;
+  return out;
 }
 
 
@@ -6918,8 +7119,127 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r50AutoPermissionOk = !!(r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r50DirectSweepMatrixOk || r50NonSweepMatrixOk || r51DirectSweepMinEdgeOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R86/R77/R75
 
         const nonSweepQualityOk = r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r47CompositeNonSweepOk || r48DirectSweepBalanceOk || r49DirectSweepUnlockOk || r50NonSweepMatrixOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk; // R86/R77/R75
-        const entryPermissionOk = sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk);
-        const entryPermissionReason = r110IctKoprusuOk ? 'R110_ICT_SSL_BSL_SWEEP_CHOCH'
+
+        // R116: HTF Likidite Süpervizörü — R115 seviyeleri sadece köprü değil, risk amiri de olmalı.
+        // R113/R115'te eski R97/R88 yolları 1H/4H direnç/BSL dibinde LONG veya destek/SSL üstünde SHORT açabiliyordu.
+        // Bu guard şunu yapar: Karşı HTF likidite seviyesi yakınsa, legacy köprüler emir açamaz;
+        // sadece R115 body-reclaim/MSS veya gerçek kabul edilmiş kırılım/retest geçerse izin verilir.
+        function r116RecentLevelAcceptance(level, dir) {
+          const rows = (Array.isArray(k5m) ? k5m : []).slice(-5).map(k => ({o:+k[1], h:+k[2], l:+k[3], c:+k[4]})).filter(k=>k.c>0);
+          if (!level || rows.length < 2) return false;
+          const last = rows.at(-1), prev = rows.at(-2);
+          const zH = Number(level.zoneHigh || level.price || 0);
+          const zL = Number(level.zoneLow  || level.price || 0);
+          const range = Math.max(last.h-last.l, 0);
+          const closePos = range > 0 ? (last.c-last.l)/range : 0.5;
+          const bodyLow = Math.min(last.o,last.c), bodyHigh = Math.max(last.o,last.c);
+          if (dir === 'LONG') {
+            // Direnç üstüne tek wick değil: gövde/kapanış zone üstüne kabul edilmeli ve önceki mum da çok geride kalmamalı.
+            return !!(zH > 0 && last.c > zH * 1.001 && bodyLow > zH * 0.998 && closePos >= 0.55 && prev.c > zH * 0.996);
+          }
+          // Destek altına tek wick değil: gövde/kapanış zone altına kabul edilmeli.
+          return !!(zL > 0 && last.c < zL * 0.999 && bodyHigh < zL * 1.002 && closePos <= 0.45 && prev.c < zL * 1.004);
+        }
+        const r116CounterLevel = isL ? r110NearBSL : r110NearSSL;
+        const r116CounterApproach = !!(isL ? r110ICT?.approachingBSL : r110ICT?.approachingSSL);
+        const r116CounterSweepTaken = !!(isL ? r110BSLAlindi : r110SSLAlindi);
+        const r116CounterTf = String(r116CounterLevel?.label || r116CounterLevel?.tf || '');
+        const r116CounterDist = Number(r116CounterLevel?.dist ?? 999);
+        const r116CounterMajor = !!(r116CounterLevel && (['4H','1H'].includes(r116CounterTf) || Number(r116CounterLevel?.strength||0) >= 6));
+        const r116NearCounterHTF = !!(r116CounterMajor && (r116CounterApproach || r116CounterDist <= 0.95));
+        const r116AcceptedCounterBreak = r116RecentLevelAcceptance(r116CounterLevel, isL ? 'LONG' : 'SHORT');
+        const r116CleanStructuralEntry = !!(r110IctKoprusuOk || r111KoprusuOk);
+        const r116LegacyRoute = !!(
+          (r92VurKacAdayOk || r96DalgaliZeminVurKacOk || r109SweepReclaimKoprusuOk || r88VurKacOk || r50AutoPermissionOk || nonSweepQualityOk) &&
+          !r116CleanStructuralEntry
+        );
+        const r116HtfGuardBlock = !!(
+          r116LegacyRoute && r116NearCounterHTF && !r116AcceptedCounterBreak &&
+          (r116CounterSweepTaken || r116CounterDist <= 0.75 || String(isL ? pd4h?.zone||'' : pd4h?.zone||'').includes(isL ? 'PREMIUM' : 'DISCOUNT'))
+        );
+        const r116HtfGuardReason = r116HtfGuardBlock
+          ? `R116 HTF likidite amiri: ${isL?'LONG':'SHORT'} eski köprüyle açılamaz; karşı ${isL?'BSL/direnç':'SSL/destek'} yakın (${r116CounterTf||'-'} ${r116CounterLevel?.price||'-'} uzaklık %${Number(r116CounterDist||0).toFixed(2)}). Önce 5m gövde kabulü veya R115 body-reclaim/MSS beklenir.`
+          : '';
+
+        // R114: MM sweep/stop-hunt artık tek başına yön değildir. Eğer 5m body-shift ters akıyorsa
+        // ve gövde reclaim gelmediyse B+ emir açılmaz. R110 ICT veya R111 squeeze gibi gerçek yapı
+        // onayı varsa bu koruma yolu boğmaz.
+        const r114Shift = r114Analyze5mShift(k5m);
+        const r114OppositeShift = !!(isL ? r114Shift.bearShift : r114Shift.bullShift);
+        const r114ReclaimOk = !!(isL ? r114Shift.longReclaim : r114Shift.shortReclaim);
+        const r114ExtremeZone = !!(isL
+          ? (String(pd1h?.zone||'').includes('PREMIUM') || String(pd4h?.zone||'').includes('PREMIUM') || rsi4h >= 68)
+          : (String(pd1h?.zone||'').includes('DISCOUNT') || String(pd4h?.zone||'').includes('DISCOUNT') || rsi4h <= 32));
+        const r114SweepTrapFamily = !!(
+          directSweepOk || hardSweepForBridge || huntBridgeOk || r88VurKacOk ||
+          mmTarget === (isL ? 'UP_SWEEP' : 'DOWN_SWEEP')
+        );
+        const r114ContinuationProof = !!(
+          r110IctKoprusuOk || r111KoprusuOk ||
+          (r61TrendContinuationBridgeOk && deltaOkStrict && (oiBridgeOk || obSameSide)) ||
+          (r93MerdivenDevamOk && r88AkisTeyidiSayisi >= 4 && r114ReclaimOk && !r93SonMumKoru)
+        );
+        const r114TrapBlock = !!(
+          r114SweepTrapFamily && r114OppositeShift && !r114ReclaimOk && !r114ContinuationProof &&
+          (r114ExtremeZone || Math.abs(Number(r114Shift.net9Pct||0)) >= Math.max(1.0, Number(r114Shift.avgRangePct||0)*1.15))
+        );
+        const r114TrapReason = r114TrapBlock
+          ? `R115 5m body-shift tuzağı: ${isL?'LONG':'SHORT'} için ters akış var; sweep/stop-hunt wick sayılır, gövde reclaim beklenir — ${r114Shift.ozet}`
+          : '';
+
+        // R117: HTF ters-köşe hedefleyici.
+        // R116 sadece yanlış yönü blokluyordu. Bu katman aynı HTF seviyede doğru ters yönü
+        // ayrıca hedefler: 1H/4H BSL/dirençte SHORT, 1H/4H SSL/destekte LONG.
+        // Asla "direnç var hemen short" yapmaz; 5m wick/reclaim, MSS/ChoCH veya body-shift kanıtı ister.
+        const r117TrapLevel = isL ? r110NearSSL : r110NearBSL;
+        const r117TrapApproach = !!(isL ? r110ICT?.approachingSSL : r110ICT?.approachingBSL);
+        const r117TrapSweepTaken = !!(isL ? r110SSLAlindi : r110BSLAlindi);
+        const r117TrapTf = String(r117TrapLevel?.label || r117TrapLevel?.tf || '');
+        const r117TrapDist = Number(r117TrapLevel?.dist ?? 999);
+        const r117TrapMajor = !!(r117TrapLevel && (['4H','1H'].includes(r117TrapTf) || Number(r117TrapLevel?.strength||0) >= 6));
+        const r117NearTrapHTF = !!(r117TrapMajor && (r117TrapApproach || r117TrapDist <= 0.95));
+        // R118: HTF ters-köşe bölgesinde 5m mum formasyon teyidi. Engulf/star/hammer/shooting-star vb.
+        // sadece OHLC gövde-fitil matematiğiyle okunur; tek başına emir değil, R117 kanıt kalitesi sağlar.
+        const r118Candle = r118AnalyzeCandlePlaybook(k5m, isL ? 'LONG' : 'SHORT', r117TrapLevel);
+        const r118CandleOk = !!(r118Candle?.ok);
+        const r118CandleStrong = !!(r118Candle?.strong);
+        const r118CandleOzet = r118Candle?.ozet || '';
+        // LONG için destek/SSL altına gerçek kabul varsa long değil; SHORT için direnç/BSL üstüne gerçek kabul varsa short değil.
+        const r117AcceptedAgainst = r116RecentLevelAcceptance(r117TrapLevel, isL ? 'SHORT' : 'LONG');
+        const r117BodyReclaimOk = !!(isL ? r114Shift.longReclaim : r114Shift.shortReclaim);
+        const r117BodyShiftOk = !!(isL ? r114Shift.bullShift : r114Shift.bearShift);
+        const r117MssOk = !!(isL ? r110ICT?.bullishChoCH : r110ICT?.bearishChoCH);
+        const r117IctSameSideOk = !!(isL ? r110ICT?.longOk : r110ICT?.shortOk);
+        const r117TrapEvidenceRawOk = !!(
+          r117TrapSweepTaken || r117IctSameSideOk || r117MssOk || r117BodyReclaimOk || r118CandleOk ||
+          (r117BodyShiftOk && (r117TrapDist <= 0.70 || r117TrapApproach)) ||
+          r93DonusRadariOk || r62CounterTrendTrapBridgeOk || r65ScalperCoreCounterTrapOk || r66WyckoffTrapReclaimOk
+        );
+        // R118 hassasiyet: HTF ters-köşe için ya R115 ICT aynı yön temiz olacak, ya MSS+body-reclaim birlikte gelecek,
+        // ya da 5m onaylı mum formasyonu olacak. Sadece “terazi/body-shift” artık ters işlem açtırmaz.
+        const r117PrecisionCandleOk = !!(r117IctSameSideOk || (r117MssOk && r117BodyReclaimOk) || r118CandleOk || (r118CandleStrong && r117TrapSweepTaken));
+        const r117TrapEvidenceOk = !!(r117TrapEvidenceRawOk && r117PrecisionCandleOk);
+        const r117FlowOk = !!(
+          deltaOk || deltaOkStrict || cvdBridgePass || oiBridgeOk || obSameSide || fundBridgeOk || mmSameSide ||
+          (r22FundingTrap.detected && ((isL && r111ShortSqueeze) || (!isL && r111LongSqueeze))) ||
+          (Number(r88AkisTeyidiSayisi||0) >= 3 && Number(r47TimingPts||0) >= 2)
+        );
+        const r117HtfReverseOk = !!(
+          r117NearTrapHTF && !r117AcceptedAgainst && r117TrapEvidenceOk && r117FlowOk &&
+          !hardVeto && !signalDecayAutoBlock && !poorLiquidity && !atrExtremeBlock &&
+          r93EmirZeminiOk && Number(r47Readiness || 0) >= 6 && Number(r88MikroSkor || 0) >= 8 &&
+          Number(r88AkisTeyidiSayisi || 0) >= 2 &&
+          // Üst hedefte SHORT açarken falling-knife değil, alt hedefte LONG açarken rising-knife değil.
+          !(isL ? r41FallingKnifeBlock : r41RisingKnifeBlock)
+        );
+        const r117HtfReverseReason = r117HtfReverseOk
+          ? `R118 HTF ters-köşe hedefi: ${isL?'SSL/destek/demand → LONG':'BSL/direnç/supply → SHORT'} (${r117TrapTf||'-'} ${r117TrapLevel?.price||'-'} uzaklık %${Number(r117TrapDist||0).toFixed(2)}) · kanıt:${r117TrapSweepTaken?'sweep ':''}${r117MssOk?'MSS ':''}${r117BodyReclaimOk?'body-reclaim ':''}${r117BodyShiftOk?'body-shift ':''}${r118CandleOk?'mum-formasyon ':''}· ${r118CandleOzet}`
+          : '';
+
+        const entryPermissionOk = (sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk || r117HtfReverseOk)) && !r114TrapBlock && !r116HtfGuardBlock;
+        const entryPermissionReason = r116HtfGuardBlock ? 'R116_HTF_SUPERVISOR_BLOCK'
+          : r117HtfReverseOk ? 'R118_HTF_CANDLE_REVERSAL_TARGET'
+          : r110IctKoprusuOk ? 'R115_HTF_LIQUIDITY_BODY_RECLAIM'
           : r111KoprusuOk ? 'R111_SIKISMA_PATLAMA'
           : r109SweepReclaimKoprusuOk ? 'R109_SWEEP_RECLAIM_TEMIZ'
           : r96DalgaliZeminVurKacOk ? 'R97_DALGALI_ZEMIN_CANLI_VURKAC'
@@ -6966,8 +7286,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R41: A-tier artık CVD/tick tamamen köprüyle varsayılarak geçemez; gerçek canlı flow ister.
         // Flow eksikse en fazla B+ kontrollü adaya düşer, A-tier otomatik güven etiketi alamaz.
         const isTierA = !hardVeto && !signalDecayAutoBlock && !r37RetestWait && entryPermissionOk && directSweepOk && hasEntry && deltaOkStrict && microConfirmR35 && sc>=Math.max(68, minAutoScore) && priorityScore>=62;
-        const r53TierScoreOk = !!(sc >= minAutoScore || r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R75
-        const isTierBPlus = !isTierA && (r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || (!hardVeto && !signalDecayAutoBlock && !r37RetestWait)) && entryPermissionOk && r53TierScoreOk && ( // R75: r75RetestBridgeOk eklendi
+        const r53TierScoreOk = !!(sc >= minAutoScore || r117HtfReverseOk || r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || r53SmartEdgeScoreOk || r54MicroProbeOk || r57ScalperBTierBridgeOk || r61TrendContinuationBridgeOk || r62CounterTrendTrapBridgeOk); // R75
+        const isTierBPlus = !isTierA && (r117HtfReverseOk || r88VurKacOk || r86FormasyonVeriTeyitOk || r75RetestBridgeOk || r74Top10ProScalperOk || r68UnifiedScalperCoreOk || r67ScalperCoreHuntEntryOk || r65ScalperCoreOk || (!hardVeto && !signalDecayAutoBlock && !r37RetestWait)) && entryPermissionOk && r53TierScoreOk && ( // R75: r75RetestBridgeOk eklendi
+          r117HtfReverseOk ||
           r88VurKacOk ||
           r86FormasyonVeriTeyitOk ||
           r75RetestBridgeOk ||
@@ -7034,7 +7355,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r90CanliKopmaOk) reasons.push(`🚀 R97 canlı 5dk kopma: mikro ${r88MikroSkor}/8 · teyit ${r88AkisTeyidiSayisi}/8 · taban ${r89ScoreFloor}`);
         if(r93MerdivenDevamOk) reasons.push(`🪜 R97 canlı merdiven devamı: merdiven ${r93MerdivenSkor}/10 · son mum ${r93Merdiven.sonMum}`);
         if(r93DonusRadariOk) reasons.push(`🔁 R97 dönüş radarı: dönüş puanı ${r93DonusSkor}/10 · ${r93Merdiven.notlar.join(' + ')}`);
-        if(r111KoprusuOk) reasons.push(`🧨 R113 sıkışma/squeeze köprüsü: ${r111Siksma?.ozet||'sıkışma patlaması'} · skor ${r111SqueezeSkor}/4`);
+        if(r111KoprusuOk) reasons.push(`🧨 R115 sıkışma/squeeze köprüsü: ${r111Siksma?.ozet||'sıkışma patlaması'} · skor ${r111SqueezeSkor}/4`);
+        if(r117HtfReverseOk) reasons.push(`🎯 ${r117HtfReverseReason}`);
         if(r88VurKacOk) reasons.push(`⚡ R97 akıllı vur-kaç terazisi: skor ${r88MikroSkor}/8 · teyit ${r88AkisTeyidiSayisi}/8 · taban ${r89ScoreFloor}${r89SuperMikroYapiOk?' · süper-mikro':''}`);
         if(r86FormasyonVeriTeyitOk) reasons.push(`🕯️ R86 formasyon+veri teyidi: ${trPatternList(r86FormasyonAdlari)||'formasyon'} · veri ${r86VeriTeyitSayisi}/8`);
         if(!sweepRequired && r69PriorityExecutionOk) reasons.push(`⚡ R69 priority scalper core score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
@@ -7051,9 +7373,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
         if(!entryPermissionOk) {
           const r47Dbg = !sweepRequired ? ` · R47 ${r47Readiness}/${r47Needed} T${r47TimingPts}/F${r47FlowPts}/C${r47ContextPts}/S${r47StructurePts}/V${r47RvolPts}` : '';
-          blocks.push(`R97 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`);
+          blocks.push(r116HtfGuardBlock ? r116HtfGuardReason : (r114TrapBlock ? r114TrapReason : `R97 giriş izni yok: Sweep zorunlu ${sweepRequired?'AÇIK':'KAPALI'} / ${entryPermissionReason}${r47Dbg}`));
         }
-        if(!hasEntry&&!softEntry&&!nonSweepQualityOk) blocks.push('Sinyal yok');
+        if(!hasEntry&&!softEntry&&!nonSweepQualityOk&&!r117HtfReverseOk) blocks.push('Sinyal yok');
         if(!deltaOk) blocks.push(cvdValid?`Delta ters(${cvdRatio.toFixed(0)}%)`:'CVD eksik veya gerçek sweep köprüsü zayıf');
         if(cvdWarmingBridge && !cvdBridgeQualityOk) blocks.push(`CVD köprüsü zayıf (${bridgeCount}/4, terazi ${priorityScore})`);
         if(signalDecayAutoBlock) blocks.push(`Bayat sweep: ${r22Decay.label}`);
@@ -7083,6 +7405,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r50AutoPermissionOk, r50DirectSweepMatrixOk, r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk, r54MicroProbeOk, r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk, r61TrendEffectiveScore, r61TrendContinuationBoost, r61TrendPriorityOk, r61MtfFullTrendOk, r60StrongTrendContinuation, r62CounterTrendTrapBridgeOk, r62TrapHardClean, r62CounterTrendTrapContextOk, r62CounterTrendTrapFlowOk, r62SideTrapEventOk, r88VurKacOk, r90CanliKopmaOk, r88VurKacEnabled, r92VurKacAdayOk, r92GucluVurKacOk, r92NormalVurKacOk, r92SadeceIzleOk, r92IslemTipi, r92RiskDurumu, r92Terazi, r92DefterSaglam, r93EmirZeminiOk, r93PiyasaEtiketi, r93PiyasaTehlikeli, r93PiyasaDalgali, r93DalgaliAmaIslemYapilabilir, r93PiyasaIslemYapilabilir, r93MerdivenDevamOk, r93DonusRadariOk, r93DonusSkor, r93MerdivenSkor, r93SonMumKoru, r93Merdiven, r89SuperMikroYapiOk, r94CanliTrendZeminKurtarmaOk, r96DalgaliZeminVurKacOk, r88MikroSkor, r88AkisTeyidiSayisi, r88ScoreFloor, r89ScoreFloor, r88PiyasaBozuk, r88SpreadWide, r88DefterInce, r88OynaklikAsiri, r88CanliHamleIzi, r86FormasyonVeriTeyitOk, r86FormasyonPuan, r86KarsiFormasyonPuan, r86VeriTeyitSayisi, r86CanliTetikOk, r86KarsiFormasyonGucu, r75RetestBridgeOk, r75LateChaseHard, r75R47MinBypass, r74Top10ProScalperOk, r74ImpulseEntryOk, r74Top10ContextBypassOk, r74ScoreFloor, r68UnifiedScalperCoreOk, r68EntryEventOk, r68TrendContextOk, r68CounterTrapContextOk, r68ReadinessOk, r68ScoreOk, r68CriticalHardBlock, r69PriorityContextOverrideOk, r69ContextOk, r69PriorityExecutionOk, r67ScalperCoreHuntEntryOk, r65ScalperCoreOk, r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto, r66WyckoffTrapReclaimOk, r66WyckoffHardVeto, r53SmartEdgeBoost, r53EffectiveScore, r53ScoreFloor, r53CvdSmartSafe, r53TierScoreOk, r50PriorityBoost, r50EffectivePriority, r50MinReadiness, r50HardClean, r50FlowOrContextOk, r50StructureOrTimingOk, r50RvolUsable,
           r46PerfectAlignCount, r46PerfectAlignBonus, r46CvdGradeBonus, r46SqueezeQualityScore, r46SpringQuality, r46ExhaustionShort,
           rvolVeryLow, atrBlocking, atrWarnForAuto, atrExtremeBlock, poorLiquidity, signalDecayAutoBlock, scalperBridge:r35ScalperBridge, fresh5mImpulse, fresh5mImpulse2Bridge, fresh5mImpulseOrRecent, fresh15mConfirm, r37Timing:r37Side, r37LateChaseBlock, r37RetestWait, r37EarlyOk, r38RetestBridgeOk, r38TopMoverStrong, r38MarketCtx, r39SR:r39Side, r39TargetNearBlock, r39AgainstZone, r39Confluence, r41TrapBlock, r42TrapReclaimOk, r41FallingKnifeBlock, r41RisingKnifeBlock,
+          r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterTf, r116CounterDist, r116NearCounterHTF, r116AcceptedCounterBreak, r116CounterSweepTaken,
+          r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapTf, r117TrapDist, r117NearTrapHTF, r117TrapSweepTaken, r117AcceptedAgainst, r117BodyReclaimOk, r117BodyShiftOk, r117MssOk, r117FlowOk, r117TrapEvidenceOk, r117TrapEvidenceRawOk, r117PrecisionCandleOk, r118CandleOk, r118CandleStrong, r118CandleOzet, r118Candle,
+          r114Shift, r114OppositeShift, r114ReclaimOk, r114ExtremeZone, r114SweepTrapFamily, r114ContinuationProof, r114TrapBlock, r114TrapReason,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
             favorable:    r25WickTrapMap ? (isL ? r25WickTrapMap.lowerTrap : r25WickTrapMap.upperTrap) : false,
@@ -7093,7 +7418,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           },
           r88VurKac: {
             aktif: r88VurKacEnabled, ok: r88VurKacOk, aday: r92VurKacAdayOk, islemTipi: r92IslemTipi, riskDurumu: r92RiskDurumu, terazi: r92Terazi, defterSaglam: r92DefterSaglam, emirZeminiOk: r93EmirZeminiOk, guclu: r92GucluVurKacOk, normal: r92NormalVurKacOk, sadeceIzle: r92SadeceIzleOk, canliKopma: r90CanliKopmaOk, superMikro: r89SuperMikroYapiOk, mikroSkor: r88MikroSkor, teyitSayisi: r88AkisTeyidiSayisi, puanTabani: r89ScoreFloor,
-            canliHamleIzi: r88CanliHamleIzi, zeminKurtarma: r94CanliTrendZeminKurtarmaOk, dalgaliBaglanti: r96DalgaliZeminVurKacOk, r109SweepReclaimKoprusuOk, r109ReclaimOk, r109ReclaimSkor, r110IctKoprusuOk, r110Phase, r110SSLAlindi, r110BSLAlindi, r110ChoCH, r110YonUyumlu, r110NearSSL, r110NearBSL, r110FVG, r110EntryOk, ictDashboard: r110ICT?.dashboardText||'', r111KoprusuOk, r111SiksmaBreakout, r111SqueezeSkor, r111SiksmaAdet, r111ShortSqueeze, r111LongSqueeze, r111OiChgPct, r111ObBaskisi, r111DemandOB, r111SupplyOB, siksmaOzet: r111Siksma?.ozet||'', piyasaBozuk: r88PiyasaBozuk, piyasaEtiketi: r93PiyasaEtiketi, piyasaTehlikeli: r93PiyasaTehlikeli, piyasaDalgali: r93PiyasaDalgali, dalgaliAmaIslemYapilabilir: r93DalgaliAmaIslemYapilabilir, makasGenis: r88SpreadWide, defterInce: r88DefterInce, oynaklikAsiri: r88OynaklikAsiri,
+            canliHamleIzi: r88CanliHamleIzi, zeminKurtarma: r94CanliTrendZeminKurtarmaOk, dalgaliBaglanti: r96DalgaliZeminVurKacOk, r109SweepReclaimKoprusuOk, r109ReclaimOk, r109ReclaimSkor, r110IctKoprusuOk, r110Phase, r110SSLAlindi, r110BSLAlindi, r110ChoCH, r110YonUyumlu, r110NearSSL, r110NearBSL, r110FVG, r110EntryOk, ictDashboard: r110ICT?.dashboardText||'', r111KoprusuOk, r111SiksmaBreakout, r111SqueezeSkor, r111SiksmaAdet, r111ShortSqueeze, r111LongSqueeze, r111OiChgPct, r111ObBaskisi, r111DemandOB, r111SupplyOB, siksmaOzet: r111Siksma?.ozet||'', r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterDist, r116AcceptedCounterBreak, r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapDist, r117AcceptedAgainst, r117PrecisionCandleOk, r118CandleOk, r118CandleOzet, r118Candle, piyasaBozuk: r88PiyasaBozuk, piyasaEtiketi: r93PiyasaEtiketi, piyasaTehlikeli: r93PiyasaTehlikeli, piyasaDalgali: r93PiyasaDalgali, dalgaliAmaIslemYapilabilir: r93DalgaliAmaIslemYapilabilir, makasGenis: r88SpreadWide, defterInce: r88DefterInce, oynaklikAsiri: r88OynaklikAsiri,
             merdivenDevam: r93MerdivenDevamOk, donusRadari: r93DonusRadariOk, donusSkor: r93DonusSkor, merdivenSkor: r93MerdivenSkor, sonMumKoru: r93SonMumKoru,
             not: r93PiyasaTehlikeli ? 'Piyasa zemini tehlikeli; işlem yok.' : (r93DalgaliAmaIslemYapilabilir ? 'Piyasa dalgalı ama canlı trend/dönüş kanıtı işlem yapılabilir düzeyde.' : (r88VurKacOk ? 'Vur-kaç motoru veriyle desteklenen 5m hamle gördü.' : 'Vur-kaç için canlı hamle veya teyit yetersiz.'))
           },
@@ -7131,11 +7456,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       function decisionRank(side, d) {
         if (!d || !d.pass) return -9999;
         const tierPts = d.tier === 'A' ? 300 : d.tier === 'B+' ? 210 : d.tier === 'B' ? 90 : 0;
+        const r117Bonus = d.r117HtfReverseOk ? 45 : 0;
         const scorePts = Number(d.score || 0);
         const psPts = Number(d.priorityScore || 0) * 1.4;
         const vetoPenalty = d.hardVeto ? 500 : 0;
         const missingPenalty = d.cvdMissing ? 18 : 0;
-        return tierPts + scorePts + psPts - vetoPenalty - missingPenalty;
+        return tierPts + scorePts + psPts + r117Bonus - vetoPenalty - missingPenalty;
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
@@ -9552,6 +9878,23 @@ async function runAutoScan() {
           logAuto(`🟡 ${coin.symbol} R97 riskli yön izlemeye alındı: ${recommendation} ${decisionChain?.tier} skor ${score}/${effectiveMinScore}, R47 ${decisionChain?.r47Readiness||0}/8, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}, devam onayı:${r88DevamOnayiOk?'VAR':'YOK'}`);
         }
 
+        // R116: Son emir öncesi HTF amir kontrolü. Analiz zinciri bir sebeple geçse bile 1H/4H karşı seviyede legacy emir açılmaz.
+        if (decisionChain?.r116HtfGuardBlock) {
+          const why = decisionChain?.r116HtfGuardReason || `R116 HTF likidite amiri — ${recommendation} emir yok`;
+          logAuto(`⛔ ${coin.symbol} ${why}`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r116CounterLevel:decisionChain?.r116CounterLevel, r116CounterDist:decisionChain?.r116CounterDist, entryPermissionReason:decisionChain?.entryPermissionReason});
+          continue;
+        }
+
+        // R114: Son savunma. WLD tipi hata: B+ / Sweep+StopHunt / MM_UP_SWEEP ama 5m body-shift aşağı.
+        // Bu durumda wick avı bitmemiş sayılır; 5m gövde reclaim veya ICT/squeeze yapı onayı beklenir.
+        if (decisionChain?.r114TrapBlock) {
+          const why = decisionChain?.r114TrapReason || `R115 5m body-shift tuzağı — ${recommendation} emir yok`;
+          logAuto(`⛔ ${coin.symbol} ${why}`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r114Shift:decisionChain?.r114Shift, r114ReclaimOk:decisionChain?.r114ReclaimOk, entryPermissionReason:decisionChain?.entryPermissionReason});
+          continue;
+        }
+
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
@@ -9660,13 +10003,23 @@ async function runAutoScan() {
         let executeLeverage = parseInt(leverage) || 1;
         let leverageNote = `panel kaldıracı ${executeLeverage}x`;
         if (cfg.vurKacEnabled && cfg.vurKacAutoLev && decisionChain?.r88VurKacOk) {
-          const userMaxLev = Math.max(1, Math.min(125, parseInt(cfg.vurKacMaxLev || 50) || 50));
-          const bracketMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * userMaxLev);
-          if (bracketMaxLev) {
-            executeLeverage = Math.max(executeLeverage, Math.min(userMaxLev, bracketMaxLev));
-            leverageNote = `vur-kaç otomatik kaldıraç ${executeLeverage}x (Binance izin ${bracketMaxLev}x, panel ${leverage}x)`;
+          const structuralAutoLevOk = !!(
+            !decisionChain?.r116HtfGuardBlock &&
+            (decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r117HtfReverseOk ||
+             String(decisionChain?.entryPermissionReason||'').includes('R115_HTF') ||
+             String(decisionChain?.entryPermissionReason||'').includes('R111_SIKISMA'))
+          );
+          if (structuralAutoLevOk) {
+            const userMaxLev = Math.max(1, Math.min(125, parseInt(cfg.vurKacMaxLev || 50) || 50));
+            const bracketMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * userMaxLev);
+            if (bracketMaxLev) {
+              executeLeverage = Math.max(executeLeverage, Math.min(userMaxLev, bracketMaxLev));
+              leverageNote = `R116 temiz HTF/squeeze yapı otomatik kaldıraç ${executeLeverage}x (Binance izin ${bracketMaxLev}x, panel ${leverage}x)`;
+            } else {
+              leverageNote = `Binance kaldıraç sınırı okunamadı; panel kaldıracı ${executeLeverage}x`;
+            }
           } else {
-            leverageNote = `Binance kaldıraç sınırı okunamadı; panel kaldıracı ${executeLeverage}x`;
+            leverageNote = `R116 legacy köprüde otomatik kaldıraç kapalı; panel kaldıracı ${executeLeverage}x`;
           }
         }
 
