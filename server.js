@@ -12,6 +12,10 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const FAPI = 'https://fapi.binance.com';
 const FAPI_WS = 'wss://fstream.binance.com/stream';
+// R132: Binance USDⓈ-M Futures WS upgrade sonrası routed endpoints zorunlu.
+// Market streams (@aggTrade, @forceOrder, markPrice/kline) /market; depth/bookTicker public hızlı veri /public.
+const FAPI_WS_PUBLIC = 'wss://fstream.binance.com/public';
+const FAPI_WS_MARKET = 'wss://fstream.binance.com/market';
 
 // R24: Auto monitor gerçek açılış sayaçları. Restart olsa bile mümkün olduğunca korunur.
 const AUTO_STATS_PATH = path.join(process.cwd(), 'lazarus_auto_stats.json');
@@ -75,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R131_AGGTRADE_CASE_AND_WATCHDOG_FIX';
+const LAZARUS_BUILD = 'R132_ROUTED_WS_MARKET_PUBLIC_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -792,7 +796,7 @@ let globalLiqWS = null;
 
 function startGlobalLiqStream() {
   if (globalLiqWS && (globalLiqWS.readyState === WebSocket.OPEN || globalLiqWS.readyState === WebSocket.CONNECTING)) return;
-  const ws = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
+  const ws = new WebSocket(`${FAPI_WS_MARKET}/ws/!forceOrder@arr`);
   globalLiqWS = ws;
 
   ws.on('message', (data) => {
@@ -1223,7 +1227,7 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
     r130CombinedTickKey = key;
     if (!key) return;
 
-    const url = `wss://fstream.binance.com/stream?streams=${key}`;
+    const url = `${FAPI_WS_MARKET}/stream?streams=${key}`;
     const ws = new WebSocket(url);
     r130CombinedTickWS = ws;
     ws.on('open', () => { r130CombinedTickLastOpenTs = Date.now(); r130CombinedTickLastErr = ''; });
@@ -1241,12 +1245,13 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
         processTick(eng, t);
       } catch(_) {}
     });
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
+      try { r130CombinedTickLastErr = code ? `close:${code}${reason?':' + String(reason).slice(0,80):''}` : r130CombinedTickLastErr; } catch(_) {}
       r130CombinedTickRestartCount++;
       const restart = Array.from(r130CombinedTickSymbols || []);
       setTimeout(() => { try { r130StartCombinedAggTradeStream(restart, {replace:true}); } catch(_) {} }, 2500);
     });
-    ws.on('error', () => {});
+    ws.on('error', (e) => { try { r130CombinedTickLastErr = String(e?.message || e || 'ws_error').slice(0,160); } catch(_) {} });
   } catch(_) {}
 }
 
@@ -1258,8 +1263,8 @@ function r130CombinedSummary() {
     const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
     const noTick = (rs === WebSocket.OPEN && !r130CombinedTickLastMsgTs && openAge != null && openAge > 12000) ? ' noTickRestartBekliyor' : '';
     const err = r130CombinedTickLastErr ? ` err:${r130CombinedTickLastErr}` : '';
-    return `R131 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
-  } catch(_) { return 'R131 combined:bilinmiyor'; }
+    return `R132 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
+  } catch(_) { return 'R132 combined:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -1274,7 +1279,7 @@ function startCVDStream(symbol) {
   const store = existing || { buy:0, sell:0, history:[], lastReset: Date.now(), ws:null };
   cvdStore.set(full, store);
 
-  const wsUrl = `wss://fstream.binance.com/ws/${full.toLowerCase()}@aggTrade`;
+  const wsUrl = `${FAPI_WS_MARKET}/ws/${full.toLowerCase()}@aggTrade`;
   const ws = new WebSocket(wsUrl);
   store.ws = ws;
 
@@ -2503,7 +2508,7 @@ async function startTickStream(symbol) {
   }).catch(()=>{});
 
   // @trade yerine @aggTrade kullan (Binance Futures'ta @trade yok)
-  const wsUrl = `wss://fstream.binance.com/ws/${full.toLowerCase()}@aggTrade`;
+  const wsUrl = `${FAPI_WS_MARKET}/ws/${full.toLowerCase()}@aggTrade`;
   const ws = new WebSocket(wsUrl);
   engine.ws = ws;
 
@@ -2712,7 +2717,7 @@ function startIcebergStream(symbol) {
   icebergStore.set(full, store);
 
   // Depth stream: her 100ms'de book güncelleme
-  const wsUrl = `wss://fstream.binance.com/ws/${full.toLowerCase()}@depth@100ms`;
+  const wsUrl = `${FAPI_WS_PUBLIC}/ws/${full.toLowerCase()}@depth@100ms`;
   const ws = new WebSocket(wsUrl);
   store.ws = ws;
 
@@ -10020,8 +10025,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R131 5m Fırsat Beyni: aggTrade stream case fix + no-tick watchdog',
-        note: 'R131; R130 combined stream korunur. @aggTrade büyük/küçük harf ve no-tick watchdog düzeltildi; canlı tick gelmeden book-only edge trade yakıtı sayılmaz.'
+          : 'R132 5m Fırsat Beyni: Binance routed WS /market-/public fix + aggTrade canlı akış',
+        note: 'R132; Binance 2026 WS routing zorunluluğuna göre @aggTrade ve forceOrder /market, depth /public üstünden açılır. Canlı tick gelmeden book-only edge trade yakıtı sayılmaz.'
       },
       lastScan: {
         source: scan.scanSource || null,
