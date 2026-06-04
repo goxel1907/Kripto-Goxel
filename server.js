@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R132_ROUTED_WS_MARKET_PUBLIC_FIX';
+const LAZARUS_BUILD = 'R133_FAST_EDGE_AND_WS_STABILITY_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -1175,6 +1175,10 @@ let r130CombinedTickLastMsgTs = 0;
 let r130CombinedTickLastOpenTs = 0;
 let r130CombinedTickLastErr = '';
 let r130CombinedTickRestartCount = 0;
+let r133CombinedLastStartTs = 0;
+function r133IsAsciiFuturesSymbol(full='') {
+  return /^[A-Z0-9_]+USDT$/.test(String(full||'').toUpperCase());
+}
 
 function r130EnsureTickEngine(symbol) {
   const full = normalizeSymbol ? normalizeSymbol(symbol) : r125NormSymbol(symbol);
@@ -1200,7 +1204,7 @@ function r130StreamName(symbol) {
   // Eski R130: full.toLowerCase() + '@aggTrade' ifadesini komple lowercase yapıp
   // '@aggtrade' üretiyordu; bağlantı OPEN/CONNECTING görünse bile tick gelmiyordu.
   // '@' karakterini encode etmiyoruz; sadece sembol parçası URL-safe yapılır.
-  return `${encodeURIComponent(full.toLowerCase())}@aggTrade`;
+  return `${full.toLowerCase()}@aggTrade`;
 }
 
 function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
@@ -1209,8 +1213,16 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
     for (const s0 of (Array.isArray(symbols)?symbols:[symbols])) {
       const full = normalizeSymbol ? normalizeSymbol(s0) : r125NormSymbol(s0);
       if (!full || !full.endsWith('USDT')) continue;
-      if (!clean.includes(full)) clean.push(full);
+      // R133: combined stream'i bozabilecek non-ASCII sembolleri combined listeden çıkar.
+      // Bu semboller için CVD/single fallback çalışır; tek bir riskli sembol TOP10 canlı akışını kapatmasın.
       r130EnsureTickEngine(full);
+      if (!r133IsAsciiFuturesSymbol(full)) {
+        const eng = tickStore.get(full);
+        if (eng) eng.r133CombinedExcluded = true;
+        try { startTickStream(full); } catch(_) {}
+        continue;
+      }
+      if (!clean.includes(full)) clean.push(full);
     }
     if (!clean.length) return;
 
@@ -1221,6 +1233,9 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
     const key = streams.join('/');
     const rs = r130CombinedTickWS?.readyState;
     if (r130CombinedTickWS && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) && key === r130CombinedTickKey) return;
+    // R133: scan içinde art arda farklı alt liste çağrıları WS'yi saniyede onlarca kez kapatmasın.
+    // Son bağlantı çok yeniyse ve elde canlı tick varsa mevcut bağlantıyı koru.
+    if (r130CombinedTickWS && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) && r130CombinedTickLastMsgTs && Date.now()-r130CombinedTickLastMsgTs < 6000 && Date.now()-r133CombinedLastStartTs < 6000) return;
 
     try { if (r130CombinedTickWS) r130CombinedTickWS.terminate?.(); } catch(_) {}
     r130CombinedTickSymbols = new Set(arr);
@@ -1229,6 +1244,7 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
 
     const url = `${FAPI_WS_MARKET}/stream?streams=${key}`;
     const ws = new WebSocket(url);
+    r133CombinedLastStartTs = Date.now();
     r130CombinedTickWS = ws;
     ws.on('open', () => { r130CombinedTickLastOpenTs = Date.now(); r130CombinedTickLastErr = ''; });
     ws.on('message', data => {
@@ -1263,8 +1279,8 @@ function r130CombinedSummary() {
     const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
     const noTick = (rs === WebSocket.OPEN && !r130CombinedTickLastMsgTs && openAge != null && openAge > 12000) ? ' noTickRestartBekliyor' : '';
     const err = r130CombinedTickLastErr ? ` err:${r130CombinedTickLastErr}` : '';
-    return `R132 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
-  } catch(_) { return 'R132 combined:bilinmiyor'; }
+    return `R133 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
+  } catch(_) { return 'R133 combined:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -1279,7 +1295,7 @@ function startCVDStream(symbol) {
   const store = existing || { buy:0, sell:0, history:[], lastReset: Date.now(), ws:null };
   cvdStore.set(full, store);
 
-  const wsUrl = `${FAPI_WS_MARKET}/ws/${full.toLowerCase()}@aggTrade`;
+  const wsUrl = `${FAPI_WS_MARKET}/ws/${encodeURIComponent(full.toLowerCase())}@aggTrade`;
   const ws = new WebSocket(wsUrl);
   store.ws = ws;
 
@@ -2508,7 +2524,7 @@ async function startTickStream(symbol) {
   }).catch(()=>{});
 
   // @trade yerine @aggTrade kullan (Binance Futures'ta @trade yok)
-  const wsUrl = `${FAPI_WS_MARKET}/ws/${full.toLowerCase()}@aggTrade`;
+  const wsUrl = `${FAPI_WS_MARKET}/ws/${encodeURIComponent(full.toLowerCase())}@aggTrade`;
   const ws = new WebSocket(wsUrl);
   engine.ws = ws;
 
@@ -3961,11 +3977,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? (/BSL_ALINDI_CHOCH_BEKLENIYOR|BSL\s*wick\+body-reclaim|SUPPLY_OB|supply/i.test(ictText) && counterDist <= 0.95 && !d.r116AcceptedCounterBreak)
     : (/SSL_ALINDI_CHOCH_BEKLENIYOR|SSL\s*wick\+body-reclaim|DEMAND_OB|demand/i.test(ictText) && counterDist <= 0.95 && !d.r116AcceptedCounterBreak)
   );
-  const hardDanger = r120Bool(
+  // R133: ölümcül güvenlik ile kalite/teyit riskini ayır. 5m kaldıraçlı scalper beyin
+  // çok güçlü canlı edge gördüğünde zayıf mum puanı yüzünden tamamen körleşmesin; fakat
+  // likidite/ATR/trap/knife gibi hesabı yakabilecek riskler asla bypass edilmez.
+  const fatalDanger = r120Bool(
     d.hardVeto || d.r114TrapBlock || htfOpposite || d.r68CriticalHardBlock || d.r65ScalperCoreHardVeto ||
-    d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock || d.rvolVeryLow || toxicFlow ||
-    (d.r88PiyasaBozuk && !d.r93DalgaliAmaIslemYapilabilir && !counterTrap && !htfReverse) ||
+    d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock || d.rvolVeryLow ||
     (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock)
+  );
+  const hardDanger = r120Bool(
+    fatalDanger || toxicFlow ||
+    (d.r88PiyasaBozuk && !d.r93DalgaliAmaIslemYapilabilir && !counterTrap && !htfReverse)
   );
 
   const candidates = [];
@@ -4009,12 +4031,23 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   );
   const edgeNeed = primaryMode === 'TREND_CONTINUATION' ? 70 : primaryMode === 'FLOW_SCALP' ? 66 : primaryMode === 'MOMENTUM_SCALP' ? 68 : 60;
   const dataMinimum = r120Bool(playbookActive && (liveFlowOk || htfReverse || htfReclaim || squeeze || r125SideFlow.strong) && r47 >= (needsPremiumProof ? 6 : 4));
-  const ok = r120Bool(!hardDanger && !modeQualityBlock && dataMinimum && score >= adaptiveFloor && edge >= edgeNeed);
+  const r133HtfSweepAligned = r120Bool(side === 'LONG'
+    ? /SSL_ALINDI|SSL_SWEEP|HTF_SSL|SSL_.*BODY_RECLAIM/i.test(ictText)
+    : /BSL_ALINDI|BSL_SWEEP|HTF_BSL|BSL_.*BODY_RECLAIM/i.test(ictText)
+  );
+  const r133LiveTradeCount = r120BrainNum(d.r125Flow?.trades, 0);
+  const r133LiveDeltaAbs = Math.abs(r120BrainNum(d.r125Flow?.deltaPct, 0));
+  const r133FastScalpOverride = r120Bool(
+    !fatalDanger && !r125OpposingFlow && !htfCounterWait && r133HtfSweepAligned &&
+    r125SideFlow.strong && r133LiveTradeCount >= 12 && r133LiveDeltaAbs >= 18 &&
+    score >= minScore && edge >= 88 && (side === d.r125Flow?.bestSide || r125SideFlow.edge >= 9)
+  );
+  const ok = r120Bool((!hardDanger && !modeQualityBlock && dataMinimum && score >= adaptiveFloor && edge >= edgeNeed) || r133FastScalpOverride);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${modeLabel} · edge ${edge}/100 · skor ${score}/${minScore} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R133 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${sensorSummary?' · '+sensorSummary:''}`;
 
   d.brainMode = primaryMode;
@@ -4029,7 +4062,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.brainLiveFlowOk = liveFlowOk;
   d.brainR125FlowOk = r125SideFlow.ok;
   d.brainR125OpposingFlow = r125OpposingFlow;
-  d.entryPermissionReason = ok ? `R121_SINGLE_BRAIN_${primaryMode}` : 'R121_SINGLE_BRAIN_WATCH';
+  d.brainFatalDanger = fatalDanger;
+  d.brainHardDanger = hardDanger;
+  d.r133FastScalpOverride = r133FastScalpOverride;
+  d.r133FastScalpWhy = r133FastScalpOverride ? `R133 hızlı 5m scalp: HTF sweep hizalı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}` : '';
+  d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R133_FAST_EDGE_MICRO_SCALP' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
   d.pass = ok;
@@ -10025,8 +10062,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R132 5m Fırsat Beyni: Binance routed WS /market-/public fix + aggTrade canlı akış',
-        note: 'R132; Binance 2026 WS routing zorunluluğuna göre @aggTrade ve forceOrder /market, depth /public üstünden açılır. Canlı tick gelmeden book-only edge trade yakıtı sayılmaz.'
+          : 'R133 5m Fırsat Beyni: canlı tick stabilizasyonu + yüksek-edge mikro scalp override',
+        note: 'R133; R132 routed WS korunur. Combined aggTrade stabilize edilir; canlı tick/HTF sweep/edge çok güçlüyse mum zayıflığında kontrollü mikro-scalp izinlenir.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10342,7 +10379,7 @@ async function runAutoScan(prioritySymbol=null) {
           priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason,
           action:decisionChain?.autoOk?(decisionChain?.entryPermissionReason||'Aday'):'İzle',
           sweepRequired:decisionChain?.sweepRequired, entryPermissionReason:decisionChain?.entryPermissionReason,
-          cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk, brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction, brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary,
+          cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk, brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction, brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary, r133FastScalpOverride:decisionChain?.r133FastScalpOverride, r133FastScalpWhy:decisionChain?.r133FastScalpWhy,
           r125Flow:decisionChain?.r125Flow, r125OrderflowSummary:decisionChain?.r125OrderflowSummary, r126FlowSummary:decisionChain?.r126FlowSummary,
           ...r119BuildAutoDiag(decisionChain),
           r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk,
@@ -10381,7 +10418,7 @@ async function runAutoScan(prioritySymbol=null) {
             : `WAIT_DIAG: skor ${waitScore}<${minScore} / ${waitSide} izleme`));
           markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, tier:'WAIT', score:waitScore, longScore, shortScore, reason:waitReason, waitSide, waitDiagnostic:true,
             priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, autoOk:false,
-            brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction || 'WATCH', brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary,
+            brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction || 'WATCH', brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary, r133FastScalpOverride:decisionChain?.r133FastScalpOverride, r133FastScalpWhy:decisionChain?.r133FastScalpWhy,
             r125Flow:decisionChain?.r125Flow, r125OrderflowSummary:decisionChain?.r125OrderflowSummary, r126FlowSummary:decisionChain?.r126FlowSummary,
             ...r119BuildAutoDiag(decisionChain)
           });
