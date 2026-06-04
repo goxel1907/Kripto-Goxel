@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R127_BRAIN_WATCH_DIAG_AND_FLOW_PASS_FIX';
+const LAZARUS_BUILD = 'R128_CIRCULAR_JSON_SAFE_BRAIN_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -3648,6 +3648,47 @@ function trPatternList(arr) {
   return (Array.isArray(arr) ? arr : []).map(x => trPatternName(x?.name || x)).filter(Boolean).slice(0,3).join(' + ');
 }
 
+
+
+// ── R128: ANALYZE JSON CIRCULAR-SAFE ÇIKTI ─────────────────────────────────
+// R127'de WATCH tarafını taşımak için decisionChain.sideDecisions = {LONG,SHORT}
+// eklenmişti. decisionChain zaten LONG veya SHORT nesnesinin kendisi olduğunda bu,
+// decisionChain -> sideDecisions -> LONG -> decisionChain döngüsü üretip res.json'u kırıyordu.
+// Çözüm: ham referansları decisionChain içine gömmek yok; JSON çıktısı WeakSet ile temizlenir.
+function r128SafeForJson(obj) {
+  const seen = new WeakSet();
+  try {
+    return JSON.parse(JSON.stringify(obj, (key, value) => {
+      if (key === 'sideDecisions') return undefined;
+      if (typeof value === 'bigint') return Number(value);
+      if (typeof value === 'function') return undefined;
+      if (value && typeof value === 'object') {
+        if (seen.has(value)) return undefined;
+        seen.add(value);
+      }
+      return value;
+    }));
+  } catch (e) {
+    return null;
+  }
+}
+function r128SideMini(d={}) {
+  return {
+    pass: !!d?.pass,
+    autoOk: !!d?.autoOk,
+    tier: d?.tier || 'WAIT',
+    score: Number(d?.score || 0),
+    priorityScore: Number(d?.priorityScore || 0),
+    brainAction: d?.brainAction || '',
+    brainMode: d?.brainMode || '',
+    brainConfidence: Number(d?.brainConfidence || 0),
+    entryPermissionReason: d?.entryPermissionReason || '',
+    reason: String(d?.brainSummary || d?.reason || '').slice(0,260)
+  };
+}
+function r128SideDecisionSummary(longDecision, shortDecision) {
+  return { LONG: r128SideMini(longDecision), SHORT: r128SideMini(shortDecision) };
+}
 
 // ── R120: TEK BEYİN KARAR ÇEKİRDEĞİ ────────────────────────────────────────
 // Eski Rxx blokları artık emir vermiyor; onlar yalnızca sensör/veri sağlayıcıdır.
@@ -7979,7 +8020,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if (Math.abs(lRank - sRank) < 18 && longDecision?.autoOk && shortDecision?.autoOk) {
           // iki taraf da güçlü ama fark zayıfsa MM kararsızlığı: işlem yok
           recommendation='WAIT';
-          decisionChain={ pass:false, tier:'WAIT', score:Math.max(longScore, shortScore), autoOk:false, brainAction:'WATCH', brainMode:'CONFLICT', brainConfidence:Math.max(longDecision?.brainConfidence||0, shortDecision?.brainConfidence||0), priorityScore:Math.max(longDecision?.priorityScore||0, shortDecision?.priorityScore||0), reason:`❌ Çift yön çatışması: LONG ${longDecision?.tier}/${longDecision?.priorityScore} SHORT ${shortDecision?.tier}/${shortDecision?.priorityScore}`, sideDecisions:{LONG:longDecision, SHORT:shortDecision} };
+          decisionChain={ pass:false, tier:'WAIT', score:Math.max(longScore, shortScore), autoOk:false, brainAction:'WATCH', brainMode:'CONFLICT', brainConfidence:Math.max(longDecision?.brainConfidence||0, shortDecision?.brainConfidence||0), priorityScore:Math.max(longDecision?.priorityScore||0, shortDecision?.priorityScore||0), reason:`❌ Çift yön çatışması: LONG ${longDecision?.tier}/${longDecision?.priorityScore} SHORT ${shortDecision?.tier}/${shortDecision?.priorityScore}`, sideDecisionSummary:r128SideDecisionSummary(longDecision, shortDecision) };
         } else if (lRank > sRank) { recommendation='LONG'; decisionChain=longDecision; }
         else { recommendation='SHORT'; decisionChain=shortDecision; }
       } else {
@@ -7992,7 +8033,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         decisionChain.entryPermissionOk = false;
         decisionChain.brainAction = decisionChain.brainAction || 'WATCH';
         decisionChain.reason = decisionChain.brainSummary || decisionChain.reason || `🧠 5m Fırsat Beyni WATCH: skor ${Math.max(longScore,shortScore)}/${minAutoScore}, trade eşiği oluşmadı`;
-        decisionChain.sideDecisions = { LONG: longDecision, SHORT: shortDecision };
+        // R128: decisionChain içine LONG/SHORT nesnelerini ham olarak koyma.
+        // decisionChain çoğu zaman longDecision/shortDecision nesnesinin kendisidir; ham sideDecisions eklemek
+        // decisionChain.sideDecisions.LONG === decisionChain döngüsünü üretir ve res.json JSON.stringify hatası verir.
+        decisionChain.sideDecisionSummary = r128SideDecisionSummary(longDecision, shortDecision);
       }
       if (!decisionChain?.pass) recommendation='WAIT';
     const score=recommendation==='LONG'?longScore:recommendation==='SHORT'?shortScore:Math.max(longScore,shortScore);
@@ -8015,6 +8059,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     if (recommendation !== 'WAIT')
       updateMarketBreadth(full, recommendation, Math.max(longScore, shortScore));
 
+    const r128DecisionChain = r128SafeForJson(decisionChain);
+    const r128SideDecisions = { LONG: r128SafeForJson(longDecision), SHORT: r128SafeForJson(shortDecision) };
     res.json({
       ok:true, symbol:full, price:lastPrice,
       freshness, signalAgeMin, isExpired,
@@ -8071,8 +8117,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         fundingMomentum: fundMom,
         atrGate: { atrPct:+atrPct.toFixed(2), slPct:slPctForGate, warn:atrGateWarn, block:atrGateBlock },
       },
-      longScore, shortScore, recommendation, decisionChain,
-      sideDecisions: { LONG: longDecision, SHORT: shortDecision },
+      longScore, shortScore, recommendation, decisionChain: r128DecisionChain,
+      sideDecisions: r128SideDecisions,
       r22: decisionChain?.r22 || null,
       r29: r29Context,
       r37: r37Timing,
@@ -9818,8 +9864,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R127 5m Fırsat Beyni: PASS yoksa bile en iyi WATCH beynini/panel teşhislerini gösterir; orderflow diag taşınır',
-        note: 'R127; R126 orderflow/absorpsiyon/adaptif beyin korunur. PASS yokken decisionChain boş bırakılmaz; en iyi WATCH tarafı, HTF/mum/orderflow nedeni ve beyin özeti panele taşınır.'
+          : 'R128 5m Fırsat Beyni: WATCH/PASS teşhisi korunur; circular JSON sideDecisions güvenli hale getirildi.',
+        note: 'R128; R127 beyin/teşhis mantığı korunur. decisionChain içine ham sideDecisions gömülmez; analiz JSON çıktısı circular yapıya düşmeden güvenli döner.'
       },
       lastScan: {
         source: scan.scanSource || null,
