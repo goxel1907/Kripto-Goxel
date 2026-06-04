@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R130_COMBINED_AGGTRADE_FLOW_ENGINE_FIX';
+const LAZARUS_BUILD = 'R131_AGGTRADE_CASE_AND_WATCHDOG_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -840,7 +840,7 @@ function startGlobalLiqStream() {
     console.log('Liq stream kapandı, yeniden bağlanıyor...');
     setTimeout(startGlobalLiqStream, 3000);
   });
-  ws.on('error', () => {});
+  ws.on('error', (e) => { try { r130CombinedTickLastErr = String(e?.message || e || 'ws_error').slice(0,120); } catch(_) {} });
   console.log('✅ Global likidasyon stream başlatıldı');
 }
 
@@ -1169,6 +1169,8 @@ let r130CombinedTickKey = '';
 let r130CombinedTickSymbols = new Set();
 let r130CombinedTickLastMsgTs = 0;
 let r130CombinedTickLastOpenTs = 0;
+let r130CombinedTickLastErr = '';
+let r130CombinedTickRestartCount = 0;
 
 function r130EnsureTickEngine(symbol) {
   const full = normalizeSymbol ? normalizeSymbol(symbol) : r125NormSymbol(symbol);
@@ -1189,8 +1191,12 @@ function r130EnsureTickEngine(symbol) {
 function r130StreamName(symbol) {
   const full = normalizeSymbol ? normalizeSymbol(symbol) : r125NormSymbol(symbol);
   if (!full || !full.endsWith('USDT')) return '';
-  // Binance stream isimleri küçük harf olur. Unicode semboller de JS içinde bozulmasın diye encode edilir.
-  return encodeURIComponent(full.toLowerCase() + '@aggTrade');
+  // R131 kritik fix: Binance futures stream adı case-sensitive'dir.
+  // Sembol küçük harf olur ama event adı aggTrade olarak kalmalıdır.
+  // Eski R130: full.toLowerCase() + '@aggTrade' ifadesini komple lowercase yapıp
+  // '@aggtrade' üretiyordu; bağlantı OPEN/CONNECTING görünse bile tick gelmiyordu.
+  // '@' karakterini encode etmiyoruz; sadece sembol parçası URL-safe yapılır.
+  return `${encodeURIComponent(full.toLowerCase())}@aggTrade`;
 }
 
 function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
@@ -1220,7 +1226,7 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
     const url = `wss://fstream.binance.com/stream?streams=${key}`;
     const ws = new WebSocket(url);
     r130CombinedTickWS = ws;
-    ws.on('open', () => { r130CombinedTickLastOpenTs = Date.now(); });
+    ws.on('open', () => { r130CombinedTickLastOpenTs = Date.now(); r130CombinedTickLastErr = ''; });
     ws.on('message', data => {
       try {
         const msg = JSON.parse(data.toString());
@@ -1236,6 +1242,7 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
       } catch(_) {}
     });
     ws.on('close', () => {
+      r130CombinedTickRestartCount++;
       const restart = Array.from(r130CombinedTickSymbols || []);
       setTimeout(() => { try { r130StartCombinedAggTradeStream(restart, {replace:true}); } catch(_) {} }, 2500);
     });
@@ -1246,10 +1253,13 @@ function r130StartCombinedAggTradeStream(symbols=[], opts={}) {
 function r130CombinedSummary() {
   try {
     const age = r130CombinedTickLastMsgTs ? Date.now() - r130CombinedTickLastMsgTs : null;
+    const openAge = r130CombinedTickLastOpenTs ? Date.now() - r130CombinedTickLastOpenTs : null;
     const rs = r130CombinedTickWS?.readyState;
     const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
-    return `R130 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}`;
-  } catch(_) { return 'R130 combined:bilinmiyor'; }
+    const noTick = (rs === WebSocket.OPEN && !r130CombinedTickLastMsgTs && openAge != null && openAge > 12000) ? ' noTickRestartBekliyor' : '';
+    const err = r130CombinedTickLastErr ? ` err:${r130CombinedTickLastErr}` : '';
+    return `R131 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
+  } catch(_) { return 'R131 combined:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -10010,8 +10020,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R130 5m Fırsat Beyni: combined aggTrade motoru + gerçek tick flow bağlantısı',
-        note: 'R130; R129 warmup ayrımı korunur. TOP10 için tek combined aggTrade WS kurulur, tick/delta/aggression verisi tek beyne gerçek canlı edge olarak akar.'
+          : 'R131 5m Fırsat Beyni: aggTrade stream case fix + no-tick watchdog',
+        note: 'R131; R130 combined stream korunur. @aggTrade büyük/küçük harf ve no-tick watchdog düzeltildi; canlı tick gelmeden book-only edge trade yakıtı sayılmaz.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10953,8 +10963,10 @@ function startAutoTrader() {
         if (!autoConfig?.enabled || autoRunning || isBinanceBackoffActive() || isPositionRiskCooldownActive()) return;
         try {
           const lastList = (autoScanState?.scanList||[]).map(x=>normalizeSymbol(x)).filter(Boolean);
-          const stale = r130CombinedTickWS && r130CombinedTickWS.readyState === WebSocket.OPEN && r130CombinedTickLastMsgTs && Date.now()-r130CombinedTickLastMsgTs > 20000;
-          if (lastList.length && (!r130CombinedTickWS || r130CombinedTickWS.readyState > WebSocket.OPEN || stale)) r130StartCombinedAggTradeStream(lastList, {replace:true});
+          const rs130 = r130CombinedTickWS?.readyState;
+          const noFirstTick = r130CombinedTickWS && rs130 === WebSocket.OPEN && !r130CombinedTickLastMsgTs && r130CombinedTickLastOpenTs && Date.now()-r130CombinedTickLastOpenTs > 12000;
+          const stale = r130CombinedTickWS && rs130 === WebSocket.OPEN && r130CombinedTickLastMsgTs && Date.now()-r130CombinedTickLastMsgTs > 20000;
+          if (lastList.length && (!r130CombinedTickWS || rs130 > WebSocket.OPEN || stale || noFirstTick)) r130StartCombinedAggTradeStream(lastList, {replace:true});
         } catch(_) {}
         const now = Date.now();
         for (const [sym, ev] of r125PriorityWake.entries()) {
