@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R126_FLOW_ABSORPTION_ADAPTIVE_BRAIN';
+const LAZARUS_BUILD = 'R127_BRAIN_WATCH_DIAG_AND_FLOW_PASS_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -7965,14 +7965,34 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
+      function watchRank(side, d) {
+        if (!d) return -9999;
+        const conf = Number(d.brainConfidence || 0);
+        const sc = Number(d.score || 0);
+        const flow = side === 'LONG' ? Number(d.r125Flow?.longEdge || 0) : Number(d.r125Flow?.shortEdge || 0);
+        const modeBonus = String(d.brainMode||'NO_EDGE') === 'NO_EDGE' ? -25 : 0;
+        const danger = d.brainModeQualityBlock || d.brainHtfCounterWait || d.hardVeto || d.r114TrapBlock || d.r116HtfGuardBlock ? -18 : 0;
+        return conf*1.8 + sc*0.55 + flow + modeBonus + danger;
+      }
       let recommendation='WAIT', decisionChain=null;
       if (lRank > -9999 || sRank > -9999) {
         if (Math.abs(lRank - sRank) < 18 && longDecision?.autoOk && shortDecision?.autoOk) {
           // iki taraf da güçlü ama fark zayıfsa MM kararsızlığı: işlem yok
           recommendation='WAIT';
-          decisionChain={ pass:false, tier:'WAIT', score:Math.max(longScore, shortScore), autoOk:false, priorityScore:Math.max(longDecision?.priorityScore||0, shortDecision?.priorityScore||0), reason:`❌ Çift yön çatışması: LONG ${longDecision?.tier}/${longDecision?.priorityScore} SHORT ${shortDecision?.tier}/${shortDecision?.priorityScore}` };
+          decisionChain={ pass:false, tier:'WAIT', score:Math.max(longScore, shortScore), autoOk:false, brainAction:'WATCH', brainMode:'CONFLICT', brainConfidence:Math.max(longDecision?.brainConfidence||0, shortDecision?.brainConfidence||0), priorityScore:Math.max(longDecision?.priorityScore||0, shortDecision?.priorityScore||0), reason:`❌ Çift yön çatışması: LONG ${longDecision?.tier}/${longDecision?.priorityScore} SHORT ${shortDecision?.tier}/${shortDecision?.priorityScore}`, sideDecisions:{LONG:longDecision, SHORT:shortDecision} };
         } else if (lRank > sRank) { recommendation='LONG'; decisionChain=longDecision; }
         else { recommendation='SHORT'; decisionChain=shortDecision; }
+      } else {
+        // R127: PASS yokken decisionChain'i boş bırakma. Tek beyin gerçekten çalıştıysa,
+        // en güçlü WATCH tarafını panel/auto monitöre taşı. Bu emir açmaz; sadece neden BEKLE dediğini gösterir.
+        const lw = watchRank('LONG', longDecision), sw = watchRank('SHORT', shortDecision);
+        decisionChain = (lw >= sw ? longDecision : shortDecision) || { pass:false, tier:'WAIT', score:Math.max(longScore, shortScore), autoOk:false, reason:'5m Fırsat Beyni WATCH: yeterli veri/edge yok' };
+        decisionChain.pass = false;
+        decisionChain.autoOk = false;
+        decisionChain.entryPermissionOk = false;
+        decisionChain.brainAction = decisionChain.brainAction || 'WATCH';
+        decisionChain.reason = decisionChain.brainSummary || decisionChain.reason || `🧠 5m Fırsat Beyni WATCH: skor ${Math.max(longScore,shortScore)}/${minAutoScore}, trade eşiği oluşmadı`;
+        decisionChain.sideDecisions = { LONG: longDecision, SHORT: shortDecision };
       }
       if (!decisionChain?.pass) recommendation='WAIT';
     const score=recommendation==='LONG'?longScore:recommendation==='SHORT'?shortScore:Math.max(longScore,shortScore);
@@ -9798,8 +9818,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R126 5m Fırsat Beyni: HTF harita + 5m mum/reclaim + orderflow absorpsiyon/aggression + adaptif playbook',
-        note: 'R125; 5m fırsat beyni + canlı orderflow önceliği. Depth imbalance, live delta/aggression ve forceOrder likidasyon mıknatısı tek beyin edge/TP kararına bağlandı.'
+          : 'R127 5m Fırsat Beyni: PASS yoksa bile en iyi WATCH beynini/panel teşhislerini gösterir; orderflow diag taşınır',
+        note: 'R127; R126 orderflow/absorpsiyon/adaptif beyin korunur. PASS yokken decisionChain boş bırakılmaz; en iyi WATCH tarafı, HTF/mum/orderflow nedeni ve beyin özeti panele taşınır.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10119,6 +10139,7 @@ async function runAutoScan(prioritySymbol=null) {
           action:decisionChain?.autoOk?(decisionChain?.entryPermissionReason||'Aday'):'İzle',
           sweepRequired:decisionChain?.sweepRequired, entryPermissionReason:decisionChain?.entryPermissionReason,
           cvdMissing:decisionChain?.cvdMissing, r45RvolStatus:decisionChain?.r45RvolStatus, autoOk:decisionChain?.autoOk, brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction, brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary,
+          r125Flow:decisionChain?.r125Flow, r125OrderflowSummary:decisionChain?.r125OrderflowSummary, r126FlowSummary:decisionChain?.r126FlowSummary,
           ...r119BuildAutoDiag(decisionChain),
           r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk,
           r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk,
@@ -10151,10 +10172,15 @@ async function runAutoScan(prioritySymbol=null) {
         if (recommendation==='WAIT') {
           const waitScore = Math.max(Number(longScore||0), Number(shortScore||0));
           const waitSide = Number(longScore||0) >= Number(shortScore||0) ? 'LONG' : 'SHORT';
-          const waitReason = decisionChain?.reason || (waitScore >= Number(minScore||0)
-            ? `WAIT_DIAG: skor ${waitScore}>=${minScore} ama final decisionChain PASS yok`
-            : `WAIT_DIAG: skor ${waitScore}<${minScore} / ${waitSide} izleme`);
-          markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, tier:'WAIT', score:waitScore, longScore, shortScore, reason:waitReason, waitSide, waitDiagnostic:true});
+          const waitReason = r120AutoReason(decisionChain, decisionChain?.reason || (waitScore >= Number(minScore||0)
+            ? `WAIT_DIAG: skor ${waitScore}>=${minScore} ama 5m Fırsat Beyni TRADE eşiği görmedi`
+            : `WAIT_DIAG: skor ${waitScore}<${minScore} / ${waitSide} izleme`));
+          markAutoSkip(coin.symbol, 'WAIT karar', {rec:recommendation, tier:'WAIT', score:waitScore, longScore, shortScore, reason:waitReason, waitSide, waitDiagnostic:true,
+            priorityScore:decisionChain?.priorityScore, entryPermissionReason:decisionChain?.entryPermissionReason, autoOk:false,
+            brainMode:decisionChain?.brainMode, brainAction:decisionChain?.brainAction || 'WATCH', brainConfidence:decisionChain?.brainConfidence, brainSummary:decisionChain?.brainSummary,
+            r125Flow:decisionChain?.r125Flow, r125OrderflowSummary:decisionChain?.r125OrderflowSummary, r126FlowSummary:decisionChain?.r126FlowSummary,
+            ...r119BuildAutoDiag(decisionChain)
+          });
           continue;
         }
 
