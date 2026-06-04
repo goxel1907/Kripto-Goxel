@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R112_R111_OI_SIKISMA_PANEL_FIX';
+const LAZARUS_BUILD = 'R113_KLINES5M_RUNTIME_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -6815,8 +6815,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (!r39TargetNearBlock || r39Side?.breakConfirmed || r62CounterTrendTrapContextOk || (r89SuperMikroYapiOk && r88CanliHamleIzi)) &&
           !mmVeryStrongOpposite && !r86KarsiFormasyonGucu)
         );
-        // R109: Sweep-Reclaim skoru — sadece fırsat kalitesini artırır, fren koymaz
-        const r109Reclaim = r109CalcSweepReclaimScore(klines5m || [], isL ? 'LONG' : 'SHORT');
+        // R97/R113-TDZ-FIX: Terazi tüm köprülerden önce hesaplanmalı.
+        // R112'de R109 köprüsü r92Terazi'yi const tanımından önce okuyabiliyordu;
+        // reclaim aktif olduğunda sessiz analiz hatası doğurmasın diye en üste alındı.
+        const r92Terazi = Number(r50EffectivePriority || priorityScore || 0);
+
+        // R109: Sweep-Reclaim skoru — sadece fırsat kalitesini artırır, fren koymaz.
+        // R113 FIX: /api/analyze içinde 5m mum değişkeninin gerçek adı k5m'dir.
+        // Eski "klines5m" referansı ANALYZE_* içinde "klines5m is not defined" hatası üretiyordu.
+        const r109Reclaim = r109CalcSweepReclaimScore(k5m || [], isL ? 'LONG' : 'SHORT');
         const r109ReclaimOk  = !!(r109Reclaim.score >= 6 && r109Reclaim.swept && r109Reclaim.reclaimed);
         const r109ReclaimSkor = Number(r109Reclaim.score || 0);
         // R109 köprüsü: Reclaim ≥6 + temel şartlar. Ekstra fren YOK.
@@ -6828,10 +6835,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           !mmVeryStrongOpposite && !r86KarsiFormasyonGucu &&
           !r41FallingKnifeBlock && !r41RisingKnifeBlock
         );
-        // R97-TDZ-FIX: Terazi r96 köprüsünden önce hesaplanmalı.
-        // Önceki pakette r96DalgaliZeminVurKacOk, r92Terazi const'u tanımlanmadan okuduğu için
-        // DEXE/PORTAL analizlerinde "Cannot access 'r92Terazi' before initialization" sessiz hatası oluşuyordu.
-        const r92Terazi = Number(r50EffectivePriority || priorityScore || 0);
         // R97: r92VurKacAdayOk skor tabanı veya r38TopMoverStrong engeli nedeniyle KALDI kalsa da,
         // piyasa etiketi "DALGALI AMA İŞLEM YAPILABİLİR" ise bu köprü emir yolunu açar.
         // Kaynak: ChatGPT R97 mimarisi; r92NormalVurKacOk eşikleri R95 orijinalinde korundu (R47>=8, timingPts>=2).
@@ -7031,7 +7034,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r90CanliKopmaOk) reasons.push(`🚀 R97 canlı 5dk kopma: mikro ${r88MikroSkor}/8 · teyit ${r88AkisTeyidiSayisi}/8 · taban ${r89ScoreFloor}`);
         if(r93MerdivenDevamOk) reasons.push(`🪜 R97 canlı merdiven devamı: merdiven ${r93MerdivenSkor}/10 · son mum ${r93Merdiven.sonMum}`);
         if(r93DonusRadariOk) reasons.push(`🔁 R97 dönüş radarı: dönüş puanı ${r93DonusSkor}/10 · ${r93Merdiven.notlar.join(' + ')}`);
-        if(r111KoprusuOk) reasons.push(`🧨 R112 sıkışma/squeeze köprüsü: ${r111Siksma?.ozet||'sıkışma patlaması'} · skor ${r111SqueezeSkor}/4`);
+        if(r111KoprusuOk) reasons.push(`🧨 R113 sıkışma/squeeze köprüsü: ${r111Siksma?.ozet||'sıkışma patlaması'} · skor ${r111SqueezeSkor}/4`);
         if(r88VurKacOk) reasons.push(`⚡ R97 akıllı vur-kaç terazisi: skor ${r88MikroSkor}/8 · teyit ${r88AkisTeyidiSayisi}/8 · taban ${r89ScoreFloor}${r89SuperMikroYapiOk?' · süper-mikro':''}`);
         if(r86FormasyonVeriTeyitOk) reasons.push(`🕯️ R86 formasyon+veri teyidi: ${trPatternList(r86FormasyonAdlari)||'formasyon'} · veri ${r86VeriTeyitSayisi}/8`);
         if(!sweepRequired && r69PriorityExecutionOk) reasons.push(`⚡ R69 priority scalper core score ${sc}/${minAutoScore} R47 ${r47Readiness}/8 P${r50EffectivePriority}`);
