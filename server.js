@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R128_CIRCULAR_JSON_SAFE_BRAIN_FIX';
+const LAZARUS_BUILD = 'R129_FLOW_WARMUP_REAL_EDGE_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -967,14 +967,30 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
   const clusters = r125LiqClusters(symbol, lastPrice);
   const cc = tickData?.currentCandle || {};
   const t30 = tickData?.recent30s || {};
-  const delta = r125Num(t30.delta ?? cc.delta, 0);
-  const total = r125Num(t30.total ?? ((cc.buy||0)+(cc.sell||0)), 0);
-  const trades = r125Num(t30.trades ?? cc.trades, 0);
+
+  // R129: canlı akış sadece defter fotoğrafı değildir. Defter tek başına spoof olabilir.
+  // Öncelik: son 30sn aggTrade/tick delta. Yoksa CVD fallback. Hiçbiri yoksa flow ısınıyor sayılır.
+  const cvdFallback = getCVD(symbol);
+  let delta = r125Num(t30.delta ?? cc.delta, 0);
+  let total = r125Num(t30.total ?? ((cc.buy||0)+(cc.sell||0)), 0);
+  let trades = r125Num(t30.trades ?? cc.trades, 0);
+  let liveSource = 'tick30s';
+  let tickFresh = total > 0 || trades > 0;
+  const cvdValid = !!(cvdFallback?.valid && ((cvdFallback.buy||0)+(cvdFallback.sell||0)>0));
+  if (!tickFresh && cvdValid) {
+    delta = r125Num(cvdFallback.delta, 0);
+    total = r125Num(cvdFallback.buy, 0) + r125Num(cvdFallback.sell, 0);
+    trades = 0;
+    liveSource = 'cvd';
+  }
+  const liveReady = total > 0;
+  const flowWarmup = !liveReady;
   const deltaPct = total > 0 ? (delta / total) * 100 : 0;
   const aggression = Math.min(100, Math.round(Math.abs(deltaPct)*0.65 + Math.min(40, trades/2) + (tickData?.deltaFlip && tickData.deltaFlip !== 'NONE' ? 12 : 0)));
   const liveSide = deltaPct > 12 ? 'LONG' : deltaPct < -12 ? 'SHORT' : 'NEUTRAL';
-  const r126Extra = r126OrderflowExtras(symbol, lastPrice, book, tickData);
-  const longEdge = Math.max(0,
+  const r126Extra = r126OrderflowExtras(symbol, lastPrice, book, tickData || {});
+
+  let longRaw =
     (book.side === 'LONG' ? 6 : book.side === 'SHORT' ? -5 : 0) +
     (book.velocity > 8 ? 2 : book.velocity < -8 ? -2 : 0) +
     (liveSide === 'LONG' ? 6 : liveSide === 'SHORT' ? -5 : 0) +
@@ -984,9 +1000,9 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
     (r126Extra.forecast?.side === 'LONG' ? Math.min(5, Math.round(r125Num(r126Extra.forecast.confidence,0)/20)) : r126Extra.forecast?.side === 'SHORT' ? -3 : 0) +
     (r126Extra.aggressionTrend?.side === 'LONG' && r126Extra.aggressionTrend?.phase === 'ACCELERATING' ? Math.min(6, Math.round(r125Num(r126Extra.aggressionTrend.strength,0)/16)) : r126Extra.aggressionTrend?.side === 'SHORT' && r126Extra.aggressionTrend?.phase === 'ACCELERATING' ? -4 : 0) +
     (r126Extra.deltaImprint?.coiled && liveSide === 'LONG' ? 2 : 0) +
-    (liqData?.cascade?.signal === 'LONG_FIRSAT' ? 5 : liqData?.cascade?.signal === 'SHORT_FIRSAT' ? -5 : 0)
-  );
-  const shortEdge = Math.max(0,
+    (liqData?.cascade?.signal === 'LONG_FIRSAT' ? 5 : liqData?.cascade?.signal === 'SHORT_FIRSAT' ? -5 : 0);
+
+  let shortRaw =
     (book.side === 'SHORT' ? 6 : book.side === 'LONG' ? -5 : 0) +
     (book.velocity < -8 ? 2 : book.velocity > 8 ? -2 : 0) +
     (liveSide === 'SHORT' ? 6 : liveSide === 'LONG' ? -5 : 0) +
@@ -996,23 +1012,32 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
     (r126Extra.forecast?.side === 'SHORT' ? Math.min(5, Math.round(r125Num(r126Extra.forecast.confidence,0)/20)) : r126Extra.forecast?.side === 'LONG' ? -3 : 0) +
     (r126Extra.aggressionTrend?.side === 'SHORT' && r126Extra.aggressionTrend?.phase === 'ACCELERATING' ? Math.min(6, Math.round(r125Num(r126Extra.aggressionTrend.strength,0)/16)) : r126Extra.aggressionTrend?.side === 'LONG' && r126Extra.aggressionTrend?.phase === 'ACCELERATING' ? -4 : 0) +
     (r126Extra.deltaImprint?.coiled && liveSide === 'SHORT' ? 2 : 0) +
-    (liqData?.cascade?.signal === 'SHORT_FIRSAT' ? 5 : liqData?.cascade?.signal === 'LONG_FIRSAT' ? -5 : 0)
-  );
+    (liqData?.cascade?.signal === 'SHORT_FIRSAT' ? 5 : liqData?.cascade?.signal === 'LONG_FIRSAT' ? -5 : 0);
+
+  // R129: tick/CVD yokken defter imbalance tek başına edge değildir; spoof olabilir.
+  // Panelde bilgi olarak görünür ama beyni trade'e taşımaz.
+  if (flowWarmup) {
+    longRaw = Math.min(longRaw, 3);
+    shortRaw = Math.min(shortRaw, 3);
+  }
+  const longEdge = Math.max(0, longRaw);
+  const shortEdge = Math.max(0, shortRaw);
   const bestSide = longEdge > shortEdge + 2 ? 'LONG' : shortEdge > longEdge + 2 ? 'SHORT' : 'NEUTRAL';
   const tpLong = clusters.above && clusters.above.distPct > 0.18 && clusters.above.distPct < 8 ? clusters.above : null;
   const tpShort = clusters.below && clusters.below.distPct < -0.18 && clusters.below.distPct > -8 ? clusters.below : null;
-  const summary = `book:${book.side} imb:${book.nearImb}% v:${book.velocity} · delta:${liveSide} ${deltaPct.toFixed(1)}% tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
-  return { ok:true, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
+  const flowState = flowWarmup ? 'ISINIYOR' : (tickFresh ? 'CANLI_TICK' : 'CVD_FALLBACK');
+  const summary = `${flowState} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
+  return { ok:true, liveReady, tickFresh, cvdValid, flowWarmup, liveSource, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
 }
 function r125FlowForSide(ctx, side='LONG') {
-  if (!ctx || !ctx.ok) return { edge:0, against:0, ok:false, summary:'' };
+  if (!ctx || !ctx.ok) return { edge:0, against:0, ok:false, strong:false, liveReady:false, summary:'' };
   const edge = side === 'LONG' ? r125Num(ctx.longEdge) : r125Num(ctx.shortEdge);
   const against = side === 'LONG' ? r125Num(ctx.shortEdge) : r125Num(ctx.longEdge);
-  const ok = edge >= 6 && edge >= against + 2;
-  const strong = edge >= 9 && edge >= against + 4;
-  return { edge, against, ok, strong, summary:ctx.summary || '' };
+  const liveReady = !!ctx.liveReady;
+  const ok = liveReady && edge >= 6 && edge >= against + 2;
+  const strong = liveReady && edge >= 9 && edge >= against + 4;
+  return { edge, against, ok, strong, liveReady, summary:ctx.summary || '' };
 }
-
 
 // ── R126: ADAPTİF PLAYBOOK + AKIŞ MİKRO-SİNYALLERİ ─────────────────────────
 // Yeni REST yükü yok. Var olan depth@100ms + aggTrade + forceOrder verisini tek beyne
@@ -2336,17 +2361,26 @@ async function startTickStream(symbol) {
   if (tickStarting.has(full)) return;
   tickStarting.add(full);
 
-  // 24s volatilite — mum süresini ve swing lookback'i belirler
-  let vol24h = 5;
-  try {
-    const ticker = await bPub('/fapi/v1/ticker/24hr', 'symbol='+full);
-    vol24h = Math.abs(parseFloat(ticker.priceChangePercent)||5);
-  } catch(e) {}
   const tickSz = full.startsWith('BTC')?0.1:full.startsWith('ETH')?0.01:
                  full.startsWith('BNB')?0.01:0.0001;
-  const engine = createTickEngine(tickSz, vol24h);
-  console.log(`${full} tick engine: candleMs=${engine.candleMs}ms vol24h=${vol24h.toFixed(1)}%`);
+
+  // R129: engine'i REST ticker beklemeden hemen oluştur.
+  // Önceki sürümde bPub('/ticker/24hr') gecikirse tickStore boş kalıyor, analiz ilk dakikalarda
+  // delta/trade=0 görüp sadece defter imbalance'a bakıyordu. 5m scalper için bu körlük yapar.
+  const engine = existing || createTickEngine(tickSz, 5);
+  engine.tickSize = tickSz;
+  if (!Array.isArray(engine.lastTicks)) engine.lastTicks = [];
+  if (!Array.isArray(engine.candles)) engine.candles = [];
   tickStore.set(full, engine);
+
+  // Volatiliteye göre candleMs'i arka planda güncelle; WS açılışını bloke etme.
+  bPub('/fapi/v1/ticker/24hr', 'symbol='+full).then(ticker => {
+    const vol24h = Math.abs(parseFloat(ticker.priceChangePercent)||5);
+    const tmp = createTickEngine(tickSz, vol24h);
+    engine.candleMs = tmp.candleMs;
+    engine.vol24h = +vol24h.toFixed(2);
+    console.log(`${full} tick engine: candleMs=${engine.candleMs}ms vol24h=${vol24h.toFixed(1)}%`);
+  }).catch(()=>{});
 
   // @trade yerine @aggTrade kullan (Binance Futures'ta @trade yok)
   const wsUrl = `wss://fstream.binance.com/ws/${full.toLowerCase()}@aggTrade`;
@@ -2356,7 +2390,7 @@ async function startTickStream(symbol) {
   ws.on('message', data => {
     try { processTick(engine, JSON.parse(data.toString())); } catch(e) {}
   });
-  ws.on('open',  () => { tickStarting.delete(full); });
+  ws.on('open',  () => { tickStarting.delete(full); engine.lastOpenTs = Date.now(); });
   ws.on('close', () => { tickStarting.delete(full); setTimeout(()=>startTickStream(full), 3000); });
   ws.on('error', () => { tickStarting.delete(full); });
 }
@@ -3723,8 +3757,10 @@ function r120BrainSensorSummary(d={}) {
   if (candle) bits.push(`Mum:${candle}`);
   const flow = [];
   const cvdFlowFlag = !!(d.cvdBridgePass || d.r53CvdSmartSafe || d.r45CvdAlternativeOk);
+  const r129AltLiveFlow = !!(d.r125Flow?.liveReady && d.r125Flow?.bestSide && d.r125Flow.bestSide !== 'NEUTRAL');
   if (cvdFlowFlag && !d.cvdMissing) flow.push('CVD/flow uygun');
-  else if (d.cvdMissing && (d.r42FlowGate || d.r111ObBaskisi || d.r45CvdAlternativeOk || d.r117FlowOk)) flow.push('CVD yok, alternatif akış var');
+  else if (d.cvdMissing && (d.r42FlowGate || d.r111ObBaskisi || d.r45CvdAlternativeOk || d.r117FlowOk || r129AltLiveFlow)) flow.push(r129AltLiveFlow ? 'CVD yok ama canlı orderflow var' : 'CVD yok, alternatif akış var');
+  else if (d.r125Flow?.flowWarmup) flow.push('orderflow ısınıyor');
   if (d.r111OiChgPct !== undefined) flow.push(`OI:${r120BrainNum(d.r111OiChgPct).toFixed(2)}%`);
   if (d.r111ShortSqueeze) flow.push('short squeeze yakıtı');
   if (d.r111LongSqueeze) flow.push('long squeeze yakıtı');
@@ -9864,8 +9900,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R128 5m Fırsat Beyni: WATCH/PASS teşhisi korunur; circular JSON sideDecisions güvenli hale getirildi.',
-        note: 'R128; R127 beyin/teşhis mantığı korunur. decisionChain içine ham sideDecisions gömülmez; analiz JSON çıktısı circular yapıya düşmeden güvenli döner.'
+          : 'R129 5m Fırsat Beyni: gerçek canlı flow ısınma/edge ayrımı + tick stream erken motor fix',
+        note: 'R129; R128 circular-safe korunur. Tick/CVD akışı ısınmadan defter imbalance tek başına trade yakıtı sayılmaz; canlı orderflow gerçek edge olarak beyne bağlanır.'
       },
       lastScan: {
         source: scan.scanSource || null,
