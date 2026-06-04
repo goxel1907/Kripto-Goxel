@@ -75,7 +75,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R122_5M_BRAIN_COIN_SCOPE_FIX';
+const LAZARUS_BUILD = 'R123_MINAUTOSCORE_SCOPE_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -6070,6 +6070,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       const proTPSL=calcProTPSL(proTPSLSide,lastPrice,atr1h,atr4h,liq1h,liq4h,ob1h,ob4h,k1h);
 
       // ── SMART PRIORITY KARAR MOTORU — A / B+ / B TERAZİSİ ───────────────
+      // R123: minAutoScore evalDecision dışına alındı. Tek Beyin karar seçimi de aynı eşik bilgisini kullanır.
+      const minAutoScore = Math.max(55, Number(autoConfig?.minScore || 72));
+
       // R20: Modül sayma / sert kural yığma yerine ağırlıklı karar.
       // CVD veri yoksa tek başına veto değildir; yalnızca güven kırpar.
       // Gerçek hard veto sadece likidite, aşırı ATR, kesin ters MM/funding gibi teknik risklerde çalışır.
@@ -6081,7 +6084,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const cvdD=getCVD(full);
         const liqD=getLiqData(full);
         const sc=isL?longScore:shortScore;
-        const minAutoScore = Math.max(55, Number(autoConfig?.minScore || 72));
 
         // Giriş sinyali: otomatik için en az bir gerçek entry izi isteriz.
         const hasEntry=
