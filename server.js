@@ -79,7 +79,14 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R149_ONE_HOUR_LOSS_ROI_VAULT_FIX';
+const LAZARUS_BUILD = 'R152_NEW_COIN_AGE_FILTER';
+// R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
+// 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
+// 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
+// 3) R150 cache/scan-gap/mikro-cap ATR korumaları aynen korunur
+// Ana motto: küçük bakiyede test, büyük bakiyede %5 ROI hedefi × işlem sıklığı = toplam kar
+const R150_MIN_SCAN_GAP_MS = 8 * 1000;
+let r150LastScanBeginTs = 0;
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -3396,7 +3403,7 @@ function recentLossPatternGuard(symbolOrSide, sideMaybe, decisionChain={}, lookb
 // R33: Binance Top Gainers kilidi — bot artık sadece özel interest sırasına değil,
 // Binance Futures 24h değişim listesindeki ilk hareketli coinlere de zorunlu bakar.
 // Ek endpoint yok: zaten kullanılan /fapi/v1/ticker/24hr verisinden hesaplanır.
-const FUTURES_TICKERS_CACHE_MS = 60 * 1000;
+const FUTURES_TICKERS_CACHE_MS = 75 * 1000; // R150: ticker yükünü azalt; TOP10 için yeterince taze
 const R33_TOP_GAINER_LOCK_COUNT = 10;
 const R33_TOP_GAINER_MIN_QUOTE_VOL = 1_000_000;
 const R54_SCAN_MODES = new Set(['FAST6','TOP10','TOP24']);
@@ -3454,10 +3461,95 @@ function r33TopGainersFromTickers(data=[], n=R33_TOP_GAINER_LOCK_COUNT) {
   return out;
 }
 
+// ── R152: YENİ COİN YAŞ FİLTRESİ ─────────────────────────────────────────────
+// Binance Futures'a 15 günden az önce eklenmiş coinler TOP10'dan çıkarılır.
+// Listedeki boşluk rank 11, 12, 13... ile doldurulur — toplam işlem potansiyeli korunur.
+// onboardDate: /fapi/v1/exchangeInfo yanıtında her sembolün içinde ms cinsinden gelir.
+const R152_NEW_COIN_AGE_MS = 15 * 24 * 60 * 60 * 1000; // 15 gün
+const R152_EXCHANGE_INFO_CACHE_MS = 6 * 60 * 60 * 1000; // 6 saatte bir yenile
+
+let r152OnboardCache = { ts: 0, map: null };
+
+async function r152GetOnboardDateMap() {
+  try {
+    const now = Date.now();
+    if (r152OnboardCache.map && now - r152OnboardCache.ts < R152_EXCHANGE_INFO_CACHE_MS) {
+      return r152OnboardCache.map;
+    }
+    // Tüm semboller için tek çağrı — weight 1
+    const info = await bPub('/fapi/v1/exchangeInfo', '');
+    if (!Array.isArray(info?.symbols)) return r152OnboardCache.map || new Map();
+    const map = new Map();
+    for (const s of info.symbols) {
+      if (s.symbol && Number.isFinite(Number(s.onboardDate))) {
+        map.set(String(s.symbol).toUpperCase(), Number(s.onboardDate));
+      }
+    }
+    r152OnboardCache = { ts: now, map };
+    return map;
+  } catch(e) {
+    // exchangeInfo geçici hata verirse mevcut cache döner (yoksa boş Map)
+    return r152OnboardCache.map || new Map();
+  }
+}
+
+// r33TopGainersFromTickers'ın yaş filtreli versiyonu.
+// onboardMap yoksa veya boşsa orijinal davranış korunur (hiçbir coin filtrelenmez).
+function r152FilterAndExtendGainers(data=[], onboardMap=new Map(), n=R33_TOP_GAINER_LOCK_COUNT) {
+  if (!Array.isArray(data)) return new Map();
+  const now = Date.now();
+
+  // Tüm adayları sırala (R33 mantığıyla aynı)
+  const allCandidates = data
+    .filter(r33IsTradeableTicker)
+    .map(t => ({
+      symbol: String(t.symbol).replace('USDT',''),
+      fullSymbol: String(t.symbol).toUpperCase(),
+      price: Number(t.lastPrice || 0),
+      change24h: Number(t.priceChangePercent || 0),
+      change24hRaw: Number(t.priceChangePercent || 0),
+      volume: Number(t.quoteVolume || 0),
+      high: Number(t.highPrice || 0),
+      low: Number(t.lowPrice || 0),
+      trades: Number(t.count || 0),
+      rangePct: Number(t.lastPrice) > 0 ? +(((Number(t.highPrice||0)-Number(t.lowPrice||0))/Number(t.lastPrice))*100).toFixed(2) : 0,
+      source: 'top_gainers_lock'
+    }))
+    .filter(c => Number.isFinite(c.change24h) && c.change24h > 0)
+    .sort((a,b) => (b.change24h - a.change24h) || (b.volume - a.volume));
+
+  // Yaş filtresini uygula: yeni coinleri ayır, eskilerden ilerle
+  const hasAgeData = onboardMap.size > 0;
+  const selected = [];
+  const skipped = []; // yeni coin — log için
+
+  for (const c of allCandidates) {
+    if (selected.length >= n) break;
+    const onboard = onboardMap.get(c.fullSymbol);
+    const isNewCoin = hasAgeData && Number.isFinite(onboard) && (now - onboard) < R152_NEW_COIN_AGE_MS;
+    if (isNewCoin) {
+      const ageDays = Math.floor((now - onboard) / (24*60*60*1000));
+      skipped.push({ sym: c.symbol, ageDays });
+      continue; // Bu coin'i atla, bir sonraki rank'a geç
+    }
+    selected.push(c);
+  }
+
+  // Log: kaç coin değiştirildi
+  if (skipped.length > 0) {
+    const skipTxt = skipped.map(x => `${x.sym}(${x.ageDays}g)`).join(', ');
+    const replaceTxt = selected.slice(selected.length - skipped.length).map(x => `${x.symbol}(${selected.indexOf(x)+1})`).join(', ');
+    logAuto(`🆕 R152 yeni coin filtresi: ${skipTxt} TOP10'dan çıkarıldı → ${replaceTxt || 'yedek eklendi'}`);
+  }
+
+  const out = new Map();
+  selected.forEach((c, i) => out.set(c.fullSymbol, {...c, topGainerRank:i+1, topGainerLocked:true}));
+  return out;
+}
+
+
 async function scanVolatility() {
   try {
-    const tickers = await bPub('/fapi/v1/ticker/24hr');
-    if (!Array.isArray(tickers)) return;
 
     const now = Date.now();
     const scored = tickers
@@ -4842,7 +4934,9 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
   try {
     // R33: 15dk cache 5m bot için çok bayattı; 60sn cache tek endpoint ile güncel Top Gainers sağlar.
     const data = await cached('futures_tickers', FUTURES_TICKERS_CACHE_MS, () => bPub('/fapi/v1/ticker/24hr'));
-    topLocked = r33TopGainersFromTickers(data, R33_TOP_GAINER_LOCK_COUNT);
+    // R152: Yaş filtreli versiyon — 15 günden genç coinler yerine rank 11/12/13... eklenir
+    const onboardMap = await r152GetOnboardDateMap();
+    topLocked = r152FilterAndExtendGainers(data, onboardMap, R33_TOP_GAINER_LOCK_COUNT);
     if (Array.isArray(data)) {
       for (const t of data) {
         if (!String(t.symbol||'').endsWith('USDT') || EXCL.has(String(t.symbol))) continue;
@@ -4965,16 +5059,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       await Promise.allSettled([
         cached(`k4h_${full}`,  30*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)),
         cached(`k1h_${full}`,   5*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)),
-        cached(`k15m_${full}`, 60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=15m&limit=200`)),
-        cached(`k5m_${full}`,  20*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=5m&limit=100`)),
+        cached(`k15m_${full}`, 90*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=15m&limit=200`)),
+        cached(`k5m_${full}`,  45*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=5m&limit=100`)),
         cached(`fund_${full}`, 30*60*1000, ()=>bPub('/fapi/v1/fundingRate',`symbol=${full}&limit=10`)),
         cached(`oih_${full}`,  15*60*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=1h&limit=24`)),
         cached(`lsg_${full}`,  15*60*1000, ()=>bPub('/futures/data/globalLongShortAccountRatio',`symbol=${full}&period=1h&limit=12`)),
         cached(`lst_${full}`,  15*60*1000, ()=>bPub('/futures/data/topLongShortPositionRatio',`symbol=${full}&period=1h&limit=12`)),
-        cached(`dep_${full}`,  30*1000, ()=>bPub('/fapi/v1/depth',`symbol=${full}&limit=100`)),
+        cached(`dep_${full}`,  60*1000, ()=>bPub('/fapi/v1/depth',`symbol=${full}&limit=100`)),
         cached(`tak_${full}`,  5*60*1000, ()=>bPub('/futures/data/takerlongshortRatio',`symbol=${full}&period=5m&limit=6`)),
-        cached(`oih5_${full}`, 60*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=5m&limit=12`)),
-        cached(`oin_${full}`,  30*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
+        cached(`oih5_${full}`, 90*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=5m&limit=12`)),
+        cached(`oin_${full}`,  60*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
       ]);
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
@@ -5000,7 +5094,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     try {
       const _tickers38 = await cached('futures_tickers', FUTURES_TICKERS_CACHE_MS, () => bPub('/fapi/v1/ticker/24hr'));
       if (Array.isArray(_tickers38)) {
-        const _top38 = r33TopGainersFromTickers(_tickers38, R33_TOP_GAINER_LOCK_COUNT);
+        const _onboard38 = await r152GetOnboardDateMap();
+        const _top38 = r152FilterAndExtendGainers(_tickers38, _onboard38, R33_TOP_GAINER_LOCK_COUNT);
         const _t38 = _tickers38.find(t => String(t.symbol||'').toUpperCase() === full);
         const _chg38 = Number(_t38?.priceChangePercent || 0);
         const _vol38 = Number(_t38?.quoteVolume || 0);
@@ -5063,7 +5158,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // R29: BTC göreli güç bağlamı. Tek REST yükü cache'lenir; 40 coin taramada aynı veri kullanılır.
     let btc5mCtx = { ok:false, change15m:0, change60m:0, dropping:false, bouncing:false, redCandles:0 };
     try {
-      const btc5m = await cached('btc5m_r29_ctx', 30*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`));
+      const btc5m = await cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`));
       if (Array.isArray(btc5m) && btc5m.length >= 13) {
         const bLast = Number(btc5m.at(-1)[4]);
         const b3 = Number(btc5m.at(-4)[1]);
@@ -9195,6 +9290,20 @@ app.post('/api/order', async (req, res) => {
       // PositionRisk okunamazsa güvenli tarafta kal: canlı otomatik emir açma.
       if (autoConfig?.enabled) throw new Error(`Pozisyon limiti doğrulanamadı: ${limitErr.message}`);
     }
+    // R150: küçük bakiye / panel marj uyuşmazlığı emir hatasına dönüşmesin.
+    // Sadece emirden hemen önce tek kez bakiye kontrolü yapılır; tarama sayısını azaltmaz.
+    try {
+      const balRows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance');
+      const usdtRow = Array.isArray(balRows) ? balRows.find(x => String(x.asset||'').toUpperCase()==='USDT') : null;
+      const av = Number(usdtRow?.availableBalance ?? usdtRow?.balance ?? 0);
+      const need = Number(usdtAmount||0) * 1.02;
+      if (Number.isFinite(av) && av > 0 && av < need) {
+        throw new Error(`Yetersiz kullanılabilir USDT: ${av.toFixed(2)} < panel marj ${Number(usdtAmount||0).toFixed(2)}. Marjı düşür veya bakiye ekle.`);
+      }
+    } catch(e) {
+      if (String(e.message||'').includes('Yetersiz kullanılabilir USDT')) throw e;
+      // Bakiye endpointi geçici 429/backoff verdiyse emir zaten bReq governor tarafından bekletilir/hata verir; burada ekstra gürültü üretme.
+    }
     if(marginType){try{await bReq(apiKey,apiSecret,'POST','/fapi/v1/marginType',{symbol:sym,marginType:marginType.toUpperCase()});}catch(e){if(!e.message.includes('No need'))console.log('MarginType:',e.message);}}
     let stepSize=0.001,tickSize=0.01,minNot=5;
     try{
@@ -10796,8 +10905,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R149 5m Fırsat Beyni: 1 saat zarar cooldown + ROI kâr kasası + dengeli LONG/SHORT',
-        note: `R149; R148/R147/R145 korunur. SL/zarar sonrası aynı yön 60dk bekler ama temiz ters yön serbesttir. Kârdaki işlemlerde ROI kâr kasası SL'yi daha akıllı taşır; işlem açma potansiyelini azaltan yeni hard gate eklenmez.`
+          : 'R152 5m Fırsat Beyni: yeni coin yaş filtresi (15gün) + işlem frekansı artışı + scan-storm freni',
+        note: `R152; R151/R150/R149 korunur. Futures'a 15 günden az önce eklenen coinler TOP10'dan çıkarılır, yerine rank 11/12/13... girer — işlem potansiyeli korunur. Priority wake eşiği 14. Az geçmişli coin kaldıraç koruması. Cache fix'leri ayakta.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10906,6 +11015,15 @@ async function runAutoScan(prioritySymbol=null) {
     }
   }
   if (!autoConfig?.enabled) return;
+  // R150: priority wake 3-5sn içinde ardışık scan tetikleyip kline/depth/OI 429 üretmesin.
+  // Pozisyon yönetimi fastManageOpenPositions ile ayrı çalışır; bu fren sadece yeni tarama/emir adayını geciktirir.
+  const r150Now = Date.now();
+  if (r150LastScanBeginTs && r150Now - r150LastScanBeginTs < R150_MIN_SCAN_GAP_MS) {
+    autoScanState.nextScanDue = r150LastScanBeginTs + R150_MIN_SCAN_GAP_MS;
+    if (prioritySymbol) autoScanState.lastAction = `R150 scan freni: ${Math.ceil((R150_MIN_SCAN_GAP_MS - (r150Now-r150LastScanBeginTs))/1000)}sn sonra öncelikli analiz`;
+    return;
+  }
+  r150LastScanBeginTs = r150Now;
   autoRunning = true;
   resetAutoScanState({
     enabled:true, running:true, phase:'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
@@ -11592,7 +11710,42 @@ async function runAutoScan(prioritySymbol=null) {
           }
         }
 
-        // TP/SL: Paneldeki değerler kesin uygulanır; proTPSL sadece analiz kalitesine katkı verir.
+        // R150: mikro-cap + ATR yüksek coinlerde işlem sayısını kesmeden ROI hasarını eşitle.
+        // 4USDT gibi 0.01 altı/çevresi coinlerde %1-2 fiyat oynama 20x ile -20/-40 ROI yapar.
+        // Gerçek HTF reversal/squeeze varsa işlem korunur; sadece hızlı-edge/momentum scalp riskinde kaldıraç düşürülür.
+        try {
+          const r150MicroCap = Number(entryRef) > 0 && Number(entryRef) < 0.03;
+          const r150AtrHot = Number(coinAtrPct||0) >= Math.max(4.5, Number(userSLPct||1.5) * 2.2);
+          const r150RealStructure = !!(decisionChain?.r117HtfReverseOk || decisionChain?.r117BodyReclaimOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r111SiksmaOk || String(decisionChain?.entryPermissionReason||'').includes('R115_HTF'));
+          const r150FastOnly = /momentum|mikro|scalp|hızlı|R134|R135|R144/i.test(String(decisionChain?.reason||'') + ' ' + String(decisionChain?.entryPermissionReason||'') + ' ' + String(decisionChain?.brainMode||''));
+          if (r150MicroCap && r150AtrHot && !r150RealStructure && r150FastOnly) {
+            const oldLev = executeLeverage;
+            const capLev = Number(coinAtrPct||0) >= 10 ? 6 : 8;
+            executeLeverage = Math.max(3, Math.min(executeLeverage, capLev));
+            if (executeLeverage < oldLev) leverageNote += ` · R150 mikro-cap ATR eşitleme ${oldLev}x→${executeLeverage}x`;
+          }
+        } catch(_e) {}
+
+        // R151: Kalibrasyon datası yetersiz (yeni) coin koruması.
+        // r142 hafıza sıfırdan başlar ve edge 100 verir → işlem doğru açılır ama kaldıraç agresif olabilir.
+        // < 3 geçmiş trade olan coin'de kaldıraç panelin %60'ı ile cap'lenir (işlem asla iptal edilmez).
+        // 3+ trade varsa veya gerçek HTF yapı varsa bu koruma devre dışı kalır.
+        try {
+          const r151Mem = r142MemoryStats(recommendation, analysis, decisionChain?.brainMode||'NO_EDGE');
+          const r151NewCoin = Number(r151Mem?.same?.n || 0) < 3;
+          const r151HasStructure = !!(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r111SiksmaOk);
+          if (r151NewCoin && !r151HasStructure) {
+            const oldLev = executeLeverage;
+            const capLev = Math.max(5, Math.round(executeLeverage * 0.6));
+            executeLeverage = Math.min(executeLeverage, capLev);
+            if (executeLeverage < oldLev) {
+              leverageNote += ` · R151 yeni coin (${Number(r151Mem?.same?.n||0)} geçmiş) kaldıraç ${oldLev}x→${executeLeverage}x`;
+              logAuto(`🆕 ${coin.symbol} kalibrasyon datası az (${Number(r151Mem?.same?.n||0)} trade) → kaldıraç ${oldLev}x→${executeLeverage}x (işlem açılıyor)`);
+            }
+          }
+        } catch(_e) {}
+
+
         let targetPrice = isLong
           ? +(entryRef * (1 + userTPPct/100)).toFixed(8)
           : +(entryRef * (1 - userTPPct/100)).toFixed(8);
@@ -11774,8 +11927,8 @@ function startAutoTrader() {
         const now = Date.now();
         for (const [sym, ev] of r125PriorityWake.entries()) {
           if (now - ev.ts > 15000) { r125PriorityWake.delete(sym); continue; }
-          if (Number(ev.score||0) >= 18 && now - Number(autoScanState.lastScanStart||0) > 7000) {
-            autoScanState.lastAction = `R125 canlı orderflow uyandırdı: ${sym.replace('USDT','')} ${ev.reason}`;
+          if (Number(ev.score||0) >= 14 && now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS) {
+            autoScanState.lastAction = `R151 canlı orderflow uyandırdı: ${sym.replace('USDT','')} ${ev.reason}`;
             r125PriorityWake.delete(sym);
             runAutoScan(sym);
             break;
