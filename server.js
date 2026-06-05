@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R152_NEW_COIN_AGE_FILTER';
+const LAZARUS_BUILD = 'R153_PARALLEL_ANALYSIS_SPEED';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3143,7 +3143,7 @@ async function getCoinglass(symbol) {
     // Coinglass public endpoint (API key gerektirmiyor)
     const r = await fetch(
       `https://open-api.coinglass.com/public/v2/liquidation_map?symbol=${full.replace('USDT','')}&range=12`,
-      { headers:{ 'accept':'application/json' }, signal: AbortSignal.timeout(8000) }
+      { headers:{ 'accept':'application/json' }, signal: AbortSignal.timeout(3000) }
     );
     const d = await r.json();
     if (!d.data) return null;
@@ -3535,11 +3535,17 @@ function r152FilterAndExtendGainers(data=[], onboardMap=new Map(), n=R33_TOP_GAI
     selected.push(c);
   }
 
-  // Log: kaç coin değiştirildi
+  // Log: kaç coin değiştirildi — aynı mesajı 60sn içinde tekrar yazma (scan spam önleme)
   if (skipped.length > 0) {
     const skipTxt = skipped.map(x => `${x.sym}(${x.ageDays}g)`).join(', ');
     const replaceTxt = selected.slice(selected.length - skipped.length).map(x => `${x.symbol}(${selected.indexOf(x)+1})`).join(', ');
-    logAuto(`🆕 R152 yeni coin filtresi: ${skipTxt} TOP10'dan çıkarıldı → ${replaceTxt || 'yedek eklendi'}`);
+    const logMsg = `🆕 R152 yeni coin filtresi: ${skipTxt} TOP10'dan çıkarıldı → ${replaceTxt || 'yedek eklendi'}`;
+    const now2 = Date.now();
+    if (!r152FilterAndExtendGainers._lastLogMsg || r152FilterAndExtendGainers._lastLogMsg !== logMsg || now2 - (r152FilterAndExtendGainers._lastLogTs||0) > 60000) {
+      r152FilterAndExtendGainers._lastLogMsg = logMsg;
+      r152FilterAndExtendGainers._lastLogTs = now2;
+      logAuto(logMsg);
+    }
   }
 
   const out = new Map();
@@ -5055,7 +5061,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     startIcebergStream(full);
     // tickStream analyze'da await ile çağrılıyor
 
-    const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow] =
+    const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m] =
       await Promise.allSettled([
         cached(`k4h_${full}`,  30*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)),
         cached(`k1h_${full}`,   5*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)),
@@ -5069,6 +5075,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         cached(`tak_${full}`,  5*60*1000, ()=>bPub('/futures/data/takerlongshortRatio',`symbol=${full}&period=5m&limit=6`)),
         cached(`oih5_${full}`, 90*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=5m&limit=12`)),
         cached(`oin_${full}`,  60*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
+        // R153: btc5m paralel çekilir — seri await kaldırıldı
+        cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`)),
       ]);
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
@@ -5094,8 +5102,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     try {
       const _tickers38 = await cached('futures_tickers', FUTURES_TICKERS_CACHE_MS, () => bPub('/fapi/v1/ticker/24hr'));
       if (Array.isArray(_tickers38)) {
-        const _onboard38 = await r152GetOnboardDateMap();
-        const _top38 = r152FilterAndExtendGainers(_tickers38, _onboard38, R33_TOP_GAINER_LOCK_COUNT);
+        // _top38: sadece topGainerRank/topMover tespiti için — yaş filtresi + log burada gereksiz
+        const _top38 = r33TopGainersFromTickers(_tickers38, R33_TOP_GAINER_LOCK_COUNT);
         const _t38 = _tickers38.find(t => String(t.symbol||'').toUpperCase() === full);
         const _chg38 = Number(_t38?.priceChangePercent || 0);
         const _vol38 = Number(_t38?.quoteVolume || 0);
@@ -5155,11 +5163,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const vwap1h=vwap(k1h),vwap4h=vwap(k4h);
     const bb1h=bollinger(k1h),bb15m_=bollinger(k15m);
 
-    // R29: BTC göreli güç bağlamı. Tek REST yükü cache'lenir; 40 coin taramada aynı veri kullanılır.
+    // R29: BTC göreli güç bağlamı. R153: artık Promise.allSettled içinde paralel çekildi (rBtc5m).
     let btc5mCtx = { ok:false, change15m:0, change60m:0, dropping:false, bouncing:false, redCandles:0 };
     try {
-      const btc5m = await cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`));
-      if (Array.isArray(btc5m) && btc5m.length >= 13) {
+      const btc5m = rBtc5m?.status==='fulfilled'&&Array.isArray(rBtc5m.value)?rBtc5m.value:null;
+      if (btc5m && btc5m.length >= 13) {
         const bLast = Number(btc5m.at(-1)[4]);
         const b3 = Number(btc5m.at(-4)[1]);
         const b12 = Number(btc5m.at(-13)[1]);
@@ -5593,8 +5601,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const liqData = getLiqData(full);
     const r125Flow = r125BuildOrderflowContext(full, lastPrice, depth, tickData, liqData);
 
-    // ── COINGLASS LİKİDATE (async, cache 15dk) ────────────────────────────────
-    const cgData = await cached(`cg_${full}`, 15*60*1000, ()=>getCoinglass(full));
+    // ── COINGLASS LİKİDATE (R153: non-blocking — scan başında prefetch edildi, cache'den oku) ──
+    // Prefetch tamamlandıysa anlık döner, tamamlanmadıysa null — analiz bloklanmaz.
+    const cgData = (cache.has(`cg_${full}`) ? cache.get(`cg_${full}`)?.val : null) ?? null;
 
     // ── MM YÖN ────────────────────────────────────────────────────────────────
     const upLiqStr=liq1h.buyLiq.reduce((s,l)=>s+l.strength*(1/Math.max(l.distPct,0.1)),0);
@@ -11156,24 +11165,34 @@ async function runAutoScan(prioritySymbol=null) {
     autoScanState.killZone = null;
     autoScanState.effectiveMinScore = effectiveMinScore;
 
-    // Haber kontrolü — tehlikeli saatlerde işlem açma
+    // R153: Haber kontrolü + Fear&Greed paralel al — 2 seri localhost fetch → 1 paralel round-trip
+    let fgSignal = 'NEUTRAL';
     try {
-      const cal = await fetch(`http://localhost:${PORT}/api/calendar`).then(r=>r.json());
-      if (cal.dangerZone) {
-        logAuto('⛔ Haber saati — tarama durduruldu: ' + cal.todayEvents.map(e=>e.event).join(', '));
+      const [calRes, fgRes] = await Promise.allSettled([
+        fetch(`http://localhost:${PORT}/api/calendar`).then(r=>r.json()),
+        fetch(`http://localhost:${PORT}/api/market-mood`).then(r=>r.json()),
+      ]);
+      if (calRes.status==='fulfilled' && calRes.value?.dangerZone) {
+        logAuto('⛔ Haber saati — tarama durduruldu: ' + (calRes.value.todayEvents||[]).map(e=>e.event).join(', '));
         return;
+      }
+      if (fgRes.status==='fulfilled') {
+        fgSignal = fgRes.value?.signal || 'NEUTRAL';
+        if (fgRes.value?.mood === 'EXTREME_GREED' && !allowShort) {
+          logAuto('⚠️ Extreme Greed — sadece short izinli, long atlanıyor');
+        }
       }
     } catch(e) {}
 
-    // Fear & Greed filtresi
-    let fgSignal = 'NEUTRAL';
+    // R153: Coinglass prefetch — analiz başlamadan önce tüm scan coin'leri için
+    // background'da cache'i ısıt. Analiz sırasında await yok → 0ms bekleme.
+    // Coinglass timeout 8sn→3sn: Railway dış ağı için gerçekçi üst sınır.
     try {
-      const fg = await fetch(`http://localhost:${PORT}/api/market-mood`).then(r=>r.json());
-      fgSignal = fg.signal;
-      if (fg.mood === 'EXTREME_GREED' && !allowShort) {
-        logAuto('⚠️ Extreme Greed — sadece short izinli, long atlanıyor');
+      for (const sc of (scanList||[]).slice(0, 10)) {
+        const scFull = normalizeSymbol(sc.fullSymbol || sc.symbol);
+        cached(`cg_${scFull}`, 15*60*1000, ()=>getCoinglass(scFull)).catch(()=>{});
       }
-    } catch(e) {}
+    } catch(_) {}
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
