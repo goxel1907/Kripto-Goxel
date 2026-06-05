@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R142_CALIBRATED_EDGE_NO_ML_FIX';
+const LAZARUS_BUILD = 'R143_ATRPCT_SCOPE_RUNTIME_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -4905,6 +4905,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const ema20_4h=ema(k4h,20),ema50_4h=ema(k4h,50),ema200_4h=ema(k4h,200);
     const ema20_1h=ema(k1h,20),ema50_1h=ema(k1h,50),ema200_1h=ema(k1h,200);
     const atr4h=atr(k4h),atr1h=atr(k1h),atr15m_=atr(k15m);
+    // R143: atrPct R140/R142 modüllerinden önce hesaplanmalı.
+    // Önceki R142'de r140PumpPhase(k5m, atrPct) satırı atrPct tanımından önce çalışıyor,
+    // bu yüzden analyze içinde "Cannot access 'atrPct' before initialization" hatası veriyordu.
+    const atrPct=lastPrice>0?(atr1h/lastPrice)*100:1;
     const vwap1h=vwap(k1h),vwap4h=vwap(k4h);
     const bb1h=bollinger(k1h),bb15m_=bollinger(k15m);
 
@@ -5418,7 +5422,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // ── KALDIRAÇ ─────────────────────────────────────────────────────────────
     const t4up=ema20_4h>ema50_4h&&ema50_4h>ema200_4h;
     const t4dn=ema20_4h<ema50_4h&&ema50_4h<ema200_4h;
-    const atrPct=lastPrice>0?(atr1h/lastPrice)*100:1;
 
     // ═════════════════════════════════════════════════════════════════════════
     // R15 AÇIK KAYNAK MODÜLLER — Boğmadan sinyal kalitesi artırma
@@ -10556,8 +10559,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R142 5m Fırsat Beyni: kalibre edge + geç giriş/ters senaryo + işlem sıklığı korunur',
-        note: 'R142; neural-network yok. R141 yön-duyarlı pump beyni korunur; raw edge kalibre edilir, geç-chase ve zarar setup hafızası aynı yönü zayıflatır, ters yön kanıtlıysa fırsata çevrilir. İşlem sayısını düşürmemek için hard block eklemez.'
+          : 'R143 5m Fırsat Beyni: R142 kalibre edge korunur + atrPct runtime scope fix',
+        note: 'R143; R142 kalibre-edge/no-ML beyni korunur. atrPct R140/R142 analizlerinden önce hesaplanır, Cannot access atrPct before initialization runtime hatası giderilir. İşlem sayısını düşüren yeni hard block eklenmez.'
       },
       lastScan: {
         source: scan.scanSource || null,
