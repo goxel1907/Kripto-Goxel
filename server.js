@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R147_OPPOSITE_FLOW_TRAP_GUARD_FIX';
+const LAZARUS_BUILD = 'R149_ONE_HOUR_LOSS_ROI_VAULT_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -3277,8 +3277,8 @@ function buildResultNote(cls={}, state={}) {
   if (Number.isFinite(pnl) && pnl < 0) {
     const er = JSON.stringify(state?.openReason||'').toLowerCase();
     if (er.includes('fitil')||er.includes('premium')||er.includes('vah'))
-      return 'Zarar: fitil/likidite bölgesi ters piyasa yapıcı izi; 25-35dk aynı yön bekleme.';
-    return 'Zarar: zarar kes/ters akış; 25-35dk aynı yön bekleme.';
+      return 'Zarar: fitil/likidite bölgesi ters piyasa yapıcı izi; 60dk aynı yön bekleme, temiz ters yön serbest.';
+    return 'Zarar: zarar kes/ters akış; 60dk aynı yön bekleme, temiz ters yön serbest.';
   }
   if (Number.isFinite(pnl) && pnl > 0) return 'Kâr: plan çalıştı.';
   if (cls.code==='EXTERNAL_OR_MANUAL') return 'Kullanıcı/Binance kapanışı: 15dk aynı yön bekleme, temiz ters yön serbest.';
@@ -3334,8 +3334,8 @@ const R84_MUM_MS = 5 * 60 * 1000;
 const CD_PROFIT_MS  = 10 * 60 * 1000;  // TP / kâr taşıma: 2 mum
 const CD_BE_MS      =  8 * 60 * 1000;  // başabaş / küçük koruma kapanışı: yaklaşık 1-2 mum
 const CD_MANUAL_MS  = 15 * 60 * 1000;  // kullanıcı/Binance dış kapanış: 3 mum
-const CD_LOSS_MS    = 20 * 60 * 1000;  // normal zarar: 4 mum
-const CD_HARD_LOSS_MS = 25 * 60 * 1000; // sert zarar/acil koruma: 5 mum
+const CD_LOSS_MS    = 60 * 60 * 1000;  // R149: normal zarar/SL sonrası aynı yön 1 saat; ters yön serbest
+const CD_HARD_LOSS_MS = 60 * 60 * 1000; // R149: sert zarar/acil koruma sonrası aynı yön 1 saat; ters yön serbest
 const CD_ERR_MS_R25 = 8 * 60 * 1000;  // emir hatası: yaklaşık 1-2 mum
 const CD_AFTER_CLOSE_PAUSE_MS = 45 * 1000; // kapanış sonrası aynı tarama döngüsünde yeni emir açma
 
@@ -4378,7 +4378,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (hardDanger?55:0) - (d.cvdMissing?5:0) - (r125OpposingFlow?12:0)
   )));
   const r142Cal = r142CalibrateEdge(side, d, primaryMode, rawEdge, score);
-  const edge = r142Cal.calibratedEdge;
+  let edge = r142Cal.calibratedEdge;
 
   // 5m kaldıraçlı TOP10 için panel skoru tek başına amir değil. Temiz playbook + edge varsa floor esner.
   const adaptiveFloor = playbookActive
@@ -4473,8 +4473,44 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? `R147 ters-akış tuzak freni: 5m formasyon yok + HTF karşı seviye yakın + canlı akış/mum tahmini karşı; ${side} yerine ters yön/izleme gerekir`
     : '';
 
+  // R148: LONG/SHORT eşit terazi.
+  // Top10 gainer listesi doğal olarak LONG skorlarını şişirir. Bu yüzden final beyin artık
+  // önce LONG düşünmez; iki yönü aynı kuralla tartar. Eğer LONG tarafı HTF direnç/BSL/supply
+  // dibinde ve canlı akış SHORT diyorsa bu LONG fırsatı değil, SHORT/izleme fırsatıdır.
+  // Simetrik olarak dipte SHORT da aynı şekilde kesilir.
+  const r148NearHighTrap = r120Bool(d.r140EqHL?.nearHighTrap || (side === 'LONG' && (r144CounterVeryNear || htfCounterWait)) || (side === 'SHORT' && r133HtfSweepAligned));
+  const r148NearLowTrap  = r120Bool(d.r140EqHL?.nearLowTrap  || (side === 'SHORT' && (r144CounterVeryNear || htfCounterWait)) || (side === 'LONG' && r133HtfSweepAligned));
+  const r148SideWithLive = r120Bool(r134FlowAligned || r134LiveDeltaAligned || r125SideFlow.strong || r134ForecastAligned || r134AggressionAligned);
+  const r148SideAgainstLive = r120Bool(r134OpposingLiveFlow || r147BookFlowAgainst || r147ForecastAgainst);
+  const r148LongTrapToShort = r120Bool(
+    side === 'SHORT' &&
+    (d.r140Phase?.phase === 'DISTRIBUTION' || d.r140OiVel?.fakePump || d.r140EqHL?.nearHighTrap || r146CounterWallPressure || r144CounterVeryNear) &&
+    r148SideWithLive && !fatalDanger
+  );
+  const r148ShortTrapToLong = r120Bool(
+    side === 'LONG' &&
+    (d.r140EqHL?.nearLowTrap || d.r111ShortSqueeze || /SSL_ALINDI|SSL_SWEEP|HTF_SSL|DEMAND_OB|demand/i.test(ictText)) &&
+    r148SideWithLive && !fatalDanger
+  );
+  const r148ReversalSideOk = r120Bool(r148LongTrapToShort || r148ShortTrapToLong);
+  const r148WrongSideBlock = r120Bool(
+    !htfReverse && !htfReclaim && !squeeze &&
+    ((side === 'LONG' && (d.r140Phase?.phase === 'DISTRIBUTION' || d.r140OiVel?.fakePump || d.r140EqHL?.nearHighTrap || r146CounterWallPressure || r144CounterVeryNear) && r148SideAgainstLive) ||
+     (side === 'SHORT' && (d.r140EqHL?.nearLowTrap || /SSL_ALINDI|SSL_SWEEP|HTF_SSL|DEMAND_OB|demand/i.test(ictText)) && r148SideAgainstLive))
+  );
+  const r148BalanceBonus = r148ReversalSideOk ? 12 : (r148SideWithLive && !r148SideAgainstLive ? 4 : 0);
+  const r148WrongPenalty = r148WrongSideBlock ? 34 : (r148SideAgainstLive ? 10 : 0);
+  if (r148BalanceBonus) edge = Math.min(100, edge + r148BalanceBonus);
+  if (r148WrongPenalty) edge = Math.max(0, edge - r148WrongPenalty);
+  const r148ScoreOk = r148ReversalSideOk ? score >= Math.max(42, minScore - 30) : score >= adaptiveFloor;
+  const r148Note = r148WrongSideBlock
+    ? `R148 eşit yön terazisi: ${side} canlı/HTF ters; önce ${r142SideOpp(side)}/izle`
+    : r148ReversalSideOk
+      ? `R148 eşit yön terazisi: ${side} tarafı trap-inversion fırsatı`
+      : '';
+
   let r133FastScalpOverride = r120Bool(
-    !fatalDanger && !r134OpposingLiveFlow && !htfCounterWait && !r144FastNeedsRealProof && r134HtfOrCandleProof && r134FlowAligned &&
+    !fatalDanger && !r134OpposingLiveFlow && !r148WrongSideBlock && !htfCounterWait && !r144FastNeedsRealProof && r134HtfOrCandleProof && r134FlowAligned &&
     r133LiveTradeCount >= 12 && r133LiveDeltaAbs >= 12 &&
     score >= Math.max(50, minScore - 22) && edge >= 82 &&
     !(d.r116HtfGuardBlock && !d.r116AcceptedCounterBreak && !r133HtfSweepAligned)
@@ -4484,9 +4520,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     : '';
   // R142: kalibrasyon hard block değildir. Raw edge çok güçlü ve taze akış varsa işlem sayısı potansiyeli korunur;
   // fakat aynı anda late-chase/live-opposite varsa bu koruma devreye girmez.
-  const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger && !r147NoProofCounterTrap);
+  const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger && !r147NoProofCounterTrap && !r148WrongSideBlock);
   const passEdge = r142FrequencySafeEdge ? Math.max(edge, edgeNeed) : edge;
-  const ok = r120Bool((!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && dataMinimum && score >= adaptiveFloor && passEdge >= edgeNeed) || (r133FastScalpOverride && !r147NoProofCounterTrap));
+  const ok = r120Bool((!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) || (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock));
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -4494,7 +4530,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r133FastScalpWhy = r133FastScalpOverride
     ? `R144 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}`
     : '';
-  const r144WatchExtra = r147TrapGuardReason ? ` · ${r147TrapGuardReason}` : (r144FastBlockReason ? ` · ${r144FastBlockReason}` : '');
+  const r144WatchExtra = r148Note ? ` · ${r148Note}` : (r147TrapGuardReason ? ` · ${r147TrapGuardReason}` : (r144FastBlockReason ? ` · ${r144FastBlockReason}` : ''));
   const core = ok
     ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''}`;
@@ -4540,7 +4576,12 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r147WrongWayCluster = r147WrongWayCluster;
   d.r147NoProofCounterTrap = r147NoProofCounterTrap;
   d.r147TrapGuardReason = r147TrapGuardReason;
-  d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
+  d.r148ReversalSideOk = r148ReversalSideOk;
+  d.r148WrongSideBlock = r148WrongSideBlock;
+  d.r148BalanceBonus = r148BalanceBonus;
+  d.r148WrongPenalty = r148WrongPenalty;
+  d.r148Note = r148Note;
+  d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
   d.pass = ok;
@@ -8763,7 +8804,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const psPts = Number(d.priorityScore || 0) * 1.1;
         const vetoPenalty = d.hardVeto ? 500 : 0;
         const missingPenalty = d.cvdMissing ? 18 : 0;
-        return tierPts + scorePts + calibPts + psPts + r117Bonus - vetoPenalty - missingPenalty;
+        const balancePts = Number(d.r148BalanceBonus || 0) * 3.0 - Number(d.r148WrongPenalty || 0) * 3.0 + (d.r148ReversalSideOk ? 38 : 0) - (d.r148WrongSideBlock ? 120 : 0);
+        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts - vetoPenalty - missingPenalty;
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
@@ -8774,7 +8816,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const flow = side === 'LONG' ? Number(d.r125Flow?.longEdge || 0) : Number(d.r125Flow?.shortEdge || 0);
         const modeBonus = String(d.brainMode||'NO_EDGE') === 'NO_EDGE' ? -25 : 0;
         const danger = d.brainModeQualityBlock || d.brainHtfCounterWait || d.hardVeto || d.r114TrapBlock || (d.r116HtfGuardBlock && !d.r117HtfReverseOk) ? -18 : 0;
-        return conf*1.8 + sc*0.55 + flow + modeBonus + danger;
+        const balance = Number(d.r148BalanceBonus || 0) * 2.0 - Number(d.r148WrongPenalty || 0) * 2.0 + (d.r148ReversalSideOk ? 22 : 0) - (d.r148WrongSideBlock ? 60 : 0);
+        return conf*1.8 + sc*0.55 + flow + modeBonus + danger + balance;
       }
       let recommendation='WAIT', decisionChain=null;
       if (lRank > -9999 || sRank > -9999) {
@@ -10064,6 +10107,43 @@ async function managePosition(apiKey, apiSecret, pos) {
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
 
+  // ── R149 ROI KÂR KASASI — işlem sayısını azaltmadan kârdaki pozisyonu daha iyi koru ──
+  // Giriş kapısı değildir; sadece açık pozisyon yönetir. Amaç büyük bakiyede küçük ROI kârlarını
+  // toplamaya uygun şekilde, +ROI görmüş işlemin tekrar zarara dönmesini azaltmaktır.
+  const r149PeakRoi = Number(state.peakPnl || 0);
+  const r149PeakReal = Number(state.peakRealPct || 0);
+  const r149GivebackRoi = Math.max(0, r149PeakRoi - Number(pnlPct || 0));
+  const r149EntryTxt = [state.openReason, state.brainMode, state.entryPermissionReason, state.entryReason?.reason].filter(Boolean).join(' ').toLowerCase();
+  const r149ScalpLike = /mikro|scalp|vur-kaç|vurkac|flow|momentum|tuzak dönüşü|counter_trap|hızlı edge|fast edge/.test(r149EntryTxt);
+  const r149ShouldLock = !!(!action && r149PeakRoi >= 8 && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= 16));
+  if (r149ShouldLock) {
+    let keepRealPct = r149PeakReal * (r149ScalpLike ? 0.58 : 0.48);
+    if (r149PeakRoi >= 20) keepRealPct = Math.max(keepRealPct, r149PeakReal * 0.64);
+    if (r149PeakRoi >= 35) keepRealPct = Math.max(keepRealPct, r149PeakReal * 0.72);
+    // Aşırı sıkıştırma yok: current price üstüne/altına SL basıp pozisyonu anında boğma.
+    keepRealPct = Math.max(0.18, Math.min(Math.max(0.20, r149PeakReal - 0.10), keepRealPct));
+    const rawVaultSL = r91LockPriceFromPct(keepRealPct);
+    const vaultSL = isLong ? Math.min(rawVaultSL, +(curPrice * 0.998).toFixed(8)) : Math.max(rawVaultSL, +(curPrice * 1.002).toFixed(8));
+    const betterVault = isLong ? (!state.currentSL || vaultSL > state.currentSL) : (!state.currentSL || vaultSL < state.currentSL);
+    if (betterVault) {
+      action = {
+        type:'R149_ROI_VAULT_LOCK', urgency:'LOW', newSL:vaultSL,
+        reason:`R149 ROI kâr kasası: zirve ROI %${r149PeakRoi.toFixed(1)}, mevcut %${pnlPct.toFixed(1)}, geri verme %${r149GivebackRoi.toFixed(1)} → SL kâr kasasına alındı`,
+        stateUpdates:{ r149VaultLock:true, profitLockLevel:Math.max(Number(state.profitLockLevel||0), 4) }
+      };
+    }
+  }
+
+  // +ROI görmüş işlem tekrar sıfıra/zarara gömülmesin. Devam gücü varsa dokunmaz;
+  // sadece kârı ciddi geri verip akış zayıfladığında market reduce-only kapatır.
+  const r149WinnerGivebackExit = !!(!action && r149PeakRoi >= 12 && r149GivebackRoi >= Math.max(8, r149PeakRoi * 0.55) && pnlPct <= Math.max(1.5, r149PeakRoi * 0.18) && !r91Brain.devamGucu);
+  if (r149WinnerGivebackExit) {
+    action = {
+      type:'R149_PROFIT_GIVEBACK_KAPAT', urgency:'HIGH',
+      reason:`R149 kâr geri verme koruması: zirve ROI %${r149PeakRoi.toFixed(1)} → mevcut %${pnlPct.toFixed(1)}; runner gücü yok, kâr sıfıra dönmeden çıkış`
+    };
+  }
+
   if (!action && r91VurKacAktif) {
     // 1) İlk kâr görünür görünmez BE'den önce küçük kâr kilidi.
     // R136: 5m kaldıraçlı TOP10'da çok erken SL sıkıştırmak, EPIC gibi işlemi
@@ -10304,7 +10384,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   stampManager(action.type, action.reason, action.urgency||'LOW');
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
-  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT') {
+  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT' || action.type === 'R149_PROFIT_GIVEBACK_KAPAT') {
     // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
       await cancelAlgoOrders(apiKey, apiSecret, sym, true);
@@ -10315,7 +10395,7 @@ async function managePosition(apiKey, apiSecret, pos) {
         type:'MARKET', quantity:qty,
         reduceOnly:'true', positionSide:'BOTH', __emergency:true
       });
-      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
+      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
       trailingState.delete(sym);
       return { action:'CLOSED', pnl:pnlPct, reason:action.reason };
     } catch(e) {
@@ -10324,7 +10404,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   }
 
   if (action.type === 'BREAK_EVEN' || action.type === 'TRAIL_SL' || action.type === 'TIGHTEN_SL'
-      || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI') {
+      || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK') {
     const newSL = action.newSL;
     if (!newSL) return null;
     const upd = await updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, action.type);
@@ -10716,8 +10796,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R147 5m Fırsat Beyni: ters-akış tuzak freni + counter-wall hasar kontrolü',
-        note: 'R147; R146/R145 korunur. 5m formasyon yok + HTF karşı duvar yakın + canlı akış/mum tahmini karşıysa aynı yöne tuzak dönüşü açılmaz; yanlış yön açılmışsa ilk dakikalarda ROI zararı büyümeden kapatılır.'
+          : 'R149 5m Fırsat Beyni: 1 saat zarar cooldown + ROI kâr kasası + dengeli LONG/SHORT',
+        note: `R149; R148/R147/R145 korunur. SL/zarar sonrası aynı yön 60dk bekler ama temiz ters yön serbesttir. Kârdaki işlemlerde ROI kâr kasası SL'yi daha akıllı taşır; işlem açma potansiyelini azaltan yeni hard gate eklenmez.`
       },
       lastScan: {
         source: scan.scanSource || null,
