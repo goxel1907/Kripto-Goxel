@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R154_POSITION_RISK_RATE_FIX';
+const LAZARUS_BUILD = 'R155_SCALP_FREQUENCY_PROFIT_LOCK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1408,7 +1408,8 @@ function r142CalibrateEdge(side='LONG', d={}, mode='NO_EDGE', rawEdge=0, score=0
   const lateLong = side==='LONG' && (phase==='DISTRIBUTION' || d.r140OiVel?.fakePump || d.r140EqHL?.nearHighTrap || d.r37LateChaseBlock || d.r39TargetNearBlock);
   const lateShort = side==='SHORT' && (d.r140EqHL?.nearLowTrap || d.r37LateChaseBlock || d.r39TargetNearBlock);
   const late = !!(lateLong || lateShort);
-  if (late && !['HTF_REVERSAL','HTF_RECLAIM'].includes(String(mode||''))) { adj -= 12; notes.push('late-chase:-12'); }
+  // R155: late-chase -12→-8. TOP10 5m scalp'te geç giriş çok agresif ceza alıyordu.
+  if (late && !['HTF_REVERSAL','HTF_RECLAIM'].includes(String(mode||''))) { adj -= 8; notes.push('late-chase:-8'); }
   const liveAgainst = (side==='LONG' && deltaPct <= -18) || (side==='SHORT' && deltaPct >= 18) || (forecastSide && forecastSide !== side && forecastConf >= 70);
   if (liveAgainst) { adj -= 10; notes.push('live-opposite:-10'); }
   const liveWith = (side==='LONG' && deltaPct >= 18) || (side==='SHORT' && deltaPct <= -18) || (forecastSide === side && forecastConf >= 70);
@@ -4382,7 +4383,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   );
   const contextOk = r120Bool(contextPts >= 2 || d.r93PiyasaIslemYapilabilir || d.r93DalgaliAmaIslemYapilabilir || !d.r88PiyasaBozuk);
   const r125OpposingFlow = r120Bool(r125SideFlow.against >= r125SideFlow.edge + 6 && r125SideFlow.against >= 8);
-  const toxicFlow = r120Bool(d.cvdToxic || d.deltaToxic || d.r22LiqWaterfall?.adverse || d.poorLiquidity || d.rvolVeryLow || r125OpposingFlow);
+  // R154: rvolVeryLow toxicFlow/fatalDanger'dan çıkarıldı — rawEdge ceza puanı olarak kalır.
+  // Güçlü flow+edge olan coinlerde (BAS, VELVET gibi) düşük RVOL hard-block değil, sadece ceza olmalı.
+  const toxicFlow = r120Bool(d.cvdToxic || d.deltaToxic || d.r22LiqWaterfall?.adverse || d.poorLiquidity || r125OpposingFlow);
 
   // Oyun türleri: Bunlar kapı değil, beynin seçebileceği playbook'lardır.
   const htfReverse = r120Bool(d.r117HtfReverseOk && (d.r117PrecisionCandleOk || d.r118CandleOk) && (d.r117FlowOk || flowOk));
@@ -4432,7 +4435,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r134LegacySensorVeto = r120Bool(d.r68CriticalHardBlock || d.r65ScalperCoreHardVeto || d.r66WyckoffHardVeto);
   const fatalDanger = r120Bool(
     d.hardVeto || d.r114TrapBlock || htfOpposite ||
-    d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock || d.rvolVeryLow ||
+    d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock ||
+    // R154: d.rvolVeryLow fatalDanger'dan çıkarıldı — rawEdge ceza (-4) + r45 kontrolleri yeterli.
+    // RVOL düşük ama edge/flow güçlü coinlerde işlem potansiyeli korunur.
     (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock)
   );
   const hardDanger = r120Bool(
@@ -4481,13 +4486,15 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   let edge = r142Cal.calibratedEdge;
 
   // 5m kaldıraçlı TOP10 için panel skoru tek başına amir değil. Temiz playbook + edge varsa floor esner.
+  // R155: adaptiveFloor gevşetildi — COUNTER_TRAP/MOMENTUM/FLOW için daha erişilebilir.
+  // 5m TOP10 scalp'te score 51-58 arası kalite sinyaller fırsat; katı floor sık işlemi engelliyordu.
   const adaptiveFloor = playbookActive
     ? (['HTF_REVERSAL','HTF_RECLAIM','SQUEEZE_BREAKOUT'].includes(primaryMode)
-        ? Math.max(42, minScore - 30)
+        ? Math.max(40, minScore - 32)
         : primaryMode === 'TREND_CONTINUATION'
-          ? Math.max(58, minScore - 12)
-          : Math.max(56, minScore - 14))
-    : Math.max(48, minScore - 12);
+          ? Math.max(52, minScore - 18)
+          : Math.max(50, minScore - 20))
+    : Math.max(44, minScore - 16);
   const needsPremiumProof = ['TREND_CONTINUATION','MOMENTUM_SCALP','FLOW_SCALP'].includes(primaryMode);
   const modeQualityBlock = r120Bool(
     (needsPremiumProof && htfCounterWait) ||
@@ -10036,11 +10043,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   // parseFloat + fallback — NaN koruması
   const safe = (v, def) => { const n=parseFloat(v); return isNaN(n)?def:n; };
   const trailPct      = safe(cfg.trailingPct,  2);
-  const trailStep     = safe(cfg.trailStep,    0.5); // Min adım boyutu % (fiyat bu kadar ilerlerse SL taşı)
-  const breakEvenAt   = safe(cfg.breakEvenPct, 0.5); // Break-even tetik % (kaldıraçsız)
-  const karTasima1    = safe(cfg.karTasima1,   1.0); // 1. kâr taşıma: %1 kâr → SL +%0.3 yukarı
-  const karTasima2    = safe(cfg.karTasima2,   2.0); // 2. kâr taşıma: %2 kâr → SL +%0.8 yukarı
-  const karTasima3    = safe(cfg.karTasima3,   3.5); // 3. kâr taşıma: %3.5 kâr → SL +%1.5 yukarı
+  const trailStep     = safe(cfg.trailStep,    0.3); // R155: 0.5→0.3 — daha sık SL taşıması
+  const breakEvenAt   = safe(cfg.breakEvenPct, 0.3); // R155: 0.5→0.3 — daha erken BE (kaldıraçsız %0.3)
+  const karTasima1    = safe(cfg.karTasima1,   0.6); // R155: 1.0→0.6 — %0.6 kârda SL kilitle
+  const karTasima2    = safe(cfg.karTasima2,   1.2); // R155: 2.0→1.2 — %1.2 kârda SL yukarı
+  const karTasima3    = safe(cfg.karTasima3,   2.0); // R155: 3.5→2.0 — %2.0 kârda güçlü kilit
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
@@ -10917,7 +10924,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R153; R152/R151/R150/R149 korunur. btc5m + 12 Binance endpoint artık tek Promise.allSettled ile paralel çekilir. Coinglass scan başında background prefetch, analiz sırasında cache oku (0ms). Calendar+FG paralel. Yeni coin yaş filtresi + kaldıraç koruması + cache fix aktif.`
+        note: `R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
