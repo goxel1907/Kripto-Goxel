@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R155b_HARD_DANGER_UNBLOCK';
+const LAZARUS_BUILD = 'R155c_LATE_CHASE_VETO_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -7832,7 +7832,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // r74ImpulseEntryOk ve r74Top10ProScalperOk için hard-veto olmaktan çıkar.
         // retestOk yoksa (salt geç chase) hardVeto olarak kalır.
         const r75LateChaseHard = !!(r37LateChaseBlock && !r37Side?.retestOk);
-        const hardVeto = !!(poorLiquidity || atrBlocking || r75LateChaseHard || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
+        // R155b: r75LateChaseHard hardVeto'dan çıkarıldı.
+        // TOP10 5m pump momentumunda "geç giriş" çok sık tetikleniyor ve hardVeto → fatalDanger → rawEdge-55 zincirini başlatıyordu.
+        // Kalibrasyon cezası (-8), r37LateChaseBlock ve r147 kontrolleri yeterli koruma sağlar.
+        const hardVeto = !!(poorLiquidity || atrBlocking || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
         const hardVetoReasons=[];
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
         if(atrBlocking) hardVetoReasons.push(`ATR gate %${atrPct.toFixed(2)}`);
