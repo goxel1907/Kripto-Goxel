@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R143_ATRPCT_SCOPE_RUNTIME_FIX';
+const LAZARUS_BUILD = 'R145_REST_BACKOFF_EXIT_GUARD_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -105,7 +105,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
   const job = async () => {
     _resetGovWindowIfNeeded();
     const now = Date.now();
-    if (binanceGov.backoffUntil > now) await sleep(binanceGov.backoffUntil - now + 50);
+    if (binanceGov.backoffUntil > now && !String(scope).includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
     // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
     if (binanceGov.usedWeight + weight > 850 || binanceGov.usedOrders + orderWeight > 70) {
@@ -189,11 +189,12 @@ async function bAlgo(apiKey, apiSecret, params, _retry=false) {
 }
 
 // ── ALGO CANCEL — tüm algo emirlerini iptal et (2025-12-09 sonrası zorunlu) ──
-async function cancelAlgoOrders(apiKey, apiSecret, symbol) {
+async function cancelAlgoOrders(apiKey, apiSecret, symbol, emergency=false) {
   // 1. Normal emirleri iptal et (MARKET vs.)
-  try { await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', {symbol}); } catch(e) {}
+  const em = emergency ? {__emergency:true} : {};
+  try { await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/allOpenOrders', {symbol, ...em}); } catch(e) {}
   // 2. Algo emirlerini de iptal et (STOP_MARKET, TP artık algo)
-  try { await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/algoOpenOrders', {symbol}); } catch(e) {}
+  try { await bReq(apiKey, apiSecret, 'DELETE', '/fapi/v1/algoOpenOrders', {symbol, ...em}); } catch(e) {}
 }
 
 // ── ALGO SL/TP — Lazarus V8.10.72 kanıtlanmış format ───────────────────────
@@ -227,6 +228,18 @@ async function placeAlgoTP(apiKey, apiSecret, symbol, closeSide, triggerPrice, _
 
 // ── SLTP PROOF — Lazarus verify_live_sltp_visible mantığı ────────────────────
 // SL/TP yazıldıktan sonra Binance'te gerçekten görünüyor mu diye kontrol et
+const bracketOrdersCache = new Map();
+function bracketCacheKey(symbol) { return normalizeSymbol(symbol || '').toUpperCase(); }
+function getBracketOrdersCached(symbol, ttlMs=45_000) {
+  const k = bracketCacheKey(symbol);
+  const c = bracketOrdersCache.get(k);
+  if (c && Date.now() - Number(c.ts || 0) <= ttlMs) return Array.isArray(c.orders) ? c.orders : [];
+  return null;
+}
+function setBracketOrdersCached(symbol, orders) {
+  bracketOrdersCache.set(bracketCacheKey(symbol), { ts: Date.now(), orders: Array.isArray(orders) ? orders : [] });
+}
+
 async function liveOpenAlgoOrders(apiKey, apiSecret, symbol) {
   try {
     const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/openAlgoOrders', {symbol});
@@ -247,12 +260,22 @@ async function liveOpenStandardOrders(apiKey, apiSecret, symbol) {
   }
 }
 
-async function liveOpenBracketOrders(apiKey, apiSecret, symbol) {
-  const [algo, standard] = await Promise.all([
-    liveOpenAlgoOrders(apiKey, apiSecret, symbol),
-    liveOpenStandardOrders(apiKey, apiSecret, symbol),
-  ]);
-  return [...algo, ...standard];
+async function liveOpenBracketOrders(apiKey, apiSecret, symbol, opts={}) {
+  const ttlMs = Number(opts.ttlMs ?? 45_000);
+  const force = !!opts.force;
+  if (!force) {
+    const cachedOrders = getBracketOrdersCached(symbol, ttlMs);
+    if (cachedOrders) return cachedOrders;
+    // R145: Binance 418/429 backoff aktifken açık emir sorgusu yeni 418 zinciri başlatmasın.
+    // Cache yoksa boş döner; state.currentSL/targetTP zaten panel/manager için kaynak olur.
+    if (isBinanceBackoffActive()) return [];
+  }
+  const algo = await liveOpenAlgoOrders(apiKey, apiSecret, symbol);
+  await sleep(120);
+  const standard = await liveOpenStandardOrders(apiKey, apiSecret, symbol);
+  const all = [...algo, ...standard];
+  setBracketOrdersCached(symbol, all);
+  return all;
 }
 
 function orderKind(o) {
@@ -282,7 +305,7 @@ function priceCloseEnough(expected, actual) {
 // Kritik düzeltme: sadece openAlgoOrders değil, standart openOrders da kontrol edilir.
 async function verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, expectedSL, expectedTP) {
   try {
-    const orders = await liveOpenBracketOrders(apiKey, apiSecret, symbol);
+    const orders = await liveOpenBracketOrders(apiKey, apiSecret, symbol, {force:true, ttlMs:0});
     let foundSL = false, foundTP = false;
     const preview = [];
     for (const o of orders) {
@@ -609,13 +632,17 @@ function formatBinanceError(path, data) {
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
   // R9: Ana Binance signed request tekrar çalışan eski gövdeye alındı.
   // GET/DELETE query string, POST form body. AlgoOrder ayrı bAlgo ile query-string çalışır.
+  // R145: reduceOnly acil kapanış emirleri merkezi backoff beklemesine takılmasın.
   const m0 = String(method||'GET').toUpperCase();
+  const cleanParams = { ...(params || {}) };
+  const emergencyBypass = !!cleanParams.__emergency;
+  delete cleanParams.__emergency;
   const orderWeight = (m0 === 'POST' || m0 === 'DELETE') ? 1 : 0;
   const w = path.includes('/positionRisk') ? 5 : path.includes('/openOrders') ? 3 : path.includes('/userTrades') ? 5 : 1;
-  await binanceThrottle(`SIGNED:${path}`, w, orderWeight);
+  await binanceThrottle(`${emergencyBypass ? 'EMERGENCY' : 'SIGNED'}:${path}`, w, orderWeight);
   if (!lastTimeSync) await syncBinanceTime(false);
   const ts = Date.now() + binanceTimeOffset;
-  const obj = { ...params, timestamp: ts, recvWindow: 10000 };
+  const obj = { ...cleanParams, timestamp: ts, recvWindow: 10000 };
   const qs = Object.entries(obj)
     .filter(([,v]) => v !== undefined && v !== null && v !== '')
     .map(([k,v]) => `${k}=${encodeURIComponent(v)}`)
@@ -4386,12 +4413,34 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r133HtfSweepAligned || d.r117BodyReclaimOk || d.r117MssOk || d.r118CandleOk ||
     (d.r118Candle?.score >= 4) || htfReclaim || htfReverse || squeeze
   );
-  const r133FastScalpOverride = r120Bool(
-    !fatalDanger && !r134OpposingLiveFlow && !htfCounterWait && r134HtfOrCandleProof && r134FlowAligned &&
+  // R144: hızlı-edge mikro-scalp gerçek scalptir, HTF ters-köşe yerine geçemez.
+  // HMSTR örneğinde olduğu gibi 1H/4H karşı seviye burnun üstündeyken, mum hacim teyidi yoksa
+  // sadece live delta + rawEdge 100 ile LONG açmak geç giriş / dağıtım riski üretir.
+  const r144CandleText = String(d.r118CandleOzet || '');
+  const r144NoVolumeConfirm = /vol\s*:\s*yok/i.test(r144CandleText);
+  const r144CounterVeryNear = r120Bool(counterDist <= 0.65 || (d.r116HtfGuardBlock && !d.r117HtfReverseOk));
+  const r144PumpLateRisk = r120Bool(
+    (side === 'LONG' && (d.r140Phase?.phase === 'DISTRIBUTION' || d.r140OiVel?.fakePump || d.r140EqHL?.nearHighTrap)) ||
+    (side === 'SHORT' && d.r140EqHL?.nearLowTrap)
+  );
+  const r145NoVolCounterTrapRisk = r120Bool(
+    r144NoVolumeConfirm && r144CounterVeryNear && !squeeze &&
+    !(htfReverse && d.r118Candle?.score >= 12 && r134FlowAligned && !r144PumpLateRisk)
+  );
+  const r144FastNeedsRealProof = r120Bool(
+    (r144NoVolumeConfirm && !htfReverse && !htfReclaim && !squeeze &&
+      (r144CounterVeryNear || r144PumpLateRisk || d.r93PiyasaDalgali || d.r93PiyasaBozuk)) ||
+    r145NoVolCounterTrapRisk
+  );
+  let r133FastScalpOverride = r120Bool(
+    !fatalDanger && !r134OpposingLiveFlow && !htfCounterWait && !r144FastNeedsRealProof && r134HtfOrCandleProof && r134FlowAligned &&
     r133LiveTradeCount >= 12 && r133LiveDeltaAbs >= 12 &&
     score >= Math.max(50, minScore - 22) && edge >= 82 &&
     !(d.r116HtfGuardBlock && !d.r116AcceptedCounterBreak && !r133HtfSweepAligned)
   );
+  const r144FastBlockReason = r144FastNeedsRealProof
+    ? `R144 hızlı-edge freni: hacim teyidi yok${r144CounterVeryNear?' + HTF karşı seviye yakın':''}${r144PumpLateRisk?' + geç-pump/dağıtım izi':''}; gerçek HTF/squeeze/reclaim beklenir`
+    : '';
   // R142: kalibrasyon hard block değildir. Raw edge çok güçlü ve taze akış varsa işlem sayısı potansiyeli korunur;
   // fakat aynı anda late-chase/live-opposite varsa bu koruma devreye girmez.
   const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger);
@@ -4401,9 +4450,13 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
   const r142Txt = `raw:${rawEdge} kalibre:${edge}${r142Cal.notes.length ? ' · '+r142Cal.notes.slice(0,3).join(',') : ''}`;
+  const r133FastScalpWhy = r133FastScalpOverride
+    ? `R144 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}`
+    : '';
+  const r144WatchExtra = r144FastBlockReason ? ` · ${r144FastBlockReason}` : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R135 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
-    : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${sensorSummary?' · '+sensorSummary:''}`;
+    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''}`;
 
   d.brainMode = primaryMode;
   d.brainAction = ok ? 'TRADE' : 'WATCH';
@@ -4430,9 +4483,14 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.brainFatalDanger = fatalDanger;
   d.brainHardDanger = hardDanger;
   d.r133FastScalpOverride = r133FastScalpOverride;
-  d.r133FastScalpWhy = r133FastScalpOverride ? `R135 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}` : '';
+  d.r133FastScalpWhy = r133FastScalpWhy;
   d.r134FastScalpOverride = r133FastScalpOverride;
   d.r134FastScalpWhy = d.r133FastScalpWhy;
+  d.r144FastNeedsRealProof = r144FastNeedsRealProof;
+  d.r144FastBlockReason = r144FastBlockReason;
+  d.r144NoVolumeConfirm = r144NoVolumeConfirm;
+  d.r144CounterVeryNear = r144CounterVeryNear;
+  d.r145NoVolCounterTrapRisk = r145NoVolCounterTrapRisk;
   d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
@@ -9253,18 +9311,27 @@ app.post('/api/positions', async (req, res) => {
       const lev=parseInt(p.leverage)||parseInt(state.leverage)||parseInt(autoConfig?.leverage)||1;
       const side=amt>0?'LONG':'SHORT';
       const pct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)).toFixed(2):'0';
-      // SL/TP bracket kontrolü — Binance'teki gerçek emir durumu
-      let brackets={hasSL:false,hasTP:false,sl:null,tp:null,orderCount:0};
-      try{
-        const orders=await liveOpenBracketOrders(apiKey,apiSecret,full);
-        brackets.orderCount=orders.length;
-        for(const o of orders){
-          const kind=orderKind(o);
-          const trig=orderTriggerPrice(o);
-          if(kind==='SL'){brackets.hasSL=true;if(!brackets.sl||Math.abs(trig-mp)<Math.abs(brackets.sl-mp))brackets.sl=trig;}
-          if(kind==='TP'){brackets.hasTP=true;if(!brackets.tp||Math.abs(trig-mp)<Math.abs(brackets.tp-mp))brackets.tp=trig;}
-        }
-      }catch(e){brackets.error=e.message;}
+      // SL/TP bracket kontrolü — R145: her dashboard yenilemede openOrders/openAlgoOrders dövülmez.
+      let brackets={hasSL:false,hasTP:false,sl:null,tp:null,orderCount:0,source:'state'};
+      if (state?.sltpVerified && (state.currentSL || state.stopLoss) && (state.targetTP || state.tpPrice || state.target)) {
+        brackets.hasSL=true; brackets.hasTP=true;
+        brackets.sl=state.currentSL||state.stopLoss||null;
+        brackets.tp=state.targetTP||state.tpPrice||state.target||null;
+      } else if (!isBinanceBackoffActive()) {
+        try{
+          const orders=await liveOpenBracketOrders(apiKey,apiSecret,full,{ttlMs:60_000});
+          brackets.source='rest-cache';
+          brackets.orderCount=orders.length;
+          for(const o of orders){
+            const kind=orderKind(o);
+            const trig=orderTriggerPrice(o);
+            if(kind==='SL'){brackets.hasSL=true;if(!brackets.sl||Math.abs(trig-mp)<Math.abs(brackets.sl-mp))brackets.sl=trig;}
+            if(kind==='TP'){brackets.hasTP=true;if(!brackets.tp||Math.abs(trig-mp)<Math.abs(brackets.tp-mp))brackets.tp=trig;}
+          }
+        }catch(e){brackets.error=e.message;}
+      } else {
+        brackets.source='backoff-skip';
+      }
       const margin=ep>0?+(Math.abs(amt)*ep/lev).toFixed(4):null;
       open.push({
         symbol:p.symbol, symbolShort:String(p.symbol||'').replace(/USDT$/,''),
@@ -9538,7 +9605,7 @@ async function currentBracketTP(apiKey, apiSecret, symbol, isLong, entryPrice, f
 }
 
 async function bracketProtectionSnapshot(apiKey, apiSecret, symbol) {
-  const orders = await liveOpenBracketOrders(apiKey, apiSecret, symbol).catch(()=>[]);
+  const orders = await liveOpenBracketOrders(apiKey, apiSecret, symbol, {ttlMs:60_000}).catch(()=>[]);
   const hasSL = orders.some(o => orderKind(o) === 'SL');
   const hasTP = orders.some(o => orderKind(o) === 'TP');
   return { hasSL, hasTP, orderCount:orders.length };
@@ -10009,6 +10076,20 @@ async function managePosition(apiKey, apiSecret, pos) {
       };
     }
 
+    // R144: HMSTR tipi hızlı-edge girişlerde fiyat hemen eksiye döner ve canlı akış tersleşirse
+    // tam SL'yi bekleme. 20x/10x 5m scalp'te ROI -6/-8 erken uyarıdır; amaç kaybı büyümeden kesmek,
+    // kârlı runner'ı boğmak değildir. Devam gücü varsa çalışmaz.
+    const r144DamageControlNow = !!(
+      !action && openMinutes >= 0.8 && pnlPct <= -4.5 && !r91Brain.devamGucu &&
+      (Number(r91Brain.exitScore||0) >= 4 || tickFlip || cvdAgainst || cvdFlip?.flip || trappedExit || exhaustExit)
+    );
+    if (r144DamageControlNow) {
+      action = {
+        type:'R144_HASAR_KONTROL_KAPAT', urgency:'HIGH',
+        reason:`R144 hasar kontrolü: ROI %${pnlPct.toFixed(1)} erken eksiye döndü, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ') || 'canlı akış tersleşti'}`
+      };
+    }
+
     // 5) 5m vur-kaçta hareket yoksa ve veri tersleşmişse pozisyonu yorma.
     if (!action && openMinutes >= 12 && pnlPct > -5 && pnlPct < 4 && r91Brain.exitScore >= 5 && !r91Brain.devamGucu) {
       action = {
@@ -10147,16 +10228,16 @@ async function managePosition(apiKey, apiSecret, pos) {
   stampManager(action.type, action.reason, action.urgency||'LOW');
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
-  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT') {
+  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT') {
     // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
-      await cancelAlgoOrders(apiKey, apiSecret, sym);
+      await cancelAlgoOrders(apiKey, apiSecret, sym, true);
       const qty = Math.abs(parseFloat(pos.positionAmt || 0)).toString();
       // MARKET emri eski endpoint'te çalışmaya devam eder
       const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
         symbol:sym, side:isLong?'SELL':'BUY',
         type:'MARKET', quantity:qty,
-        reduceOnly:'true', positionSide:'BOTH'
+        reduceOnly:'true', positionSide:'BOTH', __emergency:true
       });
       logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
       trailingState.delete(sym);
@@ -10254,14 +10335,14 @@ app.post('/api/close', async (req, res) => {
   if(!apiKey||!apiSecret||!symbol)return res.status(400).json({error:'Eksik parametre'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   try{
-    try{await cancelAlgoOrders(apiKey,apiSecret,sym);}catch(e){}
+    try{await cancelAlgoOrders(apiKey,apiSecret,sym,true);}catch(e){}
     const pos=await getPositionRisk(apiKey,apiSecret,{symbol:sym});
     const arr=Array.isArray(pos)?pos:[];
     const p=arr.find(x=>Math.abs(parseFloat(x.positionAmt))>0);
     if(!p)return res.json({ok:true,message:'Açık pozisyon yok'});
     const order=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
       symbol:sym,side:parseFloat(p.positionAmt)>0?'SELL':'BUY',
-      type:'MARKET',quantity:Math.abs(parseFloat(p.positionAmt)),reduceOnly:'true',positionSide:'BOTH'
+      type:'MARKET',quantity:Math.abs(parseFloat(p.positionAmt)),reduceOnly:'true',positionSide:'BOTH',__emergency:true
     });
     res.json({ok:true,message:`${sym} kapatıldı`,orderId:order.orderId});
   }catch(e){res.status(400).json({error:e.message});}
@@ -10559,8 +10640,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R143 5m Fırsat Beyni: R142 kalibre edge korunur + atrPct runtime scope fix',
-        note: 'R143; R142 kalibre-edge/no-ML beyni korunur. atrPct R140/R142 analizlerinden önce hesaplanır, Cannot access atrPct before initialization runtime hatası giderilir. İşlem sayısını düşüren yeni hard block eklenmez.'
+          : 'R145 5m Fırsat Beyni: R144 hasar kontrol + Binance 418 REST sakinleştirme',
+        note: 'R145; R144 hızlı-edge hasar kontrolü korunur. Dashboard/sync açık emir sorguları cache kullanır, 418 backoff sırasında openOrders/openAlgoOrders dövülmez; reduceOnly acil çıkış backoff beklemesine takılmaz. Hacimsiz + HTF karşı yakın hızlı-edge işlemler daha sıkı izlenir.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -11739,10 +11820,10 @@ async function syncPositions() {
         if (ep > 0 && mp > 0 && (realMoveGuard <= hardLossRealGuard || roiGuard <= hardLossRoiGuard)) {
           try {
             pushCritical('R14_HARD_LOSS_GUARD', `${sym}: SL ötesi zarar yakalandı; market reduceOnly kapatılıyor. move=${realMoveGuard.toFixed(2)}% roi=${roiGuard.toFixed(1)}%`, {symbol:sym, entry:ep, mark:mp, leverage:lev});
-            await cancelAlgoOrders(autoConfig.apiKey, autoConfig.apiSecret, sym);
+            await cancelAlgoOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, true);
             await bReq(autoConfig.apiKey, autoConfig.apiSecret, 'POST', '/fapi/v1/order', {
               symbol:sym, side:isLongGuard?'SELL':'BUY', type:'MARKET',
-              quantity:Math.abs(amt).toString(), reduceOnly:'true', positionSide:'BOTH'
+              quantity:Math.abs(amt).toString(), reduceOnly:'true', positionSide:'BOTH', __emergency:true
             });
             logAuto(`🛑 ${sym.replace('USDT','')} acil hasar koruması kapattı: move ${realMoveGuard.toFixed(2)}% ROI ${roiGuard.toFixed(1)}%`);
             trailingState.delete(sym);
@@ -11760,9 +11841,14 @@ async function syncPositions() {
           continue;
         }
 
-        const orders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym);
-        const hasSL = orders.some(o => orderKind(o) === 'SL');
-        const hasTP = orders.some(o => orderKind(o) === 'TP');
+        const stForBracket = trailingState.get(sym) || {};
+        let hasSL = !!(stForBracket.sltpVerified && stForBracket.currentSL);
+        let hasTP = !!(stForBracket.sltpVerified && stForBracket.targetTP);
+        if ((!hasSL || !hasTP) && !isBinanceBackoffActive()) {
+          const orders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
+          hasSL = orders.some(o => orderKind(o) === 'SL');
+          hasTP = orders.some(o => orderKind(o) === 'TP');
+        }
         if (!hasSL || !hasTP) {
           const isLong  = parseFloat(p.positionAmt) > 0;
           const ep      = parseFloat(p.entryPrice) || 0;
