@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R155_SCALP_FREQUENCY_PROFIT_LOCK';
+const LAZARUS_BUILD = 'R155b_HARD_DANGER_UNBLOCK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -4434,15 +4434,16 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // gibi hesabı yakabilecek riskler hâlâ asla bypass edilmez.
   const r134LegacySensorVeto = r120Bool(d.r68CriticalHardBlock || d.r65ScalperCoreHardVeto || d.r66WyckoffHardVeto);
   const fatalDanger = r120Bool(
-    d.hardVeto || d.r114TrapBlock || htfOpposite ||
+    d.hardVeto || d.r114TrapBlock ||
+    // R155: htfOpposite sadece HTF tam karşı VE mesafe >%0.5 ise blok — %0.02 gibi yakın seviyeler fatalDanger değil
+    (htfOpposite && r120BrainNum(d.r116CounterLevel?.dist ?? d.r116CounterLevel?.distPct, 999) > 0.5) ||
     d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock ||
-    // R154: d.rvolVeryLow fatalDanger'dan çıkarıldı — rawEdge ceza (-4) + r45 kontrolleri yeterli.
-    // RVOL düşük ama edge/flow güçlü coinlerde işlem potansiyeli korunur.
     (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock)
   );
   const hardDanger = r120Bool(
     fatalDanger || toxicFlow ||
-    (d.r88PiyasaBozuk && !d.r93DalgaliAmaIslemYapilabilir && !counterTrap && !htfReverse)
+    // R155: MOMENTUM_SCALP ve FLOW_SCALP kendi modeQualityBlock kontrollerini yapıyor — piyasaBozuk'tan muaf
+    (d.r88PiyasaBozuk && !d.r93DalgaliAmaIslemYapilabilir && !counterTrap && !htfReverse && !momentumScalp && !flowScalp)
   );
 
   const candidates = [];
