@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R153_PARALLEL_ANALYSIS_SPEED';
+const LAZARUS_BUILD = 'R154_POSITION_RISK_RATE_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -151,8 +151,10 @@ function makeBinanceBackoffError(reason='Binance istek freni', seconds=45, statu
   return e;
 }
 function registerHttpBackoffAndThrow(scope, status, retryHeader) {
-  const retry = parseInt(retryHeader || (Number(status) === 418 ? '180' : '60'), 10);
-  const sec = Math.max(Number(status) === 418 ? 180 : 30, Math.min(180, Number(retry)||60));
+  // R154: 418 global backoff 180sn→60sn. positionRisk kendi cooldown'unda ayrıca 90sn bekler.
+  // 180sn tüm sistemi durduruyordu; 60sn yeterli — positionRisk zaten kendi TTL/cooldown ile korunur.
+  const retry = parseInt(retryHeader || (Number(status) === 418 ? '60' : '60'), 10);
+  const sec = Math.max(Number(status) === 418 ? 60 : 30, Math.min(120, Number(retry)||60));
   registerBinanceBackoff(`HTTP ${status} ${scope}`, sec);
   throw makeBinanceBackoffError(`HTTP ${status} ${scope}`, sec, status);
 }
@@ -703,8 +705,8 @@ const posRiskCache = {
   lastError: null,
 };
 const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
-const POS_RISK_TTL_ACTIVE =  4000;   //  4sn (R30: pozisyon açıkken BE/trailing daha hızlı)
-const POS_RISK_RATELIMIT_MS = 60000; // -1003 sonrası 60sn dur
+const POS_RISK_TTL_ACTIVE = 10000;   // R154: 10sn (eskiden 4sn → dakikada 12 istek → 418 ban). fastManager da 10sn ile sync.
+const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
 
 function keyFingerprint(apiKey) {
@@ -11958,7 +11960,7 @@ function startAutoTrader() {
   }
   // R94: aktif vur-kaç çıkış motoru taramayı beklemez; açık pozisyonları 5sn döngüyle izler.
   if (!fastManagerTimer) {
-    fastManagerTimer = setInterval(fastManageOpenPositions, 5 * 1000);
+    fastManagerTimer = setInterval(fastManageOpenPositions, 10 * 1000); // R154: 5sn→10sn, TTL_ACTIVE ile sync
   }
   // Her 30 saniyede bir: manuel kapanış algıla + SL/TP eksikse kurtar
   if (!positionSyncTimer) {
