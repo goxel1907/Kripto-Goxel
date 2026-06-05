@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R155c_LATE_CHASE_VETO_FIX';
+const LAZARUS_BUILD = 'R156_TOP10_FAST_BYPASS';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -4630,7 +4630,28 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // fakat aynı anda late-chase/live-opposite varsa bu koruma devreye girmez.
   const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger && !r147NoProofCounterTrap && !r148WrongSideBlock);
   const passEdge = r142FrequencySafeEdge ? Math.max(edge, edgeNeed) : edge;
-  const ok = r120Bool((!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) || (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock));
+  // R156: TOP10 5m Hızlı Bypass — güçlü flow + yeterli edge + score varsa karmaşık katmanları atla.
+  // Amaç: BABY L11/S0 delta>30%, edge>40, score>44 gibi gerçek sinyaller hiçbir katmandan geçemediğinde
+  // direkt TRADE kararı ver. Sadece gerçek tehlikeler (poorLiquidity, atrExtremeBlock, r148WrongSideBlock) engeller.
+  const r156RealHardBlock = r120Bool(
+    d.poorLiquidity || d.atrExtremeBlock ||
+    (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock) ||
+    d.hardVeto  // hardVeto: rsiOk, mmOk, fundOk, poorLiquidity — gerçek tehlike
+  );
+  const r156FastTop10Bypass = r120Bool(
+    !r156RealHardBlock && !r148WrongSideBlock &&
+    r125SideFlow.edge >= 8 &&          // güçlü tek yön orderflow
+    edge >= 50 &&                       // calibrated edge yeterli
+    score >= Math.max(40, minScore - 32) && // score çok düşük değil
+    primaryMode !== 'NO_EDGE' &&        // bir playbook var
+    r133LiveTradeCount >= 15            // gerçek canlı tick var
+  );
+
+  const ok = r120Bool(
+    (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
+    (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
+    r156FastTop10Bypass
+  );
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -4639,12 +4660,14 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? `R144 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}`
     : '';
   const r144WatchExtra = r148Note ? ` · ${r148Note}` : (r147TrapGuardReason ? ` · ${r147TrapGuardReason}` : (r144FastBlockReason ? ` · ${r144FastBlockReason}` : ''));
+  const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''}`;
 
   d.brainMode = primaryMode;
   d.brainAction = ok ? 'TRADE' : 'WATCH';
+  d.r156FastBypass = r156FastTop10Bypass;
   d.brainConfidence = edge;
   d.brainRawEdge = rawEdge;
   d.r142CalibratedEdge = edge;
@@ -8006,7 +8029,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // Eski r50HardClean ham r37LateChaseBlock kullanıyordu; retestOk=true olsa bile RIF gibi
         // Sweep+Teyit + R47 10/8 adayları R50/R51'de ölüyordu.
         const r50HardClean = !!(
-          !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r75LateChaseHard && !r39TargetNearBlock &&
+          !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r39TargetNearBlock && // R155c: r75LateChaseHard kaldırıldı
           !poorLiquidity && !mtfStrongOpposite && !mmVeryStrongOpposite && !r41OppositeWyckoff &&
           !r41TrapBlock && !r41FallingKnifeBlock && !r41RisingKnifeBlock
         );
@@ -8182,7 +8205,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         );
         const r66WyckoffHardVeto = !!(r41TrapBlock && !r42TrapReclaimOk && !r66WyckoffTrapReclaimOk);
         const r65ScalperCoreHardVeto = !!(
-          poorLiquidity || atrExtremeBlock || r75LateChaseHard || r39TargetNearBlock ||
+          // R155c: r75LateChaseHard tüm kritik köprülerden çıkarıldı — kalibrasyon -8 cezası yeterli
+          poorLiquidity || atrExtremeBlock || r39TargetNearBlock ||
           r66WyckoffHardVeto || r41FallingKnifeBlock || r41RisingKnifeBlock
         );
         const r65ScalperCoreTrendOk = !!(
@@ -8216,7 +8240,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (directSweepOk || hardSweepForBridge || huntBridgeOk) &&
           mtfBridgeOk &&
           r47Readiness >= 5 &&
-          !poorLiquidity && !r75LateChaseHard && !r39TargetNearBlock && !atrExtremeBlock &&
+          !poorLiquidity && !r39TargetNearBlock && !atrExtremeBlock && // R155c: r75LateChaseHard kaldırıldı
           !r41FallingKnifeBlock && !r41RisingKnifeBlock
         );
 
@@ -8231,7 +8255,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r74ImpulseEntryOk = !!(
           r38TopMoverStrong &&
           (fresh5mImpulseOrRecent || fresh5mImpulse || r37EarlyOk || r37Side?.retestOk || r39Confluence || r39Side?.breakConfirmed) &&
-          !r75LateChaseHard && !atrExtremeBlock && !poorLiquidity && !r39TargetNearBlock
+          !atrExtremeBlock && !poorLiquidity && !r39TargetNearBlock // R155c: r75LateChaseHard kaldırıldı
         );
         // R75-FIX3: TOP10 coinde CVD eksik/nötr sık olur → R47=4-5 kalıyor, eşik 6 geçilemiyor.
         // r38TopMoverStrong ise eşiği 5'e düşür; diğer coinlerde 6 korunur.
@@ -8260,8 +8284,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R77: R75 retest soft-veto tutarlılığı.
         // retestOk=true iken r75LateChaseHard=false olmalı; aksi halde R69/R68 core
         // hâlâ eski r37LateChaseBlock yüzünden retest girişini öldürür.
+        // R155c: r75LateChaseHard buradan da çıkarıldı — hardVeto'dan sonra burası da blokluyor.
         const r68CriticalHardBlock = !!(
-          poorLiquidity || r75LateChaseHard || r39TargetNearBlock || atrExtremeBlock ||
+          poorLiquidity || r39TargetNearBlock || atrExtremeBlock ||
           r41FallingKnifeBlock || r41RisingKnifeBlock
         );
         // R69: PRIORITY_CONTEXT_EXECUTION
@@ -8348,7 +8373,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         ];
         const r86KarsiFormasyonGucu = !!(r86KarsiFormasyonPuan >= r86FormasyonPuan + 4 || _renko?.spikeTrap);
         const r86FormasyonVeriTeyitOk = !!(
-          !sweepRequired && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && !r75LateChaseHard &&
+          !sweepRequired && !hardVeto && !signalDecayAutoBlock && !r37RetestWait && // R155c: r75LateChaseHard kaldırıldı
           !poorLiquidity && !atrExtremeBlock && !r39TargetNearBlock && !r41FallingKnifeBlock && !r41RisingKnifeBlock &&
           r86FormasyonPuan >= 5 && !r86KarsiFormasyonGucu &&
           r86CanliTetikOk && r86VeriTeyitSayisi >= 3 &&
