@@ -10914,8 +10914,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R152 5m Fırsat Beyni: yeni coin yaş filtresi (15gün) + işlem frekansı artışı + scan-storm freni',
-        note: `R152; R151/R150/R149 korunur. Futures'a 15 günden az önce eklenen coinler TOP10'dan çıkarılır, yerine rank 11/12/13... girer — işlem potansiyeli korunur. Priority wake eşiği 14. Az geçmişli coin kaldıraç koruması. Cache fix'leri ayakta.`
+          : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
+        note: `R153; R152/R151/R150/R149 korunur. btc5m + 12 Binance endpoint artık tek Promise.allSettled ile paralel çekilir. Coinglass scan başında background prefetch, analiz sırasında cache oku (0ms). Calendar+FG paralel. Yeni coin yaş filtresi + kaldıraç koruması + cache fix aktif.`
       },
       lastScan: {
         source: scan.scanSource || null,
