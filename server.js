@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R145_REST_BACKOFF_EXIT_GUARD_FIX';
+const LAZARUS_BUILD = 'R147_OPPOSITE_FLOW_TRAP_GUARD_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -4314,6 +4314,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? (/BSL_ALINDI_CHOCH_BEKLENIYOR|BSL\s*wick\+body-reclaim|SUPPLY_OB|supply/i.test(ictText) && counterDist <= 0.95 && !d.r116AcceptedCounterBreak)
     : (/SSL_ALINDI_CHOCH_BEKLENIYOR|SSL\s*wick\+body-reclaim|DEMAND_OB|demand/i.test(ictText) && counterDist <= 0.95 && !d.r116AcceptedCounterBreak)
   );
+  // R146: HTF karşı duvar çok yakınken hızlı-edge mikro-scalp kör giriş yapmasın.
+  // MON/HMSTR örneği: live delta güçlü görünür ama 15m/1H/4H supply/BSL burnun üstündeyse
+  // ve 5m mum formasyonu yoksa bu çoğu zaman breakout değil, ask-wall absorpsiyonu / likidite dağıtımıdır.
+  const r146R116CounterDist = r120BrainNum(d.r116CounterLevel?.dist ?? d.r116CounterLevel?.distPct, 999);
+  const r146CounterDist = Math.min(counterDist, r146R116CounterDist);
+  const r146CandleText0 = String(d.r118CandleOzet || '');
+  const r146CandleScore0 = r120BrainNum(d.r118Candle?.score, 0);
+  const r146No5mPattern = r120Bool(/formasyon yok/i.test(r146CandleText0) || (!d.r118CandleOk && r146CandleScore0 <= 2));
+  const r146HtfCounterNear = r120Bool(r146CounterDist <= 0.70 || (d.r116HtfGuardBlock && !d.r117HtfReverseOk));
+  const r146CounterWallPressure = r120Bool(r146HtfCounterNear && !d.r116AcceptedCounterBreak && !d.r117HtfReverseOk && !d.r117BodyReclaimOk);
+  const r146LateWallNoPattern = r120Bool(r146CounterWallPressure && r146No5mPattern && !squeeze && !htfReclaim);
   // R134: ölümcül güvenlik ile legacy sensör vetosunu ayır.
   // Eski R65/R68 modülleri artık tek beynin ham sensörüdür; canlı tick + HTF sweep + yüksek edge varsa
   // bu eski modül vetoları hesabı koruyan gerçek risk gibi davranamaz. Fakat likidite/ATR/trap/knife
@@ -4362,7 +4373,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (d.r140EqHL?.nearHighTrap ? (side==='LONG' ? -8 : 6)
       : d.r140EqHL?.nearLowTrap ? (side==='SHORT' ? -8 : 6) : 0) +
     (d.r140Rvol?.signal==='VERY_HIGH' ? 4 : d.r140Rvol?.signal==='HIGH' ? 2
-      : d.r140Rvol?.signal==='VERY_LOW' ? -4 : d.r140Rvol?.signal==='LOW' ? -2 : 0) -
+      : d.r140Rvol?.signal==='VERY_LOW' ? -4 : d.r140Rvol?.signal==='LOW' ? -2 : 0) +
+    (r146LateWallNoPattern ? -14 : r146CounterWallPressure ? -8 : 0) -
     (hardDanger?55:0) - (d.cvdMissing?5:0) - (r125OpposingFlow?12:0)
   )));
   const r142Cal = r142CalibrateEdge(side, d, primaryMode, rawEdge, score);
@@ -4430,8 +4442,37 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r144FastNeedsRealProof = r120Bool(
     (r144NoVolumeConfirm && !htfReverse && !htfReclaim && !squeeze &&
       (r144CounterVeryNear || r144PumpLateRisk || d.r93PiyasaDalgali || d.r93PiyasaBozuk)) ||
-    r145NoVolCounterTrapRisk
+    r145NoVolCounterTrapRisk || r146LateWallNoPattern
   );
+
+  // R147: ROBO tipi hata freni.
+  // Örnek: LONG seçiliyor ama aynı anda 5m formasyon yok + HTF karşı seviye %0.3 civarı +
+  // R125 akış SHORT + mumTahmin SHORT + zemin BOZUK. Bu artık "tuzak dönüşü" değil,
+  // karşı duvarda geç alıcıların absorbe edilmesidir. İşlem sayısını öldürmez; aynı şartta
+  // SHORT tarafı temizse onu seçmeye izin verir, yalnızca yanlış yöne LONG/SHORT açmayı keser.
+  const r147ForecastAgainst = r120Bool(
+    d.r125Flow?.r126?.forecast?.side && d.r125Flow.r126.forecast.side !== 'NEUTRAL' &&
+    d.r125Flow.r126.forecast.side !== side &&
+    r120BrainNum(d.r125Flow?.r126?.forecast?.confidence, 0) >= 55
+  );
+  const r147BookFlowAgainst = r120Bool(
+    r125SideFlow.against >= Math.max(8, r125SideFlow.edge + 5) ||
+    (d.r125Flow?.bestSide && d.r125Flow.bestSide !== 'NEUTRAL' && d.r125Flow.bestSide !== side && r125SideFlow.against >= 6)
+  );
+  const r147WrongWayCluster = r120Bool(
+    (r134OpposingLiveFlow || r147ForecastAgainst || r147BookFlowAgainst) &&
+    (d.r93PiyasaBozuk || d.r93PiyasaTehlikeli || r144PumpLateRisk || r144CounterVeryNear || r146CounterWallPressure)
+  );
+  const r147NoProofCounterTrap = r120Bool(
+    ['COUNTER_TRAP','MOMENTUM_SCALP','FLOW_SCALP','TREND_CONTINUATION'].includes(primaryMode) &&
+    !htfReverse && !htfReclaim && !squeeze &&
+    r146No5mPattern && r146CounterDist <= 0.90 &&
+    r147WrongWayCluster
+  );
+  const r147TrapGuardReason = r147NoProofCounterTrap
+    ? `R147 ters-akış tuzak freni: 5m formasyon yok + HTF karşı seviye yakın + canlı akış/mum tahmini karşı; ${side} yerine ters yön/izleme gerekir`
+    : '';
+
   let r133FastScalpOverride = r120Bool(
     !fatalDanger && !r134OpposingLiveFlow && !htfCounterWait && !r144FastNeedsRealProof && r134HtfOrCandleProof && r134FlowAligned &&
     r133LiveTradeCount >= 12 && r133LiveDeltaAbs >= 12 &&
@@ -4439,13 +4480,13 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     !(d.r116HtfGuardBlock && !d.r116AcceptedCounterBreak && !r133HtfSweepAligned)
   );
   const r144FastBlockReason = r144FastNeedsRealProof
-    ? `R144 hızlı-edge freni: hacim teyidi yok${r144CounterVeryNear?' + HTF karşı seviye yakın':''}${r144PumpLateRisk?' + geç-pump/dağıtım izi':''}; gerçek HTF/squeeze/reclaim beklenir`
+    ? `${r146LateWallNoPattern ? 'R146 karşı-duvar freni: 5m formasyon yok + HTF karşı seviye yakın; live delta tek başına yeterli değil' : `R144 hızlı-edge freni: hacim teyidi yok${r144CounterVeryNear?' + HTF karşı seviye yakın':''}${r144PumpLateRisk?' + geç-pump/dağıtım izi':''}; gerçek HTF/squeeze/reclaim beklenir`}`
     : '';
   // R142: kalibrasyon hard block değildir. Raw edge çok güçlü ve taze akış varsa işlem sayısı potansiyeli korunur;
   // fakat aynı anda late-chase/live-opposite varsa bu koruma devreye girmez.
-  const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger);
+  const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger && !r147NoProofCounterTrap);
   const passEdge = r142FrequencySafeEdge ? Math.max(edge, edgeNeed) : edge;
-  const ok = r120Bool((!hardDanger && !modeQualityBlock && dataMinimum && score >= adaptiveFloor && passEdge >= edgeNeed) || r133FastScalpOverride);
+  const ok = r120Bool((!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && dataMinimum && score >= adaptiveFloor && passEdge >= edgeNeed) || (r133FastScalpOverride && !r147NoProofCounterTrap));
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -4453,7 +4494,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r133FastScalpWhy = r133FastScalpOverride
     ? `R144 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}`
     : '';
-  const r144WatchExtra = r144FastBlockReason ? ` · ${r144FastBlockReason}` : '';
+  const r144WatchExtra = r147TrapGuardReason ? ` · ${r147TrapGuardReason}` : (r144FastBlockReason ? ` · ${r144FastBlockReason}` : '');
   const core = ok
     ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''}`;
@@ -4491,6 +4532,14 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r144NoVolumeConfirm = r144NoVolumeConfirm;
   d.r144CounterVeryNear = r144CounterVeryNear;
   d.r145NoVolCounterTrapRisk = r145NoVolCounterTrapRisk;
+  d.r146CounterWallPressure = r146CounterWallPressure;
+  d.r146LateWallNoPattern = r146LateWallNoPattern;
+  d.r146CounterDist = r146CounterDist;
+  d.r147ForecastAgainst = r147ForecastAgainst;
+  d.r147BookFlowAgainst = r147BookFlowAgainst;
+  d.r147WrongWayCluster = r147WrongWayCluster;
+  d.r147NoProofCounterTrap = r147NoProofCounterTrap;
+  d.r147TrapGuardReason = r147TrapGuardReason;
   d.entryPermissionReason = ok ? (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
@@ -10090,6 +10139,33 @@ async function managePosition(apiKey, apiSecret, pos) {
       };
     }
 
+    // R146: hızlı-edge mikro-scalp zarar büyütme freni.
+    // Bu oyun runner değil, kısa tepki avıdır. İlk dakikalarda hiç kâr üretmeden ROI -7/-8 bölgesine inerse
+    // exitScore düşük kalsa bile SL'nin tamamını beklemek küçük bakiyede gereksiz büyük ROI hasarı üretir.
+    const r146EntryTxt = [state.openReason, state.brainMode, state.entryPermissionReason, state.entryReason?.reason].filter(Boolean).join(' ').toLowerCase();
+    const r146FastEntry = /hızlı edge|fast edge|mikro-scalp|r135_fast|r144 hızlı/.test(r146EntryTxt);
+    const r146NoProfitFastFail = r146FastEntry && openMinutes >= 1.0 && openMinutes <= 12 && Number(state.peakPnl||0) < 6 && pnlPct <= -7.0;
+    if (!action && r146NoProfitFastFail) {
+      action = {
+        type:'R144_HASAR_KONTROL_KAPAT', urgency:'HIGH',
+        reason:`R146 hızlı scalp başarısız: ROI %${pnlPct.toFixed(1)}, ilk ${openMinutes.toFixed(1)}dk içinde kâr üretemedi; SL sonu beklenmiyor`
+      };
+    }
+
+    // R147: ROBO tipi yanlış yön tuzak dönüşü açıldıysa hasarı bekletme.
+    // Bu, kârlı runner'ı boğmaz; sadece 5m formasyon yok/live-opposite/mum tahmini ters gibi
+    // giriş anında zaten kötü kokan pozisyon ilk dakikalarda ROI -8/-10'a düşerse çalışır.
+    const r147BadEntryTxt = /tuzak dönüşü|counter_trap|live-opposite|formasyon yok|mumtahmin:short|mumtahmin:düşüş|mumtahmin:long|mumtahmin:yükseliş|zemin:bozuk|r147/.test(r146EntryTxt);
+    const r147DirectionForecastAgainst = (isLong && /mumtahmin:short|mumtahmin:düşüş/.test(r146EntryTxt)) || (!isLong && /mumtahmin:long|mumtahmin:yükseliş/.test(r146EntryTxt));
+    const r147NoProfitTrapFail = r147BadEntryTxt && (r147DirectionForecastAgainst || /live-opposite|formasyon yok|zemin:bozuk/.test(r146EntryTxt)) &&
+      openMinutes >= 0.8 && openMinutes <= 10 && Number(state.peakPnl||0) < 5 && pnlPct <= -7.5;
+    if (!action && r147NoProfitTrapFail) {
+      action = {
+        type:'R147_TERS_AKIS_HASAR_KAPAT', urgency:'HIGH',
+        reason:`R147 ters-akış hasar kontrolü: ROI %${pnlPct.toFixed(1)}, ilk ${openMinutes.toFixed(1)}dk içinde kâr üretemedi; girişteki canlı/mum akışı ters olduğu için SL sonu beklenmiyor`
+      };
+    }
+
     // 5) 5m vur-kaçta hareket yoksa ve veri tersleşmişse pozisyonu yorma.
     if (!action && openMinutes >= 12 && pnlPct > -5 && pnlPct < 4 && r91Brain.exitScore >= 5 && !r91Brain.devamGucu) {
       action = {
@@ -10640,8 +10716,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R145 5m Fırsat Beyni: R144 hasar kontrol + Binance 418 REST sakinleştirme',
-        note: 'R145; R144 hızlı-edge hasar kontrolü korunur. Dashboard/sync açık emir sorguları cache kullanır, 418 backoff sırasında openOrders/openAlgoOrders dövülmez; reduceOnly acil çıkış backoff beklemesine takılmaz. Hacimsiz + HTF karşı yakın hızlı-edge işlemler daha sıkı izlenir.'
+          : 'R147 5m Fırsat Beyni: ters-akış tuzak freni + counter-wall hasar kontrolü',
+        note: 'R147; R146/R145 korunur. 5m formasyon yok + HTF karşı duvar yakın + canlı akış/mum tahmini karşıysa aynı yöne tuzak dönüşü açılmaz; yanlış yön açılmışsa ilk dakikalarda ROI zararı büyümeden kapatılır.'
       },
       lastScan: {
         source: scan.scanSource || null,
