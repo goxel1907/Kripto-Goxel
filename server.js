@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R137_LEVERAGE_CAP_FALLBACK_FIX';
+const LAZARUS_BUILD = 'R142_CALIBRATED_EDGE_NO_ML_FIX';
 
 // ── KONSERVATİF BINANCE REQUEST GOVERNOR ─────────────────────────────────────
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
@@ -933,6 +933,150 @@ const r125BookHistory = new Map();       // symbol → [{ts, imb, spread, bid, a
 const r125PriorityWake = new Map();      // symbol → {ts, reason, score}
 let r125FastWakeTimer = null;
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R140: Pump Cycle Dedektörü + Equal H/L Tuzak + OI Velocity + BTC Diverjans
+// Top 10 gainer saat bağımsız kendi dinamiği ile çalışır
+// ═══════════════════════════════════════════════════════════════════════════
+
+// PO3 Pump Phase Classifier
+function r140PumpPhase(k5m, atrPct) {
+  if (!k5m || k5m.length < 20) return { phase:'UNKNOWN', score:0, label:'bilinmiyor' };
+  const rows = k5m.slice(-30).map(c=>({
+    o:Number(c[1]),h:Number(c[2]),l:Number(c[3]),c:Number(c[4]),v:Number(c[5]||0)
+  })).filter(r=>[r.o,r.h,r.l,r.c].every(Number.isFinite));
+  if (rows.length < 15) return { phase:'UNKNOWN', score:0, label:'yetersiz veri' };
+
+  const atr = Math.max(0.3, Number(atrPct)||1);
+  const recent8 = rows.slice(-8);
+  const recent3  = rows.slice(-3);
+
+  // ATR8 vs ATR20
+  function calcAtr(r) {
+    const trs = r.map((c,i,a)=>{
+      if(i===0)return c.h-c.l;
+      return Math.max(c.h-c.l, Math.abs(c.h-a[i-1].c), Math.abs(c.l-a[i-1].c));
+    });
+    return trs.reduce((s,v)=>s+v,0)/trs.length;
+  }
+  const atr8  = calcAtr(rows.slice(-8));
+  const atr20 = calcAtr(rows.slice(-20));
+  const lp = rows.at(-1).c;
+  const volAvg = rows.slice(-20,-1).reduce((s,r)=>s+r.v,0)/19;
+  const lastVol = rows.at(-1).v;
+  const volRatio = volAvg > 0 ? lastVol/volAvg : 1;
+
+  // Trend: ardışık yükselen düşükler
+  let bullSeq = 0, bearSeq = 0;
+  for (let i=rows.length-1; i>=Math.max(0,rows.length-8); i--) {
+    if(rows[i].c>=rows[i].o){ if(!bearSeq) bullSeq++; else break; }
+    else { if(!bullSeq) bearSeq++; else break; }
+  }
+
+  // Üst wick büyüyor mu (dağıtım izi)
+  const upperWicks = recent3.map(r=>(r.h-Math.max(r.o,r.c))/lp*100);
+  const wickGrowing = upperWicks[2] > upperWicks[0]*1.5 && upperWicks[2] > 0.15;
+
+  // Faz kararı
+  if (atr8 < atr20*0.65 && bullSeq < 2 && bearSeq < 2) {
+    return { phase:'ACCUMULATION', score:1, label:'sıkışma·birikim', atRatio:+(atr8/atr20).toFixed(2), bullSeq, bearSeq, volRatio:+volRatio.toFixed(2) };
+  }
+  if (bullSeq >= 4 && volRatio < 0.7 && wickGrowing) {
+    return { phase:'DISTRIBUTION', score:-2, label:'dağıtım·sahte pump', atRatio:+(atr8/atr20).toFixed(2), bullSeq, wickGrowing, volRatio:+volRatio.toFixed(2) };
+  }
+  if (bullSeq >= 3 && atr8 > atr20*1.2 && volRatio >= 1.2) {
+    return { phase:'EXPANSION', score:2, label:'trend·genişleme', atRatio:+(atr8/atr20).toFixed(2), bullSeq, volRatio:+volRatio.toFixed(2) };
+  }
+  return { phase:'TRANSITION', score:0, label:'geçiş·nötr', atRatio:+(atr8/atr20).toFixed(2), bullSeq, bearSeq, volRatio:+volRatio.toFixed(2) };
+}
+
+// Equal Highs / Lows Tuzak Dedektörü
+function r140EqualLevels(k5m, k1h, lastPrice) {
+  const lp = Number(lastPrice||0);
+  if (!k5m || k5m.length < 20 || !lp) return { eqHighs:[], eqLows:[], nearHighTrap:false, nearLowTrap:false };
+  const tol = 0.0015; // %0.15
+
+  function findSwings(klines, lookback=40) {
+    const rows = klines.slice(-lookback).map(c=>({h:Number(c[2]),l:Number(c[3])}));
+    const highs=[], lows=[];
+    for(let i=2;i<rows.length-2;i++){
+      if(rows[i].h>rows[i-1].h&&rows[i].h>rows[i-2].h&&rows[i].h>rows[i+1].h&&rows[i].h>rows[i+2].h)
+        highs.push(rows[i].h);
+      if(rows[i].l<rows[i-1].l&&rows[i].l<rows[i-2].l&&rows[i].l<rows[i+1].l&&rows[i].l<rows[i+2].l)
+        lows.push(rows[i].l);
+    }
+    return {highs,lows};
+  }
+
+  function cluster(arr) {
+    const groups=[];
+    for(const v of arr){
+      const g=groups.find(g=>Math.abs(g.price-v)/v<tol);
+      if(g){g.count++;g.price=(g.price*(g.count-1)+v)/g.count;}
+      else groups.push({price:v,count:1});
+    }
+    return groups.filter(g=>g.count>=3).map(g=>({price:+g.price.toFixed(8),count:g.count,distPct:+((g.price-lp)/lp*100).toFixed(2)}));
+  }
+
+  const s5  = findSwings(k5m, 40);
+  const s1h = findSwings(k1h||[], 30);
+  const allHighs = [...s5.highs, ...s1h.highs];
+  const allLows  = [...s5.lows,  ...s1h.lows];
+  const eqHighs  = cluster(allHighs);
+  const eqLows   = cluster(allLows);
+
+  // Fiyata yakın mı? (%0.5 içinde = tuzak aktif)
+  const nearHighTrap = eqHighs.some(g=>g.distPct>0 && g.distPct<0.5);
+  const nearLowTrap  = eqLows.some(g=>g.distPct<0  && g.distPct>-0.5);
+  return { eqHighs, eqLows, nearHighTrap, nearLowTrap,
+    summary: `eqHigh:${eqHighs.length} eqLow:${eqLows.length} yakınTuzak:${nearHighTrap||nearLowTrap?'EVET':'YOK'}` };
+}
+
+// OI Velocity — sahte pump dedektörü
+function r140OiVelocity(oiHist5m, lastPrice, prevClose) {
+  if (!oiHist5m || oiHist5m.length < 4) return { velocity:0, fakePump:false, summary:'OI veri yok' };
+  const fn = x => Number(x?.sumOpenInterestValue||x?.sumOpenInterest||0);
+  const vals = oiHist5m.slice(-6).map(fn).filter(v=>v>0);
+  if (vals.length < 3) return { velocity:0, fakePump:false, summary:'OI yetersiz' };
+  const latest = vals.at(-1);
+  const base   = vals[0];
+  const velocity = base>0 ? ((latest-base)/base)*100 : 0;
+  const priceUp  = Number(lastPrice||0) > Number(prevClose||0)*1.001;
+  // Sahte pump: fiyat yukarı ama OI azalıyor (kapanış, yeni alım değil)
+  const fakePump = priceUp && velocity < -0.3;
+  const oiConfirmed = priceUp && velocity > 0.2; // Gerçek pump: fiyat ve OI birlikte
+  return { velocity:+velocity.toFixed(3), fakePump, oiConfirmed,
+    summary:`OI${velocity>0?'+':''}${velocity.toFixed(2)}% ${fakePump?'SAHTE_PUMP':''}${oiConfirmed?'GERCEK_PUMP':''}` };
+}
+
+// BTC Diverjans Sinyal
+function r140BtcDivergence(btc5mCtx, coinChange15m, coinChange60m) {
+  if (!btc5mCtx?.ok) return { divergence:false, strong:false, score:0, label:'' };
+  const coinC15 = Number(coinChange15m||0);
+  const coinC60 = Number(coinChange60m||0);
+  // BTC düşüyor ama coin tutunuyor → kurumsal birikim
+  const btcDrop = btc5mCtx.dropping || btc5mCtx.change15m < -0.25;
+  const coinHolds = btcDrop && coinC15 > -0.1; // coin %0.1'den az düştü
+  // BTC düşerken coin yükseliyor → ekstrem güç
+  const strongDiv = btcDrop && coinC15 > 0.2;
+  if (strongDiv) return { divergence:true, strong:true, score:20, label:`BTC düşerken coin +${coinC15.toFixed(2)}% = ekstrem güç` };
+  if (coinHolds) return { divergence:true, strong:false, score:10, label:`BTC drop ama coin tutuyor = birikim` };
+  // BTC toparlanıyor + coin zaten güçlü → momentum devam
+  if (btc5mCtx.bouncing && coinC15 > 0.3) return { divergence:false, strong:false, score:8, label:`BTC toparlanıyor + coin güçlü` };
+  return { divergence:false, strong:false, score:0, label:'' };
+}
+
+// Coin-özgü RVOL (kendi 48 mum ortalamasına göre)
+function r140CoinRvol(k5m) {
+  if (!k5m || k5m.length < 10) return { rvol:1, signal:'UNKNOWN' };
+  const vols = k5m.map(c=>Number(c[5]||0)).filter(v=>v>0);
+  const avg = vols.slice(0,-1).reduce((s,v)=>s+v,0)/Math.max(1,vols.length-1);
+  const cur = vols.at(-1)||0;
+  const rvol = avg>0 ? cur/avg : 1;
+  const signal = rvol>=2.5?'VERY_HIGH':rvol>=1.5?'HIGH':rvol>=1.0?'NORMAL':rvol>=0.6?'LOW':'VERY_LOW';
+  return { rvol:+rvol.toFixed(2), signal, avg:+avg.toFixed(0), cur:+cur.toFixed(0) };
+}
+
 function r125NormSymbol(symbol='') {
   const s = String(symbol||'').toUpperCase();
   return s.endsWith('USDT') ? s : s + 'USDT';
@@ -1140,6 +1284,103 @@ function r126UpdatePlaybookStats(state={}, cls={}) {
 }
 function r126PlaybookBase(mode, base) {
   return Number(base || 0) + r126PlaybookAdj(mode);
+}
+function r142Clamp(n, lo, hi) { n = Number(n); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : 0; }
+function r142SideOpp(side='LONG') { return String(side).toUpperCase()==='LONG' ? 'SHORT' : 'LONG'; }
+function r142Text(v='') { return String(v || '').toUpperCase(); }
+function r142TradeText(row={}) {
+  return [row.entryReason, row.openReason, row.reason, row.resultNote, row.exitReason, row.brainMode, row.entryPermissionReason, row.r126OrderflowSummary].filter(Boolean).join(' ');
+}
+function r142SetupTags(side='LONG', d={}, mode='NO_EDGE') {
+  const tags = new Set([String(mode||'NO_EDGE').toUpperCase(), String(side||'').toUpperCase()]);
+  const ict = r142Text((d.ictDashboard||'') + ' ' + (d.siksmaOzet||'') + ' ' + (d.r118CandleOzet||'') + ' ' + (d.r140Summary||''));
+  if (d.r117HtfReverseOk || d.r117BodyReclaimOk || d.r110IctKoprusuOk) tags.add('HTF_RECLAIM_SWEEP');
+  if (d.r116HtfGuardBlock || /HTF:KARŞI|BSL_ALINDI|SSL_ALINDI|SUPPLY_OB|DEMAND_OB/.test(ict)) tags.add('HTF_COUNTER_ZONE');
+  if (d.r140OiVel?.fakePump) tags.add('FAKE_PUMP_OI');
+  if (d.r140OiVel?.oiConfirmed) tags.add('OI_CONFIRMED');
+  if (d.r140Phase?.phase) tags.add('PHASE_'+String(d.r140Phase.phase).toUpperCase());
+  if (d.r140BtcDiv?.score > 0) tags.add('BTC_DIVERGENCE');
+  if (d.r140EqHL?.nearHighTrap) tags.add('EQ_HIGH_TRAP');
+  if (d.r140EqHL?.nearLowTrap) tags.add('EQ_LOW_TRAP');
+  if (d.r118CandleOk || d.r118CandleStrong) tags.add('CANDLE_OK');
+  if (d.r37LateChaseBlock || d.r37RetestWait || d.r39TargetNearBlock) tags.add('LATE_OR_TARGET_NEAR');
+  if (d.r125Flow?.bestSide && d.r125Flow.bestSide !== 'NEUTRAL') tags.add('FLOW_'+String(d.r125Flow.bestSide).toUpperCase());
+  if (Math.abs(Number(d.r125Flow?.deltaPct||0)) >= 25) tags.add(Number(d.r125Flow?.deltaPct||0)>0?'DELTA_LONG':'DELTA_SHORT');
+  if (d.atrExtremeBlock || d.atrBlocking) tags.add('ATR_RISK');
+  if (d.r93PiyasaTehlikeli || d.r88PiyasaBozuk) tags.add('BAD_GROUND');
+  return [...tags];
+}
+function r142RowTags(row={}) {
+  const text = r142Text(r142TradeText(row));
+  const tags = new Set();
+  const side = String(row.side || '').toUpperCase(); if (side) tags.add(side);
+  for (const m of ['HTF_REVERSAL','HTF_RECLAIM','SQUEEZE_BREAKOUT','TREND_CONTINUATION','COUNTER_TRAP','MOMENTUM_SCALP','FLOW_SCALP']) if (text.includes(m) || text.includes(m.replace('_',' '))) tags.add(m);
+  if (/HTF_COUNTER|HTF:KARŞI|KARŞI 15M|KARŞI 1H|KARŞI 4H|DIRENÇ|SUPPLY/.test(text)) tags.add('HTF_COUNTER_ZONE');
+  if (/LATE_CHASE|GEÇ|CHASE|HEDEF ÇOK YAKIN|TARGET/.test(text)) tags.add('LATE_OR_TARGET_NEAR');
+  if (/DELTA_OPPOSITE|DELTA TERS|TERS AKIŞ|AKIŞ TERS/.test(text)) tags.add('DELTA_OPPOSITE');
+  if (/FAKE_PUMP|SAHTE PUMP|OI.*AZAL|OI.*ÇÖZ/.test(text)) tags.add('FAKE_PUMP_OI');
+  if (/DISTRIBUTION|DAĞITIM/.test(text)) tags.add('PHASE_DISTRIBUTION');
+  if (/SWEEP|SÜPÜR|BODY|GÖVDE|RECLAIM/.test(text)) tags.add('HTF_RECLAIM_SWEEP');
+  if (/ENGULF|HAMMER|TWEEZER|MORNING|EVENING|DARKCLOUD|GRAVESTONE/.test(text)) tags.add('CANDLE_OK');
+  return [...tags];
+}
+function r142Overlap(a=[], b=[]) { const bs = new Set(b); return a.filter(x=>bs.has(x)).length; }
+function r142MemoryStats(side='LONG', d={}, mode='NO_EDGE') {
+  const now = Date.now();
+  const tags = r142SetupTags(side, d, mode);
+  const opp = r142SideOpp(side);
+  const symbol = normalizeSymbol(d.symbol || d.fullSymbol || d.r38MarketCtx?.symbol || '');
+  const rows = (Array.isArray(tradeLedger) ? tradeLedger : []).filter(r => {
+    const t = Number(r.closedAt || 0); if (!t || now - t > 7*24*60*60*1000) return false;
+    const pnl = Number(r.pnlUSDT); if (!Number.isFinite(pnl) || pnl === 0) return false;
+    const rt = r142RowTags(r); return r142Overlap(tags, rt) >= 2 || (symbol && normalizeSymbol(r.symbol||'') === symbol);
+  });
+  const sameSide = rows.filter(r => normalizeSide(r.side) === side);
+  const oppSide  = rows.filter(r => normalizeSide(r.side) === opp);
+  const countStats = arr => {
+    let wins=0, losses=0, pnl=0;
+    for (const r of arr) { const x=Number(r.pnlUSDT); pnl += Number.isFinite(x)?x:0; if (x>0) wins++; else if (x<0) losses++; }
+    const n=wins+losses, wr=n?wins/n:0;
+    return {n,wins,losses,pnl:+pnl.toFixed(4),wr};
+  };
+  return { tags, same:countStats(sameSide), opp:countStats(oppSide) };
+}
+function r142CalibrateEdge(side='LONG', d={}, mode='NO_EDGE', rawEdge=0, score=0) {
+  const notes = [];
+  let adj = 0;
+  const mem = r142MemoryStats(side, d, mode);
+  const pb = r126PlaybookStats[String(mode||'UNKNOWN').toUpperCase()] || null;
+  if (pb && Number(pb.n||0) >= 6) {
+    const wr = Number(pb.wr||0)/100;
+    const a = r142Clamp(Math.round((wr - 0.55) * 22), -12, 10);
+    adj += a; if (a) notes.push(`playbookWR:${Number(pb.wr||0).toFixed(0)}% ${a>0?'+':''}${a}`);
+  }
+  if (mem.same.n >= 3) {
+    const a = r142Clamp(Math.round((mem.same.wr - 0.55) * 24), -14, 10);
+    adj += a; if (a) notes.push(`benzer:${Math.round(mem.same.wr*100)}% ${a>0?'+':''}${a}`);
+  }
+  if (mem.same.losses >= 2 && mem.same.wins <= mem.same.losses) {
+    adj -= 10; notes.push('loss-memory:-10');
+  }
+  if (mem.opp.n >= 3 && mem.opp.wr >= 0.6 && mem.opp.pnl > 0) {
+    adj += 6; notes.push('ters-senaryo:+6');
+  }
+  const phase = String(d.r140Phase?.phase || '').toUpperCase();
+  const deltaPct = Number(d.r125Flow?.deltaPct || 0);
+  const forecastSide = String(d.r125Flow?.r126?.forecast?.side || '').toUpperCase();
+  const forecastConf = Number(d.r125Flow?.r126?.forecast?.confidence || 0);
+  const lateLong = side==='LONG' && (phase==='DISTRIBUTION' || d.r140OiVel?.fakePump || d.r140EqHL?.nearHighTrap || d.r37LateChaseBlock || d.r39TargetNearBlock);
+  const lateShort = side==='SHORT' && (d.r140EqHL?.nearLowTrap || d.r37LateChaseBlock || d.r39TargetNearBlock);
+  const late = !!(lateLong || lateShort);
+  if (late && !['HTF_REVERSAL','HTF_RECLAIM'].includes(String(mode||''))) { adj -= 12; notes.push('late-chase:-12'); }
+  const liveAgainst = (side==='LONG' && deltaPct <= -18) || (side==='SHORT' && deltaPct >= 18) || (forecastSide && forecastSide !== side && forecastConf >= 70);
+  if (liveAgainst) { adj -= 10; notes.push('live-opposite:-10'); }
+  const liveWith = (side==='LONG' && deltaPct >= 18) || (side==='SHORT' && deltaPct <= -18) || (forecastSide === side && forecastConf >= 70);
+  if (liveWith && !late) { adj += 5; notes.push('live-align:+5'); }
+  // Trade frequency protection: do not turn soft calibration into a new hard gate.
+  // Raw edge remains visible and may still pass if data is fresh; calibration mainly ranks side and weakens repeated losers.
+  const calibrated = r142Clamp(Math.round(Number(rawEdge||0) + adj), 0, 100);
+  return { rawEdge:Math.round(Number(rawEdge||0)), calibratedEdge:calibrated, adj, notes, mem, late, liveAgainst, liveWith };
 }
 function r126AggressionTrendFromTicks(ticks=[]) {
   const now = Date.now();
@@ -4075,16 +4316,30 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const playbookActive = primaryMode !== 'NO_EDGE';
 
   // Fırsat puanı: tek bir beyin, veri kaynağının o an edge üretme gücünü tartar.
-  const edge = Math.max(0, Math.min(100, Math.round(
+  const rawEdge = Math.max(0, Math.min(100, Math.round(
     score*0.32 + priority*0.25 + r47*2.2 + flowPts*5 + timingPts*4 + contextPts*2 + structurePts*2 +
     (htfReverse?20:0) + (htfReclaim?16:0) + (squeeze?15:0) + (trend?12:0) +
     (counterTrap?13:0) + (momentumScalp?11:0) + (flowScalp?9:0) + Math.min(8, r125SideFlow.edge) +
     (d.r125Flow?.r126?.bidAbsorb && side==='LONG' ? 7 : 0) + (d.r125Flow?.r126?.askAbsorb && side==='SHORT' ? 7 : 0) +
     (d.r125Flow?.r126?.forecast?.side === side ? Math.min(4, Math.round(r120BrainNum(d.r125Flow?.r126?.forecast?.confidence,0)/25)) : 0) +
     (d.r125Flow?.r126?.aggressionTrend?.side === side && d.r125Flow?.r126?.aggressionTrend?.phase === 'ACCELERATING' ? Math.min(5, Math.round(r120BrainNum(d.r125Flow?.r126?.aggressionTrend?.strength,0)/18)) : 0) +
-    (d.r125Flow?.r126?.deltaImprint?.coiled && (squeeze || flowScalp) ? 3 : 0) + r126PlaybookAdj(primaryMode) -
+    (d.r125Flow?.r126?.deltaImprint?.coiled && (squeeze || flowScalp) ? 3 : 0) + r126PlaybookAdj(primaryMode) +
+    // R141: R140 sinyalleri yön-duyarlı. R142 bunları bir de geçmiş sonuç/late-chase ile kalibre eder.
+    (d.r140Phase?.phase==='EXPANSION' ? (side==='LONG' ? 8 : -5)
+      : d.r140Phase?.phase==='DISTRIBUTION' ? (side==='LONG' ? -15 : 10)
+      : d.r140Phase?.phase==='ACCUMULATION' ? 4 : 0) +
+    (side==='LONG' ? Math.min(20, Number(d.r140BtcDiv?.score||0))
+      : (Number(d.r140BtcDiv?.score||0) > 0 ? -Math.min(10, Math.round(Number(d.r140BtcDiv?.score||0)/2)) : 0)) +
+    (d.r140OiVel?.oiConfirmed ? (side==='LONG' ? 5 : -3)
+      : d.r140OiVel?.fakePump ? (side==='LONG' ? -10 : 8) : 0) +
+    (d.r140EqHL?.nearHighTrap ? (side==='LONG' ? -8 : 6)
+      : d.r140EqHL?.nearLowTrap ? (side==='SHORT' ? -8 : 6) : 0) +
+    (d.r140Rvol?.signal==='VERY_HIGH' ? 4 : d.r140Rvol?.signal==='HIGH' ? 2
+      : d.r140Rvol?.signal==='VERY_LOW' ? -4 : d.r140Rvol?.signal==='LOW' ? -2 : 0) -
     (hardDanger?55:0) - (d.cvdMissing?5:0) - (r125OpposingFlow?12:0)
   )));
+  const r142Cal = r142CalibrateEdge(side, d, primaryMode, rawEdge, score);
+  const edge = r142Cal.calibratedEdge;
 
   // 5m kaldıraçlı TOP10 için panel skoru tek başına amir değil. Temiz playbook + edge varsa floor esner.
   const adaptiveFloor = playbookActive
@@ -4097,6 +4352,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const needsPremiumProof = ['TREND_CONTINUATION','MOMENTUM_SCALP','FLOW_SCALP'].includes(primaryMode);
   const modeQualityBlock = r120Bool(
     (needsPremiumProof && htfCounterWait) ||
+    // R138 FIX2: COUNTER_TRAP htfCounterWait=true ve karşı seviye %1 içindeyse blok
+    // Neden: OPN/WLD gibi pumped coin'lerde BSL %0.18 yakınken COUNTER_TRAP açmak = tuzağa girmek
+    (primaryMode === 'COUNTER_TRAP' && htfCounterWait && counterDist <= 1.0 && !d.r117HtfReverseOk) ||
     (primaryMode === 'TREND_CONTINUATION' && (!liveFlowOk || d.cvdMissing || teyit < 4 || r47 < 7)) ||
     (['MOMENTUM_SCALP','FLOW_SCALP'].includes(primaryMode) && (!liveFlowOk || r47 < 6))
   );
@@ -4134,17 +4392,28 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     score >= Math.max(50, minScore - 22) && edge >= 82 &&
     !(d.r116HtfGuardBlock && !d.r116AcceptedCounterBreak && !r133HtfSweepAligned)
   );
-  const ok = r120Bool((!hardDanger && !modeQualityBlock && dataMinimum && score >= adaptiveFloor && edge >= edgeNeed) || r133FastScalpOverride);
+  // R142: kalibrasyon hard block değildir. Raw edge çok güçlü ve taze akış varsa işlem sayısı potansiyeli korunur;
+  // fakat aynı anda late-chase/live-opposite varsa bu koruma devreye girmez.
+  const r142FrequencySafeEdge = r120Bool(rawEdge >= edgeNeed + 8 && !r142Cal.late && !r142Cal.liveAgainst && r134FlowAligned && r134HtfOrCandleProof && !fatalDanger);
+  const passEdge = r142FrequencySafeEdge ? Math.max(edge, edgeNeed) : edge;
+  const ok = r120Bool((!hardDanger && !modeQualityBlock && dataMinimum && score >= adaptiveFloor && passEdge >= edgeNeed) || r133FastScalpOverride);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
+  const r142Txt = `raw:${rawEdge} kalibre:${edge}${r142Cal.notes.length ? ' · '+r142Cal.notes.slice(0,3).join(',') : ''}`;
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R135 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
-    : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${sensorSummary?' · '+sensorSummary:''}`;
+    ? `🧠 5m Fırsat Beyni ${side}: ${r133FastScalpOverride ? 'R135 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpOverride ? ` · ${d.r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${sensorSummary?' · '+sensorSummary:''}`;
 
   d.brainMode = primaryMode;
   d.brainAction = ok ? 'TRADE' : 'WATCH';
   d.brainConfidence = edge;
+  d.brainRawEdge = rawEdge;
+  d.r142CalibratedEdge = edge;
+  d.r142CalibrationAdj = r142Cal.adj;
+  d.r142CalibrationNotes = r142Cal.notes;
+  d.r142MemoryStats = { same:r142Cal.mem.same, opp:r142Cal.mem.opp, tags:r142Cal.mem.tags.slice(0,10) };
+  d.r142FrequencySafeEdge = r142FrequencySafeEdge;
   d.brainSummary = core.slice(0,500);
   d.brainSensors = sensorSummary;
   d.brainAdaptiveFloor = adaptiveFloor;
@@ -4640,17 +4909,31 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const bb1h=bollinger(k1h),bb15m_=bollinger(k15m);
 
     // R29: BTC göreli güç bağlamı. Tek REST yükü cache'lenir; 40 coin taramada aynı veri kullanılır.
-    let btc5mCtx = { ok:false, change15m:0, change60m:0 };
+    let btc5mCtx = { ok:false, change15m:0, change60m:0, dropping:false, bouncing:false, redCandles:0 };
     try {
       const btc5m = await cached('btc5m_r29_ctx', 30*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`));
       if (Array.isArray(btc5m) && btc5m.length >= 13) {
         const bLast = Number(btc5m.at(-1)[4]);
         const b3 = Number(btc5m.at(-4)[1]);
         const b12 = Number(btc5m.at(-13)[1]);
+        // R140: BTC art arda kırmızı mum sayısı
+        let redCount = 0;
+        for (let i = btc5m.length-1; i >= Math.max(0,btc5m.length-5); i--) {
+          if (Number(btc5m[i][4]) < Number(btc5m[i][1])) redCount++;
+          else break;
+        }
+        const chg15 = b3>0 ? +(((bLast-b3)/b3)*100).toFixed(3) : 0;
+        const chg60 = b12>0 ? +(((bLast-b12)/b12)*100).toFixed(3) : 0;
+        // BTC bounce: son mum yeşil + önceki mum kırmızıydı
+        const lastGreen  = Number(btc5m.at(-1)[4]) > Number(btc5m.at(-1)[1]);
+        const prevRed    = Number(btc5m.at(-2)[4]) < Number(btc5m.at(-2)[1]);
         btc5mCtx = {
           ok:true,
-          change15m: b3>0 ? +(((bLast-b3)/b3)*100).toFixed(3) : 0,
-          change60m: b12>0 ? +(((bLast-b12)/b12)*100).toFixed(3) : 0,
+          change15m: chg15,
+          change60m: chg60,
+          redCandles: redCount,
+          dropping: redCount >= 3 && chg15 < -0.3,  // BTC 3+ kırmızı ve -%0.3 altı
+          bouncing:  lastGreen && prevRed && chg15 > -0.5, // BTC toparlanıyor
         };
       }
     } catch(_) {}
@@ -4688,6 +4971,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // R110: ICT Likidite Sweep Motoru — SSL/BSL + ChoCH + FVG sıralı kontrol
     const r110ICT = r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice);
     // R111: Sıkışma + Squeeze Flow — mevcut verileri kullanır, sıfır ek çağrı
+
+    // R140: Pump Cycle + Equal H/L + OI Velocity + BTC Divergence + Coin RVOL
+    const r140Phase  = r140PumpPhase(k5m, atrPct);
+    const r140EqHL   = r140EqualLevels(k5m, k1h, lastPrice);
+    const r140OiVel  = r140OiVelocity(oiHist5m, lastPrice, k5m.length>=2?k5m.at(-2)[4]:lastPrice);
+    const _coin15m   = (k5m.length>=4&&Number(k5m.at(-4)[1])>0) ? ((lastPrice-Number(k5m.at(-4)[1]))/Number(k5m.at(-4)[1])*100) : 0;
+    const _coin60m   = (k5m.length>=13&&Number(k5m.at(-13)[1])>0) ? ((lastPrice-Number(k5m.at(-13)[1]))/Number(k5m.at(-13)[1])*100) : 0;
+    const r140BtcDiv = r140BtcDivergence(btc5mCtx, _coin15m, _coin60m);
+    const r140Rvol   = r140CoinRvol(k5m);
     const r111Siksma = r111AnalyzeSiksmaFlow(k5m, k1h, k4h, lastPrice, fundArr, lsGlobal, lsTop, takerArr, oiHist5m, oiNowObj);
 
     // ── AMD 5M + TİCK SCALP MODELİ ─────────────────────────────────────────────
@@ -5659,6 +5951,66 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // R125 — depth@100ms/aggTrade canlı orderflow tek beyne yakıt verir
     if (r125Flow?.ok) {
       if (r125Flow.longEdge >= 6) { longScore += Math.min(8, Math.round(r125Flow.longEdge)); signals.long.push(`⚡ R125 OrderFlow L${r125Flow.longEdge}`); }
+      // ── R140: Pump Cycle Skoru ──────────────────────────────────────────────
+      if (r140Phase?.phase === 'EXPANSION') {
+        // Genişleme: trend var, hacim güçlü
+        longScore  += 8; signals.long.push('R140 pump-expansion');
+        shortScore -= 5; // ters yönde ihtiyat
+      }
+      if (r140Phase?.phase === 'ACCUMULATION') {
+        // Sıkışma: yakında breakout gelir ama yön belirsiz
+        longScore  += 4; shortScore += 4;
+        signals.long.push('R140 birikim-hazırlık'); signals.short.push('R140 birikim-hazırlık');
+      }
+      if (r140Phase?.phase === 'DISTRIBUTION') {
+        // Dağıtım/sahte pump: LONG tehlikeli, SHORT fırsatı
+        longScore  -= 12; signals.long.push('⚠️ R140 dağıtım-azalt');
+        shortScore += 10; signals.short.push('R140 dağıtım-short-fırsat');
+      }
+
+      // ── R140: BTC Diverjans Skoru ────────────────────────────────────────────
+      if (r140BtcDiv?.divergence || r140BtcDiv?.score > 0) {
+        longScore  += r140BtcDiv.score;
+        signals.long.push(`R140 BTC-div:${r140BtcDiv.label.slice(0,40)}`);
+      }
+      if (btc5mCtx.dropping && !r140BtcDiv.divergence) {
+        // BTC düşüyor ve coin de düşüyor → LONG için olumsuz sinyal
+        longScore  -= 8;
+        signals.long.push('R140 BTC-drop-coin-zayıf');
+      }
+
+      // ── R140: OI Velocity Skoru ──────────────────────────────────────────────
+      if (r140OiVel?.oiConfirmed) {
+        // Fiyat yukarı + OI artıyor = gerçek alım
+        longScore  += 6; signals.long.push(`R140 OI-onaylı+${r140OiVel.velocity.toFixed(1)}%`);
+      }
+      if (r140OiVel?.fakePump) {
+        // Fiyat yukarı ama OI azalıyor = sahte pump / kapanış
+        longScore  -= 10; signals.long.push(`⚠️ R140 sahte-pump OI${r140OiVel.velocity.toFixed(1)}%`);
+        shortScore += 8;  signals.short.push(`R140 sahte-pump SHORT-fırsat`);
+      }
+
+      // ── R140: Coin RVOL Skoru ────────────────────────────────────────────────
+      if (r140Rvol?.signal === 'VERY_HIGH') {
+        longScore  += 6; shortScore += 6;
+        signals.long.push(`R140 RVOL×${r140Rvol.rvol}`); signals.short.push(`R140 RVOL×${r140Rvol.rvol}`);
+      }
+      if (r140Rvol?.signal === 'LOW' || r140Rvol?.signal === 'VERY_LOW') {
+        longScore  -= 4; shortScore -= 4; // Düşük hacim = sahte sinyal riski
+      }
+
+      // ── R140: Equal Highs/Lows Tuzak Skoru ──────────────────────────────────
+      if (r140EqHL?.nearHighTrap) {
+        // Eşit yükseklere yakın: LONG için tuzak riski, SHORT için fırsat
+        longScore  -= 8; signals.long.push('⚠️ R140 eşit-tepe-tuzak');
+        shortScore += 6; signals.short.push('R140 eşit-tepe-short');
+      }
+      if (r140EqHL?.nearLowTrap) {
+        // Eşit düşüklere yakın: SHORT için tuzak riski, LONG için fırsat
+        shortScore -= 8; signals.short.push('⚠️ R140 eşit-dip-tuzak');
+        longScore  += 6; signals.long.push('R140 eşit-dip-long');
+      }
+
       if (r125Flow.shortEdge >= 6) { shortScore += Math.min(8, Math.round(r125Flow.shortEdge)); signals.short.push(`⚡ R125 OrderFlow S${r125Flow.shortEdge}`); }
     }
 
@@ -8070,9 +8422,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           ? `R118 HTF ters-köşe hedefi: ${isL?'SSL/destek/demand → LONG':'BSL/direnç/supply → SHORT'} (${r117TrapTf||'-'} ${r117TrapLevel?.price||'-'} uzaklık %${Number(r117TrapDist||0).toFixed(2)}) · kanıt:${r117TrapSweepTaken?'sweep ':''}${r117MssOk?'MSS ':''}${r117BodyReclaimOk?'body-reclaim ':''}${r117BodyShiftOk?'body-shift ':''}${r118CandleOk?'mum-formasyon ':''}· ${r118CandleOzet}`
           : '';
 
-        const entryPermissionOk = (sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk || r117HtfReverseOk)) && !r114TrapBlock && !r116HtfGuardBlock;
-        const entryPermissionReason = r116HtfGuardBlock ? 'R116_HTF_SUPERVISOR_BLOCK'
-          : r117HtfReverseOk ? 'R118_HTF_CANDLE_REVERSAL_TARGET'
+        const entryPermissionOk = (sweepRequired ? directSweepOk : (directSweepOk || nonSweepQualityOk || r50AutoPermissionOk || r117HtfReverseOk)) && !r114TrapBlock && (!r116HtfGuardBlock || r117HtfReverseOk);
+        // R138 FIX1: r117HtfReverseOk (sweep+gövde+mum onaylı) → r116HtfGuardBlock bypass edilir
+        const entryPermissionReason = r117HtfReverseOk ? 'R118_HTF_CANDLE_REVERSAL_TARGET'
+          : r116HtfGuardBlock ? 'R116_HTF_SUPERVISOR_BLOCK'
           : r110IctKoprusuOk ? 'R115_HTF_LIQUIDITY_BODY_RECLAIM'
           : r111KoprusuOk ? 'R111_SIKISMA_PATLAMA'
           : r109SweepReclaimKoprusuOk ? 'R109_SWEEP_RECLAIM_TEMIZ'
@@ -8242,6 +8595,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterTf, r116CounterDist, r116NearCounterHTF, r116AcceptedCounterBreak, r116CounterSweepTaken,
           r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapTf, r117TrapDist, r117NearTrapHTF, r117TrapSweepTaken, r117AcceptedAgainst, r117BodyReclaimOk, r117BodyShiftOk, r117MssOk, r117FlowOk, r117TrapEvidenceOk, r117TrapEvidenceRawOk, r117PrecisionCandleOk, r118CandleOk, r118CandleStrong, r118CandleOzet, r118Candle,
           r125Flow, r125OrderflowSummary:r125Flow?.summary||'', r126FlowSummary:r125Flow?.r126?.summary||'', r125BookImb:r125Flow?.book?.nearImb, r125BookVelocity:r125Flow?.book?.velocity, r125LiveDelta:r125Flow?.delta, r125LiveDeltaPct:r125Flow?.deltaPct, r125Aggression:r125Flow?.aggression, r125BestSide:r125Flow?.bestSide,
+          r140Phase, r140EqHL, r140OiVel, r140BtcDiv, r140Rvol,
           r114Shift, r114OppositeShift, r114ReclaimOk, r114ExtremeZone, r114SweepTrapFamily, r114ContinuationProof, r114TrapBlock, r114TrapReason,
           wickTrapFlip: {
             against:      r25WickTrapMap ? (isL ? r25WickTrapMap.upperTrap : r25WickTrapMap.lowerTrap) : false,
@@ -8295,10 +8649,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const tierPts = d.tier === 'A' ? 300 : d.tier === 'B+' ? 210 : d.tier === 'B' ? 90 : 0;
         const r117Bonus = d.r117HtfReverseOk ? 45 : 0;
         const scorePts = Number(d.score || 0);
-        const psPts = Number(d.priorityScore || 0) * 1.4;
+        const calibPts = Number(d.r142CalibratedEdge || d.brainConfidence || 0) * 1.1;
+        const psPts = Number(d.priorityScore || 0) * 1.1;
         const vetoPenalty = d.hardVeto ? 500 : 0;
         const missingPenalty = d.cvdMissing ? 18 : 0;
-        return tierPts + scorePts + psPts + r117Bonus - vetoPenalty - missingPenalty;
+        return tierPts + scorePts + calibPts + psPts + r117Bonus - vetoPenalty - missingPenalty;
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
@@ -8308,7 +8663,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const sc = Number(d.score || 0);
         const flow = side === 'LONG' ? Number(d.r125Flow?.longEdge || 0) : Number(d.r125Flow?.shortEdge || 0);
         const modeBonus = String(d.brainMode||'NO_EDGE') === 'NO_EDGE' ? -25 : 0;
-        const danger = d.brainModeQualityBlock || d.brainHtfCounterWait || d.hardVeto || d.r114TrapBlock || d.r116HtfGuardBlock ? -18 : 0;
+        const danger = d.brainModeQualityBlock || d.brainHtfCounterWait || d.hardVeto || d.r114TrapBlock || (d.r116HtfGuardBlock && !d.r117HtfReverseOk) ? -18 : 0;
         return conf*1.8 + sc*0.55 + flow + modeBonus + danger;
       }
       let recommendation='WAIT', decisionChain=null;
@@ -9984,13 +10339,16 @@ function r119BuildAutoDiag(dc={}) {
   try {
     const parts = [];
     if (dc.r110Phase) parts.push(`HTF faz:${dc.r110Phase}`);
-    if (dc.r116HtfGuardBlock) parts.push('HTF amir blok');
+    if (dc.r116HtfGuardBlock && !dc.r117HtfReverseOk) parts.push('HTF amir blok');
     if (dc.r117NearTrapHTF) parts.push(`ters-bölge ${r119FmtLevel(dc.r117TrapLevel)}`.trim());
     if (dc.r117HtfReverseOk) parts.push('ters-hedef HAZIR');
     if (dc.r118CandleOk) parts.push(`mum:${dc.r118CandleOzet||'OK'}`);
     else if (dc.r118CandleOzet) parts.push(`mum-izle:${dc.r118CandleOzet}`);
     if (dc.r111KoprusuOk) parts.push('sıkışma HAZIR');
     if (dc.r111SiksmaBreakout) parts.push(`patlama:${dc.r111SqueezeSkor||0}/4`);
+    if (dc.r140Phase?.phase) parts.push(`R140 faz:${dc.r140Phase.phase}`);
+    if (dc.r140OiVel?.fakePump) parts.push('R140 sahte-pump');
+    if (dc.r140BtcDiv?.score) parts.push(`R140 BTC-div:+${dc.r140BtcDiv.score}`);
 
     const htf = [];
     if (dc.r110NearSSL) htf.push(`SSL ${r119FmtLevel(dc.r110NearSSL)}`);
@@ -10014,7 +10372,14 @@ function r119BuildAutoDiag(dc={}) {
       r117PrecisionCandleOk: !!dc.r117PrecisionCandleOk,
       r118CandleOk: !!dc.r118CandleOk,
       r118CandleStrong: !!dc.r118CandleStrong,
-      r118CandleOzet: String(dc.r118CandleOzet || '').slice(0,220)
+      r118CandleOzet: String(dc.r118CandleOzet || '').slice(0,220),
+      r140Summary: String([
+        dc.r140Phase?.phase ? `faz:${dc.r140Phase.phase}` : '',
+        dc.r140OiVel?.summary ? dc.r140OiVel.summary : '',
+        dc.r140BtcDiv?.label ? dc.r140BtcDiv.label : '',
+        dc.r140EqHL?.summary ? dc.r140EqHL.summary : '',
+        dc.r140Rvol?.signal ? `RVOL:${dc.r140Rvol.signal}×${dc.r140Rvol.rvol}` : ''
+      ].filter(Boolean).join(' · ')).slice(0,260)
     };
   } catch {
     return {};
@@ -10044,8 +10409,8 @@ function pushAutoCandidate(row) {
     siksmaOzet: String(row.siksmaOzet || prevDiag.siksmaOzet || '').slice(0,180),
     ictDashboard: String(row.ictDashboard || prevDiag.ictDashboard || '').slice(0,180),
     htfTani: String(row.r119HtfDiag || row.htfTani || prevDiag.htfTani || '').slice(0,260),
-    htfBlok: !!(row.r116HtfGuardBlock ?? row.htfBlok ?? prevDiag.htfBlok),
-    htfBlokSebep: String(row.r116HtfGuardReason || row.htfBlokSebep || prevDiag.htfBlokSebep || '').slice(0,260),
+    htfBlok: !!((row.r117HtfReverseOk ? false : row.r116HtfGuardBlock) ?? row.htfBlok ?? prevDiag.htfBlok),
+    htfBlokSebep: row.r117HtfReverseOk ? '' : String(row.r116HtfGuardReason || row.htfBlokSebep || prevDiag.htfBlokSebep || '').slice(0,260),
     tersHedef: !!(row.r117HtfReverseOk ?? row.tersHedef ?? prevDiag.tersHedef),
     tersHedefSebep: String(row.r117HtfReverseReason || row.tersHedefSebep || prevDiag.tersHedefSebep || '').slice(0,260),
     tersBolge: !!(row.r117NearTrapHTF ?? row.tersBolge ?? prevDiag.tersBolge),
@@ -10059,6 +10424,7 @@ function pushAutoCandidate(row) {
     brainSummary: String(row.brainSummary || row.brain?.summary || '').slice(0,500),
     r125OrderflowSummary: String(row.r125OrderflowSummary || row.r125Flow?.summary || '').slice(0,300),
     r126FlowSummary: String(row.r126FlowSummary || row.r125Flow?.r126?.summary || '').slice(0,260),
+    r140Summary: String(row.r140Summary || prevDiag.r140Summary || '').slice(0,260),
     r126PlaybookAdj: Number(row.r126PlaybookAdj || (row.brainMode ? r126PlaybookAdj(row.brainMode) : 0)),
     r125BestSide: row.r125BestSide || row.r125Flow?.bestSide || '',
     r125LiveDeltaPct: Number(row.r125LiveDeltaPct || row.r125Flow?.deltaPct || 0),
@@ -10069,7 +10435,7 @@ function pushAutoCandidate(row) {
     htfTani:r.htfTani, htfBlok:r.htfBlok, htfBlokSebep:r.htfBlokSebep,
     tersHedef:r.tersHedef, tersHedefSebep:r.tersHedefSebep, tersBolge:r.tersBolge,
     hassasMumOk:r.hassasMumOk, mumOnay:r.mumOnay, mumGuclu:r.mumGuclu, mumOzet:r.mumOzet,
-    r125OrderflowSummary:r.r125OrderflowSummary, r126FlowSummary:r.r126FlowSummary, r126PlaybookAdj:r.r126PlaybookAdj, r125BestSide:r.r125BestSide, r125LiveDeltaPct:r.r125LiveDeltaPct
+    r125OrderflowSummary:r.r125OrderflowSummary, r126FlowSummary:r.r126FlowSummary, r140Summary:r.r140Summary, r126PlaybookAdj:r.r126PlaybookAdj, r125BestSide:r.r125BestSide, r125LiveDeltaPct:r.r125LiveDeltaPct
   };
   autoDiagBySymbol.set(`${r.symbol}_${r.rec}`, diagKeep);
   autoDiagBySymbol.set(r.symbol, diagKeep);
@@ -10190,8 +10556,8 @@ app.get('/api/health', (_req, res) => {
         sweepRequired: sweepOnly,
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
-          : 'R137 5m Fırsat Beyni: Binance sembol kaldıraç sınırı fallback + R136 çıkış nefesi korunur',
-        note: 'R137; R136 çıkış zamanlaması korunur. Binance -4028 kaldıraç geçersiz hatasında sembolün izin verdiği maksimum kaldıraç okunur, gerekirse kademeli fallback ile emir boşa düşmeden güvenli kaldıraçla denenir.'
+          : 'R142 5m Fırsat Beyni: kalibre edge + geç giriş/ters senaryo + işlem sıklığı korunur',
+        note: 'R142; neural-network yok. R141 yön-duyarlı pump beyni korunur; raw edge kalibre edilir, geç-chase ve zarar setup hafızası aynı yönü zayıflatır, ters yön kanıtlıysa fırsata çevrilir. İşlem sayısını düşürmemek için hard block eklemez.'
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -10842,7 +11208,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // R116: Son emir öncesi HTF amir kontrolü. Analiz zinciri bir sebeple geçse bile 1H/4H karşı seviyede legacy emir açılmaz.
-        if (decisionChain?.r116HtfGuardBlock) {
+        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk) {
           const why = r120AutoReason(decisionChain, `HTF likidite amiri — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r116CounterLevel:decisionChain?.r116CounterLevel, r116CounterDist:decisionChain?.r116CounterDist, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -10967,7 +11333,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
         if (cfg.vurKacEnabled && cfg.vurKacAutoLev && decisionChain?.r88VurKacOk) {
           const structuralAutoLevOk = !!(
-            !decisionChain?.r116HtfGuardBlock &&
+            (!decisionChain?.r116HtfGuardBlock || decisionChain?.r117HtfReverseOk) &&
             (decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r117HtfReverseOk ||
              String(decisionChain?.entryPermissionReason||'').includes('R115_HTF') ||
              String(decisionChain?.entryPermissionReason||'').includes('R111_SIKISMA'))
