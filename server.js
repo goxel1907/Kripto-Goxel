@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R156_TOP10_FAST_BYPASS';
+const LAZARUS_BUILD = 'R158_ANALYSIS_QUALITY';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -4221,8 +4221,8 @@ function r118AnalyzeCandlePlaybook(klines, dir='LONG', level=null) {
   if (volBoost) out.score += 1;
   if (impulse0) out.score += 1;
   out.score = Math.min(12, out.score);
-  out.strong = out.score >= 7;
-  out.ok = out.score >= 5 && !out.reject;
+  out.strong = out.score >= 8; // R158: strong threshold 7→8 (daha güçlü reversal konfirmasyonu)
+  out.ok = out.score >= 6 && !out.reject; // R158: ok threshold 5→6 (yanlış reversal engeli)
   out.trNames = out.names.map(n => trPatternName(n));
   out.ozet = out.ok
     ? `${dir} mum teyidi: ${out.trNames.slice(0,3).join(' + ')} · puan ${out.score}/12 · vol:${volBoost?'VAR':'yok'} impuls:${impulse0?'VAR':'yok'}`
@@ -4497,11 +4497,15 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
           : Math.max(50, minScore - 20))
     : Math.max(44, minScore - 16);
   const needsPremiumProof = ['TREND_CONTINUATION','MOMENTUM_SCALP','FLOW_SCALP'].includes(primaryMode);
+  // R158: modeQualityBlock — COUNTER_TRAP için r125 canlı akış teyidi eklendi.
+  // ZEC/FOLKS COUNTER_TRAP analiz hatası: bot karşı akış varken tuzak dönüşü açıyordu.
+  // Artık COUNTER_TRAP için r125SideFlow.ok (aynı yön canlı orderflow) veya deltaOkStrict zorunlu.
+  const r158CounterTrapFlowOk = r120Bool(r125SideFlow.ok || r125SideFlow.strong || deltaOkStrict);
   const modeQualityBlock = r120Bool(
     (needsPremiumProof && htfCounterWait) ||
-    // R138 FIX2: COUNTER_TRAP htfCounterWait=true ve karşı seviye %1 içindeyse blok
-    // Neden: OPN/WLD gibi pumped coin'lerde BSL %0.18 yakınken COUNTER_TRAP açmak = tuzağa girmek
     (primaryMode === 'COUNTER_TRAP' && htfCounterWait && counterDist <= 1.0 && !d.r117HtfReverseOk) ||
+    // R158: COUNTER_TRAP için canlı akış YOKsa blok (karşı akışla tuzak dönüşü açma)
+    (primaryMode === 'COUNTER_TRAP' && !r158CounterTrapFlowOk && !d.r117HtfReverseOk && !htfReclaim) ||
     (primaryMode === 'TREND_CONTINUATION' && (!liveFlowOk || d.cvdMissing || teyit < 4 || r47 < 7)) ||
     (['MOMENTUM_SCALP','FLOW_SCALP'].includes(primaryMode) && (!liveFlowOk || r47 < 6))
   );
@@ -4636,15 +4640,22 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r156RealHardBlock = r120Bool(
     d.poorLiquidity || d.atrExtremeBlock ||
     (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock) ||
-    d.hardVeto  // hardVeto: rsiOk, mmOk, fundOk, poorLiquidity — gerçek tehlike
+    d.hardVeto
   );
+  // R157: R156 bypass sıkılaştırıldı — BABY/FOLKS likidasyon analizi:
+  // 1. Kalibrasyon datası < 2 tamamlanan işlem → bypass KAPALI (edge 100 = veri yok = güvenilmez)
+  // 2. score eşiği minScore-32 → minScore-20 (daha seçici)
+  // 3. Tek yön flow eşiği: edge>=8 → edge>=10, count>=15 → count>=25
+  // 4. r147 tuzak freni bypass'ı engelliyor: r147NoProofCounterTrap=true ise bypass KAPALI
+  const r156CalibrationOk = r120Bool(r142Cal.mem.same.n >= 2);
   const r156FastTop10Bypass = r120Bool(
-    !r156RealHardBlock && !r148WrongSideBlock &&
-    r125SideFlow.edge >= 8 &&          // güçlü tek yön orderflow
-    edge >= 50 &&                       // calibrated edge yeterli
-    score >= Math.max(40, minScore - 32) && // score çok düşük değil
-    primaryMode !== 'NO_EDGE' &&        // bir playbook var
-    r133LiveTradeCount >= 15            // gerçek canlı tick var
+    !r156RealHardBlock && !r148WrongSideBlock && !r147NoProofCounterTrap &&
+    r156CalibrationOk &&                  // en az 2 geçmiş işlem (edge 100 yeni coin engeli)
+    r125SideFlow.edge >= 10 &&            // daha güçlü tek yön orderflow
+    edge >= 55 &&                         // calibrated edge daha yüksek
+    score >= Math.max(45, minScore - 20) && // score daha seçici
+    primaryMode !== 'NO_EDGE' &&
+    r133LiveTradeCount >= 25              // daha fazla canlı tick teyidi
   );
 
   const ok = r120Bool(
@@ -8698,17 +8709,26 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // ya da 5m onaylı mum formasyonu olacak. Sadece “terazi/body-shift” artık ters işlem açtırmaz.
         const r117PrecisionCandleOk = !!(r117IctSameSideOk || (r117MssOk && r117BodyReclaimOk) || r118CandleOk || (r118CandleStrong && r117TrapSweepTaken));
         const r117TrapEvidenceOk = !!(r117TrapEvidenceRawOk && r117PrecisionCandleOk);
-        const r117FlowOk = !!(
-          deltaOk || deltaOkStrict || cvdBridgePass || oiBridgeOk || obSameSide || fundBridgeOk || mmSameSide ||
-          (r22FundingTrap.detected && ((isL && r111ShortSqueeze) || (!isL && r111LongSqueeze))) ||
-          (Number(r88AkisTeyidiSayisi||0) >= 3 && Number(r47TimingPts||0) >= 2)
+        // R158: r117FlowOk güçlendirildi — FOLKS/ZEC analiz hataları:
+        // Sadece oiBridgeOk veya fundBridgeOk ile delta karşıyken HTF reversal açılıyordu.
+        // Artık delta uyumu (CVD/tick) VEYA r125 canlı akış ZORUNLU + en az 1 ek teyit.
+        const r117LiveFlowBase = r120Bool(deltaOkStrict || r125SideFlow.ok || r125SideFlow.strong);
+        const r117SecondaryTeyit = r120Bool(oiBridgeOk || obSameSide || fundBridgeOk || mmSameSide || cvdBridgePass ||
+          (r22FundingTrap.detected && ((isL && r111ShortSqueeze) || (!isL && r111LongSqueeze))));
+        const r117FlowOk = r120Bool(
+          (r117LiveFlowBase && r117SecondaryTeyit) ||
+          (r117LiveFlowBase && Number(r88AkisTeyidiSayisi||0) >= 3) ||
+          (deltaOkStrict && r125SideFlow.ok)  // delta + canlı orderbook = güçlü teyit
         );
+        // R158: r117HtfReverseOk — r117LiveFlowBase (delta/r125) ZORUNLU hale geldi.
+        // FOLKS/ZEC hatası: sweep+choch var ama canlı akış karşı yönde → büyük kayıp.
+        // Şimdi: delta veya canlı orderbook teyidi olmadan HTF reversal açılmıyor.
         const r117HtfReverseOk = !!(
           r117NearTrapHTF && !r117AcceptedAgainst && r117TrapEvidenceOk && r117FlowOk &&
+          r117LiveFlowBase &&   // R158: canlı akış ZORUNSALlaştırıldı
           !hardVeto && !signalDecayAutoBlock && !poorLiquidity && !atrExtremeBlock &&
           r93EmirZeminiOk && Number(r47Readiness || 0) >= 6 && Number(r88MikroSkor || 0) >= 8 &&
           Number(r88AkisTeyidiSayisi || 0) >= 2 &&
-          // Üst hedefte SHORT açarken falling-knife değil, alt hedefte LONG açarken rising-knife değil.
           !(isL ? r41FallingKnifeBlock : r41RisingKnifeBlock)
         );
         const r117HtfReverseReason = r117HtfReverseOk
@@ -9767,6 +9787,22 @@ function canBypassCooldownForReverse(info, desiredSide, decisionChain) {
   const tier = String(decisionChain?.tier || '');
   return !!((flip.favorable || flip.suggestedSide === ds) && ps >= 55)
       || (tier === 'A' && ps >= 75);
+}
+
+// R157: Ardışık kayıp tespiti — aynı coin+yönde son 4 saatte 2+ kayıp → 4 saat cooldown
+// FOLKS 5 kez işlem, 3 zarar analizi: cooldown bitince tekrar giriyor ve tekrar kaybediyor.
+function r157GetConsecutiveLosses(symbol, side, lookbackMs = 4*60*60*1000) {
+  const sym = String(symbol||'').replace('USDT','').toUpperCase();
+  const dirNorm = normalizeSide(side);
+  const cutoff = Date.now() - lookbackMs;
+  return (Array.isArray(tradeLedger) ? tradeLedger : []).filter(t =>
+    t.status === 'CLOSED' &&
+    String(t.symbol||'').toUpperCase() === sym &&
+    normalizeSide(t.side) === dirNorm &&
+    Number(t.closedAt||0) >= cutoff &&
+    Number.isFinite(Number(t.pnlUSDT)) &&
+    Number(t.pnlUSDT) < 0
+  ).length;
 }
 
 function setCooldown(symbol, ms, reason, meta={}) {
@@ -11754,7 +11790,8 @@ async function runAutoScan(prioritySymbol=null) {
              String(decisionChain?.entryPermissionReason||'').includes('R111_SIKISMA'))
           );
           if (structuralAutoLevOk) {
-            const userMaxLev = Math.max(1, Math.min(125, parseInt(cfg.vurKacMaxLev || 50) || 50));
+            // R157: vurKacMaxLev hard cap 20x — FOLKS/BABY likidasyon analizi: 50x=%2 ters=likide
+            const userMaxLev = Math.max(1, Math.min(20, parseInt(cfg.vurKacMaxLev || 20) || 20));
             const bracketMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * userMaxLev);
             if (bracketMaxLev) {
               executeLeverage = Math.max(executeLeverage, Math.min(userMaxLev, bracketMaxLev));
@@ -11766,6 +11803,19 @@ async function runAutoScan(prioritySymbol=null) {
             leverageNote = `R116 legacy köprüde otomatik kaldıraç kapalı; panel kaldıracı ${executeLeverage}x`;
           }
         }
+
+        // R157: SL×Kaldıraç guard — SL yüzdesi × kaldıraç > %25 ise kaldıracı düşür.
+        // FOLKS 50x × %2 SL = %100 risk. Max kabul: %25 marjın riski.
+        try {
+          const r157SlPct = Number(userSLPct || cfg.slPct || 2);
+          const r157MaxRisk = 25; // kaldıraçlı max %25 ROI risk
+          if (r157SlPct * executeLeverage > r157MaxRisk) {
+            const oldLev = executeLeverage;
+            executeLeverage = Math.max(1, Math.floor(r157MaxRisk / r157SlPct));
+            leverageNote += ` · R157 SL×Kaldıraç guard ${oldLev}x→${executeLeverage}x (SL%${r157SlPct}×lev≤25%)`;
+            logAuto(`🛡️ ${coin.symbol} SL${r157SlPct}%×${oldLev}x=%${(r157SlPct*oldLev).toFixed(0)} risk → ${executeLeverage}x'e düşürüldü`);
+          }
+        } catch(_e) {}
 
         // R150: mikro-cap + ATR yüksek coinlerde işlem sayısını kesmeden ROI hasarını eşitle.
         // 4USDT gibi 0.01 altı/çevresi coinlerde %1-2 fiyat oynama 20x ile -20/-40 ROI yapar.
@@ -11820,6 +11870,16 @@ async function runAutoScan(prioritySymbol=null) {
             targetPrice = +magnetTarget.toFixed(8);
             r125TpNote = ` · R125 TP liq-mıknatıs ${tpMagnet.price} g${tpMagnet.strength}`;
           }
+        }
+
+        // R157: Ardışık kayıp fren — aynı coin+yönde son 4 saatte 2+ kayıp → 4 saat bekleme
+        const r157ConsecLosses = r157GetConsecutiveLosses(coin.fullSymbol, recommendation);
+        if (r157ConsecLosses >= 2) {
+          const r157WaitMs = 4 * 60 * 60 * 1000;
+          logAuto(`🔁 ${coin.symbol} son 4 saatte ${r157ConsecLosses} kayıp — 4 saat cooldown (FOLKS/BABY likidasyon önleme)`);
+          setCooldown(coin.fullSymbol, r157WaitMs, `R157 ardışık ${r157ConsecLosses} kayıp; 4 saat ${recommendation} bekleme`);
+          markAutoSkip(coin.symbol, `R157 ardışık kayıp freni (${r157ConsecLosses}x)`, {rec:recommendation, score});
+          continue;
         }
 
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote} — emir açılıyor`);
