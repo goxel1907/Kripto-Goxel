@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R158c_SCOPE_FINAL';
+const LAZARUS_BUILD = 'R161b_TRAILING_RESTORE_FORECAST_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -4662,10 +4662,136 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r133LiveTradeCount >= 25              // daha fazla canlı tick teyidi
   );
 
+  // ── R160: TRADER DECISION — Puansız, 4 soru, trader mantığı ─────────────────
+  // "Şu an ne görüyorum?" — Her soru kendi içinde akıllıca. 3/4 = TRADE.
+  // Araştırma: HaasOnline, TradingView Scalp Signal Bot, CVD+OI+structure üçlüsü.
+
+  const ictTxt = String(d.r110ICT?.ictState || d.r110ICT?.dashboardText || '');
+
+  // SORU 1 — YAPI: Fiyat kritik seviyede mi ve yön uyumlu mu?
+  const r160Q1Structure = r120Bool(
+    // SSL/BSL sweep olmuş veya yakın — tam ICT setup
+    (side === 'LONG'
+      ? /SSL_ALINDI|HTF_SSL|SSL_SWEEP|SSL.*BODY_RECLAIM/i.test(ictTxt)
+      : /BSL_ALINDI|HTF_BSL|BSL_SWEEP|BSL.*BODY_RECLAIM/i.test(ictTxt)) ||
+    // Sweep bölgesinde (5m mum izleme)
+    (side === 'LONG'
+      ? /HTF_SSL_SEVIYESINDE/i.test(ictTxt)
+      : /HTF_BSL_SEVIYESINDE/i.test(ictTxt)) ||
+    // r117 trap seviyesine yakın
+    r120Bool(d.r117NearTrapHTF) ||
+    // HTF engel yok + ters bölge yok
+    (!d.r116HtfGuardBlock && !d.tersBolge)
+  );
+
+  // SORU 2 — AKIŞ: Canlı piyasa bu yönde mi?
+  const r160LiveDeltaOk = r120Bool(
+    side === 'LONG'
+      ? r120BrainNum(d.r125Flow?.deltaPct, 0) >= 15
+      : r120BrainNum(d.r125Flow?.deltaPct, 0) <= -15
+  );
+  const r160FlowNotAgainst = r120Bool(r125SideFlow.against < r125SideFlow.edge + 5);
+  // r160Q2Flow: R161'de Q4 bloğunda yeniden tanımlandı (delta teyidiyle güçlendirildi)
+
+  // SORU 3 — MOMENTUM: Coin'in döngüsü ve hacmi uygun mu?
+  const r160Phase = String(d.r140Phase?.phase || '').toUpperCase();
+  const r160OiPos = r120Bool(d.r140OiVel && !d.r140OiVel.fakePump && r120BrainNum(d.r140OiVel?.velocity, 0) > 0);
+  const r160RvolOk = r120Bool(r120BrainNum(d.r140Rvol?.ratio, 0) >= 0.45);
+  const r160Q3Momentum = r120Bool(
+    r160Phase === 'EXPANSION' ||
+    r160Phase === 'ACCUMULATION' ||
+    (r160Phase === 'TRANSITION' && r160OiPos) ||
+    (r160RvolOk && r160OiPos) ||
+    r160RvolOk   // minimum hacim var
+  );
+
+  // SORU 4 — KANIT: R161: Güçlendirildi — tek kanıt yetmiyor, delta teyidi gerekli
+  // FOLKS/ZEC analizi: sweep var ama delta karşıydı → yanlış giriş
+  // Şimdi: sweep + delta uyum VEYA candle + body reclaim VEYA güçlü forecast
+  const r161DeltaConfirm = r120Bool(
+    side === 'LONG'
+      ? r120BrainNum(d.r125Flow?.deltaPct, 0) >= 10 || r125SideFlow.strong
+      : r120BrainNum(d.r125Flow?.deltaPct, 0) <= -10 || r125SideFlow.strong
+  );
+  const r160ForecastOk = r120Bool(
+    // R161 FIX: forecastDir d.r125Flow.r126.forecast.side üzerinden geliyor
+    d.r125Flow?.r126?.forecast?.side === side ||
+    (side === 'LONG' ? r120BrainNum(d.r125Flow?.r126?.forecast?.confidence, 0) >= 65 && r120BrainNum(d.r125Flow?.deltaPct, 0) >= 5
+                     : r120BrainNum(d.r125Flow?.r126?.forecast?.confidence, 0) >= 65 && r120BrainNum(d.r125Flow?.deltaPct, 0) <= -5)
+  );
+  const r160Q4Proof = r120Bool(
+    // Sweep + delta teyidi = güçlü kanıt
+    (r120Bool(d.r117TrapSweepTaken) && r161DeltaConfirm) ||
+    // Candle formasyon + body reclaim = yapısal kanıt
+    (r120Bool(d.r118CandleOk) && (r120Bool(d.r114ReclaimOk) || r120Bool(d.r117BodyReclaimOk))) ||
+    // Sadece güçlü candle (strong = 8/12 puan)
+    r120Bool(d.r118CandleStrong) ||
+    // Sweep alındı + HTF reclaim
+    (r120Bool(d.r117TrapSweepTaken) && r120Bool(d.r117BodyReclaimOk)) ||
+    // Güçlü forecast + canlı tick + delta
+    (r160ForecastOk && r133LiveTradeCount >= 25 && r161DeltaConfirm)
+  );
+
+  // R161: Q2 akış güçlendirildi — delta veya strong flow zorunlu
+  // Sadece edge>=5 yetmez, delta veya güçlü orderbook teyidi lazım
+  const r160Q2Flow = r120Bool(
+    r160FlowNotAgainst && (
+      r125SideFlow.strong ||                          // çok güçlü tek yön
+      (r125SideFlow.edge >= 5 && r161DeltaConfirm) || // flow + delta birlikte
+      (r125SideFlow.edge >= 8)                         // çok güçlü tek yön orderbook
+    )
+  );
+
+  // R160 gerçek tehlike: SADECE bunlar engeller
+  const r160HardBlock = r120Bool(
+    d.poorLiquidity ||
+    d.atrExtremeBlock ||
+    (side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock) ||
+    (d.hardVeto && !d.r117HtfReverseOk) ||
+    r148WrongSideBlock
+  );
+
+  // Kaç soru TRUE?
+  const r160TrueCount = [r160Q1Structure, r160Q2Flow, r160Q3Momentum, r160Q4Proof].filter(Boolean).length;
+  
+  // 3/4 TRUE + flow var + hard block yok = TRADE
+  // 4/4 TRUE + minimum flow = TRADE (daha agresif)
+  const r160TraderDecision = r120Bool(
+    !r160HardBlock && edge >= 35 && r133LiveTradeCount >= 10 && (
+      (r160TrueCount >= 3 && r125SideFlow.edge >= 4) ||
+      (r160TrueCount >= 4)
+    )
+  );
+
+  // R159: MOMENTUM PASS — araştırma sonucu: 5m scalp botlarda yüksek win rate için
+  // momentum + volume + structure üçlüsü yeterli. Tüm karmaşık katmanlar bypass.
+  // 5 puandan 4'ü varsa VE gerçek tehlike yoksa → TRADE.
+  // Kaynak: HaasOnline %65-75 WR, CVD+OI+delta üçlüsü, PSAR+ADX kombinasyonu.
+  const r159Points = (
+    (r125SideFlow.edge >= 6 ? 2 : r125SideFlow.edge >= 3 ? 1 : 0) +        // canlı orderflow
+    (edge >= 60 ? 2 : edge >= 45 ? 1 : 0) +                                  // calibrated edge
+    (r120BrainNum(d.r140Rvol?.ratio, 0) >= 0.6 ? 1 : 0) +                   // RVOL yeterli
+    (d.r140OiVel && !d.r140OiVel.fakePump && r120BrainNum(d.r140OiVel?.velocity,0) > 0 ? 1 : 0) + // OI pozitif
+    (d.r126?.forecastDir === side ? 1 : 0) +                                  // mum tahmini aynı yön
+    (score >= minScore - 28 ? 1 : 0) +                                        // score kabul edilebilir
+    (primaryMode !== 'NO_EDGE' ? 1 : 0) +                                     // bir playbook var
+    (r133LiveTradeCount >= 20 ? 1 : 0)                                        // canlı tick teyidi
+  );
+  const r159MomentumPass = r120Bool(
+    r159Points >= 6 &&
+    !r156RealHardBlock &&
+    !r148WrongSideBlock &&
+    r125SideFlow.edge >= 5 &&   // minimum tek yön akış zorunlu
+    edge >= 40 &&               // minimum edge zorunlu
+    r133LiveTradeCount >= 15    // minimum canlı tick
+  );
+
   const ok = r120Bool(
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
-    r156FastTop10Bypass
+    r156FastTop10Bypass ||
+    r159MomentumPass ||
+    r160TraderDecision
   );
 
   const sensorSummary = r120BrainSensorSummary(d);
@@ -4676,13 +4802,19 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     : '';
   const r144WatchExtra = r148Note ? ` · ${r148Note}` : (r147TrapGuardReason ? ` · ${r147TrapGuardReason}` : (r144FastBlockReason ? ` · ${r144FastBlockReason}` : ''));
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
+  const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
+  const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
-    : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''}`;
+    ? `🧠 5m Fırsat Beyni ${side}: ${r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''} · R160:${r160TrueCount}/4(${[r160Q1Structure?'Y':'',r160Q2Flow?'A':'',r160Q3Momentum?'I':'',r160Q4Proof?'K':''].join('')})`;
 
   d.brainMode = primaryMode;
   d.brainAction = ok ? 'TRADE' : 'WATCH';
   d.r156FastBypass = r156FastTop10Bypass;
+  d.r159MomentumPass = r159MomentumPass;
+  d.r159Points = r159Points;
+  d.r160TraderDecision = r160TraderDecision;
+  d.r160TrueCount = r160TrueCount;
   d.brainConfidence = edge;
   d.brainRawEdge = rawEdge;
   d.r142CalibratedEdge = edge;
@@ -10114,11 +10246,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   // parseFloat + fallback — NaN koruması
   const safe = (v, def) => { const n=parseFloat(v); return isNaN(n)?def:n; };
   const trailPct      = safe(cfg.trailingPct,  2);
-  const trailStep     = safe(cfg.trailStep,    0.3); // R155: 0.5→0.3 — daha sık SL taşıması
-  const breakEvenAt   = safe(cfg.breakEvenPct, 0.3); // R155: 0.5→0.3 — daha erken BE (kaldıraçsız %0.3)
-  const karTasima1    = safe(cfg.karTasima1,   0.6); // R155: 1.0→0.6 — %0.6 kârda SL kilitle
-  const karTasima2    = safe(cfg.karTasima2,   1.2); // R155: 2.0→1.2 — %1.2 kârda SL yukarı
-  const karTasima3    = safe(cfg.karTasima3,   2.0); // R155: 3.5→2.0 — %2.0 kârda güçlü kilit
+  const trailStep     = safe(cfg.trailStep,    0.25); // R161: 0.3→0.25 — daha sık SL taşıması
+  const breakEvenAt   = safe(cfg.breakEvenPct, 0.25); // R161: 0.3→0.25 — daha erken BE
+  const karTasima1    = safe(cfg.karTasima1,   0.5);  // R161: 0.6→0.5 — %0.5 kârda kilitle
+  const karTasima2    = safe(cfg.karTasima2,   1.0);  // R161: 1.2→1.0 — %1.0 kârda güçlü kilit
+  const karTasima3    = safe(cfg.karTasima3,   1.8);  // R161: 2.0→1.8 — %1.8 kârda maksimum kilit
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
@@ -12232,6 +12364,32 @@ async function syncPositions() {
       invalidatePositionRiskCache('LAST_KNOWN_POSITION_CLOSED');
     }
     saveLastKnownPositions();
+
+    // R161 FIX: Açık pozisyonlarda trailingState yoksa restore et (Railway restart sonrası kayıp)
+    // Restart'ta in-memory Map sıfırlanıyor; açık pozisyon için BE/trailing mekanizması çalışmıyor
+    for (const [sym, p] of openMap.entries()) {
+      if (!trailingState.has(sym)) {
+        const ep  = parseFloat(p.entryPrice || 0);
+        const lev = parseInt(p.leverage) || parseInt(autoConfig?.leverage) || 1;
+        const side = parseFloat(p.positionAmt) > 0 ? 'LONG' : 'SHORT';
+        const lastKnown = lastKnownPositions?.[sym] || {};
+        trailingState.set(sym, {
+          entryPrice:    lastKnown.entryPrice || ep,
+          side:          lastKnown.side || side,
+          leverage:      lastKnown.leverage || lev,
+          usdtAmount:    lastKnown.usdtAmount || parseFloat(autoConfig?.usdtAmount || 10),
+          slPrice:       lastKnown.slPrice || 0,
+          tpPrice:       lastKnown.tpPrice || 0,
+          breakEvenSet:  false,
+          tpExtended:    false,
+          trendHoldCount:0,
+          sltpVerified:  false,
+          openTs:        lastKnown.openTs || Date.now(),
+          _restoredAfterRestart: true,
+        });
+        logAuto(`🔄 ${sym.replace('USDT','')} trailingState restart sonrası restore edildi (ep:${ep} ${side} ${lev}x)`);
+      }
+    }
 
     // Açık pozisyonlarda önce 30sn hard-loss guard, sonra SL/TP eksik mi? → kurtarmaya çalış
     for (const [sym, p] of openMap.entries()) {
