@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R161b_TRAILING_RESTORE_FORECAST_FIX';
+const LAZARUS_BUILD = 'R162b_FULL_BYPASS_PATH_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -11543,9 +11543,21 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
-        const r121BrainTradeOk = !!(decisionChain?.brainAction === 'TRADE' && decisionChain?.autoOk === true);
+        // R162 FIX: R160/R159/R156 trader kararı brainAction=TRADE set ediyor ama autoOk eski tier sistemine bağlı.
+        // VELVET 4/4, SIREN 3/4 gibi güçlü sinyaller brainAction=TRADE olmasına rağmen açılmıyordu.
+        // Çözüm: R160/R159/R156 bypass yollarından biri aktifse autoOk şartı aranmaz.
+        const r162BrainBypassActive = r120Bool(
+          decisionChain?.r160TraderDecision ||
+          decisionChain?.r159MomentumPass ||
+          decisionChain?.r156FastBypass
+        );
+        const r121BrainTradeOk = !!(
+          decisionChain?.brainAction === 'TRADE' &&
+          (decisionChain?.autoOk === true || r162BrainBypassActive)
+        );
         const r121BrainOwnsRisk = !!(r121BrainTradeOk && Number(decisionChain?.brainConfidence||0) >= 62);
-        if (!tierOk) {
+        // R162 FIX: tierOk bloğu bypass aktifse atlanır
+        if (!tierOk && !r162BrainBypassActive) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
@@ -11553,8 +11565,8 @@ async function runAutoScan(prioritySymbol=null) {
           r54MicroProbeOk:decisionChain?.r54MicroProbeOk, r57ScalperBTierBridgeOk:decisionChain?.r57ScalperBTierBridgeOk, r61TrendContinuationBridgeOk:decisionChain?.r61TrendContinuationBridgeOk, r62CounterTrendTrapBridgeOk:decisionChain?.r62CounterTrendTrapBridgeOk, r74Top10ProScalperOk:decisionChain?.r74Top10ProScalperOk, r74ImpulseEntryOk:decisionChain?.r74ImpulseEntryOk, r74Top10ContextBypassOk:decisionChain?.r74Top10ContextBypassOk, r74ScoreFloor:decisionChain?.r74ScoreFloor, r68UnifiedScalperCoreOk:decisionChain?.r68UnifiedScalperCoreOk, r68EntryEventOk:decisionChain?.r68EntryEventOk, r68TrendContextOk:decisionChain?.r68TrendContextOk, r68CounterTrapContextOk:decisionChain?.r68CounterTrapContextOk, r68CriticalHardBlock:decisionChain?.r68CriticalHardBlock, r69PriorityContextOverrideOk:decisionChain?.r69PriorityContextOverrideOk, r69ContextOk:decisionChain?.r69ContextOk, r69PriorityExecutionOk:decisionChain?.r69PriorityExecutionOk, r65ScalperCoreOk:decisionChain?.r65ScalperCoreOk, r65ScalperCoreTrendOk:decisionChain?.r65ScalperCoreTrendOk, r65ScalperCoreCounterTrapOk:decisionChain?.r65ScalperCoreCounterTrapOk, r65ScalperCoreHardVeto:decisionChain?.r65ScalperCoreHardVeto, r53EffectiveScore:decisionChain?.r53EffectiveScore, r53SmartEdgeBoost:decisionChain?.r53SmartEdgeBoost, r53CvdSmartSafe:decisionChain?.r53CvdSmartSafe, r50EffectivePriority:decisionChain?.r50EffectivePriority, r47:{ready:decisionChain?.r47Readiness, need:decisionChain?.r47Needed, t:decisionChain?.r47TimingPts, f:decisionChain?.r47FlowPts, c:decisionChain?.r47ContextPts, s:decisionChain?.r47StructurePts, v:decisionChain?.r47RvolPts}});
           continue;
         }
-        // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur; B+ autoOk ise boğma.
-        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk) {
+        // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur — bypass aktifse geç.
+        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk && !r162BrainBypassActive) {
           const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, ...r119BuildAutoDiag(decisionChain), r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
@@ -11874,7 +11886,10 @@ async function runAutoScan(prioritySymbol=null) {
             String(decisionChain?.entryPermissionReason||'').includes('R135_FAST_EDGE_PASS') &&
             !(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r118CandleOk) &&
             Number(decisionChain?.brainConfidence||0) < 96;
-          if (atrExtreme || atrLossGap || !atrBridgeAllowed) {
+          // R162: atrExtreme (>14% veya 7xSL) bypass EDİLMEZ — likidasyon riski var
+          // Normal ATR (2.5x-7x SL arası) için r162 bypass bridge açar
+          const atrBridgeAllowedFinal = atrBridgeAllowed || (r162BrainBypassActive && !atrExtreme && !atrLossGap);
+          if (atrExtreme || atrLossGap || !atrBridgeAllowedFinal) {
             logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — volatilite riski yüksek, atlandı`);
             markAutoSkip(coin.symbol, atrLossGap ? `R135 ATR boşluk freni: ATR %${coinAtrPct.toFixed(1)} / SL %${userSLPct} hızlı-edge için fazla geniş` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
             continue;
