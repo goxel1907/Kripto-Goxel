@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R158b_SCOPE_FIX';
+const LAZARUS_BUILD = 'R158c_SCOPE_FINAL';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -4500,7 +4500,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // R158: modeQualityBlock — COUNTER_TRAP için r125 canlı akış teyidi eklendi.
   // ZEC/FOLKS COUNTER_TRAP analiz hatası: bot karşı akış varken tuzak dönüşü açıyordu.
   // Artık COUNTER_TRAP için r125SideFlow.ok (aynı yön canlı orderflow) veya deltaOkStrict zorunlu.
-  const r158CounterTrapFlowOk = r120Bool(r125SideFlow.ok || r125SideFlow.strong || deltaOkStrict);
+  // R158b: deltaOkStrict brain scope'unda yok — d.r125Flow.deltaPct'den hesapla
+  const r158DeltaOk = r120Bool(
+    side === 'LONG' ? r120BrainNum(d.r125Flow?.deltaPct, 0) >= 15 : r120BrainNum(d.r125Flow?.deltaPct, 0) <= -15
+  );
+  const r158CounterTrapFlowOk = r120Bool(r125SideFlow.ok || r125SideFlow.strong || r158DeltaOk);
   const modeQualityBlock = r120Bool(
     (needsPremiumProof && htfCounterWait) ||
     (primaryMode === 'COUNTER_TRAP' && htfCounterWait && counterDist <= 1.0 && !d.r117HtfReverseOk) ||
