@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R162b_FULL_BYPASS_PATH_FIX';
+const LAZARUS_BUILD = 'R165_PROFIT_LOCK_EXECUTION_GUARD';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3276,6 +3276,10 @@ function rememberOpenPositionForReentry(p, state={}) {
     entryPrice:safeNum(p.entryPrice || state.entryPrice || old.entryPrice, 10),
     leverage:Number(p.leverage || state.leverage || old.leverage || autoConfig?.leverage || 1),
     openedAt:Number(state.openedAt || old.openedAt || Date.now()),
+    currentSL:safeNum(state.currentSL || state.slPrice || old.currentSL || old.slPrice, 10),
+    targetTP:safeNum(state.targetTP || state.tpPrice || old.targetTP || old.tpPrice, 10),
+    sltpVerified:!!(state.sltpVerified || old.sltpVerified),
+    usdtAmount:safeNum(state.usdtAmount || autoConfig?.usdtAmount || old.usdtAmount, 2),
     entryReason:state.openReason || old.entryReason || null, lastSeen:Date.now()
   };
 }
@@ -3326,7 +3330,7 @@ function recordTradeClose(symbol, state={}, cls={}) {
   Object.assign(row, {
     status:'CLOSED', closedAt, closedAtTR:trTime(closedAt), closePrice:safeNum(close,10),
     pnlUSDT:Number.isFinite(Number(cls.realizedPnl))?safeNum(cls.realizedPnl,4):null,
-    roiPct:Number.isFinite(rawMove)?safeNum(rawMove*lev,2):null,
+    roiPct:Number.isFinite(rawMove)?safeNum(rawMove*lev,2):(Number.isFinite(Number(cls.roiPct))?safeNum(cls.roiPct,2):null),
     exitReason:cls.code||'CLOSED', exitLabel:cls.label||'Binance kapanışı',
     resultNote:buildResultNote(cls,state),
     sl:cls.sl||state?.currentSL||null, tp:cls.tp||state?.targetTP||null,
@@ -4355,6 +4359,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // Eski Rxx modülleri burada sadece sensör kabul edilir. Nihai emir: tek beyin.
   // Mantık: "kural geçti/kaldı" değil; o anki TOP10 5m koşulunda hangi oyun daha yüksek edge veriyor?
   const d = raw && typeof raw === 'object' ? {...raw} : { pass:false, tier:'WAIT', score:0 };
+  // R163: karar nesnesi kendi yönünü açıkça taşısın.
+  d.side = side;
   const score = r120BrainNum(sideScore || d.score, 0);
   const minScore = r120BrainNum(minAutoScore, 72);
   const r47 = r120BrainNum(d.r47Readiness, 0);
@@ -4772,7 +4778,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (edge >= 60 ? 2 : edge >= 45 ? 1 : 0) +                                  // calibrated edge
     (r120BrainNum(d.r140Rvol?.ratio, 0) >= 0.6 ? 1 : 0) +                   // RVOL yeterli
     (d.r140OiVel && !d.r140OiVel.fakePump && r120BrainNum(d.r140OiVel?.velocity,0) > 0 ? 1 : 0) + // OI pozitif
-    (d.r126?.forecastDir === side ? 1 : 0) +                                  // mum tahmini aynı yön
+    (r160ForecastOk ? 1 : 0) +                                                 // mum tahmini aynı yön (R163: doğru forecast kaynağı)
     (score >= minScore - 28 ? 1 : 0) +                                        // score kabul edilebilir
     (primaryMode !== 'NO_EDGE' ? 1 : 0) +                                     // bir playbook var
     (r133LiveTradeCount >= 20 ? 1 : 0)                                        // canlı tick teyidi
@@ -10279,6 +10285,8 @@ async function managePosition(apiKey, apiSecret, pos) {
       : Math.max(0, (curPrice - base) / base * 100);
   };
 
+  // R165: yüksek ROI kâr kilidi aşağıda, action/r91 helper hazırlandıktan sonra çalışır.
+
   // R94 AKTİF VUR-KAÇ ÇIKIŞ MOTORU — güvenli kâr bölgesinden önce küçük kâr kilidi yok
   // Amaç: Binance SL/TP emniyet kemeri olarak kalırken, kâr görüldüğünde TP'yi beklemeden
   // kâr kilidi / aktif çıkış kararı üretmek. EMA zorunlu kapı değildir; veri-terazi kullanılır.
@@ -10404,11 +10412,22 @@ async function managePosition(apiKey, apiSecret, pos) {
     (!isLong && tickSnap.microstructure.lastDelta > 0)
   );
   // CVD flip — kaldıraçsız fiyat hareketi > 0.2% kârdayken (çok hassas)
-  if ((cvdFlip.flip || tickFlip || exhaustExit || trappedExit) && realProfitPct > 0.2) {
+  // R164: CVD flip eşiği dinamik — yüksek ROI'da acil çıkış yerine SL koru
+  // %80 ROI'da CVD flip → kapatma değil, SL sıkıştır
+  // Düşük ROI'da (<5%) hızlı çıkış, yüksek ROI'da (>20%) sadece SL taşı
+  const cvdFlipMinProfit = pnlPct >= 40 ? 2.0 : pnlPct >= 20 ? 1.0 : pnlPct >= 10 ? 0.5 : 0.2;
+  if ((cvdFlip.flip || tickFlip || exhaustExit || trappedExit) && realProfitPct > cvdFlipMinProfit) {
     if (tickFlip)    cvdFlip.reason = `Tick delta flip: ${tickSnap?.deltaFlip}`;
     if (exhaustExit) cvdFlip.reason = `Exhaustion: momentum bitti`;
     if (trappedExit) cvdFlip.reason = `Trapped trader: hızlı ters dönüş bekleniyor`;
-    action = { type:'EMERGENCY_EXIT', ...cvdFlip };
+    // R164: Yüksek ROI'da (>%30 kaldıraçlı) flip = acil çıkış değil, SL koru
+    if (pnlPct >= 30) {
+      // SL kilitleme işareti — aşağıdaki kar koruma bloğu devreye girecek
+      state.cvdFlipHighProfit = true;
+      trailingState.set(sym, state);
+    } else {
+      action = { type:'EMERGENCY_EXIT', ...cvdFlip };
+    }
   }
 
   // ── 2. ACİL ÇIKIŞ — Ters Cascade ────────────────────────────────────────
@@ -10436,6 +10455,57 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade });
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
+
+  // ── R165 ROI KÂR KİLİDİ — R164'teki sessiz hata düzeltildi ─────────────
+  // R164 bloğu action ve r91LockPriceFromPct tanımlanmadan çalışıyordu; ayrıca
+  // PROFIT_LOCK_UPDATE aksiyonu uygulama listesinde yoktu. Sonuç: %40-%80 ROI
+  // görülse bile SL gerçekten Binance'e taşınmayabiliyordu. Bu blok aksiyon
+  // nesnesi hazırlandıktan sonra çalışır ve R165_KAR_KILIDI olarak gerçek SL yazar.
+  const r165PeakRoi = Number(state.peakPnl || 0);
+  const r165GivebackRoi = Math.max(0, r165PeakRoi - Number(pnlPct || 0));
+  const r165LockTable = [
+    { min: 90, lockReal: 3.20, level: 7 },
+    { min: 70, lockReal: 2.40, level: 6 },
+    { min: 50, lockReal: 1.70, level: 5 },
+    { min: 35, lockReal: 1.10, level: 4 },
+    { min: 25, lockReal: 0.75, level: 3 },
+    { min: 16, lockReal: 0.45, level: 2 },
+    { min: 9,  lockReal: 0.24, level: 1 },
+  ];
+  if (!action && inProfit && r165PeakRoi >= 9) {
+    const lock = r165LockTable.find(x => r165PeakRoi >= x.min);
+    if (lock) {
+      // Geri verme arttıysa kilidi biraz daha yukarı al; ama mevcut fiyatı geçip
+      // stop emrini geçersiz yapmasın diye updateStopLossWithProofJS ayrıca mark'a göre clamp eder.
+      const givebackBoost = r165GivebackRoi >= 18 ? 0.35 : r165GivebackRoi >= 10 ? 0.20 : 0;
+      const lockRealPct = lock.lockReal + givebackBoost;
+      const lockSL = r91LockPriceFromPct(lockRealPct);
+      const currentSLNum = Number(state.currentSL || 0);
+      const betterLock = isLong ? (!currentSLNum || lockSL > currentSLNum) : (!currentSLNum || lockSL < currentSLNum);
+      if (betterLock) {
+        action = {
+          type:'R165_KAR_KILIDI', urgency: r165PeakRoi >= 35 ? 'MEDIUM' : 'LOW', newSL:lockSL,
+          reason:`R165 kâr kilidi: zirve ROI %${r165PeakRoi.toFixed(1)}, mevcut %${Number(pnlPct||0).toFixed(1)}, geri verme %${r165GivebackRoi.toFixed(1)} → SL entry +%${lockRealPct.toFixed(2)} gerçek kâr bölgesine`,
+          stateUpdates:{ breakEvenSet:true, r165ProfitLock:true, profitLockLevel:Math.max(Number(state.profitLockLevel||0), lock.level) }
+        };
+      }
+    }
+  }
+
+  // +ROI görmüş işlem tekrar zarara gömülmesin. Büyük zirveden sonra runner gücü yoksa
+  // market reduce-only kapatır; bu WR garantisi değildir, fakat +80 ROI → eksi kapanış
+  // tipindeki ana sapmayı kesmek için tasarlandı.
+  const r165WinnerNeverLoserExit = !!(!action && r165PeakRoi >= 20 && !r91Brain.devamGucu && (
+    (r165PeakRoi >= 70 && pnlPct <= Math.max(12, r165PeakRoi * 0.30)) ||
+    (r165PeakRoi >= 40 && pnlPct <= Math.max(8,  r165PeakRoi * 0.25)) ||
+    (r165PeakRoi >= 20 && pnlPct <= Math.max(4,  r165PeakRoi * 0.18))
+  ));
+  if (r165WinnerNeverLoserExit) {
+    action = {
+      type:'R165_WINNER_NEVER_LOSER_KAPAT', urgency:'HIGH',
+      reason:`R165 winner-never-loser: zirve ROI %${r165PeakRoi.toFixed(1)} → mevcut %${Number(pnlPct||0).toFixed(1)}; devam gücü yok, kâr zarara dönmeden market çıkış`
+    };
+  }
 
   // ── R149 ROI KÂR KASASI — işlem sayısını azaltmadan kârdaki pozisyonu daha iyi koru ──
   // Giriş kapısı değildir; sadece açık pozisyon yönetir. Amaç büyük bakiyede küçük ROI kârlarını
@@ -10714,7 +10784,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   stampManager(action.type, action.reason, action.urgency||'LOW');
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
-  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT' || action.type === 'R149_PROFIT_GIVEBACK_KAPAT') {
+  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT' || action.type === 'R149_PROFIT_GIVEBACK_KAPAT' || action.type === 'R165_WINNER_NEVER_LOSER_KAPAT') {
     // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
       await cancelAlgoOrders(apiKey, apiSecret, sym, true);
@@ -10725,7 +10795,7 @@ async function managePosition(apiKey, apiSecret, pos) {
         type:'MARKET', quantity:qty,
         reduceOnly:'true', positionSide:'BOTH', __emergency:true
       });
-      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
+      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':action.type==='R165_WINNER_NEVER_LOSER_KAPAT'?'R165 KÂR ZARARA DÖNMESİN ÇIKIŞI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
       trailingState.delete(sym);
       return { action:'CLOSED', pnl:pnlPct, reason:action.reason };
     } catch(e) {
@@ -10734,7 +10804,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   }
 
   if (action.type === 'BREAK_EVEN' || action.type === 'TRAIL_SL' || action.type === 'TIGHTEN_SL'
-      || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK') {
+      || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK' || action.type === 'R165_KAR_KILIDI') {
     const newSL = action.newSL;
     if (!newSL) return null;
     const upd = await updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, action.type);
@@ -11468,6 +11538,32 @@ async function runAutoScan(prioritySymbol=null) {
         let score = recommendation==='LONG'?longScore:shortScore;
         let isLong = recommendation==='LONG';
         let isShort = recommendation==='SHORT';
+
+        // R163: Beyin bypass durumu scan loop'un EN BAŞINDA hesaplanır.
+        // R162b'de bu değişken entryPermission/tier kontrollerinden sonra doğduğu için
+        // bazı eski kapılar R160/R159 kararını emirden önce kesebiliyordu.
+        const r162BrainBypassActive = r120Bool(
+          decisionChain?.r160TraderDecision ||
+          decisionChain?.r159MomentumPass ||
+          decisionChain?.r156FastBypass
+        );
+        const r121BrainTradeOk = !!(
+          decisionChain?.brainAction === 'TRADE' &&
+          (decisionChain?.autoOk === true || r162BrainBypassActive)
+        );
+        const r121BrainOwnsRisk = !!(r121BrainTradeOk && (r162BrainBypassActive || Number(decisionChain?.brainConfidence||0) >= 55));
+
+        // R163: Nadir ama kritik durum: analiz tarafı brainAction=TRADE üretmiş ama
+        // legacy recommendation WAIT kalmışsa, yönü decisionChain.side üzerinden geri al.
+        // Bu sadece R160/R159/R156 gibi bypass kararlarında çalışır; normal WAIT korunur.
+        if (recommendation === 'WAIT' && r162BrainBypassActive && ['LONG','SHORT'].includes(String(decisionChain?.side||''))) {
+          recommendation = String(decisionChain.side);
+          score = recommendation==='LONG' ? longScore : shortScore;
+          isLong = recommendation==='LONG';
+          isShort = recommendation==='SHORT';
+          logAuto(`🧠 ${coin.symbol} R163 WAIT→${recommendation} düzeltmesi: beyin TRADE kararını legacy WAIT gölgesinden çıkardı`);
+        }
+
         pushAutoCandidate({
           symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore,
           priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason,
@@ -11532,7 +11628,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
-        if (decisionChain && decisionChain.entryPermissionOk === false) {
+        if (decisionChain && decisionChain.entryPermissionOk === false && !r162BrainBypassActive) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
@@ -11543,19 +11639,8 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R20: A-Tier normal auto, B+ kontrollü auto. B normalde panelde görünür ama açılmaz.
         const tierOk = decisionChain?.autoOk === true && ['A','B+'].includes(String(decisionChain?.tier || ''));
-        // R162 FIX: R160/R159/R156 trader kararı brainAction=TRADE set ediyor ama autoOk eski tier sistemine bağlı.
-        // VELVET 4/4, SIREN 3/4 gibi güçlü sinyaller brainAction=TRADE olmasına rağmen açılmıyordu.
-        // Çözüm: R160/R159/R156 bypass yollarından biri aktifse autoOk şartı aranmaz.
-        const r162BrainBypassActive = r120Bool(
-          decisionChain?.r160TraderDecision ||
-          decisionChain?.r159MomentumPass ||
-          decisionChain?.r156FastBypass
-        );
-        const r121BrainTradeOk = !!(
-          decisionChain?.brainAction === 'TRADE' &&
-          (decisionChain?.autoOk === true || r162BrainBypassActive)
-        );
-        const r121BrainOwnsRisk = !!(r121BrainTradeOk && Number(decisionChain?.brainConfidence||0) >= 62);
+        // R162/R163 FIX: R160/R159/R156 trader kararı brainAction=TRADE set ediyor ama autoOk eski tier sistemine bağlı.
+        // R163'te bypass değişkenleri yukarı taşındı; burada yalnızca tier kapısı uygulanır.
         // R162 FIX: tierOk bloğu bypass aktifse atlanır
         if (!tierOk && !r162BrainBypassActive) {
           const r47Dbg = '';
@@ -11809,7 +11894,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // R116: Son emir öncesi HTF amir kontrolü. Analiz zinciri bir sebeple geçse bile 1H/4H karşı seviyede legacy emir açılmaz.
-        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk) {
+        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 55)) {
           const why = r120AutoReason(decisionChain, `HTF likidite amiri — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r116CounterLevel:decisionChain?.r116CounterLevel, r116CounterDist:decisionChain?.r116CounterDist, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -11818,7 +11903,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R114: Son savunma. WLD tipi hata: B+ / Sweep+StopHunt / MM_UP_SWEEP ama 5m body-shift aşağı.
         // Bu durumda wick avı bitmemiş sayılır; 5m gövde reclaim veya ICT/squeeze yapı onayı beklenir.
-        if (decisionChain?.r114TrapBlock) {
+        if (decisionChain?.r114TrapBlock && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 60)) {
           const why = r120AutoReason(decisionChain, `5m body-shift tuzağı — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r114Shift:decisionChain?.r114Shift, r114ReclaimOk:decisionChain?.r114ReclaimOk, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -11828,7 +11913,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
-        const r38FngStrongDecision = Number(decisionChain?.priorityScore||0) >= 76 && (decisionChain?.r37EarlyOk || decisionChain?.scalperBridge || decisionChain?.r38RetestBridgeOk);
+        const r38FngStrongDecision = r162BrainBypassActive || (Number(decisionChain?.priorityScore||0) >= 76 && (decisionChain?.r37EarlyOk || decisionChain?.scalperBridge || decisionChain?.r38RetestBridgeOk));
         if (fgSignal==='EXTREME_GREED' && isLong && !(r38AutoTopMover && r38FngStrongDecision))  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
         if (fgSignal==='EXTREME_FEAR'  && isShort && !(r38AutoTopMover && r38FngStrongDecision)) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
         if ((fgSignal==='EXTREME_GREED' && isLong) || (fgSignal==='EXTREME_FEAR' && isShort)) logAuto(`🟡 ${coin.symbol} F&G soft geçildi: top-mover + güçlü 5m karar zinciri`);
@@ -11943,8 +12028,9 @@ async function runAutoScan(prioritySymbol=null) {
              String(decisionChain?.entryPermissionReason||'').includes('R111_SIKISMA'))
           );
           if (structuralAutoLevOk) {
-            // R157: vurKacMaxLev hard cap 20x — FOLKS/BABY likidasyon analizi: 50x=%2 ters=likide
-            const userMaxLev = Math.max(1, Math.min(20, parseInt(cfg.vurKacMaxLev || 20) || 20));
+            // R163: panel/vurKacMaxLev değeri korunur; 20x hard cap kaldırıldı.
+            // Binance izinli maksimum yine okunur. Aşırı SL×kaldıraç riski aşağıdaki guard ile sınırlanır.
+            const userMaxLev = Math.max(1, parseInt(cfg.vurKacMaxLev || leverage || 20) || 20);
             const bracketMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * userMaxLev);
             if (bracketMaxLev) {
               executeLeverage = Math.max(executeLeverage, Math.min(userMaxLev, bracketMaxLev));
@@ -11961,11 +12047,11 @@ async function runAutoScan(prioritySymbol=null) {
         // FOLKS 50x × %2 SL = %100 risk. Max kabul: %25 marjın riski.
         try {
           const r157SlPct = Number(userSLPct || cfg.slPct || 2);
-          const r157MaxRisk = 25; // kaldıraçlı max %25 ROI risk
+          const r157MaxRisk = 40; // R163: panel 15x/SL%2 korunur; sadece aşırı kaldıraçlı risk düşürülür
           if (r157SlPct * executeLeverage > r157MaxRisk) {
             const oldLev = executeLeverage;
             executeLeverage = Math.max(1, Math.floor(r157MaxRisk / r157SlPct));
-            leverageNote += ` · R157 SL×Kaldıraç guard ${oldLev}x→${executeLeverage}x (SL%${r157SlPct}×lev≤25%)`;
+            leverageNote += ` · R157 SL×Kaldıraç guard ${oldLev}x→${executeLeverage}x (SL%${r157SlPct}×lev≤40%)`;
             logAuto(`🛡️ ${coin.symbol} SL${r157SlPct}%×${oldLev}x=%${(r157SlPct*oldLev).toFixed(0)} risk → ${executeLeverage}x'e düşürüldü`);
           }
         } catch(_e) {}
@@ -12305,11 +12391,19 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   } else if (closePrice > 0) {
     code = 'EXTERNAL_OR_MANUAL'; label = 'Binance dış/manuel kapanış olabilir'; emoji = '👁️';
   }
+  const pnlVal = Number(wa.pnl);
+  if (code === 'EXTERNAL_OR_MANUAL' && Number.isFinite(pnlVal)) {
+    if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = 'Binance kapanışı kârda'; emoji = '✅'; }
+    if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = 'Binance kapanışı zararda'; emoji = '❌'; }
+  }
+  const margin = Number(state?.usdtAmount || state?.marginUSDT || autoConfig?.usdtAmount || 0);
+  const roiByPnl = margin > 0 && Number.isFinite(pnlVal) ? pnlVal / margin * 100 : null;
 
   return {
     code, label, emoji,
     closePrice: closePrice ? +closePrice.toFixed(8) : null,
-    realizedPnl: Number.isFinite(wa.pnl) ? +wa.pnl.toFixed(6) : null,
+    realizedPnl: Number.isFinite(pnlVal) ? +pnlVal.toFixed(6) : null,
+    roiPct: Number.isFinite(roiByPnl) ? +roiByPnl.toFixed(2) : null,
     tradeCount: closeTrades.length || trades.length || 0,
     sl: sl || null,
     tp: tp || null,
@@ -12393,13 +12487,19 @@ async function syncPositions() {
           side:          lastKnown.side || side,
           leverage:      lastKnown.leverage || lev,
           usdtAmount:    lastKnown.usdtAmount || parseFloat(autoConfig?.usdtAmount || 10),
-          slPrice:       lastKnown.slPrice || 0,
-          tpPrice:       lastKnown.tpPrice || 0,
-          breakEvenSet:  false,
+          currentSL:      lastKnown.currentSL || lastKnown.slPrice || 0,
+          targetTP:      lastKnown.targetTP || lastKnown.tpPrice || 0,
+          slPrice:       lastKnown.currentSL || lastKnown.slPrice || 0,
+          tpPrice:       lastKnown.targetTP || lastKnown.tpPrice || 0,
+          breakEvenSet:  !!(lastKnown.currentSL || lastKnown.slPrice),
           tpExtended:    false,
           trendHoldCount:0,
-          sltpVerified:  false,
-          openTs:        lastKnown.openTs || Date.now(),
+          sltpVerified:  !!(lastKnown.sltpVerified || lastKnown.currentSL || lastKnown.targetTP),
+          openedAt:      lastKnown.openedAt || lastKnown.openTs || Date.now(),
+          openTs:        lastKnown.openedAt || lastKnown.openTs || Date.now(),
+          openReason:    lastKnown.entryReason || 'restart sonrası restore',
+          peakPnl:       Number(lastKnown.peakPnl || 0),
+          peakRealPct:   Number(lastKnown.peakRealPct || 0),
           _restoredAfterRestart: true,
         });
         logAuto(`🔄 ${sym.replace('USDT','')} trailingState restart sonrası restore edildi (ep:${ep} ${side} ${lev}x)`);
@@ -12451,8 +12551,19 @@ async function syncPositions() {
         let hasTP = !!(stForBracket.sltpVerified && stForBracket.targetTP);
         if ((!hasSL || !hasTP) && !isBinanceBackoffActive()) {
           const orders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
-          hasSL = orders.some(o => orderKind(o) === 'SL');
-          hasTP = orders.some(o => orderKind(o) === 'TP');
+          const liveSLOrder = orders.find(o => orderKind(o) === 'SL');
+          const liveTPOrder = orders.find(o => orderKind(o) === 'TP');
+          const liveSLPrice = orderTriggerPrice(liveSLOrder);
+          const liveTPPrice = orderTriggerPrice(liveTPOrder);
+          hasSL = !!liveSLOrder;
+          hasTP = !!liveTPOrder;
+          if ((liveSLPrice || liveTPPrice) && trailingState.has(sym)) {
+            const stHydrate = trailingState.get(sym) || {};
+            if (liveSLPrice) stHydrate.currentSL = liveSLPrice;
+            if (liveTPPrice) stHydrate.targetTP = liveTPPrice;
+            stHydrate.sltpVerified = !!(hasSL && hasTP);
+            trailingState.set(sym, stHydrate);
+          }
         }
         if (!hasSL || !hasTP) {
           const isLong  = parseFloat(p.positionAmt) > 0;
