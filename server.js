@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R158_ANALYSIS_QUALITY';
+const LAZARUS_BUILD = 'R158b_SCOPE_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -8712,13 +8712,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R158: r117FlowOk güçlendirildi — FOLKS/ZEC analiz hataları:
         // Sadece oiBridgeOk veya fundBridgeOk ile delta karşıyken HTF reversal açılıyordu.
         // Artık delta uyumu (CVD/tick) VEYA r125 canlı akış ZORUNLU + en az 1 ek teyit.
-        const r117LiveFlowBase = r120Bool(deltaOkStrict || r125SideFlow.ok || r125SideFlow.strong);
+        // R158 FIX: r125SideFlow evalDecision scope'unda tanımlı değil — r125Flow'dan hesapla
+        const r117R125SideFlow = r125FlowForSide(r125Flow, isL ? 'LONG' : 'SHORT');
+        const r117LiveFlowBase = r120Bool(deltaOkStrict || r117R125SideFlow.ok || r117R125SideFlow.strong);
         const r117SecondaryTeyit = r120Bool(oiBridgeOk || obSameSide || fundBridgeOk || mmSameSide || cvdBridgePass ||
           (r22FundingTrap.detected && ((isL && r111ShortSqueeze) || (!isL && r111LongSqueeze))));
         const r117FlowOk = r120Bool(
           (r117LiveFlowBase && r117SecondaryTeyit) ||
           (r117LiveFlowBase && Number(r88AkisTeyidiSayisi||0) >= 3) ||
-          (deltaOkStrict && r125SideFlow.ok)  // delta + canlı orderbook = güçlü teyit
+          (deltaOkStrict && r117R125SideFlow.ok)  // delta + canlı orderbook = güçlü teyit
         );
         // R158: r117HtfReverseOk — r117LiveFlowBase (delta/r125) ZORUNLU hale geldi.
         // FOLKS/ZEC hatası: sweep+choch var ama canlı akış karşı yönde → büyük kayıp.
