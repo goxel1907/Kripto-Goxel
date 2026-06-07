@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R168c_TELEGRAM_FULL_TRADE_CARD';
+const LAZARUS_BUILD = 'R170c_INDEX_TELEGRAM_DWM_PERF';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3413,6 +3413,8 @@ function tgTradeOpen(symbol, side, score, edge, margin, leverage, reason, extra=
   if (extra.mode || extra.brainMode) lines.push(`🧠 Mod: <b>${tgEsc(extra.mode || extra.brainMode)}</b>`);
   if (reason) lines.push(`📝 Sebep: ${tgEsc(String(reason).slice(0,220))}`);
   if (extra.sltpVerified !== undefined) lines.push(`✅ SL/TP Binance: <b>${extra.sltpVerified ? 'doğrulandı' : 'kontrol et'}</b>`);
+  lines.push(`━━━━━━━━━━━━━━━━`);
+  lines.push(...tgPerfSummaryLines());
   lines.push(`🏷 Build: ${tgEsc(LAZARUS_BUILD)}`);
   lines.push(`⏰ ${new Date().toLocaleString('tr-TR')}`);
   return tgSend(lines.join('\n'), false);
@@ -3445,6 +3447,8 @@ function tgTradeClose(symbol, side, pnl, roi, closeReason, extra={}) {
   if (extra.peakRoi !== undefined || extra.peakPnl !== undefined) lines.push(`📈 Zirve ROI: <b>${extra.peakRoi!==undefined ? tgFmtPct(extra.peakRoi,1) : '-'}</b> | Zirve PnL: <b>${extra.peakPnl!==undefined ? tgFmtUsd(extra.peakPnl,2) : '-'}</b>`);
   if (closeReason) lines.push(`📋 Kapanış: ${tgEsc(String(closeReason).slice(0,160))}`);
   if (extra.resultNote) lines.push(`🧾 Sonuç: ${tgEsc(String(extra.resultNote).slice(0,180))}`);
+  lines.push(`━━━━━━━━━━━━━━━━`);
+  lines.push(...tgPerfSummaryLines());
   lines.push(`🏷 Build: ${tgEsc(LAZARUS_BUILD)}`);
   lines.push(`⏰ ${new Date().toLocaleString('tr-TR')}`);
   return tgSend(lines.join('\n'), win);
@@ -3453,6 +3457,104 @@ function tgTradeClose(symbol, side, pnl, roi, closeReason, extra={}) {
 function tgAlert(text) {
   return tgSend(`⚠️ <b>Lazarus UYARI</b>\n${tgEsc(text)}`, false);
 }
+
+
+function tgPerfSummaryLines() {
+  try {
+    const obj = r170PerfMode();
+    const a = obj.account || {};
+    const fmt = (p={}) => {
+      const closed = Number(p.closed || 0);
+      const wr = p.wr !== null && p.wr !== undefined ? `%${(p.wr*100).toFixed(0)}` : '?';
+      const net = Number(p.net || 0);
+      const pf = Number(p.pf || 0);
+      return `${wr} | Net ${net>=0?'+':''}${net.toFixed(2)}$ | PF ${pf.toFixed(2)} | ${closed} işlem`;
+    };
+    return [
+      `🎯 <b>HESAP WR HEDEFİ</b>: %60–85 | Mod: <b>${tgEsc(obj.mode || '-')}</b>`,
+      `📅 Günlük: <b>${tgEsc(fmt(a.day))}</b>`,
+      `🗓 Haftalık: <b>${tgEsc(fmt(a.week))}</b>`,
+      `📆 Aylık: <b>${tgEsc(fmt(a.month))}</b>`,
+      `🧪 Son 12: <b>${tgEsc(fmt(a.recent))}</b> | Saatlik frekans: <b>${tgEsc(r170TradeFreq(60*60*1000))}</b>`
+    ];
+  } catch(e) {
+    return [`🎯 <b>HESAP WR HEDEFİ</b>: veri hazırlanıyor`];
+  }
+}
+
+
+
+// ── R168d: TELEGRAM EVENT HOOK — emir açılış/kapanış bildirimi ledger olayından gider ──
+// R168c'de başlangıç/backup çalışıyor ama scan-loop içindeki tgTradeOpen çağrısı bazı yollarda kaçabiliyordu.
+// Bu yüzden bildirim artık recordTradeOpen / recordTradeClose olayına bağlandı. Bir işlem bir kez bildirilir.
+const tgOpenNotifiedIds = new Set();
+const tgCloseNotifiedIds = new Set();
+
+function tgNotifyTradeOpenOnce(row={}, state={}) {
+  try {
+    const id = row.id || `${row.symbol}_${row.openedAt||Date.now()}`;
+    if (tgOpenNotifiedIds.has(id)) return;
+    tgOpenNotifiedIds.add(id);
+    const openReasonObj = state?.entryReason || state?.openReason || {};
+    const reasonText = typeof openReasonObj === 'string'
+      ? openReasonObj
+      : (openReasonObj.reason || row.entryReason || `${row.side} açıldı`);
+    tgTradeOpen(row.symbol || state.symbol || '?', row.side || state.side || '?',
+      row.score ?? openReasonObj.score ?? state.score ?? '-',
+      state.brainConfidence ?? state.edge ?? openReasonObj.edge ?? '-',
+      row.marginUSDT ?? state.usdtAmount ?? state.marginUSDT ?? autoConfig?.usdtAmount,
+      row.leverage ?? state.leverage ?? autoConfig?.leverage,
+      reasonText,
+      {
+        entryPrice: row.entryPrice ?? state.entryPrice,
+        slPrice: row.sl ?? state.currentSL ?? state.slPrice,
+        tpPrice: row.tp ?? state.targetTP ?? state.tpPrice,
+        slPct: row.slPct ?? state.slPct,
+        tpPct: row.tpPct ?? state.tpPct,
+        quantity: row.quantity ?? state.quantity ?? state.positionAmt,
+        leverage: row.leverage ?? state.leverage,
+        margin: row.marginUSDT ?? state.usdtAmount ?? state.marginUSDT,
+        tier: row.tier ?? state.tier ?? openReasonObj.tier,
+        mode: state.brainMode ?? state.primaryMode ?? openReasonObj.mode ?? '',
+        sltpVerified: state.sltpVerified ?? undefined,
+      });
+  } catch(e) {
+    try { pushCritical('TELEGRAM_OPEN_NOTIFY_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+  }
+}
+
+function tgNotifyTradeCloseOnce(row={}, state={}, cls={}) {
+  try {
+    const id = row.id || `${row.symbol}_${row.openedAt||''}_${row.closedAt||Date.now()}`;
+    if (tgCloseNotifiedIds.has(id)) return;
+    tgCloseNotifiedIds.add(id);
+    const pnl = Number(row.pnlUSDT);
+    const roi = Number(row.roiPct);
+    const dur = row.openedAt
+      ? (() => { const m = Math.max(0, Math.round((Number(row.closedAt||Date.now())-Number(row.openedAt))/60000)); return m < 60 ? `${m}dk` : `${Math.floor(m/60)}s ${m%60}dk`; })()
+      : '';
+    tgTradeClose(row.symbol, row.side,
+      Number.isFinite(pnl) ? pnl : null,
+      Number.isFinite(roi) ? roi : null,
+      cls.label || row.exitLabel || 'Kapanış algılandı',
+      {
+        entryPrice: row.entryPrice ?? state.entryPrice,
+        closePrice: cls.closePrice ?? row.closePrice,
+        duration: dur,
+        sl: row.sl ?? cls.sl ?? state.currentSL,
+        tp: row.tp ?? cls.tp ?? state.targetTP,
+        leverage: row.leverage ?? state.leverage,
+        quantity: row.quantity ?? state.quantity ?? state.positionAmt,
+        marginUSDT: row.marginUSDT ?? state.usdtAmount ?? state.marginUSDT,
+        peakRoi: state.peakRealPct,
+        peakPnl: state.peakPnl,
+        resultNote: row.resultNote,
+      });
+  } catch(e) {
+    try { pushCritical('TELEGRAM_CLOSE_NOTIFY_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+  }
+}
+
 
 const tradeLedgerPath = './trade_ledger_live.json';
 let tradeLedger = [];
@@ -3524,13 +3626,16 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
     marginUSDT:safeNum(state?.usdtAmount || autoConfig?.usdtAmount,2),
     sl:safeNum(state?.currentSL || state?.slPrice, 10), tp:safeNum(state?.targetTP || state?.tpPrice, 10),
     slPct:safeNum(state?.slPct || state?.entrySLPct, 3), tpPct:safeNum(state?.tpPct, 3),
-    entryReason:state?.openReason||`${normalizeSide(side)} açıldı`,
-    score:state?.score||null, tier:state?.tier||null,
+    entryReason:state?.openReason || state?.entryReason?.reason || `${normalizeSide(side)} açıldı`,
+    score:state?.score || state?.entryReason?.score || null, tier:state?.tier || state?.entryReason?.tier || null,
     exitReason:null,resultNote:null,pnlUSDT:null,roiPct:null,
     closedAt:null,closedAtTR:null,cooldownMin:null,
   };
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
-  saveTradeLedger(); return row;
+  saveTradeLedger();
+  // R168d: açılış bildirimi scan-loop yerine ledger event hook'tan gider.
+  try { tgNotifyTradeOpenOnce(row, state); } catch(_) {}
+  return row;
 }
 function recordTradeClose(symbol, state={}, cls={}) {
   const sym = normalizeSymbol(symbol);
@@ -3544,7 +3649,7 @@ function recordTradeClose(symbol, state={}, cls={}) {
   const rawMove = entry>0&&close>0?((close-entry)/entry*100*(normalizeSide(row.side)==='SHORT'?-1:1)):null;
   const lev = Number(row.leverage||1)||1;
   const cdMs = Number(cls.cooldownMs||0);
-  const rowQty = Math.abs(Number(state?.positionAmt || state?.qty || state?.quantity || 0));
+  const rowQty = Math.abs(Number(state?.positionAmt || state?.qty || state?.quantity || row.quantity || 0));
   const approxLedgerPnl = entry>0 && close>0 && rowQty>0 ? (close-entry)*rowQty*(normalizeSide(row.side)==='SHORT'?-1:1) : null;
   const finalPnl = Number.isFinite(Number(cls.realizedPnl)) && Math.abs(Number(cls.realizedPnl))>0.000001
     ? Number(cls.realizedPnl)
@@ -3560,27 +3665,8 @@ function recordTradeClose(symbol, state={}, cls={}) {
   });
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
-  // R168b: Telegram kapanış bildirimi — 0/null PnL olsa bile kapanış bilgisi gelir.
-  try {
-    const pnl = Number(row.pnlUSDT);
-    const roi = Number(row.roiPct);
-    const tgDuration = row.openedAt
-      ? (() => { const m = Math.max(0, Math.round((Date.now()-Number(row.openedAt))/60000)); return m < 60 ? `${m}dk` : `${Math.floor(m/60)}s ${m%60}dk`; })()
-      : '';
-    tgTradeClose(row.symbol, row.side, Number.isFinite(pnl)?pnl:null, Number.isFinite(roi)?roi:null, cls.label||row.exitLabel||'Kapanış algılandı', {
-      entryPrice: row.entryPrice,
-      closePrice: cls.closePrice || row.closePrice,
-      duration: tgDuration,
-      sl: row.sl || cls.sl || state?.currentSL,
-      tp: row.tp || cls.tp || state?.targetTP,
-      leverage: row.leverage || state?.leverage,
-      quantity: row.quantity || rowQty || state?.quantity || state?.positionAmt,
-      marginUSDT: row.marginUSDT || state?.usdtAmount,
-      peakRoi: state?.peakPnl,
-      peakPnl: state?.peakRealPct,
-      resultNote: row.resultNote,
-    });
-  } catch(_tge) {}
+  // R168d: kapanış bildirimi ledger event hook'tan gider; 0/null PnL olsa bile gönderilir.
+  try { tgNotifyTradeCloseOnce(row, state, cls); } catch(_tge) {}
   saveTradeLedger(); return row;
 }
 
@@ -5003,13 +5089,27 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // Kaç soru TRUE?
   const r160TrueCount = [r160Q1Structure, r160Q2Flow, r160Q3Momentum, r160Q4Proof].filter(Boolean).length;
   
-  // 3/4 TRUE + flow var + hard block yok = TRADE
-  // 4/4 TRUE + minimum flow = TRADE (daha agresif)
+  // R169: R160 3/4 kapısı sıkılaştırıldı.
+  // Canlı sonuçta JTO/B/PORTAL gibi 3/4 ama ivme veya kanıt eksiği olan LONG'lar büyük SL yazdı.
+  // Artık 3/4 sadece AKIŞ+KANIT+ya İVME ya çok güçlü edge varsa geçer; 4/4 ise yine çalışır ama min kalite ister.
+  const r169R160FullProof = r120Bool(
+    r160TrueCount >= 4 &&
+    r125SideFlow.edge >= 5 &&
+    edge >= 60 &&
+    score >= Math.max(42, minScore - 30) &&
+    r133LiveTradeCount >= 15
+  );
+  const r169R160StrictThree = r120Bool(
+    r160TrueCount >= 3 &&
+    r160Q2Flow && r160Q4Proof &&
+    (r160Q3Momentum || edge >= 90) &&
+    r125SideFlow.edge >= 7 &&
+    edge >= 72 &&
+    score >= Math.max(50, minScore - 22) &&
+    r133LiveTradeCount >= 25
+  );
   const r160TraderDecision = r120Bool(
-    !r160HardBlock && edge >= 35 && r133LiveTradeCount >= 10 && (
-      (r160TrueCount >= 3 && r125SideFlow.edge >= 4) ||
-      (r160TrueCount >= 4)
-    )
+    !r160HardBlock && (r169R160FullProof || r169R160StrictThree)
   );
 
   // R159: MOMENTUM PASS — araştırma sonucu: 5m scalp botlarda yüksek win rate için
@@ -5073,6 +5173,12 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r159Points = r159Points;
   d.r160TraderDecision = r160TraderDecision;
   d.r160TrueCount = r160TrueCount;
+  d.r160Q1Structure = r160Q1Structure;
+  d.r160Q2Flow = r160Q2Flow;
+  d.r160Q3Momentum = r160Q3Momentum;
+  d.r160Q4Proof = r160Q4Proof;
+  d.r169R160FullProof = r169R160FullProof;
+  d.r169R160StrictThree = r169R160StrictThree;
   d.brainConfidence = edge;
   d.brainRawEdge = rawEdge;
   d.r142CalibratedEdge = edge;
@@ -10206,6 +10312,65 @@ function r166CoinRecentWR(symbol, lookbackMs=4*60*60*1000) {
   return wins / rows.length;
 }
 
+
+// R170b: Hedef performans profili — COIN WR DEĞİL, hesap geneli günlük/haftalık/aylık WR+PNL+PF.
+// Kullanıcı hedefi: günlük / haftalık / aylık genel performans. Coin bazlı WR sadece tekrar-kayıp freni olabilir;
+// hedef WR modu ASLA tek coin WR'ına göre belirlenmez.
+function r170RowsByPeriod(lookbackMs, limit=9999) {
+  const cutoff = Date.now() - lookbackMs;
+  return (Array.isArray(tradeLedger) ? tradeLedger : [])
+    .filter(t => t && t.status === 'CLOSED' && Number(t.closedAt||0) >= cutoff && Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT) !== 0)
+    .sort((a,b)=>Number(b.closedAt||0)-Number(a.closedAt||0))
+    .slice(0, Math.max(1, Number(limit)||9999));
+}
+function r170CalcPerf(rows=[]) {
+  const closed = rows.length;
+  const wins = rows.filter(t => Number(t.pnlUSDT) > 0).length;
+  const losses = rows.filter(t => Number(t.pnlUSDT) < 0).length;
+  const net = rows.reduce((s,t)=>s+Number(t.pnlUSDT||0),0);
+  const grossWin = rows.filter(t=>Number(t.pnlUSDT)>0).reduce((s,t)=>s+Number(t.pnlUSDT),0);
+  const grossLoss = Math.abs(rows.filter(t=>Number(t.pnlUSDT)<0).reduce((s,t)=>s+Number(t.pnlUSDT),0));
+  const wr = closed ? wins/closed : null;
+  const avgWin = wins ? grossWin / wins : 0;
+  const avgLoss = losses ? grossLoss / losses : 0;
+  const pf = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? 9.99 : 0);
+  return {closed,wins,losses,wr,net,grossWin,grossLoss,avgWin,avgLoss,pf};
+}
+function r170AccountPerf() {
+  const dayRows   = r170RowsByPeriod(24*60*60*1000);
+  const weekRows  = r170RowsByPeriod(7*24*60*60*1000);
+  const monthRows = r170RowsByPeriod(30*24*60*60*1000);
+  const recentRows = dayRows.slice(0,12);
+  return {
+    recent: r170CalcPerf(recentRows),
+    day:    r170CalcPerf(dayRows),
+    week:   r170CalcPerf(weekRows),
+    month:  r170CalcPerf(monthRows),
+  };
+}
+function r170FmtPerf(p={}) {
+  const wr = p.wr !== null && p.wr !== undefined ? (p.wr*100).toFixed(0) : '?';
+  return `WR%${wr} Net:${Number(p.net||0).toFixed(2)}$ PF:${Number(p.pf||0).toFixed(2)} N:${Number(p.closed||0)}`;
+}
+function r170TradeFreq(lookbackMs=60*60*1000) {
+  const cutoff = Date.now() - lookbackMs;
+  return (Array.isArray(tradeLedger) ? tradeLedger : []).filter(t => Number(t.openedAt||0) >= cutoff).length;
+}
+function r170PerfMode() {
+  const a = r170AccountPerf();
+  const d = a.day || {};
+  const r = a.recent || {};
+  // Hedef modu hesap geneline göre: günlük performans ana, son 12 işlem erken alarm.
+  // Coin WR burada kullanılmaz.
+  const enoughDay = Number(d.closed||0) >= 8;
+  const enoughRecent = Number(r.closed||0) >= 6;
+  const dayBad = enoughDay && (d.wr !== null && (d.wr < 0.60 || d.net < 0 || d.pf < 1.20));
+  const recentBad = enoughRecent && (r.wr !== null && (r.wr < 0.55 || r.net < -2 || r.pf < 1.10));
+  if (dayBad || recentBad) return {mode:'HIGH_WR_RECOVERY', perf:d, account:a, reason: dayBad ? 'DAILY_TARGET_BELOW' : 'RECENT_DRAWDOWN'};
+  if (enoughDay && d.wr !== null && d.wr >= 0.60 && d.wr <= 0.85 && d.pf >= 1.20 && d.net >= 0) return {mode:'TARGET_OK', perf:d, account:a, reason:'DAILY_TARGET_OK'};
+  return {mode:'BALANCED_FREQ', perf:d, account:a, reason:'WARMUP_OR_MIXED'};
+}
+
 function r167OppositeSideLosses(symbol, side, windowMs=2*60*60*1000) {
   const sym = String(symbol||'').replace('USDT','').toUpperCase();
   const opp = normalizeSide(side) === 'LONG' ? 'SHORT' : 'LONG';
@@ -12233,9 +12398,9 @@ async function runAutoScan(prioritySymbol=null) {
         const entryRef = parseFloat(analysis.price || coin.price || 0);
         if (!entryRef) { logAuto(`${coin.symbol} fiyat alınamadı — atlandı`); markAutoSkip(coin.symbol, 'Fiyat alınamadı'); continue; }
 
-        const userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));
-        const userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
-        const userRR    = userTPPct / userSLPct;
+        let userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));
+        let userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
+        let userRR    = userTPPct / userSLPct;
 
         // ── R24 RVOL MİKRO LİKİDİTE FRENİ — performansı boğmadan sadece ekstrem zayıf hacmi keser
         const rvolNum = Number(analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
@@ -12244,6 +12409,86 @@ async function runAutoScan(prioritySymbol=null) {
           markAutoSkip(coin.symbol, `RVOL çok düşük ${rvolNum.toFixed(2)}x`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
         }
+
+
+        // ── R170 HEDEF WR + FREKANS KORUYUCU ─────────────────────────────────
+        // Kullanıcı hedefi: işlem sıklığı boğulmayacak, fakat canlı WR %60-85 bandı asla göz ardı edilmeyecek.
+        // Mantık: güçlü yollar açık kalır (R159 8/9p, R160 4/4); zayıf yollar canlı performans bozulunca kapanır.
+        try {
+          const r170ModeObj = r170PerfMode();
+          const r170Mode = r170ModeObj.mode;
+          const r170Perf = r170ModeObj.perf || {}; // hesap geneli GÜNLÜK performans
+          const r170Acc = r170ModeObj.account || {};
+          const r170True = Number(decisionChain?.r160TrueCount || 0);
+          const r170Q2 = !!decisionChain?.r160Q2Flow;
+          const r170Q3 = !!decisionChain?.r160Q3Momentum;
+          const r170Q4 = !!decisionChain?.r160Q4Proof;
+          const r170Edge = Number(decisionChain?.brainConfidence || 0);
+          const r170R159Pts = Number(decisionChain?.r159Points || 0);
+          const r170FlowEdge = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
+          const r170LiveTicks = Number(decisionChain?.r133LiveTradeCount || decisionChain?.liveTradeCount || 0);
+          const r170StrongMomentum = !!(decisionChain?.r159MomentumPass && r170R159Pts >= 8 && r170Edge >= 75 && score >= 45);
+          const r170StrongR160 = !!(decisionChain?.r160TraderDecision && r170True >= 4 && r170Q2 && r170Q4 && r170Edge >= 72 && score >= 45);
+          const r170GoodThree = !!(decisionChain?.r160TraderDecision && r170True === 3 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 82 && score >= 58 && r170FlowEdge >= 6);
+          const r170FreqProtectedPath = r170StrongMomentum || r170StrongR160 || r170GoodThree;
+
+          // 6p/7p momentum sadece hedef sağlıklıyken ve yapı tam destekliyorsa geçer; aksi halde winrate'i aşağı çeker.
+          if (decisionChain?.r159MomentumPass && r170R159Pts < 8 && !r170GoodThree) {
+            const why = `R170 WR hedef freni: R159 ${r170R159Pts}p zayıf; 8p+ veya Q2+Q3+Q4 güçlü 3/4 gerekli`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, mode:r170Mode});
+            continue;
+          }
+
+          // R160 3/4 içinde ivme yoksa, yapı+akış+kanıt tek başına son canlı veride kayıp üretiyor.
+          if (decisionChain?.r160TraderDecision && r170True === 3 && !r170Q3 && !r170StrongMomentum) {
+            const why = `R170 WR hedef freni: R160 3/4 ama ivme yok; frekans için 8p momentum veya 4/4 beklenir`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r160True:r170True, mode:r170Mode});
+            continue;
+          }
+
+          // Canlı performans hedef altına inerse seçici moda geç: işlem tamamen durmaz, sadece güçlü yollar kalır.
+          if (r170Mode === 'HIGH_WR_RECOVERY' && !r170FreqProtectedPath) {
+            const wrTxt = r170Perf.wr !== null ? (r170Perf.wr*100).toFixed(0) : '?';
+            const why = `R170b HIGH_WR_RECOVERY: HESAP GENELİ günlük WR%${wrTxt}, PF:${Number(r170Perf.pf||0).toFixed(2)}, net:${Number(r170Perf.net||0).toFixed(2)}$ | haftalık ${r170FmtPerf(r170Acc.week)} | aylık ${r170FmtPerf(r170Acc.month)} → sadece 8p+ momentum / 4-4 R160 / güçlü 3-4 geçer`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, r160True:r170True, mode:r170Mode, perf:r170Perf});
+            continue;
+          }
+
+          // Frekans koruması: sistem hedefteyse güçlü yolları gereksiz eski kapılarla boğma; logla görünür yap.
+          if (r170FreqProtectedPath) {
+            const wrTxt = r170Perf.wr !== null ? (r170Perf.wr*100).toFixed(0) : '?';
+            logAuto(`🧭 ${coin.symbol} R170b HESAP hedef profili: ${r170Mode} günlük WR%${wrTxt} | haftalık ${r170FmtPerf(r170Acc.week)} | aylık ${r170FmtPerf(r170Acc.month)} | freq:${r170TradeFreq(60*60*1000)}/saat → güçlü yol korundu (${decisionChain?.r159MomentumPass?'R159 '+r170R159Pts+'p':'R160 '+r170True+'/4'})`);
+          }
+        } catch(_e170) {}
+
+        // R169: Canlı sonuç kalite freni — işlem sıklığını tamamen boğmadan zayıf 3/4 R160 ve R144 mikro-scalp'i keser.
+        // Kayıp örnekleri: JTO/B/PORTAL 3/4 (yapı+akış+kanıt) ama ivme/gerçek devam yok → -12% ila -20% ROI.
+        try {
+          const r169T = Number(decisionChain?.r160TrueCount || 0);
+          const r169Q2 = !!decisionChain?.r160Q2Flow;
+          const r169Q3 = !!decisionChain?.r160Q3Momentum;
+          const r169Q4 = !!decisionChain?.r160Q4Proof;
+          const r169Edge = Number(decisionChain?.brainConfidence || 0);
+          const r169FlowEdge = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
+          const r169WeakR160 = !!(decisionChain?.r160TraderDecision && r169T === 3 && !(r169Q2 && r169Q4 && (r169Q3 || r169Edge >= 90)));
+          const r169WeakScore = !!(decisionChain?.r160TraderDecision && r169T === 3 && (score < 50 || r169Edge < 72));
+          const r169WeakR144 = !!(decisionChain?.r133FastScalpOverride && !decisionChain?.r159MomentumPass && !(r169T >= 4 || (score >= 60 && r169Edge >= 85)));
+          const r169RecentAnyLoss = r166CoinRecentLosses(coin.fullSymbol, 90*60*1000);
+          const r169HasFreshLossWeak = r169RecentAnyLoss >= 1 && !(decisionChain?.r159MomentumPass && Number(decisionChain?.r159Points||0) >= 8) && !(r169T >= 4 && r169Edge >= 80);
+          if (r169WeakR160 || r169WeakScore || r169WeakR144 || r169HasFreshLossWeak) {
+            const why = r169HasFreshLossWeak
+              ? `R169 taze kayıp freni: son 90dk aynı coin kayıp var, sadece 8p+ momentum veya 4/4 güçlü R160 geçer`
+              : r169WeakR144
+                ? `R169 R144 mikro-scalp freni: hızlı edge tek başına yetmedi`
+                : `R169 zayıf R160 3/4 freni: Q2:${r169Q2?'1':'0'} Q3:${r169Q3?'1':'0'} Q4:${r169Q4?'1':'0'} edge:${r169Edge} score:${score}`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r169Edge, r160True:r169T, flowEdge:r169FlowEdge});
+            continue;
+          }
+        } catch(_e169q) {}
 
         // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
         const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
@@ -12461,6 +12706,7 @@ async function runAutoScan(prioritySymbol=null) {
             const magnetTarget2 = isLong ? Number(tpMagnet.price)*0.997 : Number(tpMagnet.price)*1.003;
             if (magnetTarget2 > 0 && ((isLong && magnetTarget2 > entryRef) || (!isLong && magnetTarget2 < entryRef))) targetPrice = +magnetTarget2.toFixed(8);
           }
+          userRR = userTPPct / Math.max(0.05, userSLPct);
         } catch(_e167a) {}
 
         // R167: hafıza/rejim freni emir-log-Telegram'dan önce. İşlem sıklığını tamamen kapatmaz;
@@ -12475,7 +12721,7 @@ async function runAutoScan(prioritySymbol=null) {
             const calibEdge = Number(decisionChain?.brainConfidence || 0);
             const fullProof = !!(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4);
             if (calibEdge < minEdgeNeeded && !fullProof) {
-              logAuto(`🧊 ${coin.symbol} R167 coin rejim freni: loss=${r167RecentLoss}, oppLoss=${r167OppLoss}, WR%${r167WR4h!==null?(r167WR4h*100).toFixed(0):'?'} → edge ${calibEdge}<${minEdgeNeeded}, atlandı`);
+              logAuto(`🧊 ${coin.symbol} R167 coin tekrar-kayıp freni: loss=${r167RecentLoss}, oppLoss=${r167OppLoss}, coinWR%${r167WR4h!==null?(r167WR4h*100).toFixed(0):'?'} → edge ${calibEdge}<${minEdgeNeeded}, atlandı`);
               markAutoSkip(coin.symbol, `R167 coin rejim freni: zayıf son performans / ters-yön kaybı`, {rec:recommendation, score});
               continue;
             }
@@ -12496,7 +12742,7 @@ async function runAutoScan(prioritySymbol=null) {
             const minEdgeNeeded = 65; // zayıf coin için minimum edge
             const calibEdge = Number(decisionChain?.brainConfidence || 0);
             if (calibEdge < minEdgeNeeded) {
-              logAuto(`⚡ ${coin.symbol} R166 hafıza: ${r166RecentL} kayıp, WR%${r166WR4h!==null?(r166WR4h*100).toFixed(0):'?'} → edge ${calibEdge}<${minEdgeNeeded}, atlandı`);
+              logAuto(`⚡ ${coin.symbol} R166 coin hafızası: ${r166RecentL} kayıp, coinWR%${r166WR4h!==null?(r166WR4h*100).toFixed(0):'?'} → edge ${calibEdge}<${minEdgeNeeded}, atlandı`);
               markAutoSkip(coin.symbol, `R166 coin hafızası: zayıf WR+${r166RecentL}kayıp, edge ${calibEdge}<${minEdgeNeeded}`, {rec:recommendation, score});
               continue;
             }
@@ -12525,22 +12771,7 @@ async function runAutoScan(prioritySymbol=null) {
           invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
           logAuto(`✅ ${coin.symbol} ${trSideLabel(recommendation)} açıldı — ${toTurkishText(orderResp.message||'Emir açıldı')}`);
-          // R168b: Telegram bildirimi sadece emir gerçekten açıldıysa gönderilir.
-          try {
-            tgTradeOpen(coin.symbol, recommendation, score, Number(decisionChain?.brainConfidence||0), usdtAmount, executeLeverage, decisionChain?.brainSummary || decisionChain?.reason || '', {
-              entryPrice: orderResp.executedPrice || orderResp.details?.entry || entryRef,
-              slPrice: orderResp.details?.stop || stopPrice,
-              tpPrice: orderResp.details?.target || targetPrice,
-              slPct: userSLPct,
-              tpPct: userTPPct,
-              quantity: orderResp.details?.quantity,
-              leverage: orderResp.details?.leverage || executeLeverage,
-              margin: usdtAmount,
-              tier: decisionChain?.tier || '',
-              mode: decisionChain?.brainMode || decisionChain?.primaryMode || '',
-              sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
-            });
-          } catch(_tgOpenErr) {}
+          // R168d: Telegram açılış bildirimi recordTradeOpen event hook'una taşındı; burada duplicate yok.
           // Trailing state başlat + açılış sebebi kaydet (Pos kartında görünür)
           trailingState.set(coin.fullSymbol, {
             side: recommendation,
@@ -12579,7 +12810,8 @@ async function runAutoScan(prioritySymbol=null) {
           try {
             const _stOpen = trailingState.get(coin.fullSymbol) || {};
             recordTradeOpen(coin.fullSymbol, recommendation, orderResp.executedPrice||analysis.price, orderResp.details?.quantity||null, _stOpen);
-            rememberOpenPositionForReentry({symbol:coin.fullSymbol, positionAmt: recommendation==='LONG' ? 1 : -1, entryPrice:orderResp.executedPrice||analysis.price, leverage:parseInt(executeLeverage)||parseInt(leverage)||1}, _stOpen);
+            const _realQtyForKnown = Math.abs(Number(orderResp.details?.quantity || orderResp.quantity || 0)) || 1;
+            rememberOpenPositionForReentry({symbol:coin.fullSymbol, positionAmt: recommendation==='LONG' ? _realQtyForKnown : -_realQtyForKnown, entryPrice:orderResp.executedPrice||analysis.price, leverage:parseInt(executeLeverage)||parseInt(leverage)||1}, _stOpen);
             saveLastKnownPositions();
           } catch(_e) { logAuto(`⚠️ Trade ledger açılış kaydı yazılamadı: ${String(_e.message||_e).slice(0,80)}`); }
           // R135: kullanıcı maxPositions ne verdiyse ona kadar tarama devam edebilir.
@@ -12711,11 +12943,19 @@ async function getRecentUserTradesSafe(apiKey, apiSecret, symbol, state) {
   try {
     const openedAt = Number(state?.openedAt || state?.entryAt || 0);
     const startTime = openedAt > 0 ? Math.max(0, openedAt - 5*60*1000) : Date.now() - 6*60*60*1000;
-    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/userTrades', {
+    let rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/userTrades', {
       symbol,
       startTime,
       limit: 80,
     }, 10000);
+    if ((!Array.isArray(rows) || rows.length === 0) && openedAt > 0) {
+      // R169: Binance bazen çok yeni kapanışta dar pencereye trade döndürmüyor; 2 saatlik fallback.
+      rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/userTrades', {
+        symbol,
+        startTime: Math.max(0, Date.now() - 2*60*60*1000),
+        limit: 100,
+      }, 10000).catch(()=>[]);
+    }
     return Array.isArray(rows) ? rows : [];
   } catch(e) {
     return [];
@@ -12750,7 +12990,8 @@ function weightedAvgTradePrice(trades) {
 }
 
 async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
-  const side = inferStateSide(state);
+  const ledgerOpenRow = (tradeLedger || []).find(x => x && x.symbol === String(symbol).replace('USDT','') && x.status === 'OPEN');
+  const side = inferStateSide(state) || normalizeSide(ledgerOpenRow?.side);
   const isLong = side === 'LONG';
   const closeTradeSide = isLong ? 'SELL' : side === 'SHORT' ? 'BUY' : '';
   const trades = await getRecentUserTradesSafe(apiKey, apiSecret, symbol, state);
@@ -12802,14 +13043,23 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
       if (Array.isArray(incomeData) && incomeData.length > 0) {
         realPnlFromIncome = incomeData.reduce((sum, x) => sum + parseFloat(x.income||0), 0);
       }
+      if ((!Number.isFinite(realPnlFromIncome) || Math.abs(realPnlFromIncome) < 0.000001)) {
+        const wideIncome = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
+          symbol, incomeType:'REALIZED_PNL', startTime:Math.max(0, Date.now() - 2*60*60*1000), endTime:Date.now()+5000, limit:50
+        }).catch(()=>[]);
+        if (Array.isArray(wideIncome) && wideIncome.length > 0) {
+          // Tek pozisyon mantığında aynı sembolde en son kapanış gelirini al; 0.00 dashboard körlüğünü azaltır.
+          realPnlFromIncome = wideIncome.slice(-3).reduce((sum, x) => sum + parseFloat(x.income||0), 0);
+        }
+      }
     } catch(_e) {}
   }
-  // R167: income yoksa/0 geldiyse entry-close-qty ile gerçekçi PnL fallback.
+  // R167/R169: income yoksa/0 geldiyse entry-close-qty ile gerçekçi PnL fallback.
   let approxPnlFromPrice = null;
   try {
     const ep = Number(state?.entryPrice || state?.entry || 0);
     const cp = Number(closePrice || 0);
-    const qty = Math.abs(Number(state?.positionAmt || state?.qty || state?.quantity || 0));
+    const qty = Math.abs(Number(state?.positionAmt || state?.qty || state?.quantity || ledgerOpenRow?.quantity || 0));
     const sdir = normalizeSide(state?.side) || (Number(state?.positionAmt||0) < 0 ? 'SHORT' : 'LONG');
     if (ep > 0 && cp > 0 && qty > 0) approxPnlFromPrice = (cp - ep) * qty * (sdir === 'SHORT' ? -1 : 1);
   } catch(_) {}
@@ -13165,6 +13415,44 @@ app.get('/api/telegram-test', async (_req, res) => {
   res.json({ ok: !!r?.ok, telegram: r, enabled: tgEnabled(), build: LAZARUS_BUILD });
 });
 
+
+// R168d: Tam işlem kartı testi — gerçek emir açmadan açılış/kapanış kartını Telegram'a yollar.
+app.get('/api/telegram-trade-test', async (_req, res) => {
+  const sampleOpen = {
+    id:'TEST_'+Date.now(), symbol:'JTO', side:'LONG', openedAt:Date.now(),
+    entryPrice:0.6397, leverage:9, quantity:31.25, marginUSDT:20,
+    sl:0.6301, tp:0.6590, slPct:1.5, tpPct:3.0,
+    score:35, tier:'A', entryReason:'R159 momentum geçiş test kartı'
+  };
+  tgNotifyTradeOpenOnce(sampleOpen, {sltpVerified:true, brainMode:'R159 Momentum Pass'});
+  const sampleClose = {...sampleOpen, status:'CLOSED', closedAt:Date.now()+9*60*1000, closePrice:0.6301, pnlUSDT:-2.70, roiPct:-13.4, resultNote:'Test kapanış kartı'};
+  tgNotifyTradeCloseOnce(sampleClose, {currentSL:0.6301, targetTP:0.6590, leverage:9, positionAmt:31.25}, {label:'Telegram test kapanışı', closePrice:0.6301});
+  res.json({ok:true, sent:'open_close_trade_cards', build:LAZARUS_BUILD});
+});
+
+
+// R170b: Hesap geneli günlük/haftalık/aylık performans durumu — coin WR değildir.
+app.get('/api/performance-target', (_req, res) => {
+  try {
+    const obj = r170PerfMode();
+    res.json({
+      ok:true,
+      build:LAZARUS_BUILD,
+      target:'account_global_daily_weekly_monthly_wr_pnl_pf',
+      targetBand:{min:60,max:85,unit:'percent'},
+      note:'Bu endpoint coin winrate değil; hesap geneli günlük/haftalık/aylık performans ölçer.',
+      updatedAt:Date.now(),
+      mode:obj.mode,
+      reason:obj.reason,
+      frequencyLastHour:r170TradeFreq(60*60*1000),
+      daily:obj.account?.day,
+      weekly:obj.account?.week,
+      monthly:obj.account?.month,
+      recent12:obj.account?.recent,
+    });
+  } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
+});
+
 app.listen(PORT, async () => {
   console.log(`✅ Server ${PORT}`);
 
@@ -13201,6 +13489,8 @@ app.listen(PORT, async () => {
       ``,
       `✅ Otomatik tarama aktif`,
       `💬 İşlem açılınca / kapanınca bildirim gelecek`,
+      ``,
+      ...tgPerfSummaryLines(),
     ].join('\n'), false);
   } else if (!TG_TOKEN) {
     console.log('ℹ️  Telegram kapalı — TELEGRAM_BOT_TOKEN env var eklenmemiş');
