@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R170c_INDEX_TELEGRAM_DWM_PERF';
+const LAZARUS_BUILD = 'R173_SILVER_BULLET_RETEST_AUTO_RECONCILE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3332,6 +3332,22 @@ async function tgSendNow(text, silent=false) {
     const data = await res.json().catch(()=>({}));
     if (!res.ok || data.ok === false) {
       const err = data.description || `HTTP_${res.status}`;
+      // R171: HTML parse vb. yüzünden trade kartı düşmesin; düz metin fallback dene.
+      try {
+        const plain = String(text)
+          .replace(/<[^>]+>/g, '')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>');
+        const r2 = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({chat_id:TG_CHAT_ID, text:plain.slice(0,3900), disable_notification:!!silent}),
+          signal: AbortSignal.timeout(8000),
+        });
+        const d2 = await r2.json().catch(()=>({}));
+        if (r2.ok && d2.ok !== false) return {ok:true, fallback:'plain_text', originalError:err};
+      } catch(_fallbackErr) {}
       try { pushCritical('TELEGRAM_SEND_FAIL', new Error(err), { symbol:'TELEGRAM' }, 'WARN'); } catch(_) {}
       console.log('⚠️ Telegram gönderim hatası:', err);
       return {ok:false, error:err};
@@ -3667,8 +3683,179 @@ function recordTradeClose(symbol, state={}, cls={}) {
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
   // R168d: kapanış bildirimi ledger event hook'tan gider; 0/null PnL olsa bile gönderilir.
   try { tgNotifyTradeCloseOnce(row, state, cls); } catch(_tge) {}
+
   saveTradeLedger(); return row;
 }
+
+// ── R171: TELEGRAM POLLING NOTIFIER + PNL RECONCILE ─────────────────────────
+// Başlangıç/backup mesajı geliyorsa Telegram ayarı doğrudur. Trade kartı gelmiyorsa olay hook'u kaçmıştır.
+// Bu katman ledger'ı periyodik tarar; açılış/kapanış kartını kaçırmadan gönderir.
+const TG_NOTIFY_STATE_PATH = './telegram_notify_state.json';
+let tgNotifyState = {open:{}, close:{}};
+try {
+  const _tn = JSON.parse(fs.readFileSync(TG_NOTIFY_STATE_PATH,'utf8') || '{}');
+  if (_tn && typeof _tn === 'object') tgNotifyState = {open:_tn.open||{}, close:_tn.close||{}};
+} catch(_) {}
+function saveTgNotifyState() {
+  try { fs.writeFileSync(TG_NOTIFY_STATE_PATH, JSON.stringify(tgNotifyState, null, 2)); } catch(_) {}
+}
+function r171TradeRowId(row={}) {
+  return row.id || `${row.symbol||'?'}_${row.side||'?'}_${row.openedAt||0}`;
+}
+function r171RowIsClosed(row={}) {
+  return !!(row.status === 'CLOSED' || row.closedAt || row.exitReason || row.exitLabel);
+}
+function r171NotifyOpenFromLedger(row={}) {
+  const id = r171TradeRowId(row);
+  if (!row.openedAt || tgNotifyState.open[id]) return false;
+  tgNotifyState.open[id] = Date.now(); saveTgNotifyState();
+  try {
+    tgTradeOpen(row.symbol || '?', row.side || '?',
+      row.score ?? '-', row.edge ?? row.brainConfidence ?? '-',
+      row.marginUSDT ?? autoConfig?.usdtAmount,
+      row.leverage ?? autoConfig?.leverage,
+      row.entryReason || `${row.side||''} açıldı`,
+      {
+        entryPrice: row.entryPrice,
+        slPrice: row.sl,
+        tpPrice: row.tp,
+        quantity: row.quantity,
+        leverage: row.leverage,
+        margin: row.marginUSDT,
+        tier: row.tier,
+        slPct: row.slPct,
+        tpPct: row.tpPct,
+        mode: row.brainMode || '',
+      });
+    return true;
+  } catch(e) {
+    try { pushCritical('TELEGRAM_LEDGER_OPEN_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    return false;
+  }
+}
+function r171NotifyCloseFromLedger(row={}) {
+  const id = r171TradeRowId(row);
+  if (!r171RowIsClosed(row) || tgNotifyState.close[id]) return false;
+  tgNotifyState.close[id] = Date.now(); saveTgNotifyState();
+  try {
+    const pnl = Number(row.pnlUSDT);
+    const roi = Number(row.roiPct);
+    const dur = row.openedAt
+      ? (() => { const m = Math.max(0, Math.round((Number(row.closedAt||Date.now())-Number(row.openedAt))/60000)); return m < 60 ? `${m}dk` : `${Math.floor(m/60)}s ${m%60}dk`; })()
+      : '';
+    tgTradeClose(row.symbol || '?', row.side || '?',
+      Number.isFinite(pnl) ? pnl : null,
+      Number.isFinite(roi) ? roi : null,
+      row.exitLabel || row.exitReason || 'Kapanış algılandı',
+      {
+        entryPrice: row.entryPrice,
+        closePrice: row.closePrice,
+        duration: dur,
+        sl: row.sl,
+        tp: row.tp,
+        leverage: row.leverage,
+        quantity: row.quantity,
+        marginUSDT: row.marginUSDT,
+        resultNote: row.resultNote,
+      });
+    return true;
+  } catch(e) {
+    try { pushCritical('TELEGRAM_LEDGER_CLOSE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    return false;
+  }
+}
+async function r171TelegramPollLedger(force=false) {
+  let sentOpen=0, sentClose=0;
+  try {
+    const rows = Array.isArray(tradeLedger) ? tradeLedger.slice(0,80) : [];
+    for (const row of rows) {
+      if (!row || !row.openedAt) continue;
+      if (force || Number(row.openedAt||0) > Date.now() - 24*60*60*1000) {
+        if (r171NotifyOpenFromLedger(row)) sentOpen++;
+        if (r171NotifyCloseFromLedger(row)) sentClose++;
+      }
+    }
+  } catch(e) {
+    try { pushCritical('TELEGRAM_LEDGER_POLL_FAIL', new Error(String(e?.message||e)), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+  }
+  return {sentOpen, sentClose};
+}
+
+async function r171ReconcileTradeLedgerPnL(apiKey, apiSecret, maxRows=30) {
+  if (!apiKey || !apiSecret) return {ok:false, reason:'api_missing'};
+  let fixed=0, checked=0, errors=0;
+  const rows = Array.isArray(tradeLedger) ? tradeLedger : [];
+  for (const row of rows.slice(0, maxRows)) {
+    try {
+      if (!row || !r171RowIsClosed(row) || !row.openedAt) continue;
+      const pnlNow = Number(row.pnlUSDT);
+      const needs = (!Number.isFinite(pnlNow) || Math.abs(pnlNow) < 0.000001 || !row.closePrice);
+      if (!needs) continue;
+      checked++;
+      const sym = normalizeSymbol(String(row.symbol||''));
+      const startTime = Math.max(0, Number(row.openedAt||0) - 120000);
+      const endTime = Number(row.closedAt||Date.now()) + 180000;
+      let incomePnl = null, tradePnl = null, closePx = null, qty = null;
+      try {
+        const inc = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
+          symbol:sym, incomeType:'REALIZED_PNL', startTime, endTime, limit:100
+        });
+        if (Array.isArray(inc) && inc.length) {
+          const sum = inc.reduce((s,x)=>s+Number(x.income||0),0);
+          if (Number.isFinite(sum) && Math.abs(sum) > 0.000001) incomePnl = sum;
+        }
+      } catch(ei) {}
+      try {
+        const trades = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/userTrades', {symbol:sym, startTime, endTime, limit:1000});
+        if (Array.isArray(trades) && trades.length) {
+          const closeSide = normalizeSide(row.side) === 'SHORT' ? 'BUY' : 'SELL';
+          const afterOpen = trades.filter(t => Number(t.time||0) >= Number(row.openedAt||0) + 500 && String(t.side||'').toUpperCase() === closeSide);
+          const use = afterOpen.length ? afterOpen : trades.filter(t=>String(t.side||'').toUpperCase() === closeSide);
+          let notional=0, q=0, rp=0;
+          for (const t of use) {
+            const p=Number(t.price||0), qq=Math.abs(Number(t.qty||0)), r=Number(t.realizedPnl||0);
+            if (p>0 && qq>0) { notional += p*qq; q += qq; }
+            if (Number.isFinite(r)) rp += r;
+          }
+          if (q>0) { closePx = notional/q; qty = q; }
+          if (Number.isFinite(rp) && Math.abs(rp)>0.000001) tradePnl = rp;
+        }
+      } catch(et) {}
+      const finalPnl = Number.isFinite(incomePnl) ? incomePnl : (Number.isFinite(tradePnl) ? tradePnl : null);
+      let changed=false;
+      if (Number.isFinite(finalPnl)) { row.pnlUSDT = safeNum(finalPnl,4); changed=true; }
+      if (Number.isFinite(closePx) && closePx>0) { row.closePrice = safeNum(closePx,10); changed=true; }
+      if ((!row.quantity || Number(row.quantity) === 1) && Number.isFinite(qty) && qty>0) { row.quantity = safeNum(qty,8); changed=true; }
+      if (Number.isFinite(finalPnl)) {
+        const margin = Number(row.marginUSDT || autoConfig?.usdtAmount || 0);
+        if (margin > 0) row.roiPct = safeNum(finalPnl / margin * 100, 2);
+      } else if (row.entryPrice && row.closePrice && row.leverage) {
+        const raw = (Number(row.closePrice)-Number(row.entryPrice))/Number(row.entryPrice)*100*(normalizeSide(row.side)==='SHORT'?-1:1);
+        row.roiPct = safeNum(raw*Number(row.leverage||1),2);
+      }
+      if (changed) fixed++;
+    } catch(e) { errors++; }
+  }
+  if (fixed) saveTradeLedger();
+  return {ok:true, checked, fixed, errors};
+}
+
+let r173LastAutoReconcileAt = 0;
+let r173LastAutoReconcileResult = null;
+async function r173AutoReconcileTick(force=false) {
+  if (!autoConfig?.apiKey || !autoConfig?.apiSecret) return {ok:false, reason:'api_missing'};
+  if (!force && Date.now() - Number(r173LastAutoReconcileAt||0) < 5*60*1000) return {ok:true, skipped:true, last:r173LastAutoReconcileResult};
+  r173LastAutoReconcileAt = Date.now();
+  r173LastAutoReconcileResult = await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 80);
+  return r173LastAutoReconcileResult;
+}
+
+async function r171MaintenanceTick() {
+  try { await r173AutoReconcileTick(false); } catch(_) {}
+  try { await r171TelegramPollLedger(false); } catch(_) {}
+}
+
+
 
 // ── R84: 5 DAKİKA UYUMLU BEKLEME SÜRELERİ — botu kilitlemez, tekrar hatayı önler ──
 // 90dk 5m scalp için ağırdı. Yeni mantık mum sayısına göre çalışır:
@@ -10356,6 +10543,63 @@ function r170TradeFreq(lookbackMs=60*60*1000) {
   const cutoff = Date.now() - lookbackMs;
   return (Array.isArray(tradeLedger) ? tradeLedger : []).filter(t => Number(t.openedAt||0) >= cutoff).length;
 }
+
+function r173AnyText(...xs) {
+  return xs.map(x => {
+    try { return typeof x === 'string' ? x : JSON.stringify(x || ''); } catch(_) { return ''; }
+  }).join(' ').toLowerCase();
+}
+function r173Num(...xs) {
+  for (const x of xs) {
+    const n = Number(x);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+function r173ContextQuality(decisionChain={}, analysis={}) {
+  const txt = r173AnyText(
+    decisionChain?.reason, decisionChain?.brainSummary, decisionChain?.entryPermissionReason,
+    decisionChain?.r118CandleOzet, decisionChain?.r125OrderflowSummary, decisionChain?.r126FlowSummary,
+    decisionChain?.r140Summary, decisionChain?.r110IctSummary, decisionChain?.r115Summary,
+    analysis?.signals, analysis?.reason, analysis?.ict, analysis?.smc, analysis?.r140Summary
+  );
+  const sweep = !!(
+    decisionChain?.directSweepOk || decisionChain?.hardSweepForBridge ||
+    decisionChain?.r51DirectSweepMinEdgeOk || decisionChain?.r117TrapSweepTaken ||
+    decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk ||
+    /sweep|süpür|ssl|bsl|stop.?hunt|likidite.?av|stop av/.test(txt)
+  );
+  const fvg = !!(
+    decisionChain?.fvgOk || decisionChain?.r110FvgOk || decisionChain?.r118FvgOk ||
+    decisionChain?.bullishFvg || decisionChain?.bearishFvg ||
+    /fvg|fair value gap|imbalance|dengesizlik|boşluk/.test(txt)
+  );
+  const mss = !!(
+    decisionChain?.mssOk || decisionChain?.chochOk || decisionChain?.r110ChochOk ||
+    decisionChain?.r115ChochOk || decisionChain?.r117MssOk ||
+    /mss|choch|change of character|market structure shift|yapı değiş/.test(txt)
+  );
+  const candleCloseOk = !!(
+    decisionChain?.r118CandleOk || decisionChain?.r118CandleStrong ||
+    decisionChain?.r117PrecisionCandleOk || decisionChain?.hassasMumOk ||
+    /mum:ok|candle.?ok|confirmed|kapanış|gövde reclaim|body reclaim/.test(txt)
+  );
+  const retestOk = !!(
+    decisionChain?.r75RetestBridgeOk || decisionChain?.r66WyckoffTrapReclaimOk ||
+    decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r42TrapReclaimOk ||
+    decisionChain?.vwapRetestOk || decisionChain?.emaRetestOk || decisionChain?.pullbackRetestOk ||
+    /retest|pullback|geri test|geri dönüş|vwap|ema21|ema9|reclaim/.test(txt)
+  );
+  const rvol = r173Num(
+    analysis?.rvol?.['1h']?.rvol, analysis?.rvol?.rvol, analysis?.r15?.rvol?.rvol,
+    analysis?.r140Rvol?.rvol, decisionChain?.r140Rvol?.rvol, decisionChain?.rvol,
+    decisionChain?.volumeSpike, analysis?.volumeSpike
+  );
+  const volSpike15 = rvol >= 1.5 || /rvol:(high|spike)|volume.?spike|hacim.?spike|hacim.?pat/.test(txt);
+  const volOk12 = rvol >= 1.2 || volSpike15;
+  const silverBullet = !!(sweep && fvg && mss && candleCloseOk && volOk12);
+  return {txt, sweep, fvg, mss, candleCloseOk, retestOk, rvol, volSpike15, volOk12, silverBullet};
+}
 function r170PerfMode() {
   const a = r170AccountPerf();
   const d = a.day || {};
@@ -12427,10 +12671,61 @@ async function runAutoScan(prioritySymbol=null) {
           const r170R159Pts = Number(decisionChain?.r159Points || 0);
           const r170FlowEdge = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
           const r170LiveTicks = Number(decisionChain?.r133LiveTradeCount || decisionChain?.liveTradeCount || 0);
-          const r170StrongMomentum = !!(decisionChain?.r159MomentumPass && r170R159Pts >= 8 && r170Edge >= 75 && score >= 45);
-          const r170StrongR160 = !!(decisionChain?.r160TraderDecision && r170True >= 4 && r170Q2 && r170Q4 && r170Edge >= 72 && score >= 45);
-          const r170GoodThree = !!(decisionChain?.r160TraderDecision && r170True === 3 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 82 && score >= 58 && r170FlowEdge >= 6);
+          // R173: Silver Bullet + mum kapanış + hacim spike + retest kalitesi.
+          // Amaç: işlem sayısını normal modda boğmadan, recovery modda sadece gerçek kaliteyi geçirmek.
+          const r173Q = r173ContextQuality(decisionChain, analysis);
+          const r172RecoveryMode = r170Mode === 'HIGH_WR_RECOVERY';
+          const r172VeryBadDay = !!(Number(r170Perf.closed||0) >= 8 && (Number(r170Perf.wr||0) < 0.45 || Number(r170Perf.pf||0) < 0.90 || Number(r170Perf.net||0) < -3));
+          const r173SweepNeedsClose = !!(r173Q.sweep && !r173Q.candleCloseOk && !r173Q.retestOk && !r173Q.silverBullet);
+          const r173RetestOrSilver = !!(r173Q.silverBullet || (r173Q.retestOk && r173Q.candleCloseOk && r173Q.volOk12));
+          const r170StrongMomentum = !!(decisionChain?.r159MomentumPass && (
+            r172RecoveryMode
+              ? (r170R159Pts >= 9 && r170Edge >= 90 && score >= 60 && r170Q2 && r170Q3 && r170Q4 && r170FlowEdge >= 8 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver)
+              : (r170R159Pts >= 8 && r170Edge >= 75 && score >= 45 && !r173SweepNeedsClose)
+          ));
+          const r170StrongR160 = !!(decisionChain?.r160TraderDecision && (
+            r172RecoveryMode
+              ? (r170True >= 4 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 88 && score >= 65 && r170FlowEdge >= 7 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver)
+              : (r170True >= 4 && r170Q2 && r170Q4 && r170Edge >= 72 && score >= 45 && !r173SweepNeedsClose)
+          ));
+          const r170GoodThree = !!(!r172RecoveryMode && decisionChain?.r160TraderDecision && r170True === 3 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 82 && score >= 58 && r170FlowEdge >= 6 && r173Q.volOk12);
           const r170FreqProtectedPath = r170StrongMomentum || r170StrongR160 || r170GoodThree;
+
+          if (r173SweepNeedsClose) {
+            const why = `R173 mum kapanış/retest bekliyor: sweep var ama kapanış/retest teyidi yok; wick sweep tuzak riski`;
+            logAuto(`⏳ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, r160True:r170True, rvol:r173Q.rvol});
+            continue;
+          }
+
+          if (r172RecoveryMode && !r173Q.volSpike15) {
+            const why = `R173 recovery hacim spike filtresi: RVOL ${r173Q.rvol ? r173Q.rvol.toFixed(2)+'x' : 'yok'}; 1.5x+ kurumsal hacim bekleniyor`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, rvol:r173Q.rvol, mode:r170Mode});
+            continue;
+          }
+
+          if (r172RecoveryMode && r173Q.sweep && !r173RetestOrSilver) {
+            const why = `R173 retest/Silver Bullet bekliyor: sweep sonrası direkt giriş yok; FVG+MSS veya ilk retest gerekli`;
+            logAuto(`⏳ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, silver:r173Q.silverBullet, retest:r173Q.retestOk, fvg:r173Q.fvg, mss:r173Q.mss});
+            continue;
+          }
+
+          if (r172RecoveryMode && !r170FreqProtectedPath) {
+            const wrTxt = r170Perf.wr !== null ? (r170Perf.wr*100).toFixed(0) : '?';
+            const why = `R172 HIGH_WR_RECOVERY elit filtre: günlük WR%${wrTxt}, PF:${Number(r170Perf.pf||0).toFixed(2)}, net:${Number(r170Perf.net||0).toFixed(2)}$ → sadece R159 9p elit veya R160 4/4 elit geçer`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, r160True:r170True, flow:r170FlowEdge, ticks:r170LiveTicks, mode:r170Mode});
+            continue;
+          }
+
+          if (r172VeryBadDay && (score < 68 || r170Edge < 88 || r170FlowEdge < 7)) {
+            const why = `R172 çok kötü gün freni: score/edge/flow elit değil — score:${score}, edge:${r170Edge}, flow:${r170FlowEdge}`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, flow:r170FlowEdge, mode:r170Mode});
+            continue;
+          }
 
           // 6p/7p momentum sadece hedef sağlıklıyken ve yapı tam destekliyorsa geçer; aksi halde winrate'i aşağı çeker.
           if (decisionChain?.r159MomentumPass && r170R159Pts < 8 && !r170GoodThree) {
@@ -12489,6 +12784,31 @@ async function runAutoScan(prioritySymbol=null) {
             continue;
           }
         } catch(_e169q) {}
+
+        // R172: aynı coin/yön son 3 saatte zarar verdiyse recovery modda sadece elit sinyal geçsin.
+        // Bu TAG/JTO/BANK/B tekrar deneme hasarını azaltır; ters yön fırsatı serbest kalır.
+        try {
+          const r172ModeObj2 = r170PerfMode();
+          const r172Mode2 = r172ModeObj2.mode;
+          const r172SameSideLoss = r157GetConsecutiveLosses(coin.fullSymbol, recommendation, 3*60*60*1000);
+          if (r172Mode2 === 'HIGH_WR_RECOVERY' && r172SameSideLoss >= 1) {
+            const r172T = Number(decisionChain?.r160TrueCount || 0);
+            const r172Edge = Number(decisionChain?.brainConfidence || 0);
+            const r172Pts = Number(decisionChain?.r159Points || 0);
+            const r172Q2 = !!decisionChain?.r160Q2Flow, r172Q3 = !!decisionChain?.r160Q3Momentum, r172Q4 = !!decisionChain?.r160Q4Proof;
+            const r172Flow = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
+            const r172Elite = !!(
+              (decisionChain?.r159MomentumPass && r172Pts >= 9 && r172Edge >= 92 && score >= 65 && r172Q2 && r172Q3 && r172Q4 && r172Flow >= 8) ||
+              (decisionChain?.r160TraderDecision && r172T >= 4 && r172Edge >= 90 && score >= 68 && r172Q2 && r172Q3 && r172Q4 && r172Flow >= 8)
+            );
+            if (!r172Elite) {
+              const why = `R172 aynı yön taze kayıp freni: ${coin.symbol} ${recommendation} son 3s kayıp gördü; sadece elit sinyal geçer`;
+              logAuto(`⛔ ${coin.symbol} ${why}`);
+              markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r172Edge, r159:r172Pts, r160True:r172T, flow:r172Flow});
+              continue;
+            }
+          }
+        } catch(_e172loss) {}
 
         // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
         const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
@@ -13449,7 +13769,24 @@ app.get('/api/performance-target', (_req, res) => {
       weekly:obj.account?.week,
       monthly:obj.account?.month,
       recent12:obj.account?.recent,
+      reconcile:{lastAt:r173LastAutoReconcileAt||0,last:r173LastAutoReconcileResult},
     });
+  } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
+});
+
+
+// R171: Telegram trade kartlarını manuel zorla gönder + PnL reconcile.
+app.get('/api/telegram-flush-trade-alerts', async (_req, res) => {
+  try {
+    const rec = autoConfig?.apiKey && autoConfig?.apiSecret ? await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 80) : {ok:false, reason:'api_missing'};
+    const sent = await r171TelegramPollLedger(true);
+    res.json({ok:true, build:LAZARUS_BUILD, reconcile:rec, telegram:sent});
+  } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
+});
+app.get('/api/reconcile-trade-ledger', async (_req, res) => {
+  try {
+    const rec = autoConfig?.apiKey && autoConfig?.apiSecret ? await r173AutoReconcileTick(true) : {ok:false, reason:'api_missing'};
+    res.json({ok:true, build:LAZARUS_BUILD, reconcile:rec});
   } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
 });
 
@@ -13502,4 +13839,8 @@ app.listen(PORT, async () => {
     // İlk yedek 5 dakika sonra
     setTimeout(tgSaveLedgerBackup, 5 * 60 * 1000);
   }
+
+  // R171: trade açılış/kapanış Telegram kartı ve 0.00 PnL reconcile bakım döngüsü
+  setTimeout(r171MaintenanceTick, 12 * 1000);
+  setInterval(r171MaintenanceTick, 20 * 1000);
 });
