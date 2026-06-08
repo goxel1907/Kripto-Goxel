@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R173_SILVER_BULLET_RETEST_AUTO_RECONCILE';
+const LAZARUS_BUILD = 'R175_WARMUP_R159_DAMAGE_GUARD';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3840,13 +3840,77 @@ async function r171ReconcileTradeLedgerPnL(apiKey, apiSecret, maxRows=30) {
   return {ok:true, checked, fixed, errors};
 }
 
+
+async function r174BootstrapLedgerFromIncome(apiKey, apiSecret, lookbackMs=48*60*60*1000) {
+  // R174: tradeLedger boşsa reconcile düzeltemez; önce Binance REALIZED_PNL gelirinden minimum ledger kur.
+  // Bu, Railway deploy/restart sonrası Telegram document backup geri alınamadığında WR panelinin 0 işlem görünmesini düzeltir.
+  if (!apiKey || !apiSecret) return {ok:false, reason:'api_missing'};
+  try {
+    const startTime = Date.now() - Math.max(60*60*1000, Number(lookbackMs)||48*60*60*1000);
+    const endTime = Date.now() + 5000;
+    const inc = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
+      incomeType:'REALIZED_PNL', startTime, endTime, limit:1000
+    });
+    if (!Array.isArray(inc) || !inc.length) return {ok:true, restored:0, source:'income_empty'};
+    const existing = new Set((Array.isArray(tradeLedger)?tradeLedger:[]).map(r => String(r.id||'')));
+    let restored = 0;
+    for (const x of inc) {
+      const pnl = Number(x.income || 0);
+      const t = Number(x.time || x.timestamp || 0);
+      const symFull = normalizeSymbol(String(x.symbol || ''));
+      if (!symFull || !t || !Number.isFinite(pnl) || Math.abs(pnl) < 0.000001) continue;
+      const id = `RESTORE_${symFull}_${t}_${String(x.tranId||x.info||'')}`;
+      if (existing.has(id)) continue;
+      const margin = Number(autoConfig?.usdtAmount || 0);
+      const row = {
+        id,
+        symbol: symFull.replace('USDT',''),
+        side: 'UNKNOWN',
+        status: 'CLOSED',
+        openedAt: Math.max(0, t - 60*1000),
+        openedAtTR: trTime(Math.max(0, t - 60*1000)),
+        closedAt: t,
+        closedAtTR: trTime(t),
+        entryPrice: null,
+        closePrice: null,
+        leverage: Number(autoConfig?.leverage || 0) || null,
+        quantity: null,
+        marginUSDT: margin || null,
+        pnlUSDT: safeNum(pnl,4),
+        roiPct: margin > 0 ? safeNum(pnl / margin * 100, 2) : null,
+        exitReason: 'BINANCE_INCOME_RESTORE',
+        exitLabel: 'Binance gelir kaydından geri yüklendi',
+        resultNote: 'R174 bootstrap: Railway/Telegram ledger boşken Binance REALIZED_PNL üzerinden oluşturuldu',
+        sl:null, tp:null, cooldownMin:null,
+      };
+      tradeLedger.push(row);
+      existing.add(id);
+      restored++;
+    }
+    if (restored) {
+      tradeLedger = tradeLedger.sort((a,b)=>Number(b.closedAt||b.openedAt||0)-Number(a.closedAt||a.openedAt||0)).slice(0,250);
+      saveTradeLedger();
+      try { logAuto(`🧾 R174 ledger bootstrap: Binance income üzerinden ${restored} kapanış geri yüklendi`); } catch(_) {}
+    }
+    return {ok:true, restored, source:'binance_income', incomeRows:inc.length};
+  } catch(e) {
+    try { pushCritical('R174_LEDGER_BOOTSTRAP_FAIL', new Error(String(e?.message||e)), {symbol:'PNL'}, 'WARN'); } catch(_) {}
+    return {ok:false, error:String(e?.message||e)};
+  }
+}
+
 let r173LastAutoReconcileAt = 0;
 let r173LastAutoReconcileResult = null;
 async function r173AutoReconcileTick(force=false) {
   if (!autoConfig?.apiKey || !autoConfig?.apiSecret) return {ok:false, reason:'api_missing'};
   if (!force && Date.now() - Number(r173LastAutoReconcileAt||0) < 5*60*1000) return {ok:true, skipped:true, last:r173LastAutoReconcileResult};
   r173LastAutoReconcileAt = Date.now();
-  r173LastAutoReconcileResult = await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 80);
+  const closedKnown = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t => t && (t.status==='CLOSED'||t.closedAt) && Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT)!==0).length;
+  let bootstrap = {ok:true, restored:0, skipped:closedKnown>0};
+  // Ledger boşsa ya da kullanıcı manuel PnL Düzelt'e bastıysa Binance income'dan gerçek kapanışları kur.
+  if (force || closedKnown === 0) bootstrap = await r174BootstrapLedgerFromIncome(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000);
+  const rec = await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 100);
+  r173LastAutoReconcileResult = {ok:!!rec?.ok, bootstrap, reconcile:rec};
   return r173LastAutoReconcileResult;
 }
 
@@ -10608,9 +10672,15 @@ function r170PerfMode() {
   // Coin WR burada kullanılmaz.
   const enoughDay = Number(d.closed||0) >= 8;
   const enoughRecent = Number(r.closed||0) >= 6;
+  const closedDay = Number(d.closed||0);
   const dayBad = enoughDay && (d.wr !== null && (d.wr < 0.60 || d.net < 0 || d.pf < 1.20));
   const recentBad = enoughRecent && (r.wr !== null && (r.wr < 0.55 || r.net < -2 || r.pf < 1.10));
+  // R175: Ledger yeni/boşken veya ilk işlem zararken BALANCED_FREQ fazla gevşek kalıyordu.
+  // İlk 6 kapalı işlemde hedef WR için warmup da seçici çalışır.
+  const warmupBad = closedDay > 0 && closedDay < 6 && (Number(d.net||0) < 0 || (d.wr !== null && d.wr < 0.60));
+  const warmupNew = closedDay === 0;
   if (dayBad || recentBad) return {mode:'HIGH_WR_RECOVERY', perf:d, account:a, reason: dayBad ? 'DAILY_TARGET_BELOW' : 'RECENT_DRAWDOWN'};
+  if (warmupBad || warmupNew) return {mode:'WARMUP_HIGH_WR', perf:d, account:a, reason:warmupNew?'WARMUP_EMPTY_LEDGER':'WARMUP_NEGATIVE_OR_LOW_WR'};
   if (enoughDay && d.wr !== null && d.wr >= 0.60 && d.wr <= 0.85 && d.pf >= 1.20 && d.net >= 0) return {mode:'TARGET_OK', perf:d, account:a, reason:'DAILY_TARGET_OK'};
   return {mode:'BALANCED_FREQ', perf:d, account:a, reason:'WARMUP_OR_MIXED'};
 }
@@ -12674,22 +12744,35 @@ async function runAutoScan(prioritySymbol=null) {
           // R173: Silver Bullet + mum kapanış + hacim spike + retest kalitesi.
           // Amaç: işlem sayısını normal modda boğmadan, recovery modda sadece gerçek kaliteyi geçirmek.
           const r173Q = r173ContextQuality(decisionChain, analysis);
-          const r172RecoveryMode = r170Mode === 'HIGH_WR_RECOVERY';
+          const r172RecoveryMode = (r170Mode === 'HIGH_WR_RECOVERY' || r170Mode === 'WARMUP_HIGH_WR');
           const r172VeryBadDay = !!(Number(r170Perf.closed||0) >= 8 && (Number(r170Perf.wr||0) < 0.45 || Number(r170Perf.pf||0) < 0.90 || Number(r170Perf.net||0) < -3));
           const r173SweepNeedsClose = !!(r173Q.sweep && !r173Q.candleCloseOk && !r173Q.retestOk && !r173Q.silverBullet);
           const r173RetestOrSilver = !!(r173Q.silverBullet || (r173Q.retestOk && r173Q.candleCloseOk && r173Q.volOk12));
+          const r175MinScore = Number(effectiveMinScore || autoConfig?.minScore || 70);
           const r170StrongMomentum = !!(decisionChain?.r159MomentumPass && (
             r172RecoveryMode
-              ? (r170R159Pts >= 9 && r170Edge >= 90 && score >= 60 && r170Q2 && r170Q3 && r170Q4 && r170FlowEdge >= 8 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver)
-              : (r170R159Pts >= 8 && r170Edge >= 75 && score >= 45 && !r173SweepNeedsClose)
+              ? (
+                  // R175: STG tipi R159 8p/score50 hasarı için warmup/recovery'de 8p geçmez; 9p elit ya da SilverBullet gerekir.
+                  (r170R159Pts >= 9 && r170Edge >= 92 && score >= Math.max(65, r175MinScore-5) && r170Q2 && r170Q3 && r170Q4 && r170FlowEdge >= 8 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver) ||
+                  (r170R159Pts >= 8 && r170Edge >= 90 && score >= r175MinScore && r170Q2 && r170Q3 && r170Q4 && r173Q.silverBullet && r173Q.volSpike15)
+                )
+              : (r170R159Pts >= 8 && r170Edge >= 82 && score >= Math.max(58, r175MinScore-10) && r173Q.volOk12 && !r173SweepNeedsClose)
           ));
           const r170StrongR160 = !!(decisionChain?.r160TraderDecision && (
             r172RecoveryMode
-              ? (r170True >= 4 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 88 && score >= 65 && r170FlowEdge >= 7 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver)
-              : (r170True >= 4 && r170Q2 && r170Q4 && r170Edge >= 72 && score >= 45 && !r173SweepNeedsClose)
+              ? (r170True >= 4 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 90 && score >= Math.max(68, r175MinScore-2) && r170FlowEdge >= 8 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver)
+              : (r170True >= 4 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 78 && score >= Math.max(58, r175MinScore-10) && r173Q.volOk12 && !r173SweepNeedsClose)
           ));
           const r170GoodThree = !!(!r172RecoveryMode && decisionChain?.r160TraderDecision && r170True === 3 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 82 && score >= 58 && r170FlowEdge >= 6 && r173Q.volOk12);
           const r170FreqProtectedPath = r170StrongMomentum || r170StrongR160 || r170GoodThree;
+          const r175WeakR159 = !!(decisionChain?.r159MomentumPass && r170R159Pts === 8 && (score < r175MinScore || !r170Q2 || !r170Q3 || !r170Q4 || !r173Q.volSpike15 || !r173RetestOrSilver));
+          if (r172RecoveryMode && r175WeakR159) {
+            const why = `R175 warmup/recovery R159 8p hasar freni: score:${score}/${r175MinScore}, Q2:${r170Q2?'1':'0'} Q3:${r170Q3?'1':'0'} Q4:${r170Q4?'1':'0'}, RVOL:${r173Q.rvol?r173Q.rvol.toFixed(2):'?'}, retest/silver:${r173RetestOrSilver?'VAR':'YOK'} — işlem yok`;
+            logAuto(`⛔ ${coin.symbol} ${why}`);
+            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, mode:r170Mode, rvol:r173Q.rvol, retest:r173Q.retestOk, silver:r173Q.silverBullet});
+            continue;
+          }
+
 
           if (r173SweepNeedsClose) {
             const why = `R173 mum kapanış/retest bekliyor: sweep var ama kapanış/retest teyidi yok; wick sweep tuzak riski`;
@@ -13068,6 +13151,19 @@ async function runAutoScan(prioritySymbol=null) {
             }
           }
         } catch(_e166b) {}
+
+        // R175: R159 momentum geçişi yine de geçerse risk dar tutulur; 5m scalp'te ilk tepki yoksa büyük SL beklenmez.
+        try {
+          if (decisionChain?.r159MomentumPass && Number(decisionChain?.r159Points||0) <= 8) {
+            const oldSL175 = Number(userSLPct||0);
+            const oldTP175 = Number(userTPPct||0);
+            if (oldSL175 > 0.95) userSLPct = 0.95;
+            if (oldTP175 > 0 && userTPPct < 2.2) userTPPct = 2.2;
+            targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
+            stopPrice   = isLong ? +(entryRef * (1 - userSLPct/100)).toFixed(8) : +(entryRef * (1 + userSLPct/100)).toFixed(8);
+            if (oldSL175 !== userSLPct) logAuto(`🛡 ${coin.symbol} R175 R159 risk daraltma: SL %${oldSL175}→%${userSLPct}, TP %${oldTP175}→%${userTPPct}`);
+          }
+        } catch(_e175risk) {}
 
         // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -13778,7 +13874,7 @@ app.get('/api/performance-target', (_req, res) => {
 // R171: Telegram trade kartlarını manuel zorla gönder + PnL reconcile.
 app.get('/api/telegram-flush-trade-alerts', async (_req, res) => {
   try {
-    const rec = autoConfig?.apiKey && autoConfig?.apiSecret ? await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 80) : {ok:false, reason:'api_missing'};
+    const rec = autoConfig?.apiKey && autoConfig?.apiSecret ? await r173AutoReconcileTick(true) : {ok:false, reason:'api_missing'};
     const sent = await r171TelegramPollLedger(true);
     res.json({ok:true, build:LAZARUS_BUILD, reconcile:rec, telegram:sent});
   } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
