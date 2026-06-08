@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R179_R165_BASE_STABLE_TG_48H_FIX';
+const LAZARUS_BUILD = 'R180_R179_MAINTENANCE_TICK_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3658,6 +3658,19 @@ async function r173AutoReconcileTick(force=false) {
   const boot = await r179BootstrapLedger48h(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000, {replace:false});
   r173LastAutoReconcileResult = {ok:!!boot?.ok, bootstrap:boot};
   return r173LastAutoReconcileResult;
+}
+
+// ── R180 FIX: R179'da startup setInterval r171MaintenanceTick çağırıyordu ama fonksiyon yoktu.
+// Botun ana stratejisini değiştirmez; sadece bakım döngüsünü tanımlar.
+async function r171MaintenanceTick() {
+  try { await r173AutoReconcileTick(false); } catch(e) {
+    try { pushCritical('R180_MAINT_RECONCILE_FAIL', new Error(String(e?.message||e)), {symbol:'PNL'}, 'WARN'); } catch(_) {}
+  }
+  try {
+    if (typeof r171TelegramPollLedger === 'function') await r171TelegramPollLedger(false);
+  } catch(e) {
+    try { pushCritical('R180_MAINT_TELEGRAM_POLL_FAIL', new Error(String(e?.message||e)), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+  }
 }
 
 
