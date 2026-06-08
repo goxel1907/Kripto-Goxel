@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R184_TELEGRAM_DIRECT_SEND_NOW_FIX';
+const LAZARUS_BUILD = 'R189_MICROPRICE_OI_CROWD_EDGE_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1132,6 +1132,11 @@ function r125BookMetricsFromDepth(symbol, depth, lastPrice) {
   const bids = Array.isArray(depth?.bids) ? depth.bids.slice(0,50) : [];
   const asks = Array.isArray(depth?.asks) ? depth.asks.slice(0,50) : [];
   let bidTop=0, askTop=0, nearBid=0, nearAsk=0, bestBid=0, bestAsk=0;
+  // R189: microprice/VAMP hazırlığı. Sadece mevcut Binance depth kullanılır; yeni REST yükü yok.
+  // Literatürde LOB mid yerine queue imbalance/microprice kısa vadeli yön için daha anlamlıdır.
+  let bidQty5=0, askQty5=0, vampNum=0, vampDen=0;
+  const topBids = bids.slice(0,5).map(([p0,q0]) => [r125Num(p0), r125Num(q0)]).filter(([p,q]) => p>0 && q>0);
+  const topAsks = asks.slice(0,5).map(([p0,q0]) => [r125Num(p0), r125Num(q0)]).filter(([p,q]) => p>0 && q>0);
   for (const [p0,q0] of bids) {
     const p = r125Num(p0), q = r125Num(q0), usdt = p*q;
     if (!bestBid) bestBid = p;
@@ -1144,26 +1149,46 @@ function r125BookMetricsFromDepth(symbol, depth, lastPrice) {
     askTop += usdt;
     if (lp>0 && Math.abs(p-lp)/lp <= 0.0025) nearAsk += usdt;
   }
+  for (let i=0; i<Math.min(topBids.length, topAsks.length); i++) {
+    const [bp,bq] = topBids[i], [ap,aq] = topAsks[i];
+    bidQty5 += bq; askQty5 += aq;
+    // VAMP: karşı taraf miktarıyla fiyatı ağırlıkla; bid kuyruğu büyükse fiyat ask'a yaklaşır.
+    vampNum += ap*bq + bp*aq;
+    vampDen += bq + aq;
+  }
   const denom = bidTop + askTop;
   const nearDenom = nearBid + nearAsk;
   const imb = denom > 0 ? ((bidTop - askTop) / denom) * 100 : 0;
   const nearImb = nearDenom > 0 ? ((nearBid - nearAsk) / nearDenom) * 100 : imb;
-  const spreadPct = (bestAsk>0 && bestBid>0) ? ((bestAsk-bestBid)/lp)*100 : 0;
+  const spreadPct = (bestAsk>0 && bestBid>0 && lp>0) ? ((bestAsk-bestBid)/lp)*100 : 0;
+  const midPrice = (bestAsk>0 && bestBid>0) ? (bestAsk + bestBid) / 2 : 0;
+  const microPrice = (bestAsk>0 && bestBid>0 && (bidQty5+askQty5)>0) ? ((bestAsk*bidQty5 + bestBid*askQty5) / (bidQty5+askQty5)) : 0;
+  const vampPrice = (vampDen>0) ? (vampNum / vampDen) : microPrice;
+  const microBiasPct = (midPrice>0 && microPrice>0) ? ((microPrice-midPrice)/midPrice)*100 : 0;
+  const vampBiasPct = (midPrice>0 && vampPrice>0) ? ((vampPrice-midPrice)/midPrice)*100 : microBiasPct;
+  const microSide = vampBiasPct > Math.max(0.003, spreadPct*0.18) ? 'LONG' : vampBiasPct < -Math.max(0.003, spreadPct*0.18) ? 'SHORT' : 'NEUTRAL';
   const now = Date.now();
   const hist = (r125BookHistory.get(full) || []).filter(x => now - x.ts < 3*60*1000);
   const prev = hist.length ? hist[hist.length-1] : null;
-  hist.push({ ts:now, imb, nearImb, spread:spreadPct, bid:bidTop, ask:askTop });
+  hist.push({ ts:now, imb, nearImb, spread:spreadPct, bid:bidTop, ask:askTop, microBias:vampBiasPct, microSide });
   while (hist.length > 120) hist.shift();
   r125BookHistory.set(full, hist);
   const velocity = prev ? imb - prev.imb : 0;
   const nearVelocity = prev ? nearImb - prev.nearImb : 0;
+  const recentMicro = hist.slice(-6);
+  const microLongCount = recentMicro.filter(x => x.microSide === 'LONG').length;
+  const microShortCount = recentMicro.filter(x => x.microSide === 'SHORT').length;
+  const microPersistSide = microLongCount >= 4 ? 'LONG' : microShortCount >= 4 ? 'SHORT' : 'NEUTRAL';
   const side = nearImb > 12 || imb > 18 ? 'LONG' : nearImb < -12 || imb < -18 ? 'SHORT' : 'NEUTRAL';
-  const strength = Math.min(100, Math.max(0, Math.abs(nearImb)*0.8 + Math.abs(velocity)*1.2 + Math.abs(nearVelocity)));
+  const strength = Math.min(100, Math.max(0, Math.abs(nearImb)*0.8 + Math.abs(velocity)*1.2 + Math.abs(nearVelocity) + Math.abs(vampBiasPct)*200));
   return {
     ok: denom > 0,
     side, imb:+imb.toFixed(1), nearImb:+nearImb.toFixed(1), velocity:+velocity.toFixed(1), nearVelocity:+nearVelocity.toFixed(1),
     bidTop:+bidTop.toFixed(0), askTop:+askTop.toFixed(0), nearBid:+nearBid.toFixed(0), nearAsk:+nearAsk.toFixed(0),
-    spreadPct:+spreadPct.toFixed(4), strength:+strength.toFixed(0), ageMs:0
+    spreadPct:+spreadPct.toFixed(4), strength:+strength.toFixed(0), ageMs:0,
+    bestBid:+bestBid.toFixed(8), bestAsk:+bestAsk.toFixed(8), midPrice:+midPrice.toFixed(8),
+    microPrice:+microPrice.toFixed(8), vampPrice:+vampPrice.toFixed(8), microBiasPct:+microBiasPct.toFixed(5), vampBiasPct:+vampBiasPct.toFixed(5),
+    microSide, microPersistSide, microLongCount, microShortCount
   };
 }
 function r125LiqClusters(symbol, lastPrice) {
@@ -1260,7 +1285,7 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
   const tpShort = clusters.below && clusters.below.distPct < -0.18 && clusters.below.distPct > -8 ? clusters.below : null;
   const flowState = flowWarmup ? 'ISINIYOR' : (tickFresh ? 'CANLI_TICK' : 'CVD_FALLBACK');
   const r130sum = (typeof r130CombinedSummary === 'function') ? r130CombinedSummary() : '';
-  const summary = `${flowState} · ${r130sum} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
+  const summary = `${flowState} · ${r130sum} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · micro:${book.microSide||'NEUTRAL'} ${book.vampBiasPct||0}% p:${book.microPersistSide||'NEUTRAL'} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
   return { ok:true, liveReady, tickFresh, cvdValid, flowWarmup, liveSource, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
 }
 function r125FlowForSide(ctx, side='LONG') {
@@ -3250,6 +3275,7 @@ const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 let   tgLastSent = 0;
 let   tgQueue = Promise.resolve();
 const TG_MIN_GAP = 1200; // art arda mesajı düşürme; kısa gecikmeyle sıraya al
+const r185OrderOpenSent = new Set();
 
 function tgEsc(v) {
   return String(v ?? '')
@@ -3264,7 +3290,7 @@ function tgNum(v, d=2) {
 function tgEnabled() { return !!(TG_TOKEN && TG_CHAT_ID); }
 
 async function r184DirectTelegramText(text, silent=false) {
-  if (!tgEnabled()) return {ok:false, skipped:true, reason:'telegram_env_missing'};
+  if (!tgEnabled()) return {ok:false, skipped:true, reason:'telegram_env_missing', error:'telegram_env_missing'};
   try {
     const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method:'POST',
@@ -3452,7 +3478,7 @@ function tgAlert(text) {
   return tgSend(`⚠️ <b>Lazarus UYARI</b>\n${tgEsc(text)}`, false);
 }
 
-function r181TradeOpenCard(row={}, state={}) {
+async function r181TradeOpenCard(row={}, state={}) {
   try {
     const id = row.id || `${row.symbol}_${row.openedAt||Date.now()}`;
     if (tgOpenNotifiedIds.has(id)) return {ok:true, skipped:true, duplicate:true};
@@ -3480,14 +3506,14 @@ function r181TradeOpenCard(row={}, state={}) {
       `Build: ${LAZARUS_BUILD}`,
       `${new Date().toLocaleString('tr-TR')}`
     ].join('\n');
-    return r184DirectTelegramText(msg, false);
+    return await r184DirectTelegramText(msg, false);
   } catch(e) {
     try { pushCritical('R181_TG_OPEN_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
     return {ok:false,error:String(e?.message||e)};
   }
 }
 
-function r181TradeCloseCard(row={}, state={}, cls={}) {
+async function r181TradeCloseCard(row={}, state={}, cls={}) {
   try {
     const id = row.id || `${row.symbol}_${row.openedAt||''}_${row.closedAt||Date.now()}`;
     if (tgCloseNotifiedIds.has(id)) return {ok:true, skipped:true, duplicate:true};
@@ -3509,7 +3535,7 @@ function r181TradeCloseCard(row={}, state={}, cls={}) {
       `Build: ${LAZARUS_BUILD}`,
       `${new Date().toLocaleString('tr-TR')}`
     ].join('\n');
-    return r184DirectTelegramText(msg, !win);
+    return await r184DirectTelegramText(msg, !win);
   } catch(e) {
     try { pushCritical('R181_TG_CLOSE_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
     return {ok:false,error:String(e?.message||e)};
@@ -3826,7 +3852,7 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
   saveTradeLedger();
   // R181: Açılış bildirimi ledger kayıt anından direkt gider; karmaşık kart yolu bypass.
-  try { r181TradeOpenCard(row, state); } catch(_) {}
+  try { r181TradeOpenCard(row, state).catch(e=>{ try { pushCritical('R186_TG_OPEN_PROMISE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {} }); } catch(_) {}
   return row;
 }
 function recordTradeClose(symbol, state={}, cls={}) {
@@ -3853,7 +3879,7 @@ function recordTradeClose(symbol, state={}, cls={}) {
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
   // R181: Kapanış bildirimi PnL 0/null olsa bile direkt gider; gerçek PnL sonra reconcile ile düzelir.
-  try { r181TradeCloseCard(row, state, cls); } catch(_tge) {}
+  try { r181TradeCloseCard(row, state, cls).catch(e=>{ try { pushCritical('R186_TG_CLOSE_PROMISE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {} }); } catch(_tge) {}
   saveTradeLedger(); return row;
 }
 
@@ -3873,10 +3899,16 @@ function entryPatternKeyFromText(txt='') {
   const t = String(txt||'').toLowerCase();
   const parts = [];
   if (t.includes('r134') || t.includes('hızlı edge') || t.includes('fast edge') || t.includes('mikro-scalp')) parts.push('R134_FAST');
+  if (t.includes('r160 trader karar') || t.includes('r160:')) parts.push('R160');
+  if (t.includes('r159 momentum')) parts.push('R159');
   if (t.includes('trend devam')) parts.push('TREND_CONT');
   if (t.includes('tuzak dönüş') || t.includes('counter_trap')) parts.push('COUNTER_TRAP');
   if (t.includes('5m momentum')) parts.push('MOMENTUM');
   if (t.includes('5m akış') || t.includes('flow_scalp')) parts.push('FLOW');
+  if (t.includes('formasyon yok') || t.includes('mum teyidi zayıf')) parts.push('WEAK_5M_CANDLE');
+  if (t.includes('late-chase')) parts.push('LATE_CHASE');
+  if (t.includes('live-opposite')) parts.push('LIVE_OPPOSITE');
+  if (t.includes('rvol:very_low') || t.includes('rvol: very_low') || t.includes('very_low×')) parts.push('VERY_LOW_RVOL');
   if (t.includes('sweep') || t.includes('süpür')) parts.push('SWEEP');
   if (t.includes('body-reclaim') || t.includes('body geri') || t.includes('gövde')) parts.push('BODY_RECLAIM');
   if (t.includes('htf:karşı') || t.includes('karşı 15m') || t.includes('karşı 1h') || t.includes('karşı 4h')) parts.push('HTF_COUNTER');
@@ -5275,11 +5307,77 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
 
   // Kaç soru TRUE?
   const r160TrueCount = [r160Q1Structure, r160Q2Flow, r160Q3Momentum, r160Q4Proof].filter(Boolean).length;
-  
-  // 3/4 TRUE + flow var + hard block yok = TRADE
-  // 4/4 TRUE + minimum flow = TRADE (daha agresif)
+
+  // R187: R160 trader kararı panel skorunu tamamen yok sayamaz.
+  // PIPPIN gibi score 31 / min 70 ama edge yüksek görünen sinyaller, çoğunlukla canlı akışın
+  // tek başına abarttığı geç momentum veya ters duvar tuzağına dönüşüyordu. Frekansı boğmamak için
+  // 4/4 tam kanıta daha esnek, 3/4 eksik kanıta daha seçici taban uygulanır.
+  const r187R160ScoreFloor3of4 = Math.max(55, minScore - 15);
+  const r187R160ScoreFloor4of4 = Math.max(48, minScore - 25);
+  const r187R160HasRealStructure = r120Bool(
+    htfReverse || htfReclaim || squeeze || d.r117BodyReclaimOk || d.r117MssOk || d.r118CandleOk || d.r118CandleStrong
+  );
+
+  // R188: 5m proof guard. R165 frekansını boğmadan, sadece PIPPIN/STG tipi
+  // "3/4 var ama Q4 kanıt yok + mum zayıf/HTF karşı" girişlerini keser.
+  // 5m scalp'te yapı+akış+ivme yetebilir; fakat Q4 yoksa istisna için çok güçlü canlı akış,
+  // forecast ve zayıf mum olmaması gerekir.
+  let r188AccountCaution = false;
+  try {
+    const _r188Recent = r179AccountPerf()?.recent || {};
+    r188AccountCaution = Number(_r188Recent.closed||0) >= 8 && (Number(_r188Recent.wr||0) < 0.45 || Number(_r188Recent.pf||0) < 0.75 || Number(_r188Recent.net||0) < 0);
+  } catch(_r188Perf) {}
+  const r188CandleText = String(d.mumOzet || d.htfTani || d.brainSummary || d.reason || '');
+  const r188WeakCandle = r120Bool(/teyidi zayıf|formasyon yok|puan 0\/12|karşı .*mum baskın|mum onay yok/i.test(r188CandleText));
+  const r188HtfCounterPressure = r120Bool(
+    htfCounterWait || r144CounterVeryNear ||
+    (d.r116HtfGuardBlock && !d.r117HtfReverseOk) ||
+    (side === 'LONG' && (d.r140Phase?.phase === 'DISTRIBUTION' || d.r140OiVel?.fakePump || d.r140EqHL?.nearHighTrap)) ||
+    (side === 'SHORT' && d.r140EqHL?.nearLowTrap)
+  );
+  // R189: açık araştırmadan gelen microprice/VAMP filtresi.
+  // Amaç yeni kapı yığmak değil; sadece 5m scalp'te defterin beklenen gelecek mid-price'ı
+  // işlem yönüne net tersken 3/4 ve R159 bypass'ı frenlemek.
+  const r189Book = d.r125Flow?.book || {};
+  const r189MicroSide = String(r189Book.microSide || 'NEUTRAL').toUpperCase();
+  const r189MicroPersistSide = String(r189Book.microPersistSide || 'NEUTRAL').toUpperCase();
+  const r189VampBiasAbs = Math.abs(r120BrainNum(r189Book.vampBiasPct, 0));
+  const r189MicroAligned = r120Bool(
+    r189MicroSide === side &&
+    (r189MicroPersistSide === side || r189VampBiasAbs >= Math.max(0.006, r120BrainNum(r189Book.spreadPct,0)*0.25))
+  );
+  const r189MicroAgainst = r120Bool(
+    r189MicroSide === r142SideOpp(side) &&
+    (r189MicroPersistSide === r142SideOpp(side) || r189VampBiasAbs >= Math.max(0.008, r120BrainNum(r189Book.spreadPct,0)*0.30)) &&
+    !r125SideFlow.strong && !r160Q4Proof
+  );
+  const r189OiCrowdTrap = r120Bool(
+    (side === 'LONG' && (d.r140OiVel?.fakePump || d.r140Phase?.phase === 'DISTRIBUTION') && !r160Q4Proof && !r189MicroAligned) ||
+    (side === 'SHORT' && d.r140EqHL?.nearLowTrap && !r160Q4Proof && !r189MicroAligned)
+  );
+
+  const r188StrongNoQ4Exception = r120Bool(
+    !r160Q4Proof && r160TrueCount >= 3 &&
+    r125SideFlow.edge >= 11 && r133LiveTradeCount >= 35 &&
+    r161DeltaConfirm && r160ForecastOk && r189MicroAligned &&
+    !r188WeakCandle && !r188HtfCounterPressure && !r148WrongSideBlock
+  );
+  const r188NoProofGuard = r120Bool(
+    r160TrueCount === 3 && !r160Q4Proof && !r188StrongNoQ4Exception &&
+    (r188AccountCaution || r188WeakCandle || r188HtfCounterPressure || !r187R160HasRealStructure || r189MicroAgainst || r189OiCrowdTrap)
+  );
+
+  const r187R160ScoreOk = r120Bool(
+    r160TrueCount >= 4
+      ? (score >= r187R160ScoreFloor4of4 || (score >= 42 && edge >= 82 && r187R160HasRealStructure && r161DeltaConfirm))
+      : (score >= r187R160ScoreFloor3of4 && (r160Q3Momentum || r187R160HasRealStructure) && r161DeltaConfirm)
+  );
+  const r187R160LowScoreBlock = r120Bool(!r187R160ScoreOk && r160TrueCount >= 3);
+
+  // 3/4 TRUE + flow var + skor tabanı + hard block yok = TRADE
+  // 4/4 TRUE + minimum flow + daha düşük skor tabanı = TRADE
   const r160TraderDecision = r120Bool(
-    !r160HardBlock && edge >= 35 && r133LiveTradeCount >= 10 && (
+    !r160HardBlock && !r188NoProofGuard && r187R160ScoreOk && edge >= 35 && r133LiveTradeCount >= 10 && (
       (r160TrueCount >= 3 && r125SideFlow.edge >= 4) ||
       (r160TrueCount >= 4)
     )
@@ -5299,8 +5397,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (primaryMode !== 'NO_EDGE' ? 1 : 0) +                                     // bir playbook var
     (r133LiveTradeCount >= 20 ? 1 : 0)                                        // canlı tick teyidi
   );
+  const r187R159ScoreFloor = Math.max(48, minScore - 22);
+  const r187R159ScoreOk = r120Bool(score >= r187R159ScoreFloor || (score >= 42 && edge >= 82 && r187R160HasRealStructure && r161DeltaConfirm));
+  const r188R159ProofOk = r120Bool(
+    r160Q4Proof ||
+    (r187R160HasRealStructure && r160ForecastOk && r161DeltaConfirm && r125SideFlow.edge >= 8 && r133LiveTradeCount >= 25 && !r188WeakCandle && !r188HtfCounterPressure && !r189MicroAgainst) ||
+    (r189MicroAligned && r160ForecastOk && r161DeltaConfirm && r125SideFlow.edge >= 10 && r133LiveTradeCount >= 35 && !r188WeakCandle && !r188HtfCounterPressure)
+  );
   const r159MomentumPass = r120Bool(
     r159Points >= 6 &&
+    r187R159ScoreOk &&
+    r188R159ProofOk &&
     !r156RealHardBlock &&
     !r148WrongSideBlock &&
     r125SideFlow.edge >= 5 &&   // minimum tek yön akış zorunlu
@@ -5322,7 +5429,20 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r133FastScalpWhy = r133FastScalpOverride
     ? `R144 hızlı 5m scalp: HTF/mum kanıtı + canlı tick ${r133LiveTradeCount} trade + delta ${r133LiveDeltaAbs.toFixed(1)}% + edge ${edge}`
     : '';
-  const r144WatchExtra = r148Note ? ` · ${r148Note}` : (r147TrapGuardReason ? ` · ${r147TrapGuardReason}` : (r144FastBlockReason ? ` · ${r144FastBlockReason}` : ''));
+  const r187R160BlockReason = r187R160LowScoreBlock
+    ? `R187 R160 skor freni: ${r160TrueCount}/4 karar var ama skor ${score}/${minScore}; 3/4 için taban ${r187R160ScoreFloor3of4}, 4/4 için taban ${r187R160ScoreFloor4of4}`
+    : '';
+  const r187R159BlockReason = (!r187R159ScoreOk && r159Points >= 6)
+    ? `R187 R159 skor freni: momentum ${r159Points}p ama skor ${score}/${minScore}; taban ${r187R159ScoreFloor}`
+    : '';
+  const r188NoProofBlockReason = r188NoProofGuard
+    ? `R189 5m micro/kanıt freni: R160 ${r160TrueCount}/4 ama Q4 kanıt yok; zayıfMum:${r188WeakCandle?'EVET':'hayır'} HTFkarşı:${r188HtfCounterPressure?'EVET':'hayır'} microTers:${r189MicroAgainst?'EVET':'hayır'} OI/crowdTuzak:${r189OiCrowdTrap?'EVET':'hayır'} hesapDikkat:${r188AccountCaution?'EVET':'hayır'}`
+    : '';
+  const r188R159BlockReason = (!r188R159ProofOk && r159Points >= 6)
+    ? `R188 R159 kanıt freni: momentum ${r159Points}p ama 5m mum/sweep/body-reclaim/forecast kanıtı yetersiz`
+    : '';
+  const r144WatchExtraRaw = r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
+  const r144WatchExtra = r144WatchExtraRaw ? ` · ${r144WatchExtraRaw}` : '';
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
   const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
@@ -5337,6 +5457,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r159Points = r159Points;
   d.r160TraderDecision = r160TraderDecision;
   d.r160TrueCount = r160TrueCount;
+  d.r160Q1Structure = r160Q1Structure;
+  d.r160Q2Flow = r160Q2Flow;
+  d.r160Q3Momentum = r160Q3Momentum;
+  d.r160Q4Proof = r160Q4Proof;
   d.brainConfidence = edge;
   d.brainRawEdge = rawEdge;
   d.r142CalibratedEdge = edge;
@@ -5381,6 +5505,28 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r148BalanceBonus = r148BalanceBonus;
   d.r148WrongPenalty = r148WrongPenalty;
   d.r148Note = r148Note;
+  d.r187R160ScoreOk = r187R160ScoreOk;
+  d.r187R160LowScoreBlock = r187R160LowScoreBlock;
+  d.r187R160ScoreFloor3of4 = r187R160ScoreFloor3of4;
+  d.r187R160ScoreFloor4of4 = r187R160ScoreFloor4of4;
+  d.r187R160BlockReason = r187R160BlockReason;
+  d.r187R159ScoreOk = r187R159ScoreOk;
+  d.r187R159ScoreFloor = r187R159ScoreFloor;
+  d.r187R159BlockReason = r187R159BlockReason;
+  d.r188AccountCaution = r188AccountCaution;
+  d.r188WeakCandle = r188WeakCandle;
+  d.r188HtfCounterPressure = r188HtfCounterPressure;
+  d.r188StrongNoQ4Exception = r188StrongNoQ4Exception;
+  d.r188NoProofGuard = r188NoProofGuard;
+  d.r188NoProofBlockReason = r188NoProofBlockReason;
+  d.r188R159ProofOk = r188R159ProofOk;
+  d.r188R159BlockReason = r188R159BlockReason;
+  d.r189MicroSide = r189MicroSide;
+  d.r189MicroPersistSide = r189MicroPersistSide;
+  d.r189VampBiasAbs = +r189VampBiasAbs.toFixed(5);
+  d.r189MicroAligned = r189MicroAligned;
+  d.r189MicroAgainst = r189MicroAgainst;
+  d.r189OiCrowdTrap = r189OiCrowdTrap;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
@@ -12472,6 +12618,16 @@ async function runAutoScan(prioritySymbol=null) {
           continue;
         }
 
+        // R189: Son emir öncesi 5m micro/kanıt freni. Karar motoru bir şekilde TRADE üretse bile
+        // R160 3/4 + Q4 kanıtsız + zayıf mum/HTF karşı kombinasyonu canlı emir açamaz.
+        // Bu R176 gibi recovery duvarı değildir; sadece eksik kanıtlı bypass'ı keser.
+        if (decisionChain?.r188NoProofGuard) {
+          const why = decisionChain?.r188NoProofBlockReason || `R189 5m micro/kanıt freni: ${recommendation} emir yok`;
+          logAuto(`⛔ ${coin.symbol} ${why}`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r160TrueCount:decisionChain?.r160TrueCount, r160Q4Proof:decisionChain?.r160Q4Proof, r188WeakCandle:decisionChain?.r188WeakCandle, r188HtfCounterPressure:decisionChain?.r188HtfCounterPressure});
+          continue;
+        }
+
         // R38 F&G: 5m Top Gainers scalping'de Fear/Greed tek başına hard veto değildir.
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
@@ -12509,7 +12665,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         let userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));  // R177: const→let (ATR adaptive fix)
         let userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));   // R177: const→let (ATR adaptive fix)
-        const userRR    = userTPPct / userSLPct;
+        let userRR    = userTPPct / userSLPct;
 
         // ── R24 RVOL MİKRO LİKİDİTE FRENİ — performansı boğmadan sadece ekstrem zayıf hacmi keser
         const rvolNum = Number(analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
@@ -12657,7 +12813,7 @@ async function runAutoScan(prioritySymbol=null) {
         let targetPrice = isLong
           ? +(entryRef * (1 + userTPPct/100)).toFixed(8)
           : +(entryRef * (1 - userTPPct/100)).toFixed(8);
-        const stopPrice = isLong
+        let stopPrice = isLong
           ? +(entryRef * (1 - userSLPct/100)).toFixed(8)
           : +(entryRef * (1 + userSLPct/100)).toFixed(8);
 
@@ -12710,7 +12866,7 @@ async function runAutoScan(prioritySymbol=null) {
             if (magnetTarget2 > 0 && ((isLong && magnetTarget2 > entryRef) || (!isLong && magnetTarget2 < entryRef))) targetPrice = +magnetTarget2.toFixed(8);
           }
           userRR = userTPPct / Math.max(0.05, userSLPct);
-        } catch(_e167a) {}
+        } catch(_e167a) { logAuto(`⚠️ ${coin.symbol} R187 SL/TP tekrar hesaplama hatası: ${String(_e167a?.message||_e167a).slice(0,80)}`); }
 
         // R167: hafıza/rejim freni emir-log-Telegram'dan önce. İşlem sıklığını tamamen kapatmaz;
         // sadece aynı coin iki yönde de zarar veriyorsa daha güçlü kanıt ister.
@@ -12732,7 +12888,7 @@ async function runAutoScan(prioritySymbol=null) {
         } catch(_e167b) {}
 
 
-        logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote} — emir açılıyor`);
+        // R188: nihai emir logu artık tüm hafıza/risk/SLTP düzeltmeleri geçtikten sonra yazılır.
         // R168b: Telegram açılış bildirimi emir gerçekten açıldıktan sonra gönderilir.
 
         // R166: Coin performans hafızası — son 2 saatte 2+ kayıp varsa ve son 4 saatte WR<%40 ise
@@ -12763,7 +12919,25 @@ async function runAutoScan(prioritySymbol=null) {
             stopPrice   = isLong ? +(entryRef * (1 - userSLPct/100)).toFixed(8) : +(entryRef * (1 + userSLPct/100)).toFixed(8);
             if (oldSL175 !== userSLPct) logAuto(`🛡 ${coin.symbol} R175 R159 risk daraltma: SL %${oldSL175}→%${userSLPct}, TP %${oldTP175}→%${userTPPct}`);
           }
-        } catch(_e175risk) {}
+        } catch(_e175risk) { logAuto(`⚠️ ${coin.symbol} R188 R175 risk daraltma hatası: ${String(_e175risk?.message||_e175risk).slice(0,80)}`); }
+
+        try {
+          userRR = userTPPct / Math.max(0.05, userSLPct);
+          if (userSLPct * executeLeverage > 40) {
+            const oldLev188 = executeLeverage;
+            executeLeverage = Math.max(1, Math.floor(40 / Math.max(0.1, userSLPct)));
+            if (executeLeverage < oldLev188) leverageNote += ` · R188 final SL risk guard ${oldLev188}x→${executeLeverage}x`;
+          }
+          targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
+          stopPrice   = isLong ? +(entryRef * (1 - userSLPct/100)).toFixed(8) : +(entryRef * (1 + userSLPct/100)).toFixed(8);
+        } catch(_e188risk) { logAuto(`⚠️ ${coin.symbol} R188 final risk normalize hatası: ${String(_e188risk?.message||_e188risk).slice(0,80)}`); }
+        if (userRR < minRR) {
+          logAuto(`${coin.symbol} final R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
+          markAutoSkip(coin.symbol, `Final RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
+          continue;
+        }
+
+        logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote} — emir açılıyor`);
 
         // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -12787,6 +12961,25 @@ async function runAutoScan(prioritySymbol=null) {
           invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
           logAuto(`✅ ${coin.symbol} ${trSideLabel(recommendation)} açıldı — ${toTurkishText(orderResp.message||'Emir açıldı')}`);
+          try {
+            const _tgKey = `${coin.fullSymbol}_${recommendation}_${Math.round(Date.now()/60000)}`;
+            if (!r185OrderOpenSent.has(_tgKey)) {
+              r185OrderOpenSent.add(_tgKey);
+              const _msg = [
+                '🟢 İŞLEM AÇILDI',
+                'Hey Ben Kripto Goxel Bot İşleme Girdi',
+                `${coin.fullSymbol} ${recommendation}`,
+                `Marjin: ${usdtAmount} USDT | Lev: ${parseInt(executeLeverage)||parseInt(leverage)||1}x`,
+                `Entry: ${orderResp.executedPrice||analysis.price}`,
+                `SL: ${orderResp.details?.stop||stopPrice} | TP: ${orderResp.details?.target||targetPrice}`,
+                `Skor: ${score}/100`,
+                `Sebep: ${String(decisionChain?.reason || '').slice(0,500)}`,
+                `Build: ${LAZARUS_BUILD}`,
+                new Date().toLocaleString('tr-TR')
+              ].join('\n');
+              r184DirectTelegramText(_msg, false).catch(()=>{});
+            }
+          } catch(_tgOpenE) {}
           // R168d: Telegram açılış bildirimi recordTradeOpen event hook'una taşındı; burada duplicate yok.
           // Trailing state başlat + açılış sebebi kaydet (Pos kartında görünür)
           trailingState.set(coin.fullSymbol, {
@@ -13463,33 +13656,67 @@ app.get('/api/telegram-test', async (_req, res) => {
 // R179: Tam işlem kartı testi — gerçek emir açmadan direkt açılış/kapanış kartı gönderir.
 app.get('/api/telegram-trade-test', async (_req, res) => {
   try {
-    const id = 'TGTEST_' + Date.now();
-    const row = {
-      id, symbol:'TESTUSDT', side:'LONG', status:'OPEN',
-      openedAt:Date.now(), entryPrice:0.12345, leverage:15,
-      marginUSDT:30, quantity:3645, score:88, tier:'A',
-      sl:0.12160, tp:0.12980, entryReason:'R182 Telegram direkt kart test — gerçek emir değildir'
-    };
-    const openR = await r181TradeOpenCard(row, {sltpVerified:true});
-    const closeRow = {...row, status:'CLOSED', closedAt:Date.now()+180000, closePrice:0.12600, pnlUSDT:2.34, roiPct:7.8, exitLabel:'R182 test kapanışı'};
-    const closeR = await r181TradeCloseCard(closeRow, {}, {label:'R182 test kapanışı', closePrice:0.12600});
-    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'r184_direct_send_now', error:(!openR?.ok?openR?.error:null)||(!closeR?.ok?closeR?.error:null)||null});
+    const openMsg = [
+      '🟢 İŞLEM AÇILDI',
+      'Hey Ben Kripto Goxel Bot İşleme Girdi',
+      'TESTUSDT LONG',
+      'Marjin: 30 USDT | Lev: 15x',
+      'Entry: 0.12345',
+      'SL: 0.12160 | TP: 0.12980',
+      'Build: ' + LAZARUS_BUILD,
+      new Date().toLocaleString('tr-TR')
+    ].join('\n');
+    const closeMsg = [
+      '✅ İŞLEM KAPANDI',
+      'Kripto Goxel Tekkeyi Bekleyen Çorbayı İçer',
+      'TESTUSDT LONG',
+      'PnL: +2.34 USDT | ROI: +7.8%',
+      'Entry: 0.12345 → Çıkış: 0.12600',
+      'Build: ' + LAZARUS_BUILD,
+      new Date().toLocaleString('tr-TR')
+    ].join('\n');
+    const openR = await r184DirectTelegramText(openMsg, false);
+    const closeR = await r184DirectTelegramText(closeMsg, false);
+    const err = (!openR?.ok ? (openR?.error || openR?.reason || 'open_failed') : null) || (!closeR?.ok ? (closeR?.error || closeR?.reason || 'close_failed') : null);
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, error:err, mode:'r186_async_and_raw_direct'});
   } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
 });
 app.get('/api/telegram-card-test', async (req, res) => {
   try {
-    const id = 'TGTEST_' + Date.now();
-    const row = {
-      id, symbol:'TESTUSDT', side:'LONG', status:'OPEN',
-      openedAt:Date.now(), entryPrice:0.12345, leverage:15,
-      marginUSDT:30, quantity:3645, score:88, tier:'A',
-      sl:0.12160, tp:0.12980, entryReason:'R182 Telegram direkt kart test — gerçek emir değildir'
-    };
-    const openR = await r181TradeOpenCard(row, {sltpVerified:true});
-    const closeRow = {...row, status:'CLOSED', closedAt:Date.now()+180000, closePrice:0.12600, pnlUSDT:2.34, roiPct:7.8, exitLabel:'R182 test kapanışı'};
-    const closeR = await r181TradeCloseCard(closeRow, {}, {label:'R182 test kapanışı', closePrice:0.12600});
-    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'r184_direct_send_now', error:(!openR?.ok?openR?.error:null)||(!closeR?.ok?closeR?.error:null)||null});
+    const openMsg = [
+      '🟢 İŞLEM AÇILDI',
+      'Hey Ben Kripto Goxel Bot İşleme Girdi',
+      'TESTUSDT LONG',
+      'Marjin: 30 USDT | Lev: 15x',
+      'Entry: 0.12345',
+      'SL: 0.12160 | TP: 0.12980',
+      'Build: ' + LAZARUS_BUILD,
+      new Date().toLocaleString('tr-TR')
+    ].join('\n');
+    const closeMsg = [
+      '✅ İŞLEM KAPANDI',
+      'Kripto Goxel Tekkeyi Bekleyen Çorbayı İçer',
+      'TESTUSDT LONG',
+      'PnL: +2.34 USDT | ROI: +7.8%',
+      'Entry: 0.12345 → Çıkış: 0.12600',
+      'Build: ' + LAZARUS_BUILD,
+      new Date().toLocaleString('tr-TR')
+    ].join('\n');
+    const openR = await r184DirectTelegramText(openMsg, false);
+    const closeR = await r184DirectTelegramText(closeMsg, false);
+    const err = (!openR?.ok ? (openR?.error || openR?.reason || 'open_failed') : null) || (!closeR?.ok ? (closeR?.error || closeR?.reason || 'close_failed') : null);
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, error:err, mode:'r186_async_and_raw_direct'});
   } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
+});
+app.get('/api/telegram-debug-status', (_req, res) => {
+  res.json({
+    ok:true, build:LAZARUS_BUILD,
+    enabled:tgEnabled(),
+    tokenSet:!!TG_TOKEN,
+    chatIdSet:!!TG_CHAT_ID,
+    chatId:String(TG_CHAT_ID||'').replace(/.(?=.{3})/g,'*'),
+    tokenHead:TG_TOKEN ? TG_TOKEN.slice(0,8)+'...' : '',
+  });
 });
 
 app.get('/api/bootstrap-ledger-48h', async (_req, res) => {
