@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R182_TELEGRAM_GOXEL_PHRASE_FIX';
+const LAZARUS_BUILD = 'R183_PERFORMANCE_TARGET_ENDPOINT_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -13371,6 +13371,34 @@ async function tgRestoreLedgerBackup() {
   } catch(_e) { return false; }
 }
 
+
+
+// R183: Hesap geneli günlük/haftalık/aylık performans endpoint'i geri eklendi.
+// R182'de index /api/performance-target çağırıyordu ama server endpoint'i kaybolmuştu.
+// Netlify/yanlış host HTML döndürünce panelde Unexpected token '<' çıkıyordu.
+app.get('/api/performance-target', (_req, res) => {
+  try {
+    const obj = r170PerfMode();
+    res.json({
+      ok:true,
+      build:LAZARUS_BUILD,
+      target:'account_global_daily_weekly_monthly_wr_pnl_pf',
+      targetBand:{min:60,max:85,unit:'percent'},
+      note:'Bu endpoint coin winrate değil; hesap geneli günlük/haftalık/aylık performans ölçer.',
+      updatedAt:Date.now(),
+      mode:obj.mode,
+      reason:obj.reason,
+      frequencyLastHour:r170TradeFreq(60*60*1000),
+      daily:obj.account?.day,
+      weekly:obj.account?.week,
+      monthly:obj.account?.month,
+      recent12:obj.account?.recent,
+      reconcile:{lastAt:r173LastAutoReconcileAt||0,last:r173LastAutoReconcileResult},
+    });
+  } catch(e) {
+    res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD});
+  }
+});
 
 // R168b: Telegram test ve durum endpointleri
 app.get('/api/telegram-status', (_req, res) => {
