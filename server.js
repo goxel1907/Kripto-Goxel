@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R175_WARMUP_R159_DAMAGE_GUARD';
+const LAZARUS_BUILD = 'R176_TG_DEDUP_RATE_LIMIT_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3578,8 +3578,30 @@ try {
   tradeLedger = JSON.parse(fs.readFileSync(tradeLedgerPath, 'utf8') || '[]');
   if (!Array.isArray(tradeLedger)) tradeLedger = [];
 } catch(_) { tradeLedger = []; }
+function r176LedgerKey(row={}) {
+  const sym = normalizeSymbol(String(row.symbol||'')).replace('USDT','');
+  const t = Math.round(Number(row.closedAt || row.openedAt || 0) / 60000); // 1dk bucket
+  const pnl = Number(row.pnlUSDT||0).toFixed(2);
+  return `${sym}_${t}_${pnl}`;
+}
+function r176DedupeLedger(limit=250) {
+  const seen = new Set();
+  const out = [];
+  for (const r of (Array.isArray(tradeLedger) ? tradeLedger : [])) {
+    if (!r || !(r.openedAt || r.closedAt)) continue;
+    const key = r.id && !String(r.id).startsWith('RESTORE_') ? String(r.id) : r176LedgerKey(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  tradeLedger = out.sort((a,b)=>Number(b.closedAt||b.openedAt||0)-Number(a.closedAt||a.openedAt||0)).slice(0, limit);
+  return tradeLedger.length;
+}
 function saveTradeLedger() {
-  try { fs.writeFileSync(tradeLedgerPath, JSON.stringify(tradeLedger.slice(0,250), null, 2)); } catch(_) {}
+  try {
+    r176DedupeLedger(250);
+    fs.writeFileSync(tradeLedgerPath, JSON.stringify(tradeLedger.slice(0,250), null, 2));
+  } catch(_) {}
 }
 
 // ── R26: LAST-KNOWN POSITIONS — Railway restart/state kaybında kapanış tespiti ──
@@ -3852,15 +3874,19 @@ async function r174BootstrapLedgerFromIncome(apiKey, apiSecret, lookbackMs=48*60
       incomeType:'REALIZED_PNL', startTime, endTime, limit:1000
     });
     if (!Array.isArray(inc) || !inc.length) return {ok:true, restored:0, source:'income_empty'};
-    const existing = new Set((Array.isArray(tradeLedger)?tradeLedger:[]).map(r => String(r.id||'')));
+    r176DedupeLedger(250);
+    const existing = new Set((Array.isArray(tradeLedger)?tradeLedger:[]).map(r => r176LedgerKey(r)));
     let restored = 0;
     for (const x of inc) {
       const pnl = Number(x.income || 0);
       const t = Number(x.time || x.timestamp || 0);
       const symFull = normalizeSymbol(String(x.symbol || ''));
       if (!symFull || !t || !Number.isFinite(pnl) || Math.abs(pnl) < 0.000001) continue;
+      const probe = {symbol:symFull.replace('USDT',''), closedAt:t, openedAt:Math.max(0,t-60*1000), pnlUSDT:pnl};
+      const key = r176LedgerKey(probe);
       const id = `RESTORE_${symFull}_${t}_${String(x.tranId||x.info||'')}`;
-      if (existing.has(id)) continue;
+      if (existing.has(key)) continue;
+      existing.add(key);
       const margin = Number(autoConfig?.usdtAmount || 0);
       const row = {
         id,
@@ -3903,20 +3929,30 @@ let r173LastAutoReconcileAt = 0;
 let r173LastAutoReconcileResult = null;
 async function r173AutoReconcileTick(force=false) {
   if (!autoConfig?.apiKey || !autoConfig?.apiSecret) return {ok:false, reason:'api_missing'};
-  if (!force && Date.now() - Number(r173LastAutoReconcileAt||0) < 5*60*1000) return {ok:true, skipped:true, last:r173LastAutoReconcileResult};
+  // R176: Income endpoint 429 üretiyordu. Otomatik reconcile 15dk; manuel PnL Düzelt force çalışır.
+  if (!force && Date.now() - Number(r173LastAutoReconcileAt||0) < 15*60*1000) return {ok:true, skipped:true, last:r173LastAutoReconcileResult, throttle:'15m'};
+  try {
+    if (!force && typeof binanceGov === 'object' && Number(binanceGov.backoffUntil||0) > Date.now()) {
+      return {ok:true, skipped:true, reason:'BINANCE_BACKOFF_ACTIVE', backoffMs:Number(binanceGov.backoffUntil)-Date.now(), last:r173LastAutoReconcileResult};
+    }
+  } catch(_) {}
   r173LastAutoReconcileAt = Date.now();
+  r176DedupeLedger(250);
   const closedKnown = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t => t && (t.status==='CLOSED'||t.closedAt) && Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT)!==0).length;
   let bootstrap = {ok:true, restored:0, skipped:closedKnown>0};
-  // Ledger boşsa ya da kullanıcı manuel PnL Düzelt'e bastıysa Binance income'dan gerçek kapanışları kur.
+  // R176: otomatikte sadece ledger boşsa bootstrap; manuel PnL Düzelt'te force bootstrap yapılabilir.
   if (force || closedKnown === 0) bootstrap = await r174BootstrapLedgerFromIncome(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000);
-  const rec = await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 100);
-  r173LastAutoReconcileResult = {ok:!!rec?.ok, bootstrap, reconcile:rec};
+  const rec = await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 60);
+  r176DedupeLedger(250);
+  saveTradeLedger();
+  r173LastAutoReconcileResult = {ok:!!rec?.ok, bootstrap, reconcile:rec, deduped:true};
   return r173LastAutoReconcileResult;
 }
 
 async function r171MaintenanceTick() {
-  try { await r173AutoReconcileTick(false); } catch(_) {}
+  // Telegram ledger kart poll Binance'e gitmez; 429'dan etkilenmez.
   try { await r171TelegramPollLedger(false); } catch(_) {}
+  try { await r173AutoReconcileTick(false); } catch(_) {}
 }
 
 
@@ -13874,11 +13910,22 @@ app.get('/api/performance-target', (_req, res) => {
 // R171: Telegram trade kartlarını manuel zorla gönder + PnL reconcile.
 app.get('/api/telegram-flush-trade-alerts', async (_req, res) => {
   try {
-    const rec = autoConfig?.apiKey && autoConfig?.apiSecret ? await r173AutoReconcileTick(true) : {ok:false, reason:'api_missing'};
+    // R176: TG Kart Test sadece Telegram kartını test eder; Binance income/reconcile çağırmaz.
+    // Önceki sürüm income 429 yüzünden butonu bozuyordu.
+    r176DedupeLedger(250);
     const sent = await r171TelegramPollLedger(true);
-    res.json({ok:true, build:LAZARUS_BUILD, reconcile:rec, telegram:sent});
+    res.json({ok:true, build:LAZARUS_BUILD, telegram:sent, reconcile:{skipped:true, reason:'TG_TEST_NO_BINANCE_CALL'}});
   } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
 });
+app.get('/api/dedupe-trade-ledger', async (_req, res) => {
+  try {
+    const before = Array.isArray(tradeLedger) ? tradeLedger.length : 0;
+    const after = r176DedupeLedger(250);
+    saveTradeLedger();
+    res.json({ok:true, build:LAZARUS_BUILD, before, after, removed:before-after});
+  } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
+});
+
 app.get('/api/reconcile-trade-ledger', async (_req, res) => {
   try {
     const rec = autoConfig?.apiKey && autoConfig?.apiSecret ? await r173AutoReconcileTick(true) : {ok:false, reason:'api_missing'};
