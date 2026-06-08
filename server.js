@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R183_PERFORMANCE_TARGET_ENDPOINT_FIX';
+const LAZARUS_BUILD = 'R184_TELEGRAM_DIRECT_SEND_NOW_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3263,6 +3263,33 @@ function tgNum(v, d=2) {
 }
 function tgEnabled() { return !!(TG_TOKEN && TG_CHAT_ID); }
 
+async function r184DirectTelegramText(text, silent=false) {
+  if (!tgEnabled()) return {ok:false, skipped:true, reason:'telegram_env_missing'};
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        chat_id: TG_CHAT_ID,
+        text: String(text).slice(0,3900),
+        disable_notification: !!silent,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok || data.ok === false) {
+      const err = data.description || `HTTP_${res.status}`;
+      try { pushCritical('R184_TELEGRAM_DIRECT_FAIL', new Error(err), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+      return {ok:false, error:err, status:res.status, data};
+    }
+    return {ok:true, messageId:data?.result?.message_id || null};
+  } catch(e) {
+    const err = String(e?.message || e);
+    try { pushCritical('R184_TELEGRAM_DIRECT_EXCEPTION', new Error(err), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+    return {ok:false, error:err};
+  }
+}
+
 async function tgSendNow(text, silent=false) {
   if (!tgEnabled()) return {ok:false, skipped:true, reason:'telegram_env_missing'};
   const wait = Math.max(0, TG_MIN_GAP - (Date.now() - tgLastSent));
@@ -3453,7 +3480,7 @@ function r181TradeOpenCard(row={}, state={}) {
       `Build: ${LAZARUS_BUILD}`,
       `${new Date().toLocaleString('tr-TR')}`
     ].join('\n');
-    return tgSend(msg, false);
+    return r184DirectTelegramText(msg, false);
   } catch(e) {
     try { pushCritical('R181_TG_OPEN_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
     return {ok:false,error:String(e?.message||e)};
@@ -3482,7 +3509,7 @@ function r181TradeCloseCard(row={}, state={}, cls={}) {
       `Build: ${LAZARUS_BUILD}`,
       `${new Date().toLocaleString('tr-TR')}`
     ].join('\n');
-    return tgSend(msg, !win);
+    return r184DirectTelegramText(msg, !win);
   } catch(e) {
     try { pushCritical('R181_TG_CLOSE_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
     return {ok:false,error:String(e?.message||e)};
@@ -13446,7 +13473,7 @@ app.get('/api/telegram-trade-test', async (_req, res) => {
     const openR = await r181TradeOpenCard(row, {sltpVerified:true});
     const closeRow = {...row, status:'CLOSED', closedAt:Date.now()+180000, closePrice:0.12600, pnlUSDT:2.34, roiPct:7.8, exitLabel:'R182 test kapanışı'};
     const closeR = await r181TradeCloseCard(closeRow, {}, {label:'R182 test kapanışı', closePrice:0.12600});
-    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'direct_plain_card'});
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'r184_direct_send_now', error:(!openR?.ok?openR?.error:null)||(!closeR?.ok?closeR?.error:null)||null});
   } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
 });
 app.get('/api/telegram-card-test', async (req, res) => {
@@ -13461,7 +13488,7 @@ app.get('/api/telegram-card-test', async (req, res) => {
     const openR = await r181TradeOpenCard(row, {sltpVerified:true});
     const closeRow = {...row, status:'CLOSED', closedAt:Date.now()+180000, closePrice:0.12600, pnlUSDT:2.34, roiPct:7.8, exitLabel:'R182 test kapanışı'};
     const closeR = await r181TradeCloseCard(closeRow, {}, {label:'R182 test kapanışı', closePrice:0.12600});
-    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'direct_plain_card'});
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'r184_direct_send_now', error:(!openR?.ok?openR?.error:null)||(!closeR?.ok?closeR?.error:null)||null});
   } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
 });
 
