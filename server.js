@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R180_R179_MAINTENANCE_TICK_FIX';
+const LAZARUS_BUILD = 'R182_TELEGRAM_GOXEL_PHRASE_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3425,6 +3425,70 @@ function tgAlert(text) {
   return tgSend(`⚠️ <b>Lazarus UYARI</b>\n${tgEsc(text)}`, false);
 }
 
+function r181TradeOpenCard(row={}, state={}) {
+  try {
+    const id = row.id || `${row.symbol}_${row.openedAt||Date.now()}`;
+    if (tgOpenNotifiedIds.has(id)) return {ok:true, skipped:true, duplicate:true};
+    tgOpenNotifiedIds.add(id);
+    const sym = row.symbol || state.symbol || '?';
+    const side = row.side || state.side || '?';
+    const lev = row.leverage || state.leverage || autoConfig?.leverage || '-';
+    const margin = row.marginUSDT || state.usdtAmount || state.marginUSDT || autoConfig?.usdtAmount || '-';
+    const qty = row.quantity || state.quantity || state.positionAmt || '-';
+    const entry = row.entryPrice || state.entryPrice || '-';
+    const sl = row.sl || state.currentSL || state.slPrice || '-';
+    const tp = row.tp || state.targetTP || state.tpPrice || '-';
+    const reasonObj = state.entryReason || state.openReason || {};
+    const reason = typeof reasonObj === 'string' ? reasonObj : (reasonObj.reason || row.entryReason || `${side} açıldı`);
+    const msg = [
+      `🟢 İŞLEM AÇILDI`,
+      `Hey Ben Kripto Goxel Bot İşleme Girdi`,
+      `${sym} ${side}`,
+      `Marjin: ${margin} USDT | Lev: ${lev}x`,
+      `Miktar: ${qty}`,
+      `Entry: ${entry}`,
+      `SL: ${sl} | TP: ${tp}`,
+      `Skor: ${row.score ?? state.score ?? '-'} | Tier: ${row.tier ?? state.tier ?? '-'}`,
+      `Sebep: ${String(reason).slice(0,500)}`,
+      `Build: ${LAZARUS_BUILD}`,
+      `${new Date().toLocaleString('tr-TR')}`
+    ].join('\n');
+    return tgSend(msg, false);
+  } catch(e) {
+    try { pushCritical('R181_TG_OPEN_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    return {ok:false,error:String(e?.message||e)};
+  }
+}
+
+function r181TradeCloseCard(row={}, state={}, cls={}) {
+  try {
+    const id = row.id || `${row.symbol}_${row.openedAt||''}_${row.closedAt||Date.now()}`;
+    if (tgCloseNotifiedIds.has(id)) return {ok:true, skipped:true, duplicate:true};
+    tgCloseNotifiedIds.add(id);
+    const pnl = Number(row.pnlUSDT);
+    const roi = Number(row.roiPct);
+    const win = Number.isFinite(pnl) ? pnl >= 0 : false;
+    const goxelPhrase = win
+      ? 'Kripto Goxel Tekkeyi Bekleyen Çorbayı İçer'
+      : 'Kripto Goxel Ben siz girdiğiniz diye girdim :)';
+    const msg = [
+      `${win ? '✅' : '❌'} İŞLEM KAPANDI`,
+      goxelPhrase,
+      `${row.symbol || '?'} ${row.side || '?'}`,
+      `PnL: ${Number.isFinite(pnl) ? (pnl>=0?'+':'')+pnl.toFixed(2)+' USDT' : 'bilinmiyor'} | ROI: ${Number.isFinite(roi) ? (roi>=0?'+':'')+roi.toFixed(1)+'%' : 'bilinmiyor'}`,
+      `Entry: ${row.entryPrice ?? '-'} → Çıkış: ${row.closePrice ?? cls.closePrice ?? '-'}`,
+      `SL: ${row.sl ?? cls.sl ?? state.currentSL ?? '-'} | TP: ${row.tp ?? cls.tp ?? state.targetTP ?? '-'}`,
+      `Kapanış: ${cls.label || row.exitLabel || row.exitReason || 'Kapanış algılandı'}`,
+      `Build: ${LAZARUS_BUILD}`,
+      `${new Date().toLocaleString('tr-TR')}`
+    ].join('\n');
+    return tgSend(msg, !win);
+  } catch(e) {
+    try { pushCritical('R181_TG_CLOSE_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    return {ok:false,error:String(e?.message||e)};
+  }
+}
+
 
 function tgPerfSummaryLines() {
   try {
@@ -3733,7 +3797,10 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
     closedAt:null,closedAtTR:null,cooldownMin:null,
   };
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
-  saveTradeLedger(); return row;
+  saveTradeLedger();
+  // R181: Açılış bildirimi ledger kayıt anından direkt gider; karmaşık kart yolu bypass.
+  try { r181TradeOpenCard(row, state); } catch(_) {}
+  return row;
 }
 function recordTradeClose(symbol, state={}, cls={}) {
   const sym = normalizeSymbol(symbol);
@@ -3758,14 +3825,8 @@ function recordTradeClose(symbol, state={}, cls={}) {
   });
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
-  // R177: Telegram kapanış bildirimi
-  try {
-    const pnl = Number(row.pnlUSDT); const roi = Number(row.roiPct);
-    if (Number.isFinite(pnl) && pnl !== 0) {
-      const dur = row.openedAt ? (() => { const m=Math.round((Date.now()-Number(row.openedAt))/60000); return m<60?m+'dk':Math.floor(m/60)+'s '+m%60+'dk'; })() : '';
-      tgTradeClose(row.symbol, row.side, pnl, roi, cls?.label||'', {entryPrice:row.entryPrice, closePrice:cls?.closePrice, duration:dur});
-    }
-  } catch(_tge) {}
+  // R181: Kapanış bildirimi PnL 0/null olsa bile direkt gider; gerçek PnL sonra reconcile ile düzelir.
+  try { r181TradeCloseCard(row, state, cls); } catch(_tge) {}
   saveTradeLedger(); return row;
 }
 
@@ -13347,57 +13408,35 @@ app.get('/api/telegram-test', async (_req, res) => {
 // R179: Tam işlem kartı testi — gerçek emir açmadan direkt açılış/kapanış kartı gönderir.
 app.get('/api/telegram-trade-test', async (_req, res) => {
   try {
-    const stamp = Date.now();
-    const openR = await tgTradeOpen('TESTUSDT','LONG',88,96,30,15,'R179 Telegram tam kart test — gerçek emir değildir',{
-      entryPrice:0.12345, slPrice:0.12160, tpPrice:0.12980, quantity:3645, leverage:15, margin:30, tier:'A',
-      slPct:1.5, tpPct:5.1, mode:'TEST_CARD', sltpVerified:true
-    });
-    const closeR = await tgTradeClose('TESTUSDT','LONG',2.34,7.80,'R179 Telegram test kapanışı — gerçek işlem değildir',{
-      entryPrice:0.12345, closePrice:0.12600, sl:0.12160, tp:0.12980, leverage:15, quantity:3645,
-      marginUSDT:30, duration:'3dk', peakRoi:12.4, peakPnl:3.72, resultNote:`Test ID ${stamp}`
-    });
-    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, sent:'direct_open_close_trade_cards'});
+    const id = 'TGTEST_' + Date.now();
+    const row = {
+      id, symbol:'TESTUSDT', side:'LONG', status:'OPEN',
+      openedAt:Date.now(), entryPrice:0.12345, leverage:15,
+      marginUSDT:30, quantity:3645, score:88, tier:'A',
+      sl:0.12160, tp:0.12980, entryReason:'R182 Telegram direkt kart test — gerçek emir değildir'
+    };
+    const openR = await r181TradeOpenCard(row, {sltpVerified:true});
+    const closeRow = {...row, status:'CLOSED', closedAt:Date.now()+180000, closePrice:0.12600, pnlUSDT:2.34, roiPct:7.8, exitLabel:'R182 test kapanışı'};
+    const closeR = await r181TradeCloseCard(closeRow, {}, {label:'R182 test kapanışı', closePrice:0.12600});
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'direct_plain_card'});
   } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
 });
-app.get('/api/telegram-card-test', async (_req, res) => {
+app.get('/api/telegram-card-test', async (req, res) => {
   try {
-    const openR = await tgTradeOpen('TESTUSDT','LONG',88,96,30,15,'R179 Telegram tam kart test — gerçek emir değildir',{
-      entryPrice:0.12345, slPrice:0.12160, tpPrice:0.12980, quantity:3645, leverage:15, margin:30, tier:'A',
-      slPct:1.5, tpPct:5.1, mode:'TEST_CARD', sltpVerified:true
-    });
-    const closeR = await tgTradeClose('TESTUSDT','LONG',2.34,7.80,'R179 Telegram test kapanışı — gerçek işlem değildir',{
-      entryPrice:0.12345, closePrice:0.12600, sl:0.12160, tp:0.12980, leverage:15, quantity:3645,
-      marginUSDT:30, duration:'3dk', peakRoi:12.4, peakPnl:3.72, resultNote:'Panel TG Kart Test'
-    });
-    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR});
+    const id = 'TGTEST_' + Date.now();
+    const row = {
+      id, symbol:'TESTUSDT', side:'LONG', status:'OPEN',
+      openedAt:Date.now(), entryPrice:0.12345, leverage:15,
+      marginUSDT:30, quantity:3645, score:88, tier:'A',
+      sl:0.12160, tp:0.12980, entryReason:'R182 Telegram direkt kart test — gerçek emir değildir'
+    };
+    const openR = await r181TradeOpenCard(row, {sltpVerified:true});
+    const closeRow = {...row, status:'CLOSED', closedAt:Date.now()+180000, closePrice:0.12600, pnlUSDT:2.34, roiPct:7.8, exitLabel:'R182 test kapanışı'};
+    const closeR = await r181TradeCloseCard(closeRow, {}, {label:'R182 test kapanışı', closePrice:0.12600});
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, mode:'direct_plain_card'});
   } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
 });
 
-// R170b: Hesap geneli günlük/haftalık/aylık performans durumu — coin WR değildir.
-app.get('/api/performance-target', (_req, res) => {
-  try {
-    const obj = r170PerfMode();
-    res.json({
-      ok:true,
-      build:LAZARUS_BUILD,
-      target:'account_global_daily_weekly_monthly_wr_pnl_pf',
-      targetBand:{min:60,max:85,unit:'percent'},
-      note:'Bu endpoint coin winrate değil; hesap geneli günlük/haftalık/aylık performans ölçer.',
-      updatedAt:Date.now(),
-      mode:obj.mode,
-      reason:obj.reason,
-      frequencyLastHour:r170TradeFreq(60*60*1000),
-      daily:obj.account?.day,
-      weekly:obj.account?.week,
-      monthly:obj.account?.month,
-      recent12:obj.account?.recent,
-      reconcile:{lastAt:r173LastAutoReconcileAt||0,last:r173LastAutoReconcileResult},
-    });
-  } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
-});
-
-
-// R171: Telegram trade kartlarını manuel zorla gönder + PnL reconcile.
 app.get('/api/bootstrap-ledger-48h', async (_req, res) => {
   try {
     const r = autoConfig?.apiKey && autoConfig?.apiSecret ? await r179BootstrapLedger48h(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000, {replace:false}) : {ok:false, reason:'api_missing'};
