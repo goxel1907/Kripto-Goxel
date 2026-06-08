@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R176_TG_DEDUP_RATE_LIMIT_FIX';
+const LAZARUS_BUILD = 'R179_R165_BASE_STABLE_TG_48H_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -492,52 +492,6 @@ async function freshOpenPositionForSymbol(apiKey, apiSecret, symbol, attempts=3)
   }
   return { open:false, pos:null };
 }
-
-// ── R167: Güvenli market kapatma merkezi ───────────────────────────────────
-async function safeMarketClosePosition(apiKey, apiSecret, symbol, opts={}) {
-  const sym = normalizeSymbol(symbol);
-  const reason = String(opts.reason || 'SAFE_MARKET_CLOSE');
-  const fresh1 = await freshOpenPositionForSymbol(apiKey, apiSecret, sym, 2);
-  if (fresh1.open === false) return { ok:true, alreadyClosed:true, reason };
-  if (!fresh1.pos) return { ok:false, error:'fresh position okunamadı', reason };
-  let amt = parseFloat(fresh1.pos.positionAmt || 0);
-  if (!amt) return { ok:true, alreadyClosed:true, reason };
-  let side = amt > 0 ? 'SELL' : 'BUY';
-  let qty = Math.abs(amt).toString();
-  try { await cancelAlgoOrders(apiKey, apiSecret, sym, true); } catch(_) {}
-  try {
-    const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol:sym, side, type:'MARKET', quantity:qty, reduceOnly:'true', positionSide:'BOTH', __emergency:true
-    });
-    invalidatePositionRiskCache(`${reason}_REDUCEONLY_OK`);
-    return { ok:true, order:r, reduceOnly:true, reason };
-  } catch(e1) {
-    const msg = String(e1.message || e1);
-    if (!msg.includes('-2022') && !/ReduceOnly/i.test(msg)) return { ok:false, error:msg, reason, stage:'reduceOnly' };
-    await sleep(450);
-    const fresh2 = await freshOpenPositionForSymbol(apiKey, apiSecret, sym, 3);
-    if (fresh2.open === false) {
-      invalidatePositionRiskCache(`${reason}_ALREADY_CLOSED_AFTER_2022`);
-      return { ok:true, alreadyClosed:true, reduceOnlyRejected:true, reason };
-    }
-    if (!fresh2.pos) return { ok:false, error:`reduceOnly rejected; fresh position okunamadı: ${msg}`, reason };
-    amt = parseFloat(fresh2.pos.positionAmt || 0);
-    if (!amt) return { ok:true, alreadyClosed:true, reduceOnlyRejected:true, reason };
-    side = amt > 0 ? 'SELL' : 'BUY';
-    qty = Math.abs(amt).toString();
-    try { await cancelAlgoOrders(apiKey, apiSecret, sym, true); } catch(_) {}
-    try {
-      const r2 = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-        symbol:sym, side, type:'MARKET', quantity:qty, positionSide:'BOTH', __emergency:true
-      });
-      invalidatePositionRiskCache(`${reason}_FALLBACK_OK`);
-      return { ok:true, order:r2, reduceOnly:false, fallback:true, reduceOnlyError:msg, reason };
-    } catch(e2) {
-      return { ok:false, error:`reduceOnly:${msg} | fallback:${String(e2.message||e2)}`, reason, stage:'fallback' };
-    }
-  }
-}
-
 async function cleanupClosedPositionState(symbol, reason='POSITION_ALREADY_CLOSED', state={}) {
   const sym = String(symbol||'').toUpperCase();
   const st = state || (typeof trailingState !== 'undefined' ? trailingState.get(sym) : null) || (lastKnownPositions && lastKnownPositions[sym]) || {};
@@ -3291,9 +3245,6 @@ function trTime(ts = Date.now()) {
 
 // ── R25: İŞLEM KARNESİ — DOSYAYA YAZILIR (Railway restart'ta kaybolmaz) ─────
 
-// ── R168b: TELEGRAM BİLDİRİM SİSTEMİ — KUYRUK + TEST + HTML SAFE ────────
-// .env veya Railway env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-// @BotFather'dan bot oluştur → token al → bota /start yaz → chat ID al
 const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 let   tgLastSent = 0;
@@ -3578,9 +3529,14 @@ try {
   tradeLedger = JSON.parse(fs.readFileSync(tradeLedgerPath, 'utf8') || '[]');
   if (!Array.isArray(tradeLedger)) tradeLedger = [];
 } catch(_) { tradeLedger = []; }
-function r176LedgerKey(row={}) {
+function saveTradeLedger() {
+  try { fs.writeFileSync(tradeLedgerPath, JSON.stringify(tradeLedger.slice(0,250), null, 2)); } catch(_) {}
+}
+
+// ── R179: EKSİK PANEL/LEDGER HELPER'LARI — R165 frekansını bozmadan ─────────
+function r179LedgerKey(row={}) {
   const sym = normalizeSymbol(String(row.symbol||'')).replace('USDT','');
-  const t = Math.round(Number(row.closedAt || row.openedAt || 0) / 60000); // 1dk bucket
+  const t = Math.round(Number(row.closedAt || row.openedAt || 0) / (2*60*1000)); // 2dk bucket
   const pnl = Number(row.pnlUSDT||0).toFixed(2);
   return `${sym}_${t}_${pnl}`;
 }
@@ -3589,7 +3545,9 @@ function r176DedupeLedger(limit=250) {
   const out = [];
   for (const r of (Array.isArray(tradeLedger) ? tradeLedger : [])) {
     if (!r || !(r.openedAt || r.closedAt)) continue;
-    const key = r.id && !String(r.id).startsWith('RESTORE_') ? String(r.id) : r176LedgerKey(r);
+    const key = r.id && !String(r.id).startsWith('RESTORE') && !String(r.id).startsWith('binance_hist_')
+      ? String(r.id)
+      : r179LedgerKey(r);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(r);
@@ -3597,12 +3555,111 @@ function r176DedupeLedger(limit=250) {
   tradeLedger = out.sort((a,b)=>Number(b.closedAt||b.openedAt||0)-Number(a.closedAt||a.openedAt||0)).slice(0, limit);
   return tradeLedger.length;
 }
-function saveTradeLedger() {
-  try {
-    r176DedupeLedger(250);
-    fs.writeFileSync(tradeLedgerPath, JSON.stringify(tradeLedger.slice(0,250), null, 2));
-  } catch(_) {}
+function r179Stat(rows=[]) {
+  const arr = (Array.isArray(rows)?rows:[]).filter(t => t && (t.status==='CLOSED'||t.closedAt) && Number.isFinite(Number(t.pnlUSDT)));
+  const wins = arr.filter(t=>Number(t.pnlUSDT)>0).length;
+  const losses = arr.filter(t=>Number(t.pnlUSDT)<0).length;
+  const closed = wins + losses;
+  const profit = arr.filter(t=>Number(t.pnlUSDT)>0).reduce((s,t)=>s+Number(t.pnlUSDT||0),0);
+  const lossAbs = Math.abs(arr.filter(t=>Number(t.pnlUSDT)<0).reduce((s,t)=>s+Number(t.pnlUSDT||0),0));
+  const net = arr.reduce((s,t)=>s+Number(t.pnlUSDT||0),0);
+  return {closed,wins,losses,wr:closed?wins/closed:null,net:safeNum(net,2),profit:safeNum(profit,2),loss:safeNum(lossAbs,2),pf:lossAbs>0?safeNum(profit/lossAbs,2):(profit>0?99:0)};
 }
+function r179AccountPerf() {
+  const now = Date.now();
+  const day = now - 24*60*60*1000;
+  const week = now - 7*24*60*60*1000;
+  const month = now - 30*24*60*60*1000;
+  const rows = Array.isArray(tradeLedger) ? tradeLedger : [];
+  const byTime = rows.filter(t=>t && (t.closedAt||t.openedAt)).sort((a,b)=>Number(b.closedAt||b.openedAt||0)-Number(a.closedAt||a.openedAt||0));
+  return {
+    day: r179Stat(byTime.filter(t=>Number(t.closedAt||t.openedAt||0)>=day)),
+    week: r179Stat(byTime.filter(t=>Number(t.closedAt||t.openedAt||0)>=week)),
+    month: r179Stat(byTime.filter(t=>Number(t.closedAt||t.openedAt||0)>=month)),
+    recent: r179Stat(byTime.slice(0,12)),
+  };
+}
+function r170TradeFreq(windowMs=60*60*1000) {
+  const since = Date.now() - Number(windowMs||60*60*1000);
+  return (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t=>Number(t.openedAt||t.closedAt||0)>=since).length;
+}
+function r170PerfMode() {
+  const account = r179AccountPerf();
+  const d = account.day || {};
+  let mode = 'BALANCED_FREQ';
+  let reason = 'R165_BASE_FREQ';
+  if (Number(d.closed||0) >= 20 && d.wr !== null && d.wr >= 0.60 && d.wr <= 0.85 && Number(d.net||0) >= 0 && Number(d.pf||0) >= 1.2) {
+    mode = 'TARGET_OK'; reason = 'DAILY_TARGET_OK';
+  } else if (Number(d.closed||0) >= 20 && (Number(d.wr||0) < 0.45 || Number(d.pf||0) < 0.75 || Number(d.net||0) < -30)) {
+    // Bilgi modudur; R179 bunu emir kapısı olarak kullanmaz. R165 frekansı korunur.
+    mode = 'ACCOUNT_DRAWDOWN_INFO'; reason = 'INFO_ONLY_NOT_ENTRY_GATE';
+  }
+  return {mode, reason, perf:d, account};
+}
+
+async function r179BootstrapLedger48h(apiKey, apiSecret, lookbackMs=48*60*60*1000, opts={}) {
+  if (!apiKey || !apiSecret) return {ok:false, reason:'api_missing'};
+  try {
+    const startTime = Date.now() - Math.max(60*60*1000, Number(lookbackMs)||48*60*60*1000);
+    const endTime = Date.now() + 5000;
+    const inc = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
+      incomeType:'REALIZED_PNL', startTime, endTime, limit:1000
+    });
+    if (!Array.isArray(inc) || !inc.length) return {ok:true, restored:0, groups:0, source:'income_empty'};
+    const groups = new Map();
+    for (const x of inc) {
+      const pnl = Number(x.income || 0);
+      const t = Number(x.time || x.timestamp || 0);
+      const symFull = normalizeSymbol(String(x.symbol || ''));
+      if (!symFull || !t || !Number.isFinite(pnl) || Math.abs(pnl) < 0.000001) continue;
+      const b = Math.round(t / (2*60*1000));
+      const key = `${symFull}_${b}`;
+      const g = groups.get(key) || {symbol:symFull.replace('USDT',''), pnlUSDT:0, first:t, last:t, count:0};
+      g.pnlUSDT += pnl; g.first = Math.min(g.first,t); g.last = Math.max(g.last,t); g.count++;
+      groups.set(key,g);
+    }
+    let base = opts.replace ? [] : (Array.isArray(tradeLedger)?tradeLedger.filter(r=>!String(r.id||'').startsWith('RESTORE48_')):[]);
+    const existing = new Set(base.map(r=>r179LedgerKey(r)));
+    let restored=0;
+    for (const g of groups.values()) {
+      if (!Number.isFinite(g.pnlUSDT) || Math.abs(g.pnlUSDT)<0.000001) continue;
+      const row = {
+        id:`RESTORE48_${g.symbol}_${g.last}_${g.count}_${Math.round(g.pnlUSDT*10000)}`,
+        symbol:g.symbol, side:'UNKNOWN', status:'CLOSED',
+        openedAt:Math.max(0, Number(g.first||g.last)-60*1000),
+        closedAt:Number(g.last||g.first),
+        entryPrice:null, closePrice:null, quantity:null,
+        leverage:Number(autoConfig?.leverage||1), marginUSDT:Number(autoConfig?.usdtAmount||0),
+        pnlUSDT:safeNum(g.pnlUSDT,4),
+        roiPct:safeNum((Number(autoConfig?.usdtAmount||0)>0 ? g.pnlUSDT/Number(autoConfig.usdtAmount)*100 : 0),2),
+        exitLabel:'Binance 48s gelir bootstrap',
+        exitReason:'R179_BINANCE_48H_BOOTSTRAP',
+        resultNote:`R179: son 48 saat Binance REALIZED_PNL gruplandı (${g.count} income)`
+      };
+      const k = r179LedgerKey(row);
+      if (existing.has(k)) continue;
+      existing.add(k); base.push(row); restored++;
+    }
+    tradeLedger = base.sort((a,b)=>Number(b.closedAt||b.openedAt||0)-Number(a.closedAt||a.openedAt||0)).slice(0,250);
+    r176DedupeLedger(250); saveTradeLedger();
+    try { logAuto(`🧾 R179 48s bootstrap: ${restored}/${groups.size} grup eklendi, ledger:${tradeLedger.length}`); } catch(_) {}
+    return {ok:true, restored, groups:groups.size, incomeRows:inc.length, after:tradeLedger.length, source:'binance_income_48h_grouped'};
+  } catch(e) {
+    try { pushCritical('R179_48H_BOOTSTRAP_FAIL', new Error(String(e?.message||e)), {symbol:'PNL'}, 'WARN'); } catch(_) {}
+    return {ok:false, error:String(e?.message||e)};
+  }
+}
+let r173LastAutoReconcileAt = 0;
+let r173LastAutoReconcileResult = null;
+async function r173AutoReconcileTick(force=false) {
+  if (!autoConfig?.apiKey || !autoConfig?.apiSecret) return {ok:false, reason:'api_missing'};
+  if (!force && Date.now() - Number(r173LastAutoReconcileAt||0) < 15*60*1000) return {ok:true, skipped:true, throttle:'15m', last:r173LastAutoReconcileResult};
+  r173LastAutoReconcileAt = Date.now();
+  const boot = await r179BootstrapLedger48h(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000, {replace:false});
+  r173LastAutoReconcileResult = {ok:!!boot?.ok, bootstrap:boot};
+  return r173LastAutoReconcileResult;
+}
+
 
 // ── R26: LAST-KNOWN POSITIONS — Railway restart/state kaybında kapanış tespiti ──
 const lastKnownPositionsPath = './last_known_positions.json';
@@ -3628,10 +3685,6 @@ function rememberOpenPositionForReentry(p, state={}) {
     openedAt:Number(state.openedAt || old.openedAt || Date.now()),
     currentSL:safeNum(state.currentSL || state.slPrice || old.currentSL || old.slPrice, 10),
     targetTP:safeNum(state.targetTP || state.tpPrice || old.targetTP || old.tpPrice, 10),
-    slPct:safeNum(state.slPct || state.entrySLPct || old.slPct, 3),
-    tpPct:safeNum(state.tpPct || old.tpPct, 3),
-    peakPnl:safeNum(state.peakPnl || old.peakPnl, 3),
-    peakRealPct:safeNum(state.peakRealPct || old.peakRealPct, 3),
     sltpVerified:!!(state.sltpVerified || old.sltpVerified),
     usdtAmount:safeNum(state.usdtAmount || autoConfig?.usdtAmount || old.usdtAmount, 2),
     entryReason:state.openReason || old.entryReason || null, lastSeen:Date.now()
@@ -3660,20 +3713,14 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
     id, symbol:sym.replace('USDT',''), side:normalizeSide(side), status:'OPEN',
     openedAt, openedAtTR:trTime(openedAt), entryPrice:safeNum(entryPrice,10),
     leverage:Number(state?.leverage||autoConfig?.leverage||0)||null,
-    quantity:safeNum(qty || state?.quantity || state?.positionAmt, 8),
-    marginUSDT:safeNum(state?.usdtAmount || autoConfig?.usdtAmount,2),
-    sl:safeNum(state?.currentSL || state?.slPrice, 10), tp:safeNum(state?.targetTP || state?.tpPrice, 10),
-    slPct:safeNum(state?.slPct || state?.entrySLPct, 3), tpPct:safeNum(state?.tpPct, 3),
-    entryReason:state?.openReason || state?.entryReason?.reason || `${normalizeSide(side)} açıldı`,
-    score:state?.score || state?.entryReason?.score || null, tier:state?.tier || state?.entryReason?.tier || null,
+    marginUSDT:safeNum(autoConfig?.usdtAmount,2),
+    entryReason:state?.openReason||`${normalizeSide(side)} açıldı`,
+    score:state?.score||null, tier:state?.tier||null,
     exitReason:null,resultNote:null,pnlUSDT:null,roiPct:null,
     closedAt:null,closedAtTR:null,cooldownMin:null,
   };
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
-  saveTradeLedger();
-  // R168d: açılış bildirimi scan-loop yerine ledger event hook'tan gider.
-  try { tgNotifyTradeOpenOnce(row, state); } catch(_) {}
-  return row;
+  saveTradeLedger(); return row;
 }
 function recordTradeClose(symbol, state={}, cls={}) {
   const sym = normalizeSymbol(symbol);
@@ -3687,14 +3734,9 @@ function recordTradeClose(symbol, state={}, cls={}) {
   const rawMove = entry>0&&close>0?((close-entry)/entry*100*(normalizeSide(row.side)==='SHORT'?-1:1)):null;
   const lev = Number(row.leverage||1)||1;
   const cdMs = Number(cls.cooldownMs||0);
-  const rowQty = Math.abs(Number(state?.positionAmt || state?.qty || state?.quantity || row.quantity || 0));
-  const approxLedgerPnl = entry>0 && close>0 && rowQty>0 ? (close-entry)*rowQty*(normalizeSide(row.side)==='SHORT'?-1:1) : null;
-  const finalPnl = Number.isFinite(Number(cls.realizedPnl)) && Math.abs(Number(cls.realizedPnl))>0.000001
-    ? Number(cls.realizedPnl)
-    : (Number.isFinite(approxLedgerPnl) ? approxLedgerPnl : null);
   Object.assign(row, {
     status:'CLOSED', closedAt, closedAtTR:trTime(closedAt), closePrice:safeNum(close,10),
-    pnlUSDT:Number.isFinite(finalPnl)?safeNum(finalPnl,4):null,
+    pnlUSDT:Number.isFinite(Number(cls.realizedPnl))?safeNum(cls.realizedPnl,4):null,
     roiPct:Number.isFinite(rawMove)?safeNum(rawMove*lev,2):(Number.isFinite(Number(cls.roiPct))?safeNum(cls.roiPct,2):null),
     exitReason:cls.code||'CLOSED', exitLabel:cls.label||'Binance kapanışı',
     resultNote:buildResultNote(cls,state),
@@ -3703,259 +3745,16 @@ function recordTradeClose(symbol, state={}, cls={}) {
   });
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
-  // R168d: kapanış bildirimi ledger event hook'tan gider; 0/null PnL olsa bile gönderilir.
-  try { tgNotifyTradeCloseOnce(row, state, cls); } catch(_tge) {}
-
+  // R177: Telegram kapanış bildirimi
+  try {
+    const pnl = Number(row.pnlUSDT); const roi = Number(row.roiPct);
+    if (Number.isFinite(pnl) && pnl !== 0) {
+      const dur = row.openedAt ? (() => { const m=Math.round((Date.now()-Number(row.openedAt))/60000); return m<60?m+'dk':Math.floor(m/60)+'s '+m%60+'dk'; })() : '';
+      tgTradeClose(row.symbol, row.side, pnl, roi, cls?.label||'', {entryPrice:row.entryPrice, closePrice:cls?.closePrice, duration:dur});
+    }
+  } catch(_tge) {}
   saveTradeLedger(); return row;
 }
-
-// ── R171: TELEGRAM POLLING NOTIFIER + PNL RECONCILE ─────────────────────────
-// Başlangıç/backup mesajı geliyorsa Telegram ayarı doğrudur. Trade kartı gelmiyorsa olay hook'u kaçmıştır.
-// Bu katman ledger'ı periyodik tarar; açılış/kapanış kartını kaçırmadan gönderir.
-const TG_NOTIFY_STATE_PATH = './telegram_notify_state.json';
-let tgNotifyState = {open:{}, close:{}};
-try {
-  const _tn = JSON.parse(fs.readFileSync(TG_NOTIFY_STATE_PATH,'utf8') || '{}');
-  if (_tn && typeof _tn === 'object') tgNotifyState = {open:_tn.open||{}, close:_tn.close||{}};
-} catch(_) {}
-function saveTgNotifyState() {
-  try { fs.writeFileSync(TG_NOTIFY_STATE_PATH, JSON.stringify(tgNotifyState, null, 2)); } catch(_) {}
-}
-function r171TradeRowId(row={}) {
-  return row.id || `${row.symbol||'?'}_${row.side||'?'}_${row.openedAt||0}`;
-}
-function r171RowIsClosed(row={}) {
-  return !!(row.status === 'CLOSED' || row.closedAt || row.exitReason || row.exitLabel);
-}
-function r171NotifyOpenFromLedger(row={}) {
-  const id = r171TradeRowId(row);
-  if (!row.openedAt || tgNotifyState.open[id]) return false;
-  tgNotifyState.open[id] = Date.now(); saveTgNotifyState();
-  try {
-    tgTradeOpen(row.symbol || '?', row.side || '?',
-      row.score ?? '-', row.edge ?? row.brainConfidence ?? '-',
-      row.marginUSDT ?? autoConfig?.usdtAmount,
-      row.leverage ?? autoConfig?.leverage,
-      row.entryReason || `${row.side||''} açıldı`,
-      {
-        entryPrice: row.entryPrice,
-        slPrice: row.sl,
-        tpPrice: row.tp,
-        quantity: row.quantity,
-        leverage: row.leverage,
-        margin: row.marginUSDT,
-        tier: row.tier,
-        slPct: row.slPct,
-        tpPct: row.tpPct,
-        mode: row.brainMode || '',
-      });
-    return true;
-  } catch(e) {
-    try { pushCritical('TELEGRAM_LEDGER_OPEN_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
-    return false;
-  }
-}
-function r171NotifyCloseFromLedger(row={}) {
-  const id = r171TradeRowId(row);
-  if (!r171RowIsClosed(row) || tgNotifyState.close[id]) return false;
-  tgNotifyState.close[id] = Date.now(); saveTgNotifyState();
-  try {
-    const pnl = Number(row.pnlUSDT);
-    const roi = Number(row.roiPct);
-    const dur = row.openedAt
-      ? (() => { const m = Math.max(0, Math.round((Number(row.closedAt||Date.now())-Number(row.openedAt))/60000)); return m < 60 ? `${m}dk` : `${Math.floor(m/60)}s ${m%60}dk`; })()
-      : '';
-    tgTradeClose(row.symbol || '?', row.side || '?',
-      Number.isFinite(pnl) ? pnl : null,
-      Number.isFinite(roi) ? roi : null,
-      row.exitLabel || row.exitReason || 'Kapanış algılandı',
-      {
-        entryPrice: row.entryPrice,
-        closePrice: row.closePrice,
-        duration: dur,
-        sl: row.sl,
-        tp: row.tp,
-        leverage: row.leverage,
-        quantity: row.quantity,
-        marginUSDT: row.marginUSDT,
-        resultNote: row.resultNote,
-      });
-    return true;
-  } catch(e) {
-    try { pushCritical('TELEGRAM_LEDGER_CLOSE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
-    return false;
-  }
-}
-async function r171TelegramPollLedger(force=false) {
-  let sentOpen=0, sentClose=0;
-  try {
-    const rows = Array.isArray(tradeLedger) ? tradeLedger.slice(0,80) : [];
-    for (const row of rows) {
-      if (!row || !row.openedAt) continue;
-      if (force || Number(row.openedAt||0) > Date.now() - 24*60*60*1000) {
-        if (r171NotifyOpenFromLedger(row)) sentOpen++;
-        if (r171NotifyCloseFromLedger(row)) sentClose++;
-      }
-    }
-  } catch(e) {
-    try { pushCritical('TELEGRAM_LEDGER_POLL_FAIL', new Error(String(e?.message||e)), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
-  }
-  return {sentOpen, sentClose};
-}
-
-async function r171ReconcileTradeLedgerPnL(apiKey, apiSecret, maxRows=30) {
-  if (!apiKey || !apiSecret) return {ok:false, reason:'api_missing'};
-  let fixed=0, checked=0, errors=0;
-  const rows = Array.isArray(tradeLedger) ? tradeLedger : [];
-  for (const row of rows.slice(0, maxRows)) {
-    try {
-      if (!row || !r171RowIsClosed(row) || !row.openedAt) continue;
-      const pnlNow = Number(row.pnlUSDT);
-      const needs = (!Number.isFinite(pnlNow) || Math.abs(pnlNow) < 0.000001 || !row.closePrice);
-      if (!needs) continue;
-      checked++;
-      const sym = normalizeSymbol(String(row.symbol||''));
-      const startTime = Math.max(0, Number(row.openedAt||0) - 120000);
-      const endTime = Number(row.closedAt||Date.now()) + 180000;
-      let incomePnl = null, tradePnl = null, closePx = null, qty = null;
-      try {
-        const inc = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
-          symbol:sym, incomeType:'REALIZED_PNL', startTime, endTime, limit:100
-        });
-        if (Array.isArray(inc) && inc.length) {
-          const sum = inc.reduce((s,x)=>s+Number(x.income||0),0);
-          if (Number.isFinite(sum) && Math.abs(sum) > 0.000001) incomePnl = sum;
-        }
-      } catch(ei) {}
-      try {
-        const trades = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/userTrades', {symbol:sym, startTime, endTime, limit:1000});
-        if (Array.isArray(trades) && trades.length) {
-          const closeSide = normalizeSide(row.side) === 'SHORT' ? 'BUY' : 'SELL';
-          const afterOpen = trades.filter(t => Number(t.time||0) >= Number(row.openedAt||0) + 500 && String(t.side||'').toUpperCase() === closeSide);
-          const use = afterOpen.length ? afterOpen : trades.filter(t=>String(t.side||'').toUpperCase() === closeSide);
-          let notional=0, q=0, rp=0;
-          for (const t of use) {
-            const p=Number(t.price||0), qq=Math.abs(Number(t.qty||0)), r=Number(t.realizedPnl||0);
-            if (p>0 && qq>0) { notional += p*qq; q += qq; }
-            if (Number.isFinite(r)) rp += r;
-          }
-          if (q>0) { closePx = notional/q; qty = q; }
-          if (Number.isFinite(rp) && Math.abs(rp)>0.000001) tradePnl = rp;
-        }
-      } catch(et) {}
-      const finalPnl = Number.isFinite(incomePnl) ? incomePnl : (Number.isFinite(tradePnl) ? tradePnl : null);
-      let changed=false;
-      if (Number.isFinite(finalPnl)) { row.pnlUSDT = safeNum(finalPnl,4); changed=true; }
-      if (Number.isFinite(closePx) && closePx>0) { row.closePrice = safeNum(closePx,10); changed=true; }
-      if ((!row.quantity || Number(row.quantity) === 1) && Number.isFinite(qty) && qty>0) { row.quantity = safeNum(qty,8); changed=true; }
-      if (Number.isFinite(finalPnl)) {
-        const margin = Number(row.marginUSDT || autoConfig?.usdtAmount || 0);
-        if (margin > 0) row.roiPct = safeNum(finalPnl / margin * 100, 2);
-      } else if (row.entryPrice && row.closePrice && row.leverage) {
-        const raw = (Number(row.closePrice)-Number(row.entryPrice))/Number(row.entryPrice)*100*(normalizeSide(row.side)==='SHORT'?-1:1);
-        row.roiPct = safeNum(raw*Number(row.leverage||1),2);
-      }
-      if (changed) fixed++;
-    } catch(e) { errors++; }
-  }
-  if (fixed) saveTradeLedger();
-  return {ok:true, checked, fixed, errors};
-}
-
-
-async function r174BootstrapLedgerFromIncome(apiKey, apiSecret, lookbackMs=48*60*60*1000) {
-  // R174: tradeLedger boşsa reconcile düzeltemez; önce Binance REALIZED_PNL gelirinden minimum ledger kur.
-  // Bu, Railway deploy/restart sonrası Telegram document backup geri alınamadığında WR panelinin 0 işlem görünmesini düzeltir.
-  if (!apiKey || !apiSecret) return {ok:false, reason:'api_missing'};
-  try {
-    const startTime = Date.now() - Math.max(60*60*1000, Number(lookbackMs)||48*60*60*1000);
-    const endTime = Date.now() + 5000;
-    const inc = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
-      incomeType:'REALIZED_PNL', startTime, endTime, limit:1000
-    });
-    if (!Array.isArray(inc) || !inc.length) return {ok:true, restored:0, source:'income_empty'};
-    r176DedupeLedger(250);
-    const existing = new Set((Array.isArray(tradeLedger)?tradeLedger:[]).map(r => r176LedgerKey(r)));
-    let restored = 0;
-    for (const x of inc) {
-      const pnl = Number(x.income || 0);
-      const t = Number(x.time || x.timestamp || 0);
-      const symFull = normalizeSymbol(String(x.symbol || ''));
-      if (!symFull || !t || !Number.isFinite(pnl) || Math.abs(pnl) < 0.000001) continue;
-      const probe = {symbol:symFull.replace('USDT',''), closedAt:t, openedAt:Math.max(0,t-60*1000), pnlUSDT:pnl};
-      const key = r176LedgerKey(probe);
-      const id = `RESTORE_${symFull}_${t}_${String(x.tranId||x.info||'')}`;
-      if (existing.has(key)) continue;
-      existing.add(key);
-      const margin = Number(autoConfig?.usdtAmount || 0);
-      const row = {
-        id,
-        symbol: symFull.replace('USDT',''),
-        side: 'UNKNOWN',
-        status: 'CLOSED',
-        openedAt: Math.max(0, t - 60*1000),
-        openedAtTR: trTime(Math.max(0, t - 60*1000)),
-        closedAt: t,
-        closedAtTR: trTime(t),
-        entryPrice: null,
-        closePrice: null,
-        leverage: Number(autoConfig?.leverage || 0) || null,
-        quantity: null,
-        marginUSDT: margin || null,
-        pnlUSDT: safeNum(pnl,4),
-        roiPct: margin > 0 ? safeNum(pnl / margin * 100, 2) : null,
-        exitReason: 'BINANCE_INCOME_RESTORE',
-        exitLabel: 'Binance gelir kaydından geri yüklendi',
-        resultNote: 'R174 bootstrap: Railway/Telegram ledger boşken Binance REALIZED_PNL üzerinden oluşturuldu',
-        sl:null, tp:null, cooldownMin:null,
-      };
-      tradeLedger.push(row);
-      existing.add(id);
-      restored++;
-    }
-    if (restored) {
-      tradeLedger = tradeLedger.sort((a,b)=>Number(b.closedAt||b.openedAt||0)-Number(a.closedAt||a.openedAt||0)).slice(0,250);
-      saveTradeLedger();
-      try { logAuto(`🧾 R174 ledger bootstrap: Binance income üzerinden ${restored} kapanış geri yüklendi`); } catch(_) {}
-    }
-    return {ok:true, restored, source:'binance_income', incomeRows:inc.length};
-  } catch(e) {
-    try { pushCritical('R174_LEDGER_BOOTSTRAP_FAIL', new Error(String(e?.message||e)), {symbol:'PNL'}, 'WARN'); } catch(_) {}
-    return {ok:false, error:String(e?.message||e)};
-  }
-}
-
-let r173LastAutoReconcileAt = 0;
-let r173LastAutoReconcileResult = null;
-async function r173AutoReconcileTick(force=false) {
-  if (!autoConfig?.apiKey || !autoConfig?.apiSecret) return {ok:false, reason:'api_missing'};
-  // R176: Income endpoint 429 üretiyordu. Otomatik reconcile 15dk; manuel PnL Düzelt force çalışır.
-  if (!force && Date.now() - Number(r173LastAutoReconcileAt||0) < 15*60*1000) return {ok:true, skipped:true, last:r173LastAutoReconcileResult, throttle:'15m'};
-  try {
-    if (!force && typeof binanceGov === 'object' && Number(binanceGov.backoffUntil||0) > Date.now()) {
-      return {ok:true, skipped:true, reason:'BINANCE_BACKOFF_ACTIVE', backoffMs:Number(binanceGov.backoffUntil)-Date.now(), last:r173LastAutoReconcileResult};
-    }
-  } catch(_) {}
-  r173LastAutoReconcileAt = Date.now();
-  r176DedupeLedger(250);
-  const closedKnown = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t => t && (t.status==='CLOSED'||t.closedAt) && Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT)!==0).length;
-  let bootstrap = {ok:true, restored:0, skipped:closedKnown>0};
-  // R176: otomatikte sadece ledger boşsa bootstrap; manuel PnL Düzelt'te force bootstrap yapılabilir.
-  if (force || closedKnown === 0) bootstrap = await r174BootstrapLedgerFromIncome(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000);
-  const rec = await r171ReconcileTradeLedgerPnL(autoConfig.apiKey, autoConfig.apiSecret, 60);
-  r176DedupeLedger(250);
-  saveTradeLedger();
-  r173LastAutoReconcileResult = {ok:!!rec?.ok, bootstrap, reconcile:rec, deduped:true};
-  return r173LastAutoReconcileResult;
-}
-
-async function r171MaintenanceTick() {
-  // Telegram ledger kart poll Binance'e gitmez; 429'dan etkilenmez.
-  try { await r171TelegramPollLedger(false); } catch(_) {}
-  try { await r173AutoReconcileTick(false); } catch(_) {}
-}
-
-
 
 // ── R84: 5 DAKİKA UYUMLU BEKLEME SÜRELERİ — botu kilitlemez, tekrar hatayı önler ──
 // 90dk 5m scalp için ağırdı. Yeni mantık mum sayısına göre çalışır:
@@ -5376,27 +5175,13 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // Kaç soru TRUE?
   const r160TrueCount = [r160Q1Structure, r160Q2Flow, r160Q3Momentum, r160Q4Proof].filter(Boolean).length;
   
-  // R169: R160 3/4 kapısı sıkılaştırıldı.
-  // Canlı sonuçta JTO/B/PORTAL gibi 3/4 ama ivme veya kanıt eksiği olan LONG'lar büyük SL yazdı.
-  // Artık 3/4 sadece AKIŞ+KANIT+ya İVME ya çok güçlü edge varsa geçer; 4/4 ise yine çalışır ama min kalite ister.
-  const r169R160FullProof = r120Bool(
-    r160TrueCount >= 4 &&
-    r125SideFlow.edge >= 5 &&
-    edge >= 60 &&
-    score >= Math.max(42, minScore - 30) &&
-    r133LiveTradeCount >= 15
-  );
-  const r169R160StrictThree = r120Bool(
-    r160TrueCount >= 3 &&
-    r160Q2Flow && r160Q4Proof &&
-    (r160Q3Momentum || edge >= 90) &&
-    r125SideFlow.edge >= 7 &&
-    edge >= 72 &&
-    score >= Math.max(50, minScore - 22) &&
-    r133LiveTradeCount >= 25
-  );
+  // 3/4 TRUE + flow var + hard block yok = TRADE
+  // 4/4 TRUE + minimum flow = TRADE (daha agresif)
   const r160TraderDecision = r120Bool(
-    !r160HardBlock && (r169R160FullProof || r169R160StrictThree)
+    !r160HardBlock && edge >= 35 && r133LiveTradeCount >= 10 && (
+      (r160TrueCount >= 3 && r125SideFlow.edge >= 4) ||
+      (r160TrueCount >= 4)
+    )
   );
 
   // R159: MOMENTUM PASS — araştırma sonucu: 5m scalp botlarda yüksek win rate için
@@ -5413,17 +5198,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (primaryMode !== 'NO_EDGE' ? 1 : 0) +                                     // bir playbook var
     (r133LiveTradeCount >= 20 ? 1 : 0)                                        // canlı tick teyidi
   );
-  // R168: R159 artık "6 puan gördüm, açayım" kadar gevşek değil.
-  // JTO örneği: R159 6p + score 35 ile LONG açıp -13.4% ROI yazdı.
-  // Çözüm: 6p sinyal yalnızca ek kanıt varsa geçer; score çok düşükse 7+ puan ister.
-  // İşlem sıklığını boğmamak için 8-9p güçlü momentumlar aynen geçer.
-  const r168R159WeakSix = r159Points === 6;
-  const r168R159ScoreFloorOk = score >= 45 || r159Points >= 7;
-  const r168R159ProofOk = r159Points >= 7 || (r160TrueCount >= 3 && r160Q2Flow && r160Q4Proof && r125SideFlow.edge >= 8);
   const r159MomentumPass = r120Bool(
     r159Points >= 6 &&
-    r168R159ScoreFloorOk &&
-    r168R159ProofOk &&
     !r156RealHardBlock &&
     !r148WrongSideBlock &&
     r125SideFlow.edge >= 5 &&   // minimum tek yön akış zorunlu
@@ -5460,12 +5236,6 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r159Points = r159Points;
   d.r160TraderDecision = r160TraderDecision;
   d.r160TrueCount = r160TrueCount;
-  d.r160Q1Structure = r160Q1Structure;
-  d.r160Q2Flow = r160Q2Flow;
-  d.r160Q3Momentum = r160Q3Momentum;
-  d.r160Q4Proof = r160Q4Proof;
-  d.r169R160FullProof = r169R160FullProof;
-  d.r169R160StrictThree = r169R160StrictThree;
   d.brainConfidence = edge;
   d.brainRawEdge = rawEdge;
   d.r142CalibratedEdge = edge;
@@ -10305,7 +10075,10 @@ app.post('/api/order', async (req, res) => {
       }
       let emergencyClose = null;
       try {
-        emergencyClose = await safeMarketClosePosition(apiKey, apiSecret, sym, {reason:'ORDER_SLTP_PROOF_FAIL'});
+        await cancelAlgoOrders(apiKey, apiSecret, sym);
+        emergencyClose = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+          symbol:sym, side:cSide, type:'MARKET', quantity:qty, reduceOnly:'true', positionSide:'BOTH'
+        });
       } catch(closeErr) {
         emergencyClose = { error: closeErr.message };
       }
@@ -10575,163 +10348,51 @@ function canBypassCooldownForReverse(info, desiredSide, decisionChain) {
       || (tier === 'A' && ps >= 75);
 }
 
-// R166: Coin kısa vadeli performans hafızası — son 2 saatte kayıp/kazanç sayısı
-// R157'yi tamamlar: R157 cooldown koyar, R166 edge eşiğini sıkılaştırır
-function r166CoinRecentLosses(symbol, lookbackMs=2*60*60*1000) {
-  const sym = String(symbol||'').replace('USDT','').toUpperCase();
-  const cutoff = Date.now() - lookbackMs;
-  return (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t=>
-    String(t.symbol||'').toUpperCase()===sym &&
-    Number(t.closedAt||0)>=cutoff &&
-    Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT)<0
-  ).length;
-}
-function r166CoinRecentWR(symbol, lookbackMs=4*60*60*1000) {
-  const sym = String(symbol||'').replace('USDT','').toUpperCase();
-  const cutoff = Date.now() - lookbackMs;
-  const rows = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t=>
-    String(t.symbol||'').toUpperCase()===sym &&
-    Number(t.closedAt||0)>=cutoff &&
-    Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT)!==0
-  );
-  if (rows.length < 3) return null;
-  const wins = rows.filter(t=>Number(t.pnlUSDT)>0).length;
-  return wins / rows.length;
-}
-
-
-// R170b: Hedef performans profili — COIN WR DEĞİL, hesap geneli günlük/haftalık/aylık WR+PNL+PF.
-// Kullanıcı hedefi: günlük / haftalık / aylık genel performans. Coin bazlı WR sadece tekrar-kayıp freni olabilir;
-// hedef WR modu ASLA tek coin WR'ına göre belirlenmez.
-function r170RowsByPeriod(lookbackMs, limit=9999) {
-  const cutoff = Date.now() - lookbackMs;
-  return (Array.isArray(tradeLedger) ? tradeLedger : [])
-    .filter(t => t && t.status === 'CLOSED' && Number(t.closedAt||0) >= cutoff && Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT) !== 0)
-    .sort((a,b)=>Number(b.closedAt||0)-Number(a.closedAt||0))
-    .slice(0, Math.max(1, Number(limit)||9999));
-}
-function r170CalcPerf(rows=[]) {
-  const closed = rows.length;
-  const wins = rows.filter(t => Number(t.pnlUSDT) > 0).length;
-  const losses = rows.filter(t => Number(t.pnlUSDT) < 0).length;
-  const net = rows.reduce((s,t)=>s+Number(t.pnlUSDT||0),0);
-  const grossWin = rows.filter(t=>Number(t.pnlUSDT)>0).reduce((s,t)=>s+Number(t.pnlUSDT),0);
-  const grossLoss = Math.abs(rows.filter(t=>Number(t.pnlUSDT)<0).reduce((s,t)=>s+Number(t.pnlUSDT),0));
-  const wr = closed ? wins/closed : null;
-  const avgWin = wins ? grossWin / wins : 0;
-  const avgLoss = losses ? grossLoss / losses : 0;
-  const pf = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? 9.99 : 0);
-  return {closed,wins,losses,wr,net,grossWin,grossLoss,avgWin,avgLoss,pf};
-}
-function r170AccountPerf() {
-  const dayRows   = r170RowsByPeriod(24*60*60*1000);
-  const weekRows  = r170RowsByPeriod(7*24*60*60*1000);
-  const monthRows = r170RowsByPeriod(30*24*60*60*1000);
-  const recentRows = dayRows.slice(0,12);
-  return {
-    recent: r170CalcPerf(recentRows),
-    day:    r170CalcPerf(dayRows),
-    week:   r170CalcPerf(weekRows),
-    month:  r170CalcPerf(monthRows),
-  };
-}
-function r170FmtPerf(p={}) {
-  const wr = p.wr !== null && p.wr !== undefined ? (p.wr*100).toFixed(0) : '?';
-  return `WR%${wr} Net:${Number(p.net||0).toFixed(2)}$ PF:${Number(p.pf||0).toFixed(2)} N:${Number(p.closed||0)}`;
-}
-function r170TradeFreq(lookbackMs=60*60*1000) {
-  const cutoff = Date.now() - lookbackMs;
-  return (Array.isArray(tradeLedger) ? tradeLedger : []).filter(t => Number(t.openedAt||0) >= cutoff).length;
-}
-
-function r173AnyText(...xs) {
-  return xs.map(x => {
-    try { return typeof x === 'string' ? x : JSON.stringify(x || ''); } catch(_) { return ''; }
-  }).join(' ').toLowerCase();
-}
-function r173Num(...xs) {
-  for (const x of xs) {
-    const n = Number(x);
-    if (Number.isFinite(n) && n > 0) return n;
+// R177: -2022 safe close
+async function safeMarketClosePosition(apiKey, apiSecret, symbol, opts={}) {
+  const sym = normalizeSymbol(symbol);
+  const reason = String(opts.reason || 'SAFE_MARKET_CLOSE');
+  const fresh1 = await freshOpenPositionForSymbol(apiKey, apiSecret, sym, 2);
+  if (fresh1.open === false) return { ok:true, alreadyClosed:true, reason };
+  if (!fresh1.pos) return { ok:false, error:'fresh position okunamadı', reason };
+  let amt = parseFloat(fresh1.pos.positionAmt || 0);
+  if (!amt) return { ok:true, alreadyClosed:true, reason };
+  let side = amt > 0 ? 'SELL' : 'BUY';
+  let qty = Math.abs(amt).toString();
+  try { await cancelAlgoOrders(apiKey, apiSecret, sym, true); } catch(_) {}
+  try {
+    const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+      symbol:sym, side, type:'MARKET', quantity:qty, reduceOnly:'true', positionSide:'BOTH', __emergency:true
+    });
+    invalidatePositionRiskCache(`${reason}_REDUCEONLY_OK`);
+    return { ok:true, order:r, reduceOnly:true, reason };
+  } catch(e1) {
+    const msg = String(e1.message || e1);
+    if (!msg.includes('-2022') && !/ReduceOnly/i.test(msg)) return { ok:false, error:msg, reason, stage:'reduceOnly' };
+    await sleep(450);
+    const fresh2 = await freshOpenPositionForSymbol(apiKey, apiSecret, sym, 3);
+    if (fresh2.open === false) {
+      invalidatePositionRiskCache(`${reason}_ALREADY_CLOSED_AFTER_2022`);
+      return { ok:true, alreadyClosed:true, reduceOnlyRejected:true, reason };
+    }
+    if (!fresh2.pos) return { ok:false, error:`reduceOnly rejected; fresh position okunamadı: ${msg}`, reason };
+    amt = parseFloat(fresh2.pos.positionAmt || 0);
+    if (!amt) return { ok:true, alreadyClosed:true, reduceOnlyRejected:true, reason };
+    side = amt > 0 ? 'SELL' : 'BUY';
+    qty = Math.abs(amt).toString();
+    try { await cancelAlgoOrders(apiKey, apiSecret, sym, true); } catch(_) {}
+    try {
+      const r2 = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+        symbol:sym, side, type:'MARKET', quantity:qty, positionSide:'BOTH', __emergency:true
+      });
+      invalidatePositionRiskCache(`${reason}_FALLBACK_OK`);
+      return { ok:true, order:r2, reduceOnly:false, fallback:true, reduceOnlyError:msg, reason };
+    } catch(e2) {
+      return { ok:false, error:`reduceOnly:${msg} | fallback:${String(e2.message||e2)}`, reason, stage:'fallback' };
+    }
   }
-  return 0;
-}
-function r173ContextQuality(decisionChain={}, analysis={}) {
-  const txt = r173AnyText(
-    decisionChain?.reason, decisionChain?.brainSummary, decisionChain?.entryPermissionReason,
-    decisionChain?.r118CandleOzet, decisionChain?.r125OrderflowSummary, decisionChain?.r126FlowSummary,
-    decisionChain?.r140Summary, decisionChain?.r110IctSummary, decisionChain?.r115Summary,
-    analysis?.signals, analysis?.reason, analysis?.ict, analysis?.smc, analysis?.r140Summary
-  );
-  const sweep = !!(
-    decisionChain?.directSweepOk || decisionChain?.hardSweepForBridge ||
-    decisionChain?.r51DirectSweepMinEdgeOk || decisionChain?.r117TrapSweepTaken ||
-    decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk ||
-    /sweep|süpür|ssl|bsl|stop.?hunt|likidite.?av|stop av/.test(txt)
-  );
-  const fvg = !!(
-    decisionChain?.fvgOk || decisionChain?.r110FvgOk || decisionChain?.r118FvgOk ||
-    decisionChain?.bullishFvg || decisionChain?.bearishFvg ||
-    /fvg|fair value gap|imbalance|dengesizlik|boşluk/.test(txt)
-  );
-  const mss = !!(
-    decisionChain?.mssOk || decisionChain?.chochOk || decisionChain?.r110ChochOk ||
-    decisionChain?.r115ChochOk || decisionChain?.r117MssOk ||
-    /mss|choch|change of character|market structure shift|yapı değiş/.test(txt)
-  );
-  const candleCloseOk = !!(
-    decisionChain?.r118CandleOk || decisionChain?.r118CandleStrong ||
-    decisionChain?.r117PrecisionCandleOk || decisionChain?.hassasMumOk ||
-    /mum:ok|candle.?ok|confirmed|kapanış|gövde reclaim|body reclaim/.test(txt)
-  );
-  const retestOk = !!(
-    decisionChain?.r75RetestBridgeOk || decisionChain?.r66WyckoffTrapReclaimOk ||
-    decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r42TrapReclaimOk ||
-    decisionChain?.vwapRetestOk || decisionChain?.emaRetestOk || decisionChain?.pullbackRetestOk ||
-    /retest|pullback|geri test|geri dönüş|vwap|ema21|ema9|reclaim/.test(txt)
-  );
-  const rvol = r173Num(
-    analysis?.rvol?.['1h']?.rvol, analysis?.rvol?.rvol, analysis?.r15?.rvol?.rvol,
-    analysis?.r140Rvol?.rvol, decisionChain?.r140Rvol?.rvol, decisionChain?.rvol,
-    decisionChain?.volumeSpike, analysis?.volumeSpike
-  );
-  const volSpike15 = rvol >= 1.5 || /rvol:(high|spike)|volume.?spike|hacim.?spike|hacim.?pat/.test(txt);
-  const volOk12 = rvol >= 1.2 || volSpike15;
-  const silverBullet = !!(sweep && fvg && mss && candleCloseOk && volOk12);
-  return {txt, sweep, fvg, mss, candleCloseOk, retestOk, rvol, volSpike15, volOk12, silverBullet};
-}
-function r170PerfMode() {
-  const a = r170AccountPerf();
-  const d = a.day || {};
-  const r = a.recent || {};
-  // Hedef modu hesap geneline göre: günlük performans ana, son 12 işlem erken alarm.
-  // Coin WR burada kullanılmaz.
-  const enoughDay = Number(d.closed||0) >= 8;
-  const enoughRecent = Number(r.closed||0) >= 6;
-  const closedDay = Number(d.closed||0);
-  const dayBad = enoughDay && (d.wr !== null && (d.wr < 0.60 || d.net < 0 || d.pf < 1.20));
-  const recentBad = enoughRecent && (r.wr !== null && (r.wr < 0.55 || r.net < -2 || r.pf < 1.10));
-  // R175: Ledger yeni/boşken veya ilk işlem zararken BALANCED_FREQ fazla gevşek kalıyordu.
-  // İlk 6 kapalı işlemde hedef WR için warmup da seçici çalışır.
-  const warmupBad = closedDay > 0 && closedDay < 6 && (Number(d.net||0) < 0 || (d.wr !== null && d.wr < 0.60));
-  const warmupNew = closedDay === 0;
-  if (dayBad || recentBad) return {mode:'HIGH_WR_RECOVERY', perf:d, account:a, reason: dayBad ? 'DAILY_TARGET_BELOW' : 'RECENT_DRAWDOWN'};
-  if (warmupBad || warmupNew) return {mode:'WARMUP_HIGH_WR', perf:d, account:a, reason:warmupNew?'WARMUP_EMPTY_LEDGER':'WARMUP_NEGATIVE_OR_LOW_WR'};
-  if (enoughDay && d.wr !== null && d.wr >= 0.60 && d.wr <= 0.85 && d.pf >= 1.20 && d.net >= 0) return {mode:'TARGET_OK', perf:d, account:a, reason:'DAILY_TARGET_OK'};
-  return {mode:'BALANCED_FREQ', perf:d, account:a, reason:'WARMUP_OR_MIXED'};
 }
 
-function r167OppositeSideLosses(symbol, side, windowMs=2*60*60*1000) {
-  const sym = String(symbol||'').replace('USDT','').toUpperCase();
-  const opp = normalizeSide(side) === 'LONG' ? 'SHORT' : 'LONG';
-  const since = Date.now() - windowMs;
-  return (Array.isArray(tradeLedger)?tradeLedger:[]).filter(t =>
-    String(t.symbol||'').replace('USDT','').toUpperCase() === sym &&
-    normalizeSide(t.side) === opp &&
-    Number(t.closedAt||0) >= since &&
-    Number.isFinite(Number(t.pnlUSDT)) && Number(t.pnlUSDT) < 0
-  ).length;
-}
 
 // R157: Ardışık kayıp tespiti — aynı coin+yönde son 4 saatte 2+ kayıp → 4 saat cooldown
 // FOLKS 5 kez işlem, 3 zarar analizi: cooldown bitince tekrar giriyor ve tekrar kaybediyor.
@@ -10846,12 +10507,15 @@ async function emergencyCloseIfBracketMissing(apiKey, apiSecret, pos, reason='SL
   const qty = Math.abs(parseFloat(pos.positionAmt || 0));
   if (!qty) return { closed:false, protected:false, snap, error:'qty yok' };
   try {
-    const r = await safeMarketClosePosition(apiKey, apiSecret, sym, {reason});
-    if (!r.ok) throw new Error(r.error || 'safe close başarısız');
+    await cancelAlgoOrders(apiKey, apiSecret, sym);
+    const isLong = pos.side === 'LONG' || parseFloat(pos.positionAmt||0) > 0;
+    const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+      symbol:sym, side:isLong?'SELL':'BUY', type:'MARKET', quantity:qty.toString(), reduceOnly:'true', positionSide:'BOTH'
+    });
     trailingState.delete(sym);
     setCooldown(sym, COOLDOWN_CLOSE_MS, `${reason} korumasız pozisyon acil kapatıldı`);
-    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE', `${sym}: ${reason}; SL/TP eksikti, güvenli market kapatma denendi`, {...snap, close:r}, 'WARNING');
-    return { closed:true, protected:false, snap, order:r.order, alreadyClosed:r.alreadyClosed, fallback:r.fallback };
+    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE', `${sym}: ${reason}; SL/TP eksikti, market reduce-only kapatıldı`, snap, 'WARNING');
+    return { closed:true, protected:false, snap, order:r };
   } catch(e) {
     pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE_FAIL', `${sym}: ${reason}; acil kapatma başarısız ${e.message}`, snap, 'CRITICAL');
     return { closed:false, protected:false, snap, error:e.message };
@@ -11055,10 +10719,8 @@ async function managePosition(apiKey, apiSecret, pos) {
   const karTasima2    = safe(cfg.karTasima2,   1.0);  // R161: 1.2→1.0 — %1.0 kârda güçlü kilit
   const karTasima3    = safe(cfg.karTasima3,   1.8);  // R161: 2.0→1.8 — %1.8 kârda maksimum kilit
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
-  // R168: pozisyon yönetimi panel SL yerine pozisyon açılırken kullanılan gerçek SL/TP'yi okur.
-  // R166/R167 adaptif SL/TP varsa, R14/R42/R41 eski panel SL ile yanlış hasar hesabı yapmamalı.
-  const slPct         = safe(state.slPct ?? state.entrySLPct ?? cfg.slPct, 2);
-  const tpPct         = safe(state.tpPct ?? state.entryTPPct ?? cfg.tpPct, 10);
+  const slPct         = safe(cfg.slPct,        2);
+  const tpPct         = safe(cfg.tpPct,        10);
   // BE emri sadece entry'ye değil, taker fee + olası stop-market kayması için
   // küçük kâr bölgesine taşınır. INJ örneğinde entry üstü kapanışa rağmen
   // komisyon/slippage nedeniyle eksi yazmıştı. Varsayılan %0.22 coin hareketi.
@@ -11184,18 +10846,6 @@ async function managePosition(apiKey, apiSecret, pos) {
     action = {
       type:'EMERGENCY_EXIT', urgency:'HIGH',
       reason:`Erken hasar kes: ROI %${pnlPct.toFixed(1)} <= %${r41EarlyDamageRoiCap.toFixed(1)} ve CVD/tick trend sağlığı yok`
-    };
-  }
-
-  // R168: Momentum-pass erken tez bozulması.
-  // 5m scalp'te R159 giriş 6-9 puanla açıldıysa ilk 12 dakikada BE görmeden -8/-10 ROI'a düşmesi
-  // çoğu zaman "analiz ters yönde" demektir. CVD hâlâ sağlıklı görünse bile tam SL'yi bekleme.
-  const r168WeakEntry = String(state.openReason||'').includes('R159 momentum') || String(state.brainMode||'').includes('MOMENTUM');
-  const r168EarlyThesisCap = r168WeakEntry ? -8.5 : -10.5;
-  if (!action && openMinutes <= 12 && !state.breakEvenSet && Number(state.peakPnl||0) < 4 && pnlPct <= r168EarlyThesisCap) {
-    action = {
-      type:'EMERGENCY_EXIT', urgency:'HIGH',
-      reason:`R168 erken tez bozuldu: ${r168WeakEntry?'R159/MOMENTUM ':' '}giriş BE görmeden ROI %${pnlPct.toFixed(1)} <= %${r168EarlyThesisCap}; tam SL beklenmedi`
     };
   }
 
@@ -11598,9 +11248,15 @@ async function managePosition(apiKey, apiSecret, pos) {
   if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT' || action.type === 'R149_PROFIT_GIVEBACK_KAPAT' || action.type === 'R165_WINNER_NEVER_LOSER_KAPAT') {
     // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
-      const r = await safeMarketClosePosition(apiKey, apiSecret, sym, {reason:action.type});
-      if (!r.ok) throw new Error(r.error || 'safe close başarısız');
-      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':action.type==='R165_WINNER_NEVER_LOSER_KAPAT'?'R165 KÂR ZARARA DÖNMESİN ÇIKIŞI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.order?.orderId || (r.alreadyClosed?'zaten kapalı':'safe-close')}`);
+      await cancelAlgoOrders(apiKey, apiSecret, sym, true);
+      const qty = Math.abs(parseFloat(pos.positionAmt || 0)).toString();
+      // MARKET emri eski endpoint'te çalışmaya devam eder
+      const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
+        symbol:sym, side:isLong?'SELL':'BUY',
+        type:'MARKET', quantity:qty,
+        reduceOnly:'true', positionSide:'BOTH', __emergency:true
+      });
+      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':action.type==='R165_WINNER_NEVER_LOSER_KAPAT'?'R165 KÂR ZARARA DÖNMESİN ÇIKIŞI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
       trailingState.delete(sym);
       return { action:'CLOSED', pnl:pnlPct, reason:action.reason };
     } catch(e) {
@@ -11701,9 +11357,11 @@ app.post('/api/close', async (req, res) => {
     const arr=Array.isArray(pos)?pos:[];
     const p=arr.find(x=>Math.abs(parseFloat(x.positionAmt))>0);
     if(!p)return res.json({ok:true,message:'Açık pozisyon yok'});
-    const order=await safeMarketClosePosition(apiKey, apiSecret, sym, {reason:'MANUAL_API_CLOSE'});
-    if (!order.ok) return res.status(400).json({ok:false,error:order.error||'safe close başarısız'});
-    res.json({ok:true,message:`${sym} kapatma denendi`,orderId:order.order?.orderId, alreadyClosed:order.alreadyClosed, fallback:order.fallback});
+    const order=await bReq(apiKey,apiSecret,'POST','/fapi/v1/order',{
+      symbol:sym,side:parseFloat(p.positionAmt)>0?'SELL':'BUY',
+      type:'MARKET',quantity:Math.abs(parseFloat(p.positionAmt)),reduceOnly:'true',positionSide:'BOTH',__emergency:true
+    });
+    res.json({ok:true,message:`${sym} kapatıldı`,orderId:order.orderId});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
@@ -12748,9 +12406,9 @@ async function runAutoScan(prioritySymbol=null) {
         const entryRef = parseFloat(analysis.price || coin.price || 0);
         if (!entryRef) { logAuto(`${coin.symbol} fiyat alınamadı — atlandı`); markAutoSkip(coin.symbol, 'Fiyat alınamadı'); continue; }
 
-        let userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));
-        let userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));
-        let userRR    = userTPPct / userSLPct;
+        let userSLPct = Math.max(0.05, parseFloat(cfg.slPct ?? 2));  // R177: const→let (ATR adaptive fix)
+        let userTPPct = Math.max(0.05, parseFloat(cfg.tpPct ?? 10));   // R177: const→let (ATR adaptive fix)
+        const userRR    = userTPPct / userSLPct;
 
         // ── R24 RVOL MİKRO LİKİDİTE FRENİ — performansı boğmadan sadece ekstrem zayıf hacmi keser
         const rvolNum = Number(analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
@@ -12759,175 +12417,6 @@ async function runAutoScan(prioritySymbol=null) {
           markAutoSkip(coin.symbol, `RVOL çok düşük ${rvolNum.toFixed(2)}x`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
         }
-
-
-        // ── R170 HEDEF WR + FREKANS KORUYUCU ─────────────────────────────────
-        // Kullanıcı hedefi: işlem sıklığı boğulmayacak, fakat canlı WR %60-85 bandı asla göz ardı edilmeyecek.
-        // Mantık: güçlü yollar açık kalır (R159 8/9p, R160 4/4); zayıf yollar canlı performans bozulunca kapanır.
-        try {
-          const r170ModeObj = r170PerfMode();
-          const r170Mode = r170ModeObj.mode;
-          const r170Perf = r170ModeObj.perf || {}; // hesap geneli GÜNLÜK performans
-          const r170Acc = r170ModeObj.account || {};
-          const r170True = Number(decisionChain?.r160TrueCount || 0);
-          const r170Q2 = !!decisionChain?.r160Q2Flow;
-          const r170Q3 = !!decisionChain?.r160Q3Momentum;
-          const r170Q4 = !!decisionChain?.r160Q4Proof;
-          const r170Edge = Number(decisionChain?.brainConfidence || 0);
-          const r170R159Pts = Number(decisionChain?.r159Points || 0);
-          const r170FlowEdge = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
-          const r170LiveTicks = Number(decisionChain?.r133LiveTradeCount || decisionChain?.liveTradeCount || 0);
-          // R173: Silver Bullet + mum kapanış + hacim spike + retest kalitesi.
-          // Amaç: işlem sayısını normal modda boğmadan, recovery modda sadece gerçek kaliteyi geçirmek.
-          const r173Q = r173ContextQuality(decisionChain, analysis);
-          const r172RecoveryMode = (r170Mode === 'HIGH_WR_RECOVERY' || r170Mode === 'WARMUP_HIGH_WR');
-          const r172VeryBadDay = !!(Number(r170Perf.closed||0) >= 8 && (Number(r170Perf.wr||0) < 0.45 || Number(r170Perf.pf||0) < 0.90 || Number(r170Perf.net||0) < -3));
-          const r173SweepNeedsClose = !!(r173Q.sweep && !r173Q.candleCloseOk && !r173Q.retestOk && !r173Q.silverBullet);
-          const r173RetestOrSilver = !!(r173Q.silverBullet || (r173Q.retestOk && r173Q.candleCloseOk && r173Q.volOk12));
-          const r175MinScore = Number(effectiveMinScore || autoConfig?.minScore || 70);
-          const r170StrongMomentum = !!(decisionChain?.r159MomentumPass && (
-            r172RecoveryMode
-              ? (
-                  // R175: STG tipi R159 8p/score50 hasarı için warmup/recovery'de 8p geçmez; 9p elit ya da SilverBullet gerekir.
-                  (r170R159Pts >= 9 && r170Edge >= 92 && score >= Math.max(65, r175MinScore-5) && r170Q2 && r170Q3 && r170Q4 && r170FlowEdge >= 8 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver) ||
-                  (r170R159Pts >= 8 && r170Edge >= 90 && score >= r175MinScore && r170Q2 && r170Q3 && r170Q4 && r173Q.silverBullet && r173Q.volSpike15)
-                )
-              : (r170R159Pts >= 8 && r170Edge >= 82 && score >= Math.max(58, r175MinScore-10) && r173Q.volOk12 && !r173SweepNeedsClose)
-          ));
-          const r170StrongR160 = !!(decisionChain?.r160TraderDecision && (
-            r172RecoveryMode
-              ? (r170True >= 4 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 90 && score >= Math.max(68, r175MinScore-2) && r170FlowEdge >= 8 && r170LiveTicks >= 18 && r173Q.volSpike15 && r173RetestOrSilver)
-              : (r170True >= 4 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 78 && score >= Math.max(58, r175MinScore-10) && r173Q.volOk12 && !r173SweepNeedsClose)
-          ));
-          const r170GoodThree = !!(!r172RecoveryMode && decisionChain?.r160TraderDecision && r170True === 3 && r170Q2 && r170Q3 && r170Q4 && r170Edge >= 82 && score >= 58 && r170FlowEdge >= 6 && r173Q.volOk12);
-          const r170FreqProtectedPath = r170StrongMomentum || r170StrongR160 || r170GoodThree;
-          const r175WeakR159 = !!(decisionChain?.r159MomentumPass && r170R159Pts === 8 && (score < r175MinScore || !r170Q2 || !r170Q3 || !r170Q4 || !r173Q.volSpike15 || !r173RetestOrSilver));
-          if (r172RecoveryMode && r175WeakR159) {
-            const why = `R175 warmup/recovery R159 8p hasar freni: score:${score}/${r175MinScore}, Q2:${r170Q2?'1':'0'} Q3:${r170Q3?'1':'0'} Q4:${r170Q4?'1':'0'}, RVOL:${r173Q.rvol?r173Q.rvol.toFixed(2):'?'}, retest/silver:${r173RetestOrSilver?'VAR':'YOK'} — işlem yok`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, mode:r170Mode, rvol:r173Q.rvol, retest:r173Q.retestOk, silver:r173Q.silverBullet});
-            continue;
-          }
-
-
-          if (r173SweepNeedsClose) {
-            const why = `R173 mum kapanış/retest bekliyor: sweep var ama kapanış/retest teyidi yok; wick sweep tuzak riski`;
-            logAuto(`⏳ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, r160True:r170True, rvol:r173Q.rvol});
-            continue;
-          }
-
-          if (r172RecoveryMode && !r173Q.volSpike15) {
-            const why = `R173 recovery hacim spike filtresi: RVOL ${r173Q.rvol ? r173Q.rvol.toFixed(2)+'x' : 'yok'}; 1.5x+ kurumsal hacim bekleniyor`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, rvol:r173Q.rvol, mode:r170Mode});
-            continue;
-          }
-
-          if (r172RecoveryMode && r173Q.sweep && !r173RetestOrSilver) {
-            const why = `R173 retest/Silver Bullet bekliyor: sweep sonrası direkt giriş yok; FVG+MSS veya ilk retest gerekli`;
-            logAuto(`⏳ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, silver:r173Q.silverBullet, retest:r173Q.retestOk, fvg:r173Q.fvg, mss:r173Q.mss});
-            continue;
-          }
-
-          if (r172RecoveryMode && !r170FreqProtectedPath) {
-            const wrTxt = r170Perf.wr !== null ? (r170Perf.wr*100).toFixed(0) : '?';
-            const why = `R172 HIGH_WR_RECOVERY elit filtre: günlük WR%${wrTxt}, PF:${Number(r170Perf.pf||0).toFixed(2)}, net:${Number(r170Perf.net||0).toFixed(2)}$ → sadece R159 9p elit veya R160 4/4 elit geçer`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, r160True:r170True, flow:r170FlowEdge, ticks:r170LiveTicks, mode:r170Mode});
-            continue;
-          }
-
-          if (r172VeryBadDay && (score < 68 || r170Edge < 88 || r170FlowEdge < 7)) {
-            const why = `R172 çok kötü gün freni: score/edge/flow elit değil — score:${score}, edge:${r170Edge}, flow:${r170FlowEdge}`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, flow:r170FlowEdge, mode:r170Mode});
-            continue;
-          }
-
-          // 6p/7p momentum sadece hedef sağlıklıyken ve yapı tam destekliyorsa geçer; aksi halde winrate'i aşağı çeker.
-          if (decisionChain?.r159MomentumPass && r170R159Pts < 8 && !r170GoodThree) {
-            const why = `R170 WR hedef freni: R159 ${r170R159Pts}p zayıf; 8p+ veya Q2+Q3+Q4 güçlü 3/4 gerekli`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, mode:r170Mode});
-            continue;
-          }
-
-          // R160 3/4 içinde ivme yoksa, yapı+akış+kanıt tek başına son canlı veride kayıp üretiyor.
-          if (decisionChain?.r160TraderDecision && r170True === 3 && !r170Q3 && !r170StrongMomentum) {
-            const why = `R170 WR hedef freni: R160 3/4 ama ivme yok; frekans için 8p momentum veya 4/4 beklenir`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r160True:r170True, mode:r170Mode});
-            continue;
-          }
-
-          // Canlı performans hedef altına inerse seçici moda geç: işlem tamamen durmaz, sadece güçlü yollar kalır.
-          if (r170Mode === 'HIGH_WR_RECOVERY' && !r170FreqProtectedPath) {
-            const wrTxt = r170Perf.wr !== null ? (r170Perf.wr*100).toFixed(0) : '?';
-            const why = `R170b HIGH_WR_RECOVERY: HESAP GENELİ günlük WR%${wrTxt}, PF:${Number(r170Perf.pf||0).toFixed(2)}, net:${Number(r170Perf.net||0).toFixed(2)}$ | haftalık ${r170FmtPerf(r170Acc.week)} | aylık ${r170FmtPerf(r170Acc.month)} → sadece 8p+ momentum / 4-4 R160 / güçlü 3-4 geçer`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r170Edge, r159:r170R159Pts, r160True:r170True, mode:r170Mode, perf:r170Perf});
-            continue;
-          }
-
-          // Frekans koruması: sistem hedefteyse güçlü yolları gereksiz eski kapılarla boğma; logla görünür yap.
-          if (r170FreqProtectedPath) {
-            const wrTxt = r170Perf.wr !== null ? (r170Perf.wr*100).toFixed(0) : '?';
-            logAuto(`🧭 ${coin.symbol} R170b HESAP hedef profili: ${r170Mode} günlük WR%${wrTxt} | haftalık ${r170FmtPerf(r170Acc.week)} | aylık ${r170FmtPerf(r170Acc.month)} | freq:${r170TradeFreq(60*60*1000)}/saat → güçlü yol korundu (${decisionChain?.r159MomentumPass?'R159 '+r170R159Pts+'p':'R160 '+r170True+'/4'})`);
-          }
-        } catch(_e170) {}
-
-        // R169: Canlı sonuç kalite freni — işlem sıklığını tamamen boğmadan zayıf 3/4 R160 ve R144 mikro-scalp'i keser.
-        // Kayıp örnekleri: JTO/B/PORTAL 3/4 (yapı+akış+kanıt) ama ivme/gerçek devam yok → -12% ila -20% ROI.
-        try {
-          const r169T = Number(decisionChain?.r160TrueCount || 0);
-          const r169Q2 = !!decisionChain?.r160Q2Flow;
-          const r169Q3 = !!decisionChain?.r160Q3Momentum;
-          const r169Q4 = !!decisionChain?.r160Q4Proof;
-          const r169Edge = Number(decisionChain?.brainConfidence || 0);
-          const r169FlowEdge = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
-          const r169WeakR160 = !!(decisionChain?.r160TraderDecision && r169T === 3 && !(r169Q2 && r169Q4 && (r169Q3 || r169Edge >= 90)));
-          const r169WeakScore = !!(decisionChain?.r160TraderDecision && r169T === 3 && (score < 50 || r169Edge < 72));
-          const r169WeakR144 = !!(decisionChain?.r133FastScalpOverride && !decisionChain?.r159MomentumPass && !(r169T >= 4 || (score >= 60 && r169Edge >= 85)));
-          const r169RecentAnyLoss = r166CoinRecentLosses(coin.fullSymbol, 90*60*1000);
-          const r169HasFreshLossWeak = r169RecentAnyLoss >= 1 && !(decisionChain?.r159MomentumPass && Number(decisionChain?.r159Points||0) >= 8) && !(r169T >= 4 && r169Edge >= 80);
-          if (r169WeakR160 || r169WeakScore || r169WeakR144 || r169HasFreshLossWeak) {
-            const why = r169HasFreshLossWeak
-              ? `R169 taze kayıp freni: son 90dk aynı coin kayıp var, sadece 8p+ momentum veya 4/4 güçlü R160 geçer`
-              : r169WeakR144
-                ? `R169 R144 mikro-scalp freni: hızlı edge tek başına yetmedi`
-                : `R169 zayıf R160 3/4 freni: Q2:${r169Q2?'1':'0'} Q3:${r169Q3?'1':'0'} Q4:${r169Q4?'1':'0'} edge:${r169Edge} score:${score}`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r169Edge, r160True:r169T, flowEdge:r169FlowEdge});
-            continue;
-          }
-        } catch(_e169q) {}
-
-        // R172: aynı coin/yön son 3 saatte zarar verdiyse recovery modda sadece elit sinyal geçsin.
-        // Bu TAG/JTO/BANK/B tekrar deneme hasarını azaltır; ters yön fırsatı serbest kalır.
-        try {
-          const r172ModeObj2 = r170PerfMode();
-          const r172Mode2 = r172ModeObj2.mode;
-          const r172SameSideLoss = r157GetConsecutiveLosses(coin.fullSymbol, recommendation, 3*60*60*1000);
-          if (r172Mode2 === 'HIGH_WR_RECOVERY' && r172SameSideLoss >= 1) {
-            const r172T = Number(decisionChain?.r160TrueCount || 0);
-            const r172Edge = Number(decisionChain?.brainConfidence || 0);
-            const r172Pts = Number(decisionChain?.r159Points || 0);
-            const r172Q2 = !!decisionChain?.r160Q2Flow, r172Q3 = !!decisionChain?.r160Q3Momentum, r172Q4 = !!decisionChain?.r160Q4Proof;
-            const r172Flow = Number(decisionChain?.r125SideFlow?.edge || decisionChain?.r125Flow?.sideEdge || decisionChain?.brainR125FlowEdge || 0);
-            const r172Elite = !!(
-              (decisionChain?.r159MomentumPass && r172Pts >= 9 && r172Edge >= 92 && score >= 65 && r172Q2 && r172Q3 && r172Q4 && r172Flow >= 8) ||
-              (decisionChain?.r160TraderDecision && r172T >= 4 && r172Edge >= 90 && score >= 68 && r172Q2 && r172Q3 && r172Q4 && r172Flow >= 8)
-            );
-            if (!r172Elite) {
-              const why = `R172 aynı yön taze kayıp freni: ${coin.symbol} ${recommendation} son 3s kayıp gördü; sadece elit sinyal geçer`;
-              logAuto(`⛔ ${coin.symbol} ${why}`);
-              markAutoSkip(coin.symbol, why, {rec:recommendation, score, edge:r172Edge, r159:r172Pts, r160True:r172T, flow:r172Flow});
-              continue;
-            }
-          }
-        } catch(_e172loss) {}
 
         // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
         const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
@@ -13067,25 +12556,9 @@ async function runAutoScan(prioritySymbol=null) {
         let targetPrice = isLong
           ? +(entryRef * (1 + userTPPct/100)).toFixed(8)
           : +(entryRef * (1 - userTPPct/100)).toFixed(8);
-        let stopPrice = isLong
+        const stopPrice = isLong
           ? +(entryRef * (1 - userSLPct/100)).toFixed(8)
           : +(entryRef * (1 + userSLPct/100)).toFixed(8);
-
-        // R168: R159 momentum geçişi saf momentumdur; R160 tam trader kanıtı yoksa
-        // SL daha kompakt olmalı. JTO R159 6p -13.4% ROI örneğinde büyük zarar burada oluştu.
-        try {
-          const r168OnlyR159 = !!(decisionChain?.r159MomentumPass && !decisionChain?.r160TraderDecision && !decisionChain?.r156FastBypass);
-          const r168Pts = Number(decisionChain?.r159Points || 0);
-          if (r168OnlyR159) {
-            const oldSL168 = userSLPct;
-            const oldTP168 = userTPPct;
-            userSLPct = +(Math.min(Number(userSLPct||1.5), r168Pts >= 8 ? 1.15 : 0.95)).toFixed(2);
-            userTPPct = +(Math.min(Math.max(Number(userTPPct||3), userSLPct * 2.2), 5.0)).toFixed(2);
-            if (oldSL168 !== userSLPct || oldTP168 !== userTPPct) {
-              logAuto(`🧠 ${coin.symbol} R168 R159 risk profili: ${r168Pts}p → SL:%${oldSL168}→%${userSLPct} TP:%${oldTP168}→%${userTPPct}`);
-            }
-          }
-        } catch(_e168risk) {}
 
         // R125: forceOrder likidasyon kümesi aynı yönde yakın hedefse TP'yi kör yüzdeye değil
         // mıknatısa göre ayarla. Çok yakın hedefe düşürmez; çok uzak hedefe de taşırmaz.
@@ -13097,16 +12570,6 @@ async function runAutoScan(prioritySymbol=null) {
             targetPrice = +magnetTarget.toFixed(8);
             r125TpNote = ` · R125 TP liq-mıknatıs ${tpMagnet.price} g${tpMagnet.strength}`;
           }
-        }
-
-        // R157: Ardışık kayıp fren — aynı coin+yönde son 4 saatte 2+ kayıp → 4 saat bekleme
-        const r157ConsecLosses = r157GetConsecutiveLosses(coin.fullSymbol, recommendation);
-        if (r157ConsecLosses >= 2) {
-          const r157WaitMs = 4 * 60 * 60 * 1000;
-          logAuto(`🔁 ${coin.symbol} son 4 saatte ${r157ConsecLosses} kayıp — 4 saat cooldown (FOLKS/BABY likidasyon önleme)`);
-          setCooldown(coin.fullSymbol, r157WaitMs, `R157 ardışık ${r157ConsecLosses} kayıp; 4 saat ${recommendation} bekleme`);
-          markAutoSkip(coin.symbol, `R157 ardışık kayıp freni (${r157ConsecLosses}x)`, {rec:recommendation, score});
-          continue;
         }
 
         // R166: ATR-ADAPTIVE SL/TP ─────────────────────────────────────────
@@ -13868,20 +13331,34 @@ app.get('/api/telegram-test', async (_req, res) => {
 });
 
 
-// R168d: Tam işlem kartı testi — gerçek emir açmadan açılış/kapanış kartını Telegram'a yollar.
+// R179: Tam işlem kartı testi — gerçek emir açmadan direkt açılış/kapanış kartı gönderir.
 app.get('/api/telegram-trade-test', async (_req, res) => {
-  const sampleOpen = {
-    id:'TEST_'+Date.now(), symbol:'JTO', side:'LONG', openedAt:Date.now(),
-    entryPrice:0.6397, leverage:9, quantity:31.25, marginUSDT:20,
-    sl:0.6301, tp:0.6590, slPct:1.5, tpPct:3.0,
-    score:35, tier:'A', entryReason:'R159 momentum geçiş test kartı'
-  };
-  tgNotifyTradeOpenOnce(sampleOpen, {sltpVerified:true, brainMode:'R159 Momentum Pass'});
-  const sampleClose = {...sampleOpen, status:'CLOSED', closedAt:Date.now()+9*60*1000, closePrice:0.6301, pnlUSDT:-2.70, roiPct:-13.4, resultNote:'Test kapanış kartı'};
-  tgNotifyTradeCloseOnce(sampleClose, {currentSL:0.6301, targetTP:0.6590, leverage:9, positionAmt:31.25}, {label:'Telegram test kapanışı', closePrice:0.6301});
-  res.json({ok:true, sent:'open_close_trade_cards', build:LAZARUS_BUILD});
+  try {
+    const stamp = Date.now();
+    const openR = await tgTradeOpen('TESTUSDT','LONG',88,96,30,15,'R179 Telegram tam kart test — gerçek emir değildir',{
+      entryPrice:0.12345, slPrice:0.12160, tpPrice:0.12980, quantity:3645, leverage:15, margin:30, tier:'A',
+      slPct:1.5, tpPct:5.1, mode:'TEST_CARD', sltpVerified:true
+    });
+    const closeR = await tgTradeClose('TESTUSDT','LONG',2.34,7.80,'R179 Telegram test kapanışı — gerçek işlem değildir',{
+      entryPrice:0.12345, closePrice:0.12600, sl:0.12160, tp:0.12980, leverage:15, quantity:3645,
+      marginUSDT:30, duration:'3dk', peakRoi:12.4, peakPnl:3.72, resultNote:`Test ID ${stamp}`
+    });
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR, sent:'direct_open_close_trade_cards'});
+  } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
 });
-
+app.get('/api/telegram-card-test', async (_req, res) => {
+  try {
+    const openR = await tgTradeOpen('TESTUSDT','LONG',88,96,30,15,'R179 Telegram tam kart test — gerçek emir değildir',{
+      entryPrice:0.12345, slPrice:0.12160, tpPrice:0.12980, quantity:3645, leverage:15, margin:30, tier:'A',
+      slPct:1.5, tpPct:5.1, mode:'TEST_CARD', sltpVerified:true
+    });
+    const closeR = await tgTradeClose('TESTUSDT','LONG',2.34,7.80,'R179 Telegram test kapanışı — gerçek işlem değildir',{
+      entryPrice:0.12345, closePrice:0.12600, sl:0.12160, tp:0.12980, leverage:15, quantity:3645,
+      marginUSDT:30, duration:'3dk', peakRoi:12.4, peakPnl:3.72, resultNote:'Panel TG Kart Test'
+    });
+    res.json({ok:!!(openR?.ok && closeR?.ok), build:LAZARUS_BUILD, open:openR, close:closeR});
+  } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
+});
 
 // R170b: Hesap geneli günlük/haftalık/aylık performans durumu — coin WR değildir.
 app.get('/api/performance-target', (_req, res) => {
@@ -13908,6 +13385,19 @@ app.get('/api/performance-target', (_req, res) => {
 
 
 // R171: Telegram trade kartlarını manuel zorla gönder + PnL reconcile.
+app.get('/api/bootstrap-ledger-48h', async (_req, res) => {
+  try {
+    const r = autoConfig?.apiKey && autoConfig?.apiSecret ? await r179BootstrapLedger48h(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000, {replace:false}) : {ok:false, reason:'api_missing'};
+    res.json({ok:!!r?.ok, build:LAZARUS_BUILD, bootstrap:r});
+  } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
+});
+app.get('/api/rebuild-ledger-48h', async (_req, res) => {
+  try {
+    const r = autoConfig?.apiKey && autoConfig?.apiSecret ? await r179BootstrapLedger48h(autoConfig.apiKey, autoConfig.apiSecret, 48*60*60*1000, {replace:true}) : {ok:false, reason:'api_missing'};
+    res.json({ok:!!r?.ok, build:LAZARUS_BUILD, bootstrap:r});
+  } catch(e) { res.status(500).json({ok:false, build:LAZARUS_BUILD, error:String(e?.message||e)}); }
+});
+
 app.get('/api/telegram-flush-trade-alerts', async (_req, res) => {
   try {
     // R176: TG Kart Test sadece Telegram kartını test eder; Binance income/reconcile çağırmaz.
@@ -13933,11 +13423,30 @@ app.get('/api/reconcile-trade-ledger', async (_req, res) => {
   } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
 });
 
+
+// ── R177: BAŞLANGIŞTA BİNANCE 48 SAATLİK GEÇMİŞ ──────────────────────────
+// Railway yeniden başlayınca ledger boş kalıyor → WR hesabı bozuluyor
+// Bu fonksiyon başlangıçta son 48 saatlik realized PNL'yi çekip ledger'ı besler
+// ── R179: BAŞLANGIÇTA BİNANCE 48 SAATLİK GRUPLU GEÇMİŞ ───────────────
+async function r177FetchBinanceHistory(apiKey, apiSecret) {
+  const r = await r179BootstrapLedger48h(apiKey, apiSecret, 48*60*60*1000, {replace:false});
+  return Number(r?.restored || 0);
+}
+
 app.listen(PORT, async () => {
   console.log(`✅ Server ${PORT}`);
 
   // Kısa gecikme — diğer init tamamlansın
   await new Promise(r => setTimeout(r, 3000));
+
+  // ── R177 ADIM 0: Binance 48 saatlik gerçek geçmiş çek ───────────────────
+  try {
+    const cfg0 = autoConfig || {};
+    if (cfg0.apiKey && cfg0.apiSecret) {
+      const added = await r177FetchBinanceHistory(cfg0.apiKey, cfg0.apiSecret);
+      if (added > 0) logAuto('📊 R177 Binance geçmişten ' + added + ' işlem yüklendi — WR kalibrasyonu hazır');
+    }
+  } catch(_e0) {}
 
   // ── ADIM 1: Ledger boşsa Telegram'dan geri yükle ─────────────────────────
   let restoredCount = 0;
@@ -13980,7 +13489,7 @@ app.listen(PORT, async () => {
   if (TG_TOKEN && TG_CHAT_ID) {
     setInterval(tgSaveLedgerBackup, TG_BACKUP_INTERVAL_MS);
     // İlk yedek 5 dakika sonra
-    setTimeout(tgSaveLedgerBackup, 5 * 60 * 1000);
+  setTimeout(tgSaveLedgerBackup, 5 * 60 * 1000);
   }
 
   // R171: trade açılış/kapanış Telegram kartı ve 0.00 PnL reconcile bakım döngüsü
