@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R189_MICROPRICE_OI_CROWD_EDGE_FIX';
+const LAZARUS_BUILD = 'R192_FOOTPRINT_DEEPOFI_FUEL_TRAIL';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1137,6 +1137,16 @@ function r125BookMetricsFromDepth(symbol, depth, lastPrice) {
   let bidQty5=0, askQty5=0, vampNum=0, vampDen=0;
   const topBids = bids.slice(0,5).map(([p0,q0]) => [r125Num(p0), r125Num(q0)]).filter(([p,q]) => p>0 && q>0);
   const topAsks = asks.slice(0,5).map(([p0,q0]) => [r125Num(p0), r125Num(q0)]).filter(([p,q]) => p>0 && q>0);
+  // R192: Multi-level OFI — top-10 derinlikte gerçek duvar desteği/direnci.
+  // Yeni endpoint yok; mevcut depth snapshot/WS verisinin ilk 10 seviyesini okur.
+  const topBids10 = bids.slice(0,10).map(([p0,q0]) => [r125Num(p0), r125Num(q0)]).filter(([p,q]) => p>0 && q>0);
+  const topAsks10 = asks.slice(0,10).map(([p0,q0]) => [r125Num(p0), r125Num(q0)]).filter(([p,q]) => p>0 && q>0);
+  const deepBid10 = topBids10.reduce((sum,[p,q]) => sum + p*q, 0);
+  const deepAsk10 = topAsks10.reduce((sum,[p,q]) => sum + p*q, 0);
+  const deepDen10 = deepBid10 + deepAsk10;
+  const deepImb10 = deepDen10 > 0 ? ((deepBid10 - deepAsk10) / deepDen10) * 100 : 0;
+  const deepSide10 = deepImb10 > 18 ? 'LONG' : deepImb10 < -18 ? 'SHORT' : 'NEUTRAL';
+  const deepStrength10 = Math.min(100, Math.round(Math.abs(deepImb10) * 1.15 + Math.log10(Math.max(1, deepDen10)) * 5));
   for (const [p0,q0] of bids) {
     const p = r125Num(p0), q = r125Num(q0), usdt = p*q;
     if (!bestBid) bestBid = p;
@@ -1188,7 +1198,9 @@ function r125BookMetricsFromDepth(symbol, depth, lastPrice) {
     spreadPct:+spreadPct.toFixed(4), strength:+strength.toFixed(0), ageMs:0,
     bestBid:+bestBid.toFixed(8), bestAsk:+bestAsk.toFixed(8), midPrice:+midPrice.toFixed(8),
     microPrice:+microPrice.toFixed(8), vampPrice:+vampPrice.toFixed(8), microBiasPct:+microBiasPct.toFixed(5), vampBiasPct:+vampBiasPct.toFixed(5),
-    microSide, microPersistSide, microLongCount, microShortCount
+    microSide, microPersistSide, microLongCount, microShortCount,
+    deepBid10:+deepBid10.toFixed(0), deepAsk10:+deepAsk10.toFixed(0),
+    deepImb10:+deepImb10.toFixed(1), deepSide10, deepStrength10
   };
 }
 function r125LiqClusters(symbol, lastPrice) {
@@ -1250,6 +1262,7 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
 
   let longRaw =
     (book.side === 'LONG' ? 6 : book.side === 'SHORT' ? -5 : 0) +
+    (book.deepSide10 === 'LONG' ? 3 : book.deepSide10 === 'SHORT' ? -3 : 0) +
     (book.velocity > 8 ? 2 : book.velocity < -8 ? -2 : 0) +
     (liveSide === 'LONG' ? 6 : liveSide === 'SHORT' ? -5 : 0) +
     (tickData?.whaleBias === 'WHALE_BUY' ? 3 : tickData?.whaleBias === 'WHALE_SELL' ? -3 : 0) +
@@ -1262,6 +1275,7 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
 
   let shortRaw =
     (book.side === 'SHORT' ? 6 : book.side === 'LONG' ? -5 : 0) +
+    (book.deepSide10 === 'SHORT' ? 3 : book.deepSide10 === 'LONG' ? -3 : 0) +
     (book.velocity < -8 ? 2 : book.velocity > 8 ? -2 : 0) +
     (liveSide === 'SHORT' ? 6 : liveSide === 'LONG' ? -5 : 0) +
     (tickData?.whaleBias === 'WHALE_SELL' ? 3 : tickData?.whaleBias === 'WHALE_BUY' ? -3 : 0) +
@@ -1285,7 +1299,7 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
   const tpShort = clusters.below && clusters.below.distPct < -0.18 && clusters.below.distPct > -8 ? clusters.below : null;
   const flowState = flowWarmup ? 'ISINIYOR' : (tickFresh ? 'CANLI_TICK' : 'CVD_FALLBACK');
   const r130sum = (typeof r130CombinedSummary === 'function') ? r130CombinedSummary() : '';
-  const summary = `${flowState} · ${r130sum} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · micro:${book.microSide||'NEUTRAL'} ${book.vampBiasPct||0}% p:${book.microPersistSide||'NEUTRAL'} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
+  const summary = `${flowState} · ${r130sum} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · deep:${book.deepSide10||'NEUTRAL'} ${book.deepImb10||0}% · micro:${book.microSide||'NEUTRAL'} ${book.vampBiasPct||0}% p:${book.microPersistSide||'NEUTRAL'} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
   return { ok:true, liveReady, tickFresh, cvdValid, flowWarmup, liveSource, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
 }
 function r125FlowForSide(ctx, side='LONG') {
@@ -1367,6 +1381,9 @@ function r142SetupTags(side='LONG', d={}, mode='NO_EDGE') {
   if (d.r37LateChaseBlock || d.r37RetestWait || d.r39TargetNearBlock) tags.add('LATE_OR_TARGET_NEAR');
   if (d.r125Flow?.bestSide && d.r125Flow.bestSide !== 'NEUTRAL') tags.add('FLOW_'+String(d.r125Flow.bestSide).toUpperCase());
   if (Math.abs(Number(d.r125Flow?.deltaPct||0)) >= 25) tags.add(Number(d.r125Flow?.deltaPct||0)>0?'DELTA_LONG':'DELTA_SHORT');
+  if (d.r190Edge?.earlyContinuation) tags.add('R190_EARLY_CONTINUATION');
+  if (d.r190Edge?.lateTrapRisk) tags.add('R190_LATE_TRAP');
+  if (d.r190Edge?.squeeze) tags.add('R190_SQUEEZE_FUEL');
   if (d.atrExtremeBlock || d.atrBlocking) tags.add('ATR_RISK');
   if (d.r93PiyasaTehlikeli || d.r88PiyasaBozuk) tags.add('BAD_GROUND');
   return [...tags];
@@ -2212,6 +2229,204 @@ function r111AnalyzeSiksmaFlow(k5m, k1h, k4h, lastPrice, fundingData, lsData, ls
     inDemand, inSupply,
     longOk: r111LongOk, shortOk: r111ShortOk,
     ozet
+  };
+}
+
+// ── R190: 5M EARLY MOMENTUM EDGE — frekansı bozmadan geç girişleri ayırır ──
+// Yeni endpoint yok: mevcut k5m, openInterestHist(5m), fundingRate, takerlongshortRatio,
+// orderbook/microprice ve aggTrade VPIN verisini önem sırasına göre okur.
+function r190N(v, d=0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function r190Pct(a,b) { a=r190N(a); b=r190N(b); return b>0 ? ((a-b)/b)*100 : 0; }
+function r190Rows5m(k5m=[], limit=8) {
+  return (Array.isArray(k5m)?k5m:[]).slice(-limit).map(k=>({
+    o:r190N(k?.[1]), h:r190N(k?.[2]), l:r190N(k?.[3]), c:r190N(k?.[4]), v:r190N(k?.[5])
+  })).filter(x=>x.o>0 && x.h>0 && x.l>0 && x.c>0);
+}
+function r190OiVal(x) { return r190N(x?.sumOpenInterestValue || x?.sumOpenInterest || x?.openInterest || 0); }
+function r190ParseLS(arr=[]) {
+  const x = Array.isArray(arr) && arr.length ? arr.at(-1) : {};
+  const la = r190N(x.longAccount, NaN), sa = r190N(x.shortAccount, NaN);
+  if (Number.isFinite(la) && Number.isFinite(sa) && la>0 && sa>0) return { long:la, short:sa };
+  const ratio = r190N(x.longShortRatio, NaN);
+  if (Number.isFinite(ratio) && ratio>0) return { long:ratio/(1+ratio), short:1/(1+ratio) };
+  return { long:0.5, short:0.5 };
+}
+function r190TakerRatio(takerArr=[]) {
+  const arr = (Array.isArray(takerArr)?takerArr:[]).slice(-4).map(t => r190N(t.buySellRatio, NaN)).filter(Number.isFinite);
+  if (!arr.length) return 1;
+  const last2 = arr.slice(-2);
+  return +(last2.reduce((s,v)=>s+v,0)/last2.length).toFixed(3);
+}
+function r190FundingTrend(fundArr=[]) {
+  const arr = (Array.isArray(fundArr)?fundArr:[]).slice(-6).map(f=>r190N(f.fundingRate || f.lastFundingRate, NaN)).filter(Number.isFinite);
+  if (arr.length < 2) return { ok:false, last:0, delta:0, rising:false, falling:false, label:'fund:yok' };
+  const first = arr[0], last = arr.at(-1), prev = arr.at(-2);
+  const delta = last - first;
+  return {
+    ok:true, last:+(last*100).toFixed(4), delta:+(delta*100).toFixed(4),
+    rising:last > prev && delta > 0, falling:last < prev && delta < 0,
+    label:`fund:${(last*100).toFixed(4)}% Δ${(delta*100).toFixed(4)}%`
+  };
+}
+
+// ── R192: Footprint + Deep OFI + Squeeze Fuel yardımcıları ─────────────────
+// Amaç: yeni kapı yığmadan R191 final valisine gerçek mum-içi alıcı/satıcı baskısı ve
+// top-10 defter duvarı kanıtı vermek. Tek başına işlem açtırmaz; sadece yakıt/kanıt sağlar.
+function r192FootprintFromTickData(tickData={}, side='LONG') {
+  side = String(side||'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const cc = tickData?.currentCandle || {};
+  const t30 = tickData?.recent30s || {};
+  const buy = r190N(cc.buy,0) + r190N(t30.buy,0) * 0.45;
+  const sell = r190N(cc.sell,0) + r190N(t30.sell,0) * 0.45;
+  const total = buy + sell;
+  const trades = r190N(cc.trades,0) + r190N(t30.trades,0);
+  if (total <= 0) return { ok:false, side, ratio:0.5, deltaPct:0, total:0, aligned:false, against:false, absorption:false, label:'R192FP:yok' };
+  const ratio = buy / total;
+  const deltaPct = ((buy - sell) / total) * 100;
+  const aligned = isL ? ratio >= 0.62 : ratio <= 0.38;
+  const strongAligned = isL ? ratio >= 0.68 : ratio <= 0.32;
+  const against = isL ? ratio <= 0.42 : ratio >= 0.58;
+  const highVolNeutral = total >= 18000 && ratio > 0.46 && ratio < 0.54;
+  const rangePct = (r190N(cc.high,0)>0 && r190N(cc.low,0)>0 && r190N(cc.close,0)>0)
+    ? ((r190N(cc.high)-r190N(cc.low))/r190N(cc.close))*100 : 0;
+  const absorption = !!(highVolNeutral && rangePct < 0.18);
+  return {
+    ok:true, side, ratio:+ratio.toFixed(3), deltaPct:+deltaPct.toFixed(1), total:+total.toFixed(0), trades,
+    aligned, strongAligned, against, absorption,
+    label:`R192FP ${ratio>=0.5?'BUY':'SELL'}:${(ratio*100).toFixed(0)}% Δ${deltaPct.toFixed(0)}% $${Math.round(total)}`
+  };
+}
+function r192DeepOfiFromBook(book={}, side='LONG') {
+  side = String(side||'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const imb = r190N(book.deepImb10, 0);
+  const side10 = String(book.deepSide10 || 'NEUTRAL').toUpperCase();
+  const aligned = isL ? imb >= 18 : imb <= -18;
+  const strongAligned = isL ? imb >= 28 : imb <= -28;
+  const against = isL ? imb <= -20 : imb >= 20;
+  return {
+    ok: !!(book && (book.deepBid10 || book.deepAsk10)), side, imb:+imb.toFixed(1), bookSide:side10,
+    aligned, strongAligned, against, strength:r190N(book.deepStrength10,0),
+    label:`R192Deep ${side10} ${imb.toFixed(1)}%`
+  };
+}
+
+function r190OiVector(oiHist5m=[], oiNowObj=null) {
+  const arr = (Array.isArray(oiHist5m)?oiHist5m:[]).slice(-8).map(r190OiVal).filter(v=>v>0);
+  const nowOi = r190OiVal(oiNowObj);
+  if (nowOi>0 && (!arr.length || Math.abs(nowOi-arr.at(-1))/Math.max(1,arr.at(-1)) > 0.0001)) arr.push(nowOi);
+  if (arr.length < 4) return { ok:false, oiChg15:0, lastVel:0, prevVel:0, accel:0, trend:'FLAT', label:'OI vektör:yok' };
+  const a0 = arr.at(-4), a1 = arr.at(-3), a2 = arr.at(-2), a3 = arr.at(-1);
+  const v1 = r190Pct(a1,a0), v2 = r190Pct(a2,a1), v3 = r190Pct(a3,a2);
+  const oiChg15 = r190Pct(a3,a0);
+  const accel = v3 - v2;
+  const rising = v1 > -0.05 && v2 > -0.05 && v3 > -0.05 && oiChg15 > 0.15;
+  const accelerating = rising && (v3 >= v2 - 0.03) && (v2 >= v1 - 0.10);
+  const decel = oiChg15 > 0.25 && accel < -0.18;
+  const falling = oiChg15 < -0.25;
+  const trend = accelerating ? 'ACCEL_UP' : rising ? 'UP' : decel ? 'DECEL_UP' : falling ? 'DOWN' : 'FLAT';
+  return { ok:true, oiChg15:+oiChg15.toFixed(3), lastVel:+v3.toFixed(3), prevVel:+v2.toFixed(3), accel:+accel.toFixed(3), trend, accelerating, rising, decel, falling, label:`OI15:${oiChg15.toFixed(2)}% v:${v3.toFixed(2)} a:${accel.toFixed(2)} ${trend}` };
+}
+function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
+  side = String(side || 'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const opp = isL ? 'SHORT' : 'LONG';
+  const rows = r190Rows5m(ctx.k5m, 10);
+  const last = rows.at(-1) || null;
+  const first3 = rows.at(-4) || rows[0] || null;
+  const first5 = rows.at(-6) || rows[0] || null;
+  const price3 = (last && first3) ? r190Pct(last.c, first3.o) : 0;
+  const price5 = (last && first5) ? r190Pct(last.c, first5.o) : 0;
+  const dir3Ok = isL ? price3 > 0.18 : price3 < -0.18;
+  const dir5Abs = Math.abs(price5);
+  let seq = 0;
+  for (let i=rows.length-1; i>=Math.max(0, rows.length-6); i--) {
+    const bull = rows[i].c >= rows[i].o;
+    if (isL ? bull : !bull) seq++; else break;
+  }
+  const avgVol = rows.slice(-8,-1).reduce((s,x)=>s+x.v,0) / Math.max(1, rows.slice(-8,-1).length);
+  const rvol = avgVol>0 && last ? last.v/avgVol : 1;
+  const rangeHi = rows.length ? Math.max(...rows.slice(-8).map(x=>x.h)) : 0;
+  const rangeLo = rows.length ? Math.min(...rows.slice(-8).map(x=>x.l)) : 0;
+  const rangePos = (last && rangeHi>rangeLo) ? (last.c-rangeLo)/(rangeHi-rangeLo) : 0.5;
+  const book = ctx.r125Flow?.book || {};
+  const spreadPct = r190N(book.spreadPct,0);
+  const vpin = ctx.tickData?.vpin || null;
+  const vpinDir = String(vpin?.direction || 'NEUTRAL').toUpperCase();
+  const vpinToxic = String(vpin?.toxicity || 'LOW').toUpperCase();
+  const vpinHigh = ['MEDIUM','HIGH','EXTREME'].includes(vpinToxic);
+  const vpinAligned = !!(vpinHigh && ((isL && vpinDir === 'BUY_DOMINANT') || (!isL && vpinDir === 'SELL_DOMINANT')));
+  const vpinAgainst = !!(vpinHigh && ((isL && vpinDir === 'SELL_DOMINANT') || (!isL && vpinDir === 'BUY_DOMINANT')));
+  const takerRatio = r190TakerRatio(ctx.takerArr);
+  const takerAligned = isL ? takerRatio >= 1.08 : takerRatio <= 0.93;
+  const takerStrong = isL ? takerRatio >= 1.25 : takerRatio <= 0.80;
+  const takerDivergence = isL ? (price3 > 0.15 && takerRatio < 0.90) : (price3 < -0.15 && takerRatio > 1.10);
+  const oi = r190OiVector(ctx.oiHist5m, ctx.oiNowObj);
+  const oiAccelAligned = !!(oi.ok && oi.accelerating);
+  const oiDecelLate = !!(oi.ok && oi.decel && Math.abs(price5) > 0.7);
+  const fund = r190FundingTrend(ctx.fundArr);
+  const lsG = r190ParseLS(ctx.lsGlobal);
+  const lsT = r190ParseLS(ctx.lsTop);
+  const shortCrowded = Math.max(lsG.short, lsT.short) >= 0.58;
+  const longCrowded  = Math.max(lsG.long,  lsT.long)  >= 0.62;
+  const squeezeLong = !!(isL && price3 > 0.35 && oi.oiChg15 > 0.35 && takerRatio >= 1.22 && shortCrowded);
+  const squeezeShort= !!(!isL && price3 < -0.35 && oi.oiChg15 > 0.35 && takerRatio <= 0.82 && longCrowded);
+  const squeeze = squeezeLong || squeezeShort;
+  const r192Footprint = r192FootprintFromTickData(ctx.tickData || {}, side);
+  const r192DeepOfi = r192DeepOfiFromBook(book, side);
+  const sqzImminentLong = !!(isL && shortCrowded && oi.rising && fund.last <= 0.02 && takerRatio >= 0.98 && !takerDivergence);
+  const sqzImminentShort = !!(!isL && longCrowded && oi.rising && fund.last >= -0.02 && takerRatio <= 1.02 && !takerDivergence);
+  const r192SqzImminent = !!((sqzImminentLong || sqzImminentShort) && spreadPct < 0.18);
+  const microSide = String(book.microSide || 'NEUTRAL').toUpperCase();
+  const microPersist = String(book.microPersistSide || 'NEUTRAL').toUpperCase();
+  const microAligned = microSide === side || microPersist === side;
+  const microAgainst = microSide === opp && microPersist === opp;
+  const tooLate = !!(seq >= 4 || (dir5Abs > Math.max(1.05, r190N(ctx.atrPct,1)*0.90) && (isL ? rangePos > 0.82 : rangePos < 0.18)) || oiDecelLate);
+  const momentumWindow = !!(dir3Ok && rvol >= 0.75 && oi.rising && takerAligned && !takerDivergence && !microAgainst && !tooLate);
+  const earlyContinuation = !!(momentumWindow && seq <= 3 && (oiAccelAligned || vpinAligned || takerStrong || squeeze || r192Footprint.aligned || r192DeepOfi.strongAligned) && spreadPct <= 0.12);
+  const spreadCost15x = spreadPct * 15;
+  const spreadBlock = !!(spreadPct >= 0.18 || spreadCost15x >= 3.2);
+  const fakePump = !!(isL && (takerDivergence || (price3 > 0.45 && oi.falling) || (fund.rising && fund.last > 0.06 && longCrowded && !squeeze)));
+  const fakeDump = !!(!isL && (takerDivergence || (price3 < -0.45 && oi.falling) || (fund.falling && fund.last < -0.06 && shortCrowded && !squeeze)));
+  const r192LiveAgainst = !!((r192Footprint.against && r192Footprint.total >= 2500) || (r192DeepOfi.against && !squeeze));
+  const r192FuelScore =
+    (earlyContinuation ? 4 : 0) + (squeeze ? 5 : 0) + (r192SqzImminent ? 3 : 0) +
+    (r192Footprint.strongAligned ? 4 : r192Footprint.aligned ? 2 : 0) +
+    (r192DeepOfi.strongAligned ? 3 : r192DeepOfi.aligned ? 1 : 0) +
+    (oiAccelAligned ? 2 : 0) + (takerStrong ? 2 : 0) + (microAligned ? 1 : 0) -
+    (r192Footprint.against ? 4 : 0) - (r192DeepOfi.against ? 3 : 0) - (takerDivergence ? 4 : 0);
+  const r192FuelOk = r192FuelScore >= 6 && !spreadBlock && !takerDivergence && !r192LiveAgainst;
+  const lateTrapRisk = !!((tooLate && !squeeze && !earlyContinuation && !r192FuelOk) || fakePump || fakeDump || vpinAgainst || spreadBlock || (r192LiveAgainst && !r192FuelOk));
+  let score = 0;
+  const tags = [];
+  const add=(ok,pts,tag)=>{ if(ok){ score += pts; tags.push(tag); } };
+  add(earlyContinuation, 18, 'earlyContinuation');
+  add(momentumWindow && !earlyContinuation, 8, 'momentumWindow');
+  add(oiAccelAligned, 8, oi.label);
+  add(vpinAligned, 7, `VPIN:${vpin?.vpin||0}/${vpinToxic}/${vpinDir}`);
+  add(takerStrong, 7, `taker:${takerRatio}`);
+  add(takerAligned && !takerStrong, 4, `taker:${takerRatio}`);
+  add(squeeze, 16, isL?'shortSqueezeFuel':'longSqueezeFuel');
+  add(r192SqzImminent && !squeeze, 5, 'R192_SQZ_IMMINENT');
+  add(r192Footprint.aligned, r192Footprint.strongAligned ? 6 : 4, r192Footprint.label);
+  add(r192DeepOfi.aligned, r192DeepOfi.strongAligned ? 5 : 3, r192DeepOfi.label);
+  add(r192FuelOk && !earlyContinuation && !squeeze, 4, `R192Fuel:${r192FuelScore}`);
+  add(microAligned, 5, `micro:${microSide}/${microPersist}`);
+  if (r192Footprint.against) { score -= 8; tags.push('R192FootprintAgainst'); }
+  if (r192DeepOfi.against) { score -= 6; tags.push('R192DeepAgainst'); }
+  if (lateTrapRisk) { score -= 18; tags.push('lateTrapRisk'); }
+  if (tooLate) { score -= 10; tags.push(`lateSeq:${seq}`); }
+  if (takerDivergence) { score -= 12; tags.push(`takerDivergence:${takerRatio}`); }
+  if (spreadBlock) { score -= 16; tags.push(`spreadBlock:${spreadPct}%`); }
+  return {
+    ok:true, side, score, tags:tags.slice(0,8),
+    earlyEntryOk: earlyContinuation,
+    momentumWindow, earlyContinuation, lateTrapRisk, tooLate, seq, rvol:+rvol.toFixed(2), price3:+price3.toFixed(2), price5:+price5.toFixed(2), rangePos:+rangePos.toFixed(2),
+    oi, takerRatio, takerAligned, takerDivergence, vpinAligned, vpinAgainst, vpin, microAligned, microAgainst,
+    squeeze, shortCrowded, longCrowded, funding:fund, spreadPct:+spreadPct.toFixed(4), spreadBlock,
+    r192Footprint, r192DeepOfi, r192SqzImminent, r192FuelScore:+r192FuelScore.toFixed(1), r192FuelOk, r192LiveAgainst,
+    summary:`R190/R192 ${side} ${earlyContinuation?'ERKEN':'izle'} fuel:${r192FuelScore.toFixed(1)} score:${score} p3:${price3.toFixed(2)}% seq:${seq} rvol:${rvol.toFixed(2)} taker:${takerRatio} ${oi.label} ${vpin?`VPIN:${vpin.vpin}/${vpinToxic}/${vpinDir}`:'VPIN:yok'} ${r192Footprint.label} ${r192DeepOfi.label} spread:${spreadPct.toFixed(4)}%`
   };
 }
 
@@ -3740,6 +3955,30 @@ async function r179BootstrapLedger48h(apiKey, apiSecret, lookbackMs=48*60*60*100
     let restored=0;
     for (const g of groups.values()) {
       if (!Number.isFinite(g.pnlUSDT) || Math.abs(g.pnlUSDT)<0.000001) continue;
+      // R191: Binance 48s bootstrap aynı gerçek trade'i UNKNOWN kopya olarak yazmasın.
+      // Eğer aynı sembolde 4dk içinde gerçek trade satırı varsa ve pnl 0 kalmışsa,
+      // yeni UNKNOWN satır üretmek yerine o satırın PnL'ini güncelle. Ledger/WR ve
+      // öğrenme motoru aksi halde iki ayrı işlem varmış gibi bozuluyordu.
+      const realNearby = base.find(r => {
+        try {
+          const rs = normalizeSymbol(String(r.symbol||'')).replace('USDT','');
+          const gs = String(g.symbol||'').replace('USDT','');
+          const rt = Number(r.closedAt || r.openedAt || 0);
+          const gt = Number(g.last || g.first || 0);
+          return rs === gs && String(r.side||'UNKNOWN').toUpperCase() !== 'UNKNOWN' && rt > 0 && gt > 0 && Math.abs(rt-gt) <= 4*60*1000;
+        } catch(_) { return false; }
+      });
+      if (realNearby) {
+        if (Math.abs(Number(realNearby.pnlUSDT||0)) < 0.000001) {
+          realNearby.pnlUSDT = safeNum(g.pnlUSDT,4);
+          const m = Number(realNearby.marginUSDT || autoConfig?.usdtAmount || 0);
+          realNearby.roiPct = safeNum((m>0 ? g.pnlUSDT/m*100 : Number(realNearby.roiPct||0)),2);
+          realNearby.exitLabel = realNearby.exitLabel || 'Binance realized PNL ile düzeltildi';
+          realNearby.resultNote = `R191: 48s Binance REALIZED_PNL yakın gerçek trade satırına işlendi (${g.count} income)`;
+          restored++;
+        }
+        continue;
+      }
       const row = {
         id:`RESTORE48_${g.symbol}_${g.last}_${g.count}_${Math.round(g.pnlUSDT*10000)}`,
         symbol:g.symbol, side:'UNKNOWN', status:'CLOSED',
@@ -3958,7 +4197,7 @@ function recentLossPatternGuard(symbolOrSide, sideMaybe, decisionChain={}, lookb
 // R33: Binance Top Gainers kilidi — bot artık sadece özel interest sırasına değil,
 // Binance Futures 24h değişim listesindeki ilk hareketli coinlere de zorunlu bakar.
 // Ek endpoint yok: zaten kullanılan /fapi/v1/ticker/24hr verisinden hesaplanır.
-const FUTURES_TICKERS_CACHE_MS = 75 * 1000; // R150: ticker yükünü azalt; TOP10 için yeterince taze
+const FUTURES_TICKERS_CACHE_MS = 45 * 1000; // R190: TOP24/5m erken yakalama için ticker cache 75sn→45sn; tek endpoint yükü düşük
 const R33_TOP_GAINER_LOCK_COUNT = 10;
 const R33_TOP_GAINER_MIN_QUOTE_VOL = 1_000_000;
 const R54_SCAN_MODES = new Set(['FAST6','TOP10','TOP24']);
@@ -4898,7 +5137,8 @@ function r120BrainSensorSummary(d={}) {
   if (d.r42FlowGate) flow.push('akış kapısı temiz');
   if (d.r125Flow?.ok) flow.push(`R125 ${d.r125Flow.bestSide} L${d.r125Flow.longEdge}/S${d.r125Flow.shortEdge}`);
   if (d.r125Flow?.r126?.summary) flow.push(`R126 ${String(d.r125Flow.r126.summary).slice(0,90)}`);
-  if (flow.length) bits.push(`Akış:${flow.slice(0,5).join(', ')}`);
+  if (d.r190Edge?.summary) flow.push(String(d.r190Edge.summary).slice(0,120));
+  if (flow.length) bits.push(`Akış:${flow.slice(0,6).join(', ')}`);
   if (d.r93PiyasaEtiketi) bits.push(`Zemin:${d.r93PiyasaEtiketi}`);
   return bits.join(' · ');
 }
@@ -4923,23 +5163,23 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r125SideFlow = r125FlowForSide(d.r125Flow, side);
   const flowOk = r120Bool(
     flowPts >= 1 || d.r42FlowGate || d.cvdBridgePass || d.r53CvdSmartSafe ||
-    d.r45CvdAlternativeOk || d.r117FlowOk || d.r111ObBaskisi || d.microConfirm || r125SideFlow.ok
+    d.r45CvdAlternativeOk || d.r117FlowOk || d.r111ObBaskisi || d.microConfirm || r125SideFlow.ok || d.r190Edge?.earlyContinuation
   );
   // R124: CVD yokken "CVD/flow uygun" diye düşük kaliteli trend devamını açma.
   // CVD yoksa en azından taker/OI/orderbook gibi açık alternatif akış kanıtı gerekir.
   const liveFlowOk = r120Bool(
     (flowOk && !d.cvdMissing) || d.r117FlowOk || d.r111ObBaskisi ||
-    Math.abs(r120BrainNum(d.r111OiChgPct, 0)) >= 0.35 || d.r42FlowGate || d.r45CvdAlternativeOk || r125SideFlow.ok
+    Math.abs(r120BrainNum(d.r111OiChgPct, 0)) >= 0.35 || d.r42FlowGate || d.r45CvdAlternativeOk || r125SideFlow.ok || d.r190Edge?.earlyContinuation || (d.r190Edge?.momentumWindow && d.r190Edge?.score >= 12)
   );
   const timingOk = r120Bool(
     timingPts >= 1 || d.r117TrapSweepTaken || d.r117BodyReclaimOk || d.r118CandleOk ||
-    d.r111SiksmaBreakout || d.fresh5mImpulseOrRecent || d.r37EarlyOk || d.directSweepOk
+    d.r111SiksmaBreakout || d.fresh5mImpulseOrRecent || d.r37EarlyOk || d.directSweepOk || d.r190Edge?.earlyContinuation
   );
   const contextOk = r120Bool(contextPts >= 2 || d.r93PiyasaIslemYapilabilir || d.r93DalgaliAmaIslemYapilabilir || !d.r88PiyasaBozuk);
   const r125OpposingFlow = r120Bool(r125SideFlow.against >= r125SideFlow.edge + 6 && r125SideFlow.against >= 8);
   // R154: rvolVeryLow toxicFlow/fatalDanger'dan çıkarıldı — rawEdge ceza puanı olarak kalır.
   // Güçlü flow+edge olan coinlerde (BAS, VELVET gibi) düşük RVOL hard-block değil, sadece ceza olmalı.
-  const toxicFlow = r120Bool(d.cvdToxic || d.deltaToxic || d.r22LiqWaterfall?.adverse || d.poorLiquidity || r125OpposingFlow);
+  const toxicFlow = r120Bool(d.cvdToxic || d.deltaToxic || d.r22LiqWaterfall?.adverse || d.poorLiquidity || r125OpposingFlow || d.r190Edge?.spreadBlock || (d.r190Edge?.lateTrapRisk && !d.r190Edge?.squeeze));
 
   // Oyun türleri: Bunlar kapı değil, beynin seçebileceği playbook'lardır.
   const htfReverse = r120Bool(d.r117HtfReverseOk && (d.r117PrecisionCandleOk || d.r118CandleOk) && (d.r117FlowOk || flowOk));
@@ -4955,7 +5195,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     liveFlowOk
   );
   const momentumScalp = r120Bool(
-    (d.r74Top10ProScalperOk || d.r68EntryEventOk || d.r67ScalperCoreHuntEntryOk || d.r37EarlyOk || d.fresh5mImpulseOrRecent) &&
+    (d.r74Top10ProScalperOk || d.r68EntryEventOk || d.r67ScalperCoreHuntEntryOk || d.r37EarlyOk || d.fresh5mImpulseOrRecent || d.r190Edge?.earlyContinuation) &&
     r47 >= 5 && (liveFlowOk || priority >= 70) && timingOk && !d.r116HtfGuardBlock && !d.r114TrapBlock
   );
   const flowScalp = r120Bool(
@@ -5034,6 +5274,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
       : d.r140EqHL?.nearLowTrap ? (side==='SHORT' ? -8 : 6) : 0) +
     (d.r140Rvol?.signal==='VERY_HIGH' ? 4 : d.r140Rvol?.signal==='HIGH' ? 2
       : d.r140Rvol?.signal==='VERY_LOW' ? -4 : d.r140Rvol?.signal==='LOW' ? -2 : 0) +
+    Math.max(-18, Math.min(18, r120BrainNum(d.r190Edge?.score,0))) +
     (r146LateWallNoPattern ? -14 : r146CounterWallPressure ? -8 : 0) -
     (hardDanger?55:0) - (d.cvdMissing?5:0) - (r125OpposingFlow?12:0)
   )));
@@ -5043,13 +5284,14 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // 5m kaldıraçlı TOP10 için panel skoru tek başına amir değil. Temiz playbook + edge varsa floor esner.
   // R155: adaptiveFloor gevşetildi — COUNTER_TRAP/MOMENTUM/FLOW için daha erişilebilir.
   // 5m TOP10 scalp'te score 51-58 arası kalite sinyaller fırsat; katı floor sık işlemi engelliyordu.
-  const adaptiveFloor = playbookActive
+  const adaptiveFloorBase = playbookActive
     ? (['HTF_REVERSAL','HTF_RECLAIM','SQUEEZE_BREAKOUT'].includes(primaryMode)
         ? Math.max(40, minScore - 32)
         : primaryMode === 'TREND_CONTINUATION'
           ? Math.max(52, minScore - 18)
           : Math.max(50, minScore - 20))
     : Math.max(44, minScore - 16);
+  const adaptiveFloor = Math.max(40, adaptiveFloorBase - (d.r190Edge?.earlyContinuation ? 6 : (d.r190Edge?.momentumWindow ? 3 : 0)));
   const needsPremiumProof = ['TREND_CONTINUATION','MOMENTUM_SCALP','FLOW_SCALP'].includes(primaryMode);
   // R158: modeQualityBlock — COUNTER_TRAP için r125 canlı akış teyidi eklendi.
   // ZEC/FOLKS COUNTER_TRAP analiz hatası: bot karşı akış varken tuzak dönüşü açıyordu.
@@ -5359,12 +5601,12 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r188StrongNoQ4Exception = r120Bool(
     !r160Q4Proof && r160TrueCount >= 3 &&
     r125SideFlow.edge >= 11 && r133LiveTradeCount >= 35 &&
-    r161DeltaConfirm && r160ForecastOk && r189MicroAligned &&
+    r161DeltaConfirm && r160ForecastOk && (r189MicroAligned || d.r190Edge?.earlyContinuation) &&
     !r188WeakCandle && !r188HtfCounterPressure && !r148WrongSideBlock
   );
   const r188NoProofGuard = r120Bool(
     r160TrueCount === 3 && !r160Q4Proof && !r188StrongNoQ4Exception &&
-    (r188AccountCaution || r188WeakCandle || r188HtfCounterPressure || !r187R160HasRealStructure || r189MicroAgainst || r189OiCrowdTrap)
+    (d.r190Edge?.lateTrapRisk || r188AccountCaution || r188WeakCandle || r188HtfCounterPressure || !r187R160HasRealStructure || r189MicroAgainst || r189OiCrowdTrap)
   );
 
   const r187R160ScoreOk = r120Bool(
@@ -5376,8 +5618,12 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
 
   // 3/4 TRUE + flow var + skor tabanı + hard block yok = TRADE
   // 4/4 TRUE + minimum flow + daha düşük skor tabanı = TRADE
+  // R190b: Squeeze/momentum boost — kaliteli sıkıştırma/devam durumunda edge gevşiyor
+  const r190bSqueezeBoost = !!(d?.r190Edge?.squeeze || d?.r190Edge?.earlyContinuation);
+  const r190bEffEdge = r190bSqueezeBoost ? Math.max(28, 35 - 5) : 35;
+
   const r160TraderDecision = r120Bool(
-    !r160HardBlock && !r188NoProofGuard && r187R160ScoreOk && edge >= 35 && r133LiveTradeCount >= 10 && (
+    !r160HardBlock && !r188NoProofGuard && r187R160ScoreOk && edge >= r190bEffEdge && r133LiveTradeCount >= 10 && (
       (r160TrueCount >= 3 && r125SideFlow.edge >= 4) ||
       (r160TrueCount >= 4)
     )
@@ -5393,6 +5639,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (r120BrainNum(d.r140Rvol?.ratio, 0) >= 0.6 ? 1 : 0) +                   // RVOL yeterli
     (d.r140OiVel && !d.r140OiVel.fakePump && r120BrainNum(d.r140OiVel?.velocity,0) > 0 ? 1 : 0) + // OI pozitif
     (r160ForecastOk ? 1 : 0) +                                                 // mum tahmini aynı yön (R163: doğru forecast kaynağı)
+    (d.r190Edge?.earlyContinuation ? 2 : d.r190Edge?.momentumWindow ? 1 : 0) + // R190 erken momentum penceresi
+    (d.r190Edge?.vpinAligned ? 1 : 0) +                                       // VPIN yön uyumu
+    (d.r190Edge?.squeeze ? 2 : 0) +                                           // short/long squeeze yakıtı
     (score >= minScore - 28 ? 1 : 0) +                                        // score kabul edilebilir
     (primaryMode !== 'NO_EDGE' ? 1 : 0) +                                     // bir playbook var
     (r133LiveTradeCount >= 20 ? 1 : 0)                                        // canlı tick teyidi
@@ -5401,6 +5650,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r187R159ScoreOk = r120Bool(score >= r187R159ScoreFloor || (score >= 42 && edge >= 82 && r187R160HasRealStructure && r161DeltaConfirm));
   const r188R159ProofOk = r120Bool(
     r160Q4Proof ||
+    (d.r190Edge?.earlyContinuation && !d.r190Edge?.lateTrapRisk && r133LiveTradeCount >= 12) ||
     (r187R160HasRealStructure && r160ForecastOk && r161DeltaConfirm && r125SideFlow.edge >= 8 && r133LiveTradeCount >= 25 && !r188WeakCandle && !r188HtfCounterPressure && !r189MicroAgainst) ||
     (r189MicroAligned && r160ForecastOk && r161DeltaConfirm && r125SideFlow.edge >= 10 && r133LiveTradeCount >= 35 && !r188WeakCandle && !r188HtfCounterPressure)
   );
@@ -5410,18 +5660,73 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r188R159ProofOk &&
     !r156RealHardBlock &&
     !r148WrongSideBlock &&
-    r125SideFlow.edge >= 5 &&   // minimum tek yön akış zorunlu
-    edge >= 40 &&               // minimum edge zorunlu
-    r133LiveTradeCount >= 15    // minimum canlı tick
+    !d.r190Edge?.lateTrapRisk &&
+    !d.r190Edge?.spreadBlock &&
+    r125SideFlow.edge >= (d.r190Edge?.earlyContinuation ? 4 : 5) &&   // minimum tek yön akış zorunlu
+    edge >= (d.r190Edge?.earlyContinuation ? 36 : 40) &&              // erken momentumda hafif esneme
+    r133LiveTradeCount >= (d.r190Edge?.earlyContinuation ? 10 : 15)   // minimum canlı tick
   );
 
-  const ok = r120Bool(
+  // ── R191: TEK FINAL GİRİŞ VALİSİ ─────────────────────────────────────────
+  // R190b spread/VPIN/squeeze/late bilgisi doğruydu; ama R144/R156/R159/R160
+  // farklı bypass yolları bazen bu bilgiyi son kararda deliyordu. R191 yeni
+  // katman yığmaz; sadece BÜTÜN giriş yollarından sonra aynı 5m zamanlama
+  // disiplinini uygular. Amaç frekansı öldürmeden 4-5 mum sonra chase,
+  // forecast-only 4/4 ve zayıf counter-trap işlemleri kesmektir.
+  const r191Hard5mProof = r120Bool(
+    (r120Bool(d.r117TrapSweepTaken) && r161DeltaConfirm) ||
+    (r120Bool(d.r118CandleOk) && (r120Bool(d.r114ReclaimOk) || r120Bool(d.r117BodyReclaimOk))) ||
+    r120Bool(d.r118CandleStrong) ||
+    (r120Bool(d.r117TrapSweepTaken) && r120Bool(d.r117BodyReclaimOk)) ||
+    // R192: mum-içi footprint + top10 deep OFI beraber hizalıysa Q4 forecast-only değil, canlı kanıt sayılır.
+    (r120Bool(d.r190Edge?.r192Footprint?.aligned) && r120Bool(d.r190Edge?.r192DeepOfi?.aligned) && r120BrainNum(d.r190Edge?.r192FuelScore,0) >= 5)
+  );
+  const r191ForecastOnlyProof = r120Bool(r160Q4Proof && !r191Hard5mProof);
+  let r191PerfCaution = false;
+  try {
+    const _p = r179AccountPerf()?.recent || {};
+    r191PerfCaution = Number(_p.closed||0) >= 8 && (Number(_p.wr||0) < 0.45 || Number(_p.pf||0) < 0.80 || Number(_p.net||0) < 0);
+  } catch(_r191p) {}
+  const r191EarlyFuel = r120Bool(d.r190Edge?.earlyContinuation || d.r190Edge?.squeeze || d.r190Edge?.r192FuelOk);
+  const r191LateNoFuel = r120Bool((d.r190Edge?.lateTrapRisk || d.r190Edge?.tooLate) && !r191EarlyFuel);
+  const r191SpreadBad = r120Bool(d.r190Edge?.spreadBlock || d.poorLiquidity);
+  const r192AgainstFinal = r120Bool(d.r190Edge?.r192LiveAgainst || d.r190Edge?.r192Footprint?.against || d.r190Edge?.r192DeepOfi?.against);
+  const r191TakerOrVpinAgainst = r120Bool((d.r190Edge?.takerDivergence || d.r190Edge?.vpinAgainst || r189MicroAgainst || r192AgainstFinal) && !r191EarlyFuel);
+  const r191LowScoreNoFuel = r120Bool(score < Math.max(52, minScore - 18) && !r191EarlyFuel && !r191Hard5mProof);
+  const r191ForecastOnlyChase = r120Bool(r191ForecastOnlyProof && !r191EarlyFuel && score < Math.max(58, minScore - 12));
+  const r191CounterTrapWeak = r120Bool(primaryMode === 'COUNTER_TRAP' && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r188HtfCounterPressure || r191TakerOrVpinAgainst));
+  const r191FastScalpWeak = r120Bool(r133FastScalpOverride && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r191TakerOrVpinAgainst || r191LateNoFuel));
+  const r191PerfCautionWeak = r120Bool(r191PerfCaution && !r191EarlyFuel && !r191Hard5mProof && (r159MomentumPass || r133FastScalpOverride || r191ForecastOnlyProof));
+  const r191RawOk = r120Bool(
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
     r156FastTop10Bypass ||
     r159MomentumPass ||
     r160TraderDecision
   );
+  const r191UnifiedEntryBlock = r120Bool(r191RawOk && (
+    r191SpreadBad ||
+    r191LateNoFuel ||
+    r191TakerOrVpinAgainst ||
+    r191LowScoreNoFuel ||
+    r191ForecastOnlyChase ||
+    r191CounterTrapWeak ||
+    r191FastScalpWeak ||
+    r191PerfCautionWeak
+  ));
+  const r191UnifiedBlockReason = r191UnifiedEntryBlock
+    ? `R191 final vali: ${[
+        r191SpreadBad?'spread/likidite pahalı':'',
+        r191LateNoFuel?'4-5 mum geç/chase yakıt yok':'',
+        r191TakerOrVpinAgainst?'taker/VPIN/micro/footprint/deepOFI ters':'',
+        r191LowScoreNoFuel?`skor ${score}/${minScore} düşük + erken yakıt yok`:'',
+        r191ForecastOnlyChase?'forecast-only 4/4; gerçek 5m kanıt yok':'',
+        r191CounterTrapWeak?'counter-trap zayıf kanıt':'',
+        r191FastScalpWeak?'hızlı scalp zayıf kanıt':'',
+        r191PerfCautionWeak?'son performans kötü; zayıf bypass kapalı':''
+      ].filter(Boolean).join(' + ')}`
+    : '';
+  const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -5441,7 +5746,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r188R159BlockReason = (!r188R159ProofOk && r159Points >= 6)
     ? `R188 R159 kanıt freni: momentum ${r159Points}p ama 5m mum/sweep/body-reclaim/forecast kanıtı yetersiz`
     : '';
-  const r144WatchExtraRaw = r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
+  const r144WatchExtraRaw = r191UnifiedBlockReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
   const r144WatchExtra = r144WatchExtraRaw ? ` · ${r144WatchExtraRaw}` : '';
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
@@ -5527,6 +5832,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r189MicroAligned = r189MicroAligned;
   d.r189MicroAgainst = r189MicroAgainst;
   d.r189OiCrowdTrap = r189OiCrowdTrap;
+  d.r191Hard5mProof = r191Hard5mProof;
+  d.r191ForecastOnlyProof = r191ForecastOnlyProof;
+  d.r191PerfCaution = r191PerfCaution;
+  d.r191EarlyFuel = r191EarlyFuel;
+  d.r192AgainstFinal = r192AgainstFinal;
+  d.r192FuelOk = !!d.r190Edge?.r192FuelOk;
+  d.r192Footprint = d.r190Edge?.r192Footprint || null;
+  d.r192DeepOfi = d.r190Edge?.r192DeepOfi || null;
+  d.r191RawOk = r191RawOk;
+  d.r191UnifiedEntryBlock = r191UnifiedEntryBlock;
+  d.r191UnifiedBlockReason = r191UnifiedBlockReason;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
@@ -8066,6 +8382,18 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       }
     }
 
+    // ── R190: erken momentum terazisi — score'u boğmadan geç/chase ayrımı ──
+    const r190LongEdgePre = r190Analyze5mEarlyEdge('LONG', { k5m, lastPrice, oiHist5m, oiNowObj, takerArr, fundArr, lsGlobal, lsTop, tickData, r125Flow, atrPct, r37Side:r37Timing?.long });
+    const r190ShortEdgePre = r190Analyze5mEarlyEdge('SHORT', { k5m, lastPrice, oiHist5m, oiNowObj, takerArr, fundArr, lsGlobal, lsTop, tickData, r125Flow, atrPct, r37Side:r37Timing?.short });
+    if (r190LongEdgePre?.score) {
+      longScore = Math.max(0, Math.min(100, Math.round(longScore + Math.max(-18, Math.min(16, r190LongEdgePre.score * 0.55)))));
+      signals.long.push(`🧭 ${r190LongEdgePre.summary}`);
+    }
+    if (r190ShortEdgePre?.score) {
+      shortScore = Math.max(0, Math.min(100, Math.round(shortScore + Math.max(-18, Math.min(16, r190ShortEdgePre.score * 0.55)))));
+      signals.short.push(`🧭 ${r190ShortEdgePre.summary}`);
+    }
+
     // ── R23: R22 BEST ÜSTÜ HASSAS SKOR KATMANI ─────────────────────────────
     // Burada ham longScore/shortScore güçlendirilir; evalDecision içinde ayrıca
     // priorityScore/terazi hesaplanır. Aynı aile bonusları tavanlıdır ki bot
@@ -8211,6 +8539,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const cvdD=getCVD(full);
         const liqD=getLiqData(full);
         const sc=isL?longScore:shortScore;
+        const r190Edge = r190Analyze5mEarlyEdge(side, {
+          k5m, lastPrice, oiHist5m, oiNowObj, takerArr, fundArr, lsGlobal, lsTop,
+          tickData, r125Flow, atrPct,
+          r37Side: r37Timing?.ok ? (isL ? r37Timing.long : r37Timing.short) : null
+        });
 
         // Giriş sinyali: otomatik için en az bir gerçek entry izi isteriz.
         const hasEntry=
@@ -8223,13 +8556,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (tickData?.imbalance?.bull&&tickData.whaleBias==='WHALE_BUY'&&isL)||
           (tickData?.imbalance?.bear&&tickData.whaleBias==='WHALE_SELL'&&!isL)||
           (tickData?.deltaFlip==='BEAR_TO_BULL'&&tickData.whaleBias==='WHALE_BUY'&&isL)||
-          (tickData?.deltaFlip==='BULL_TO_BEAR'&&tickData.whaleBias==='WHALE_SELL'&&!isL);
+          (tickData?.deltaFlip==='BULL_TO_BEAR'&&tickData.whaleBias==='WHALE_SELL'&&!isL)||
+          (r190Edge?.earlyEntryOk);
 
         const softEntry=
           (sw1?.swept&&!sw1?.confirmed)||
           (isL?(ob1h?.bullOB&&lastPrice<=ob1h.bullOB.high*1.01):(ob1h?.bearOB&&lastPrice>=ob1h.bearOB.low*0.99))||
           mmTarget===(isL?'GENUINE_UP':'GENUINE_DOWN')||
-          mmTarget===(isL?'UP_SWEEP':'DOWN_SWEEP');
+          mmTarget===(isL?'UP_SWEEP':'DOWN_SWEEP')||
+          (r190Edge?.momentumWindow && !r190Edge?.lateTrapRisk);
 
         // CVD / tick: ikisi de yoksa veri eksik kabul edilir, tek başına veto değildir.
         const cvdRatio=Number.isFinite(Number(cvdD?.ratio)) ? Number(cvdD.ratio) : 50; // R43: 0%/100% CVD değerlerini 50'ye düşürme
@@ -8409,11 +8744,14 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const atrWarnForAuto = !!(atrGateBlock || atrPct > _slPctEval * 2.5);
         const atrExtremeBlock = atrPct > Math.max(14, _slPctEval * 7.0);
         const atrBlocking = !!atrExtremeBlock;
-        const poorLiquidity = !!(liqQual?.quality==='POOR' || (liqQual?.slippageRisk && Number(liqQual?.spread||0)>0.10));
+        // R190b FIX: Spread Hard Block — BEAT(0.001$) spread%0.3 → kârsız
+        const r190bSpreadPct = Number(liqQual?.spread || 0);
+        const r190bSpreadKill = r190bSpreadPct > 0.18; // ChatGPT 0.18 kullanıyor, biz de korunalım
+        const poorLiquidity = !!(r190bSpreadKill || liqQual?.quality==='POOR' || (liqQual?.slippageRisk && r190bSpreadPct > 0.10));
         const r37Side = r37Timing?.ok ? (isL ? r37Timing.long : r37Timing.short) : null;
-        const r37LateChaseBlock = !!(r37Side?.lateChase);
+        const r37LateChaseBlock = !!(r37Side?.lateChase && !r190Edge?.squeeze && !r190Edge?.earlyContinuation);
         const r37RetestWaitBase = !!(r37Side?.retestOnly && !r37Side?.retestOk && !r37Side?.earlyImpulse);
-        let r37RetestWait = r37RetestWaitBase;
+        let r37RetestWait = r37RetestWaitBase && !r190Edge?.earlyContinuation;
         const r37EarlyOk = !!(r37Side?.earlyImpulse || r37Side?.retestOk || Number(r37Side?.earlyScore||0) >= 4);
         const r39Side = r39SR?.ok ? (isL ? r39SR.long : r39SR.short) : null;
         const r39TargetNearBlock = !!(r39Side?.targetTooNear && !r39Side?.breakConfirmed && !r37Side?.earlyImpulse && !r37Side?.retestOk);
@@ -8508,8 +8846,19 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(r37Side?.earlyImpulse, 10, 'R37Early');
         addP(r37Side?.retestOk, 8, 'R37Retest');
         addP(Number(r37Side?.earlyScore||0) >= 4, 5, 'R37Micro');
-        subP(r37Side?.lateChase, 22, 'R37LateChase');
-        subP(r37RetestWaitBase, (r38TopMoverStrong && Number(r37Side?.earlyScore||0) >= 3) ? 6 : 12, 'R37RetestWait');
+        addP(r190Edge?.earlyContinuation, 18, 'R190Early');
+        addP(r190Edge?.momentumWindow && !r190Edge?.earlyContinuation, 8, 'R190Window');
+        addP(r190Edge?.vpinAligned, 7, 'R190VPIN');
+        addP(r190Edge?.squeeze, 16, 'R190Squeeze');
+        addP(r190Edge?.r192Footprint?.aligned, r190Edge?.r192Footprint?.strongAligned ? 8 : 5, 'R192Footprint');
+        addP(r190Edge?.r192DeepOfi?.aligned, r190Edge?.r192DeepOfi?.strongAligned ? 6 : 4, 'R192DeepOFI');
+        addP(r190Edge?.r192SqzImminent, 5, 'R192SqzFuel');
+        subP(r190Edge?.r192LiveAgainst, 16, 'R192LiveAgainst');
+        subP(r190Edge?.lateTrapRisk && !r190Edge?.squeeze, 22, 'R190LateTrap');
+        subP(r190Edge?.takerDivergence, 14, 'R190TakerDiv');
+        subP(r190Edge?.spreadBlock, 20, 'R190Spread');
+        subP(r37Side?.lateChase && !r190Edge?.squeeze && !r190Edge?.earlyContinuation, 22, 'R37LateChase');
+        subP(r37RetestWaitBase && !r190Edge?.earlyContinuation, (r38TopMoverStrong && Number(r37Side?.earlyScore||0) >= 3) ? 6 : 12, 'R37RetestWait');
         addP(r39Confluence, 8, 'R39_SR_Confluence');
         addP(r39Side?.breakConfirmed, 7, 'R39_Break');
         subP(r39TargetNearBlock, 18, 'R39_TargetNear');
@@ -9688,6 +10037,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r22LiqWaterfall.adverse) blocks.push('Likidasyon şelalesi ters risk');
         if(isL && r29Context.longAutoBlock) blocks.push(`R29 bağlam LONG blok ${r29Context.longRisk}: ${r29Context.longNotes.slice(0,2).join(' + ')}`);
         if(!isL && r29Context.shortAutoBlock) blocks.push(`R29 bağlam SHORT blok ${r29Context.shortRisk}: ${r29Context.shortNotes.slice(0,2).join(' + ')}`);
+        if(r190Edge?.spreadBlock) blocks.push(`R190 spread pahalı: ${r190Edge.spreadPct}%`);
+        if(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) blocks.push(`R190 geç/ters akış riski: ${r190Edge.summary}`);
         if(r37LateChaseBlock) blocks.push(`R37 geç giriş/chase: ${r37Side?.reason||''}`);
         if(r37RetestWait) blocks.push(`R37 hareket kaçmış: retest bekleniyor (${r37Side?.reason||''})`);
         if(r39TargetNearBlock) blocks.push(`R39 hedef çok yakın — market chase yok (${r39Side?.reason||''})`);
@@ -9701,7 +10052,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if((tier==='B'||tier==='WAIT') && softEntry && !hasEntry && !nonSweepQualityOk) blocks.push('Yumuşak bağlam var ama canlı emir için gerçek giriş izi yok');
         if((isTierA||isTierBPlus) && !microConfirmR35) blocks.push('Mikro teyit eksik');
         const passCount=[entryPermissionOk,hasEntry||softEntry||nonSweepQualityOk,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
-        const autoOk=(isTierA||isTierBPlus) && entryPermissionOk;
+        const autoOk=(isTierA||isTierBPlus) && entryPermissionOk && !r190Edge?.spreadBlock && !(r190Edge?.lateTrapRisk && !r190Edge?.squeeze);
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
@@ -9714,6 +10065,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterTf, r116CounterDist, r116NearCounterHTF, r116AcceptedCounterBreak, r116CounterSweepTaken,
           r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapTf, r117TrapDist, r117NearTrapHTF, r117TrapSweepTaken, r117AcceptedAgainst, r117BodyReclaimOk, r117BodyShiftOk, r117MssOk, r117FlowOk, r117TrapEvidenceOk, r117TrapEvidenceRawOk, r117PrecisionCandleOk, r118CandleOk, r118CandleStrong, r118CandleOzet, r118Candle,
           r125Flow, r125OrderflowSummary:r125Flow?.summary||'', r126FlowSummary:r125Flow?.r126?.summary||'', r125BookImb:r125Flow?.book?.nearImb, r125BookVelocity:r125Flow?.book?.velocity, r125LiveDelta:r125Flow?.delta, r125LiveDeltaPct:r125Flow?.deltaPct, r125Aggression:r125Flow?.aggression, r125BestSide:r125Flow?.bestSide,
+          r190Edge,
           r140Phase, r140EqHL, r140OiVel, r140BtcDiv, r140Rvol,
           r114Shift, r114OppositeShift, r114ReclaimOk, r114ExtremeZone, r114SweepTrapFamily, r114ContinuationProof, r114TrapBlock, r114TrapReason,
           wickTrapFlip: {
@@ -9773,7 +10125,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const vetoPenalty = d.hardVeto ? 500 : 0;
         const missingPenalty = d.cvdMissing ? 18 : 0;
         const balancePts = Number(d.r148BalanceBonus || 0) * 3.0 - Number(d.r148WrongPenalty || 0) * 3.0 + (d.r148ReversalSideOk ? 38 : 0) - (d.r148WrongSideBlock ? 120 : 0);
-        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts - vetoPenalty - missingPenalty;
+        const r190Pts = (d.r190Edge?.earlyContinuation ? 34 : 0) + (d.r190Edge?.squeeze ? 24 : 0) + (d.r190Edge?.momentumWindow ? 10 : 0) - (d.r190Edge?.lateTrapRisk ? 55 : 0) - (d.r190Edge?.spreadBlock ? 75 : 0);
+        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts + r190Pts - vetoPenalty - missingPenalty;
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
@@ -11164,6 +11517,18 @@ async function managePosition(apiKey, apiSecret, pos) {
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
 
+  // R192: Kaliteli yakıt varsa BE biraz nefes alır; yakıt bozulursa R165/R149 kilitleri aynen çalışır.
+  const r192OpenFuel = !!(state.r190Edge?.r192FuelOk || state.r190Edge?.squeeze || state.r190Edge?.earlyContinuation);
+  const r192LiveFoot = r192FootprintFromTickData(tickSnap || {}, side);
+  const r192LiveFootAligned = !!(r192LiveFoot?.aligned && !r192LiveFoot?.against);
+  const r192MomentumBreath = !!(r192OpenFuel && r91Brain.devamGucu && r192LiveFootAligned && !tickFlip && !exhaustExit && !trappedExit && Number(r91Brain.exitScore||0) < 2.5);
+  const r192BreakEvenAt = r192MomentumBreath ? Math.max(breakEvenAt, Math.min(0.55, breakEvenAt + 0.20)) : breakEvenAt;
+  if (r192MomentumBreath && !state.breakEvenSet && realProfitPct >= breakEvenAt && realProfitPct < r192BreakEvenAt) {
+    state.r192BeBreath = Number(state.r192BeBreath||0) + 1;
+    if (state.r192BeBreath <= 4) logAuto(`⏳ ${sym} R192 BE nefesi: yakıt devam ediyor (${r192LiveFoot.label}); BE %${breakEvenAt}→%${r192BreakEvenAt.toFixed(2)}`);
+    trailingState.set(sym, state);
+  }
+
   // ── R165 ROI KÂR KİLİDİ — R164'teki sessiz hata düzeltildi ─────────────
   // R164 bloğu action ve r91LockPriceFromPct tanımlanmadan çalışıyordu; ayrıca
   // PROFIT_LOCK_UPDATE aksiyonu uygulama listesinde yoktu. Sonuç: %40-%80 ROI
@@ -11379,10 +11744,10 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 4. BREAK-EVEN ─────────────────────────────────────────────────────────
   // Kaldıraçsız fiyat hareketi breakEvenAt % geçince SL giriş fiyatına çek
   // Örn: 20x kaldıraç, breakEvenAt=%0.5 → fiyat %0.5 hareket = kaldıraçlı %10
-  if (!action && !state.breakEvenSet && realProfitPct >= breakEvenAt) {
+  if (!action && !state.breakEvenSet && realProfitPct >= r192BreakEvenAt) {
     action = {
       type:'BREAK_EVEN',
-      reason:`Fiyat %${realProfitPct.toFixed(2)} hareket etti (kaldıraçsız) → SL giriş + fee buffer %${beFeeSafePct.toFixed(2)}`,
+      reason:`Fiyat %${realProfitPct.toFixed(2)} hareket etti (kaldıraçsız) → SL giriş + fee buffer %${beFeeSafePct.toFixed(2)}${r192MomentumBreath ? ' · R192 yakıt nefesi sonrası' : ''}`,
       urgency:'LOW',
       newSL: +(entryPrice * (isLong ? (1 + beFeeSafePct/100) : (1 - beFeeSafePct/100))).toFixed(8),
       stateUpdates:{ breakEvenSet:true, beFeeSafePct }
@@ -12428,6 +12793,7 @@ async function runAutoScan(prioritySymbol=null) {
           decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent ||
           decisionChain?.r62CounterTrendTrapBridgeOk || decisionChain?.r65ScalperCoreCounterTrapOk ||
           decisionChain?.r88VurKacOk || decisionChain?.r86FormasyonVeriTeyitOk || decisionChain?.r88VurKacOk ||
+          decisionChain?.r190Edge?.earlyEntryOk ||
           (decisionChain?.r74Top10ProScalperOk && r85TimingPts >= 1)
         );
         const r85SadeceFundingDestek = !!(
@@ -12499,7 +12865,7 @@ async function runAutoScan(prioritySymbol=null) {
           decisionChain?.r75RetestBridgeOk || decisionChain?.r51DirectSweepMinEdgeOk ||
           decisionChain?.r50AutoPermissionOk || decisionChain?.r74Top10ProScalperOk ||
           decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk ||
-          decisionChain?.directSweepOk || decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent
+          decisionChain?.directSweepOk || decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent || decisionChain?.r190Edge?.earlyEntryOk
         );
         const r81StrongBPlusSoftPass = !!(
           ['A','B+'].includes(String(decisionChain?.tier || '')) &&
@@ -12526,7 +12892,7 @@ async function runAutoScan(prioritySymbol=null) {
         );
         const r88DevamOnayiOk = !!(
           r88GeriTestOnayiOk || r88KirilimOnayiOk || r88GeriKazanimOnayiOk ||
-          r88TazeImpulsOnayiOk || r88SweepZamanlamaOnayiOk
+          r88TazeImpulsOnayiOk || r88SweepZamanlamaOnayiOk || decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.squeeze
         );
         const r88RiskliBolgeKuvvetli = !!(antiChaseZone || antiChaseRsi || decisionChain?.r39TargetNearBlock || sideCtxRisk >= 30);
         const r88RiskliYonDevamYok = !!(antiChase && !eliteOverride && r88RiskliBolgeKuvvetli && !r88DevamOnayiOk);
@@ -12621,10 +12987,14 @@ async function runAutoScan(prioritySymbol=null) {
         // R189: Son emir öncesi 5m micro/kanıt freni. Karar motoru bir şekilde TRADE üretse bile
         // R160 3/4 + Q4 kanıtsız + zayıf mum/HTF karşı kombinasyonu canlı emir açamaz.
         // Bu R176 gibi recovery duvarı değildir; sadece eksik kanıtlı bypass'ı keser.
-        if (decisionChain?.r188NoProofGuard) {
-          const why = decisionChain?.r188NoProofBlockReason || `R189 5m micro/kanıt freni: ${recommendation} emir yok`;
+        if (decisionChain?.r188NoProofGuard || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) {
+          const why = decisionChain?.r190Edge?.spreadBlock
+            ? `R190 spread pahalı: ${decisionChain.r190Edge.spreadPct}% — 15x ROI makas riski yüksek`
+            : (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))
+              ? `R190 geç/ters akış freni: ${decisionChain.r190Edge.summary}`
+              : (decisionChain?.r188NoProofBlockReason || `R190 5m micro/kanıt freni: ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
-          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r160TrueCount:decisionChain?.r160TrueCount, r160Q4Proof:decisionChain?.r160Q4Proof, r188WeakCandle:decisionChain?.r188WeakCandle, r188HtfCounterPressure:decisionChain?.r188HtfCounterPressure});
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, r160TrueCount:decisionChain?.r160TrueCount, r160Q4Proof:decisionChain?.r160Q4Proof, r188WeakCandle:decisionChain?.r188WeakCandle, r188HtfCounterPressure:decisionChain?.r188HtfCounterPressure, r190Edge:decisionChain?.r190Edge});
           continue;
         }
 
@@ -12727,6 +13097,15 @@ async function runAutoScan(prioritySymbol=null) {
           continue;
         }
 
+        // R191: scan loop final check. Karar zinciri içindeki bütün bypasslar normalde
+        // burada autoOk=false döner; yine de eski/legacy bir yol emre yaklaşırsa son kez kes.
+        if (decisionChain?.r191UnifiedEntryBlock || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) {
+          const why = decisionChain?.r191UnifiedBlockReason || (decisionChain?.r190Edge?.spreadBlock ? `R190 spread pahalı: ${decisionChain?.r190Edge?.spreadPct}%` : `R190 geç giriş: ${decisionChain?.r190Edge?.summary||''}`);
+          logAuto(`⛔ ${coin.symbol} ${why} — emir açılmadı`);
+          markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r190:decisionChain?.r190Edge});
+          continue;
+        }
+
         logAuto(`🔥 ${coin.symbol} ${decisionChain?.tier||'A'} PRO! ${decisionChain?.reason||'karar zinciri'} — tek beyin 5m edge gördü; ek katmanlı kapı yok.`);
 
         // R88: Normal otomatik işlem panel kaldıracını kullanır. Vur-kaç otomatik kaldıraç açık ise
@@ -12809,6 +13188,23 @@ async function runAutoScan(prioritySymbol=null) {
           }
         } catch(_e) {}
 
+        // R191: WR toparlama kaldıraç valisi. İşlem sayısını kesmez; sadece
+        // son performans kötü veya kanıt zayıf/fast scalp ise tek işlem ROI hasarını küçültür.
+        // R189 performansında 23x ve -30% ROI hasarları WR'yi değil hesabı bozuyordu.
+        try {
+          const _p191 = r179AccountPerf()?.recent || {};
+          const r191PerfBad = Number(_p191.closed||0) >= 8 && (Number(_p191.wr||0) < 0.45 || Number(_p191.pf||0) < 0.80 || Number(_p191.net||0) < 0);
+          const r191FastOrWeak = !!(decisionChain?.r159MomentumPass || decisionChain?.r133FastScalpOverride || decisionChain?.r191ForecastOnlyProof || String(decisionChain?.brainMode||'').includes('COUNTER_TRAP') || Number(score||0) < Number(effectiveMinScore||minScore||70));
+          const r191EarlyFuel = !!(decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk);
+          const maxRoiRisk = r191PerfBad && r191FastOrWeak && !r191EarlyFuel ? 18 : (r191FastOrWeak && !r191EarlyFuel ? 24 : 32);
+          const capByRisk = Math.max(3, Math.floor(maxRoiRisk / Math.max(0.5, Number(userSLPct||1.5))));
+          const oldLev = executeLeverage;
+          executeLeverage = Math.min(executeLeverage, capByRisk);
+          if (executeLeverage < oldLev) {
+            leverageNote += ` · R191 WR/ROI risk valisi ${oldLev}x→${executeLeverage}x (SL×Lev≤${maxRoiRisk}%)`;
+            logAuto(`🛡️ ${coin.symbol} R191 kaldıraç valisi: ${oldLev}x→${executeLeverage}x; son WR/PF ve kanıt kalitesi nedeniyle ROI hasarı sınırlandı`);
+          }
+        } catch(_e) {}
 
         let targetPrice = isLong
           ? +(entryRef * (1 + userTPPct/100)).toFixed(8)
@@ -12921,6 +13317,27 @@ async function runAutoScan(prioritySymbol=null) {
           }
         } catch(_e175risk) { logAuto(`⚠️ ${coin.symbol} R188 R175 risk daraltma hatası: ${String(_e175risk?.message||_e175risk).slice(0,80)}`); }
 
+        // R192: Yakıt bazlı TP planı — sabit TP büyütme değil, sadece gerçek yakıt varsa hedefi uzat.
+        // R144 hızlı scalp / zayıf fuel aynı kalır; squeeze + footprint/deepOFI/VPIN devamında ortalama kazanan büyüsün.
+        let r192ExitPlanNote = '';
+        try {
+          const e192 = decisionChain?.r190Edge || {};
+          const fuelScore192 = Number(e192.r192FuelScore || 0);
+          const fuelOk192 = !!(e192.r192FuelOk || (e192.squeeze && fuelScore192 >= 5) || (e192.earlyContinuation && fuelScore192 >= 4));
+          const oldTP192 = Number(userTPPct || 0);
+          if (fuelOk192 && e192.squeeze) {
+            userTPPct = Math.max(userTPPct, Math.min(7.5, Math.max(5.0, userSLPct * 3.2)));
+            r192ExitPlanNote = ` · R192 squeeze yakıt TP ${oldTP192}→${userTPPct}`;
+          } else if (fuelOk192 && e192.earlyContinuation) {
+            userTPPct = Math.max(userTPPct, Math.min(5.0, Math.max(3.8, userSLPct * 2.6)));
+            r192ExitPlanNote = ` · R192 erken devam TP ${oldTP192}→${userTPPct}`;
+          } else if (decisionChain?.r133FastScalpOverride && !fuelOk192 && userTPPct > 4.0) {
+            userTPPct = 3.0;
+            r192ExitPlanNote = ` · R192 hızlı scalp TP ${oldTP192}→${userTPPct}`;
+          }
+          if (r192ExitPlanNote) logAuto(`🎯 ${coin.symbol}${r192ExitPlanNote} — yakıt:${fuelScore192}`);
+        } catch(_r192tp) {}
+
         try {
           userRR = userTPPct / Math.max(0.05, userSLPct);
           if (userSLPct * executeLeverage > 40) {
@@ -12937,7 +13354,7 @@ async function runAutoScan(prioritySymbol=null) {
           continue;
         }
 
-        logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote} — emir açılıyor`);
+        logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} — emir açılıyor`);
 
         // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -12990,6 +13407,11 @@ async function runAutoScan(prioritySymbol=null) {
             targetTP:orderResp.details?.target||targetPrice,
             leverage:parseInt(executeLeverage)||parseInt(leverage)||1,
             slPct:userSLPct, tpPct:userTPPct,
+            r190Edge:{
+              earlyContinuation:!!decisionChain?.r190Edge?.earlyContinuation, squeeze:!!decisionChain?.r190Edge?.squeeze,
+              r192FuelOk:!!decisionChain?.r190Edge?.r192FuelOk, r192FuelScore:Number(decisionChain?.r190Edge?.r192FuelScore||0),
+              r192SqzImminent:!!decisionChain?.r190Edge?.r192SqzImminent, r192ExitPlanNote:r192ExitPlanNote||''
+            },
             sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
             openedAt: Date.now(),
                 openReason: decisionChain?.reason || '',
