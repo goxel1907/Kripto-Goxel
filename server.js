@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R194_SWING_BREAK_EARLY_STRUCTURE';
+const LAZARUS_BUILD = 'R195_SWING_BREAK_QUALITY_VALVE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -2455,7 +2455,10 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
   });
   const tooLate = !!(seq >= 4 || (dir5Abs > Math.max(1.05, r190N(ctx.atrPct,1)*0.90) && (isL ? rangePos > 0.82 : rangePos < 0.18)) || oiDecelLate);
   const momentumWindow = !!(dir3Ok && rvol >= 0.75 && oi.rising && takerAligned && !takerDivergence && !microAgainst && !tooLate);
-  const earlyContinuation = !!((momentumWindow && seq <= 3 && (oiAccelAligned || vpinAligned || takerStrong || squeeze || r192Footprint.aligned || r192DeepOfi.strongAligned) && spreadPct <= 0.12) || r194SwingBreak.ok);
+  const earlyContinuation = !!((momentumWindow && seq <= 3 && (oiAccelAligned || vpinAligned || takerStrong || squeeze || r192Footprint.aligned || r192DeepOfi.strongAligned) && spreadPct <= 0.12) || r194SwingBreak.strong);
+  // R195: R194 swing BOS 'ok' tek başına erken devam/yakıt sayılmayacak.
+  // VELVET tipi S:48/edge10 işlemlerde zayıf swing kırılımı final valiyi deliyordu.
+  // Sadece STRONG swing (vol+flow+net candle) erken continuation kabul edilir; ok ise sadece düşük puanlı yardımcı kanıt kalır.
   const spreadCost15x = spreadPct * 15;
   const spreadBlock = !!(spreadPct >= 0.18 || spreadCost15x >= 3.2);
   const fakePump = !!(isL && (takerDivergence || (price3 > 0.45 && oi.falling) || (fund.rising && fund.last > 0.06 && longCrowded && !squeeze)));
@@ -2474,7 +2477,7 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
   const tags = [];
   const add=(ok,pts,tag)=>{ if(ok){ score += pts; tags.push(tag); } };
   add(earlyContinuation && !r194SwingBreak.ok, 18, 'earlyContinuation');
-  add(r194SwingBreak.ok, r194SwingBreak.strong ? 20 : 16, r194SwingBreak.label);
+  add(r194SwingBreak.ok, r194SwingBreak.strong ? 20 : 8, r194SwingBreak.label);
   add(momentumWindow && !earlyContinuation, 8, 'momentumWindow');
   add(oiAccelAligned, 8, oi.label);
   add(vpinAligned, 7, `VPIN:${vpin?.vpin||0}/${vpinToxic}/${vpinDir}`);
@@ -5753,8 +5756,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (r120Bool(d.r117TrapSweepTaken) && r120Bool(d.r117BodyReclaimOk)) ||
     // R192: mum-içi footprint + top10 deep OFI beraber hizalıysa Q4 forecast-only değil, canlı kanıt sayılır.
     (r120Bool(d.r190Edge?.r192Footprint?.aligned) && r120Bool(d.r190Edge?.r192DeepOfi?.aligned) && r120BrainNum(d.r190Edge?.r192FuelScore,0) >= 5) ||
-    // R194: 5m swing high/low gövde kırılımı + hacim + canlı akış varsa gerçek erken yapı kanıtıdır.
-    r120Bool(d.r190Edge?.r194SwingBreak?.ok)
+    // R194/R195: swing BOS gerçek 5m kanıt sayılır ama sadece güçlü BOS ise.
+    // Zayıf BOS (ok ama strong değil) tek başına düşük skor/edge bypass'ını açamaz.
+    r120Bool(d.r190Edge?.r194SwingBreak?.strong || (d.r190Edge?.r194SwingBreak?.ok && d.r190Edge?.r192FuelOk && r120BrainNum(d.r190Edge?.score,0) >= 28))
   );
   const r191ForecastOnlyProof = r120Bool(r160Q4Proof && !r191Hard5mProof);
   let r191PerfCaution = false;
@@ -5762,7 +5766,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     const _p = r179AccountPerf()?.recent || {};
     r191PerfCaution = Number(_p.closed||0) >= 8 && (Number(_p.wr||0) < 0.45 || Number(_p.pf||0) < 0.80 || Number(_p.net||0) < 0);
   } catch(_r191p) {}
-  const r191EarlyFuel = r120Bool(d.r190Edge?.earlyContinuation || d.r190Edge?.squeeze || d.r190Edge?.r192FuelOk);
+  const r191EarlyFuel = r120Bool(
+    d.r190Edge?.squeeze ||
+    d.r190Edge?.r192FuelOk ||
+    (d.r190Edge?.earlyContinuation && (d.r190Edge?.r194SwingBreak?.strong || d.r190Edge?.r192FuelOk || d.r190Edge?.squeeze))
+  );
   const r191LateNoFuel = r120Bool((d.r190Edge?.lateTrapRisk || d.r190Edge?.tooLate) && !r191EarlyFuel);
   const r191SpreadBad = r120Bool(d.r190Edge?.spreadBlock || d.poorLiquidity);
   const r192AgainstFinal = r120Bool(d.r190Edge?.r192LiveAgainst || d.r190Edge?.r192Footprint?.against || d.r190Edge?.r192DeepOfi?.against);
@@ -5782,7 +5790,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r193EdgeObj.squeeze ||
     r193EdgeObj.earlyContinuation ||
     r193EdgeObj.r192FuelOk ||
-    r193EdgeObj.r194SwingBreak?.ok ||
+    r193EdgeObj.r194SwingBreak?.strong ||
     (r193EdgeObj.r192Footprint?.strongAligned && r193EdgeObj.r192DeepOfi?.aligned && r193FuelScore >= 7) ||
     (r193EdgeObj.r192DeepOfi?.strongAligned && r193EdgeObj.r192Footprint?.aligned && r193FuelScore >= 7)
   );
@@ -5805,6 +5813,28 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     !r120Bool(d.r118CandleStrong) &&
     !r120Bool(d.r117BodyReclaimOk)
   );
+
+  // R195: Swing-break modülü yanlışlıkla kalite valisini delmesin.
+  // VELVET ekranında S:48 + edge 10 + R160 4/4 diye işlem açıldı; çünkü zayıf R194 BOS
+  // hard proof/early fuel sayılmıştı. Burada düşük skor + düşük edge + zayıf swing'i son kapıda kesiyoruz.
+  const r195SwingWeakOnly = r120Bool(r193EdgeObj.r194SwingBreak?.ok && !r193EdgeObj.r194SwingBreak?.strong);
+  const r195LowScoreLowEdgeNoFuel = r120Bool(
+    score < Math.max(55, minScore - 15) &&
+    edge < 35 &&
+    !r193StrongLiveFuel
+  );
+  const r195WeakSwingLowQuality = r120Bool(
+    r195SwingWeakOnly &&
+    !r193EdgeObj.r192FuelOk &&
+    (score < Math.max(58, minScore - 10) || edge < 35 || r193FuelScore < 6)
+  );
+  const r195R160LowEdgeFalse4of4 = r120Bool(
+    r160TrueCount >= 4 &&
+    edge < 35 &&
+    score < Math.max(58, minScore - 10) &&
+    !r193StrongLiveFuel
+  );
+
   const r191LowScoreNoFuel = r120Bool(score < Math.max(52, minScore - 18) && !r191EarlyFuel && !r191Hard5mProof);
   const r191ForecastOnlyChase = r120Bool(r191ForecastOnlyProof && !r191EarlyFuel && score < Math.max(58, minScore - 12));
   const r191CounterTrapWeak = r120Bool(primaryMode === 'COUNTER_TRAP' && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r188HtfCounterPressure || r191TakerOrVpinAgainst));
@@ -5828,7 +5858,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r191PerfCautionWeak ||
     r193WeakZeroCandleDirtyFuel ||
     r193OiAnomalyNoFuel ||
-    r193HtfOnlyWeakProof
+    r193HtfOnlyWeakProof ||
+    r195LowScoreLowEdgeNoFuel ||
+    r195WeakSwingLowQuality ||
+    r195R160LowEdgeFalse4of4
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
     ? `R191 final vali: ${[
@@ -5842,7 +5875,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r191PerfCautionWeak?'son performans kötü; zayıf bypass kapalı':'',
         r193WeakZeroCandleDirtyFuel?'5m mum 0/12/zayıf + zemin/RVOL/yakıt kirli':'',
         r193OiAnomalyNoFuel?`OI spike anomali (${r193Oi15Abs.toFixed(0)}%) ama canlı yakıt yok`:'',
-        r193HtfOnlyWeakProof?'HTF/stop-hunt kanıtı var ama gerçek 5m mum/footprint/deepOFI yok':''
+        r193HtfOnlyWeakProof?'HTF/stop-hunt kanıtı var ama gerçek 5m mum/footprint/deepOFI yok':'',
+        r195LowScoreLowEdgeNoFuel?`düşük skor ${score}/${minScore} + düşük edge ${edge} + güçlü yakıt yok`:'',
+        r195WeakSwingLowQuality?'R194 swing zayıf; TP/yakıt/edge kalite yok':'',
+        r195R160LowEdgeFalse4of4?'R160 4/4 görünüyor ama edge düşük; gerçek kaliteli 5m yakıt yok':''
       ].filter(Boolean).join(' + ')}`
     : '';
   const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
@@ -5965,6 +6001,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r193WeakZeroCandleDirtyFuel = r193WeakZeroCandleDirtyFuel;
   d.r193OiAnomalyNoFuel = r193OiAnomalyNoFuel;
   d.r193HtfOnlyWeakProof = r193HtfOnlyWeakProof;
+  d.r195LowScoreLowEdgeNoFuel = r195LowScoreLowEdgeNoFuel;
+  d.r195WeakSwingLowQuality = r195WeakSwingLowQuality;
+  d.r195R160LowEdgeFalse4of4 = r195R160LowEdgeFalse4of4;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
