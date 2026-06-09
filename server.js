@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R203_R202_TAKER_SCOPE_RUNTIME_FIX';
+const LAZARUS_BUILD = 'R206_GRAPH_MEMORY_PROBABILITY_ENGINE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5507,6 +5507,7 @@ function r120BrainSensorSummary(d={}) {
   if (d.r125Flow?.r126?.summary) flow.push(`R126 ${String(d.r125Flow.r126.summary).slice(0,90)}`);
   if (d.r190Edge?.summary) flow.push(String(d.r190Edge.summary).slice(0,120));
   if (flow.length) bits.push(`Akış:${flow.slice(0,6).join(', ')}`);
+  if (d.r206Graph?.summary) bits.push(`Grafik:${String(d.r206Graph.summary).slice(0,140)}`);
   if (d.r93PiyasaEtiketi) bits.push(`Zemin:${d.r93PiyasaEtiketi}`);
   return bits.join(' · ');
 }
@@ -5612,6 +5613,125 @@ function r202MicroPreConfirm(kl1m=[], kl3m=[], side='LONG', takerArr=[]) {
     fade.fade ? `FADE:${fade.reason}` : ''
   ].filter(Boolean).join(' · ');
   return { ok:true, boost, block, score, summary, dirMomentum, oppMomentum, bodyOk, closeOk, volOk, takerOk, takerBad, pivot, fade };
+}
+
+
+// ── R206: GRAPH MEMORY PROBABILITY ENGINE ──────────────────────────────────
+// Amaç: yeni bir kör filtre değil; grafiğin geçmişini/şimdiki fazını 1m-3m-5m-15m-1H-4H
+// birlikte okuyup son karar motoruna "zamanlama doğru mu?" bilgisini vermek.
+// Veri yoksa blok üretmez. Güçlü destek varsa R204 mikro zayıf cezasını yumuşatır; açık ters faz varsa bypass'ı keser.
+function r206KlineObj(k) { return r202KlineObj(k); }
+function r206Pct(a,b) { a=Number(a); b=Number(b); return (Number.isFinite(a)&&Number.isFinite(b)&&b!==0) ? ((a-b)/b*100) : 0; }
+function r206Arr(kl=[], max=120) {
+  return (Array.isArray(kl)?kl:[]).map(r206KlineObj).filter(x=>x.c>0 && x.h>=x.l).slice(-max);
+}
+function r206Slope(arr=[], n=3) {
+  const a = Array.isArray(arr)?arr:[];
+  if (a.length < n+1) return 0;
+  return r206Pct(a[a.length-1].c, a[a.length-1-n].c);
+}
+function r206RangeLoc(arr=[], lookback=48) {
+  const a = (Array.isArray(arr)?arr:[]).slice(-lookback);
+  if (a.length < 8) return { ok:false, loc:0.5, high:0, low:0, widthPct:0 };
+  const high = Math.max(...a.map(x=>x.h));
+  const low = Math.min(...a.map(x=>x.l));
+  const last = a[a.length-1].c;
+  const width = Math.max(1e-12, high-low);
+  return { ok:true, loc:Math.max(0,Math.min(1,(last-low)/width)), high, low, widthPct:low>0 ? (width/low*100) : 0 };
+}
+function r206Reject(arr=[], side='LONG') {
+  const a = (Array.isArray(arr)?arr:[]).slice(-3);
+  if (!a.length) return { reject:false, upper:0, lower:0, red:0, green:0 };
+  let upper=0, lower=0, red=0, green=0;
+  for (const c of a) {
+    const range=Math.max(1e-12,c.h-c.l), bodyHi=Math.max(c.o,c.c), bodyLo=Math.min(c.o,c.c);
+    upper += (c.h-bodyHi)/range; lower += (bodyLo-c.l)/range;
+    if (c.c<c.o) red++; if (c.c>c.o) green++;
+  }
+  upper/=a.length; lower/=a.length;
+  const rejectLong = side==='LONG' && upper>0.42 && red>=2;
+  const rejectShort = side==='SHORT' && lower>0.42 && green>=2;
+  return { reject:!!(rejectLong||rejectShort), upper, lower, red, green };
+}
+function r206GraphMemoryProbability(side='LONG', d={}) {
+  try {
+    side = normalizeSide(side) || String(side||'LONG').toUpperCase();
+    const isLong = side === 'LONG';
+    const k1 = r206Arr(d?._r202k1m || d?._r201k1m || d?.k1mArr || [], 80);
+    const k3 = r206Arr(d?._r202k3m || d?._r201k3m || d?.k3mArr || [], 80);
+    const k5 = r206Arr(d?._r206k5m || d?.k5mArr || [], 120);
+    const k15 = r206Arr(d?._r206k15m || d?.k15mArr || [], 96);
+    const k1h = r206Arr(d?._r206k1h || d?.k1hArr || [], 96);
+    const k4h = r206Arr(d?._r206k4h || d?.k4hArr || [], 96);
+    const enough = k1.length>=5 && k3.length>=5 && k5.length>=8;
+    if (!enough) return { ok:false, block:false, caution:false, strongSupport:false, score:0, bad:0, state:'DATA_LIGHT', summary:'R206 veri az; blok yok' };
+
+    const s1 = r206Slope(k1,3), s3 = r206Slope(k3,3), s5 = r206Slope(k5,3), s15 = r206Slope(k15,3), s1h = r206Slope(k1h,3), s4h = r206Slope(k4h,3);
+    const loc5 = r206RangeLoc(k5,48), loc15 = r206RangeLoc(k15,48), loc1h = r206RangeLoc(k1h,72), loc4h = r206RangeLoc(k4h,72);
+    const micro = r202MicroPreConfirm(k1, k3, side, d?._r202TakerArr || d?._r201TakerArr || d?.takerArr || []);
+    const pivot = r202PivotBreak(k3, side);
+    const fade = r202PostSpikeFade(k1, side);
+    const rej5 = r206Reject(k5, side);
+    const flowSide = normalizeSide(d?.r125BestSide || d?.r125Flow?.bestSide || '');
+    const liveDelta = Number(d?.r125LiveDeltaPct ?? d?.r125Flow?.deltaPct ?? 0);
+    const flowEdge = Number((side==='LONG'?d?.r125Flow?.longEdge:d?.r125Flow?.shortEdge) ?? d?.r125Flow?.edge ?? 0);
+    const candlePts = Number(d?.r118CandlePoints ?? d?.r86FormasyonPuan ?? d?.candlePoints ?? 0);
+    const r197Ctx = side==='LONG' ? d?.r29?.r197?.long : d?.r29?.r197?.short;
+    const r196Ctx = side==='LONG' ? d?.r29?.r196?.long : d?.r29?.r196?.short;
+    const r198Ctx = side==='LONG' ? d?.r29?.r198?.long : d?.r29?.r198?.short;
+
+    const dir1 = isLong ? s1>0.10 : s1<-0.10;
+    const dir3 = isLong ? s3>0.12 : s3<-0.12;
+    const dir5 = isLong ? s5>0.18 : s5<-0.18;
+    const opp1 = isLong ? s1<-0.12 : s1>0.12;
+    const opp3 = isLong ? s3<-0.16 : s3>0.16;
+    const opp5 = isLong ? s5<-0.22 : s5>0.22;
+    const htfAgainst = isLong ? (s15<-0.35 && s1h<-0.55) : (s15>0.35 && s1h>0.55);
+    const htfWith = isLong ? (s15>0.25 || s1h>0.45) : (s15<-0.25 || s1h<-0.45);
+    const premiumLong = isLong && ((loc5.ok && loc5.loc>0.82) || (loc15.ok && loc15.loc>0.82));
+    const discountShort = !isLong && ((loc5.ok && loc5.loc<0.18) || (loc15.ok && loc15.loc<0.18));
+    const goodLocation = isLong ? ((loc5.ok && loc5.loc<0.76) || r197Ctx?.strong) : ((loc5.ok && loc5.loc>0.24) || r197Ctx?.strong);
+    const taker = r202LatestTakerRatio(d?._r202TakerArr || d?._r201TakerArr || d?.takerArr || []);
+    const takerAgainst = isLong ? taker < 0.92 : taker > 1.08;
+    const takerWith = isLong ? taker > 1.08 : taker < 0.92;
+
+    let score=0, bad=0; const plus=[], minus=[];
+    if (dir1) { score++; plus.push('1m yön'); } else if (opp1) { bad++; minus.push('1m ters'); }
+    if (dir3) { score++; plus.push('3m yön'); } else if (opp3) { bad++; minus.push('3m ters'); }
+    if (dir5) { score++; plus.push('5m yön'); } else if (opp5) { bad++; minus.push('5m ters'); }
+    if (pivot.ok || pivot.near) { score++; plus.push(pivot.ok?'3m BOS':'3m BOS yakın'); } else { bad++; minus.push('3m BOS yok'); }
+    if (micro.boost || micro.score>=4) { score++; plus.push(`mikro ${micro.score||0}/6`); } else if (micro.block) { bad+=2; minus.push('mikro ters'); }
+    if (takerWith) { score++; plus.push(`taker ${taker.toFixed(2)}`); } else if (takerAgainst) { bad++; minus.push(`taker ters ${taker.toFixed(2)}`); }
+    if (flowSide === side && flowEdge>=8) { score++; plus.push(`flow ${flowEdge}`); }
+    else if (flowSide && flowSide !== side && Math.abs(liveDelta)>=18) { bad++; minus.push(`flow ters ${flowSide}`); }
+    if (goodLocation) { score++; plus.push('range konum uygun'); }
+    if (htfWith) { score++; plus.push('HTF akış destek'); } else if (htfAgainst) { bad++; minus.push('HTF akış ters'); }
+    if (r197Ctx?.strong) { score+=2; plus.push('R197 ters dönüş güçlü'); }
+    if (r198Ctx?.block) { bad+=2; minus.push('HTF zone kabul yok'); }
+    else if (r198Ctx?.caution) { bad++; minus.push('HTF zone dikkat'); }
+    if (r196Ctx?.block) { bad+=2; minus.push('range lokasyon blok'); }
+    if (fade.fade) { bad+=2; minus.push(fade.reason); }
+    if (rej5.reject) { bad++; minus.push('5m fitil/rejection'); }
+    if (candlePts>=8) { score++; plus.push(`mum ${candlePts}/12`); }
+    else if (candlePts<=2 && (premiumLong || discountShort)) { bad++; minus.push(`mum zayıf ${candlePts}/12`); }
+
+    const earlyLeg = (dir1 && dir3 && (pivot.ok || pivot.near) && !fade.fade && !takerAgainst);
+    const exhaustion = (premiumLong || discountShort) && (fade.fade || rej5.reject || takerAgainst) && !r197Ctx?.strong;
+    const strongSupport = score>=8 && bad<=2 && earlyLeg && !r198Ctx?.block && !r196Ctx?.block;
+    const block = (micro.block && bad>=3) || exhaustion || (opp1 && opp3 && takerAgainst && !r197Ctx?.strong) || (r198Ctx?.block && bad>=2);
+    const caution = !block && (bad>=3 || (premiumLong || discountShort) || htfAgainst);
+    const state = block ? 'WRONG_SIDE_TIMING' : strongSupport ? 'EARLY_VALIDATED' : caution ? 'CAUTION' : score>=6 ? 'VALID' : 'WAIT';
+    const locTxt = loc5.ok ? `5mLoc:${Math.round(loc5.loc*100)}%` : '';
+    return {
+      ok:true, block:!!block, caution:!!caution, strongSupport:!!strongSupport,
+      score, bad, state, earlyLeg, exhaustion,
+      slopes:{ m1:+s1.toFixed(3), m3:+s3.toFixed(3), m5:+s5.toFixed(3), m15:+s15.toFixed(3), h1:+s1h.toFixed(3), h4:+s4h.toFixed(3) },
+      range:{ m5:loc5, m15:loc15, h1:loc1h, h4:loc4h },
+      summary:`${state} ${side} score:${score}/10 bad:${bad} ${locTxt} · +${plus.slice(0,5).join(', ')}${minus.length?' · -'+minus.slice(0,5).join(', '):''}`
+    };
+  } catch(e) {
+    return { ok:false, block:false, caution:false, strongSupport:false, score:0, bad:0, state:'ERROR_SAFE_OPEN', summary:`R206 hata-safe: ${safeErrMsg(e)}` };
+  }
 }
 
 function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
@@ -6257,15 +6377,24 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r202BoostActive = !!(r202Micro.boost);
   const r202BlockActive = !!(r202Micro.block);
 
+  // R206: Grafik geçmişi + mikro zamanlama + HTF konum tek olasılık sinyalinde.
+  const r206Graph = r206GraphMemoryProbability(side, d);
+  const r206SupportActive = !!(r206Graph.strongSupport);
+  const r206BlockActive = !!(r206Graph.block);
+  d.r206Graph = r206Graph;
+  d.r206GraphSupport = r206SupportActive;
+  d.r206GraphBlock = r206BlockActive;
+
   const r200EliteRealFuel = r120Bool(
-    (r193EdgeObj.squeeze || r193EdgeObj.earlyContinuation || r193EdgeObj.r194SwingBreak?.strong || r202BoostActive || r120Bool((side === 'LONG' ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong))) &&
-    (r193EdgeObj.r192FuelOk || r193FuelScore >= 8 || r120Bool(d.r118CandleStrong)) &&
+    (r193EdgeObj.squeeze || r193EdgeObj.earlyContinuation || r193EdgeObj.r194SwingBreak?.strong || r202BoostActive || r206SupportActive || r120Bool((side === 'LONG' ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong))) &&
+    (r193EdgeObj.r192FuelOk || r193FuelScore >= 8 || r120Bool(d.r118CandleStrong) || r206SupportActive) &&
     r125SideFlow.edge >= 10 &&
     r133LiveTradeCount >= 25 &&
     !r191TakerOrVpinAgainst &&
     !r192AgainstFinal &&
     !r193OiAnomalyNoFuel &&
-    !r196RangeLocationBlock
+    !r196RangeLocationBlock &&
+    !r206BlockActive
   );
   const r200UltraLowEdgeScoreBlock = r120Bool(
     (r160TrueCount >= 3 || r159MomentumPass || r156FastTop10Bypass || r133FastScalpOverride) &&
@@ -6284,6 +6413,52 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     edge < 35 &&
     score < Math.max(55, minScore - 15) &&
     !r200EliteRealFuel
+  );
+
+
+  // R204: 6 saatlik karnede ana kayıp hattı R156/R159/R144 hızlı bypass oldu.
+  // Edge yüksek olsa bile 1m/3m mikro teyit yoksa, mum 0/12 ise, taker/flow zayıfsa veya HTF bölgeye ilk temas varsa
+  // bu yollar artık emir açamaz. Bu bir hard "az işlem" modu değil; sadece hızlı rota için mikro-zamanlama şartı.
+  const r204FastRoute = r120Bool(r156FastTop10Bypass || r159MomentumPass || r133FastScalpOverride);
+  const r204R160SoftRoute = r120Bool(r160TraderDecision && r160TrueCount <= 3);
+  const r204MicroWeak = r120Bool(!r202BoostActive && !r206SupportActive && (r202Micro?.score || 0) < 4);
+  const r204CandleWeakForFast = r120Bool(r188WeakCandle || (Number(d.r118CandlePoints||d.candlePoints||0) > 0 && Number(d.r118CandlePoints||d.candlePoints||0) < 6));
+  const r204LiveFlowTooThin = r120Bool(r125SideFlow.edge < 10 || r133LiveTradeCount < 20);
+  const r204FastRouteNeedsMicroBlock = r120Bool(
+    r204FastRoute &&
+    !r200EliteRealFuel &&
+    (
+      score < Math.max(64, minScore - 6) ||
+      r204MicroWeak ||
+      r204CandleWeakForFast ||
+      r191TakerOrVpinAgainst ||
+      r192AgainstFinal ||
+      r196RangeLocationCaution ||
+      r204LiveFlowTooThin
+    )
+  );
+  const r204R160ThreeOfFourNeedsProofBlock = r120Bool(
+    r204R160SoftRoute &&
+    !r200EliteRealFuel &&
+    (score < Math.max(64, minScore - 6) || r204MicroWeak || r188WeakCandle || r191TakerOrVpinAgainst || r204LiveFlowTooThin)
+  );
+
+  // R205: Claude 6s performans teşhisi — ana açık edge değil, SCORE bypass idi.
+  // ENA S:52 / CHIP S:62 / KAT S:60 gibi işlemler edge yüksek diye minScore'u deldi.
+  // Artık hızlı yollar için mutlak skor tabanı vardır; 1m/3m ve edge iyi olsa bile skor çok düşükse emir yok.
+  const r205NoBypassBelow = Math.max(65, minScore - 5);
+  const r205R156ScoreBlock = r120Bool(r156FastTop10Bypass && score < r205NoBypassBelow && !r200EliteRealFuel);
+  const r205R144ScoreBlock = r120Bool(r133FastScalpOverride && score < r205NoBypassBelow && !r200EliteRealFuel);
+  const r205R159Needs8pBlock = r120Bool(r159MomentumPass && r159Points < 8 && !r200EliteRealFuel);
+  const r205R159ScoreFloor = r159Points >= 8 ? Math.max(62, minScore - 8) : Math.max(68, minScore - 2);
+  const r205R159ScoreBlock = r120Bool(r159MomentumPass && score < r205R159ScoreFloor && !r200EliteRealFuel);
+  const r205R160ThreeScoreBlock = r120Bool(r160TraderDecision && r160TrueCount === 3 && score < r205NoBypassBelow && !r200EliteRealFuel);
+  const r205BypassScoreBlock = r120Bool(
+    r205R156ScoreBlock ||
+    r205R144ScoreBlock ||
+    r205R159Needs8pBlock ||
+    r205R159ScoreBlock ||
+    r205R160ThreeScoreBlock
   );
 
   const r191RawOk = r120Bool(
@@ -6312,6 +6487,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r200UltraLowEdgeScoreBlock ||
     r200R160LowEdgeAnySideBlock ||
     r200R159R156LowEdgeAnySideBlock ||
+    r204FastRouteNeedsMicroBlock ||
+    r204R160ThreeOfFourNeedsProofBlock ||
+    r205BypassScoreBlock ||
+    r206BlockActive ||
     r202BlockActive
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
@@ -6334,6 +6513,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r200UltraLowEdgeScoreBlock?`R200 ultra düşük kalite: ${side} edge ${edge} + skor ${score}; bypass kapalı`:'',
         r200R160LowEdgeAnySideBlock?`R200 ${side} R160 4/4 düşük edge ${edge}; elit canlı yakıt yok`:'',
         r200R159R156LowEdgeAnySideBlock?`R200 ${side} R159/R156/R144 düşük edge ${edge}; elit canlı yakıt yok`:'',
+        r204FastRouteNeedsMicroBlock?`R204 hızlı rota valisi: ${side} R156/R159/R144 için 1m/3m mikro teyit + gerçek mum/flow yetersiz (micro:${r202Micro?.score||0}/6, flow:${r125SideFlow.edge}, tick:${r133LiveTradeCount})`:'',
+        r204R160ThreeOfFourNeedsProofBlock?`R204 R160 3/4 valisi: ${side} için mikro teyit/5m kanıt/flow yetersiz`:'',
+        r205BypassScoreBlock?`R205 bypass skor tabanı: ${side} skor ${score}/${minScore}; R156/R144 taban ${r205NoBypassBelow}, R159 ${r159Points}p taban ${r205R159ScoreFloor}, R160 3/4 taban ${r205NoBypassBelow}`:'',
+        r206BlockActive?`R206 grafik hafızası ters faz: ${r206Graph?.summary||'grafik uyumsuz'}`:'',
+        r206SupportActive?`R206 grafik hafızası destek: ${r206Graph?.summary||'grafik uyumlu'}`:'',
         r202BlockActive?`R202 1m/3m mikro zamanlama ters: ${r202Micro?.summary||'core fail'}`:'',
         r202BoostActive?`R202 1m/3m mikro destek: ${r202Micro?.score}/6`:''
       ].filter(Boolean).join(' + ')}`
@@ -6468,6 +6652,20 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r200UltraLowEdgeScoreBlock = r200UltraLowEdgeScoreBlock;
   d.r200R160LowEdgeAnySideBlock = r200R160LowEdgeAnySideBlock;
   d.r200R159R156LowEdgeAnySideBlock = r200R159R156LowEdgeAnySideBlock;
+  d.r204FastRouteNeedsMicroBlock = r204FastRouteNeedsMicroBlock;
+  d.r204R160ThreeOfFourNeedsProofBlock = r204R160ThreeOfFourNeedsProofBlock;
+  d.r205BypassScoreBlock = r205BypassScoreBlock;
+  d.r205R156ScoreBlock = r205R156ScoreBlock;
+  d.r205R144ScoreBlock = r205R144ScoreBlock;
+  d.r205R159Needs8pBlock = r205R159Needs8pBlock;
+  d.r205R159ScoreBlock = r205R159ScoreBlock;
+  d.r205R160ThreeScoreBlock = r205R160ThreeScoreBlock;
+  d.r205NoBypassBelow = r205NoBypassBelow;
+  d.r205R159ScoreFloor = r205R159ScoreFloor;
+  d.r206Graph = r206Graph;
+  d.r206GraphSupport = r206SupportActive;
+  d.r206GraphBlock = r206BlockActive;
+  d.r204MicroWeak = r204MicroWeak;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
@@ -6794,7 +6992,27 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
   } else if (scanMode === 'TOP10') {
     rawOrdered = pinned.slice(0, 10).map(c => ({ ...c, r54Bucket:'TOP10_GAINER' }));
   } else {
-    rawOrdered = [...pinned.map(c => ({ ...c, r54Bucket:'TOP24_PINNED_TOP10' })), ...rest.map(c => ({ ...c, r54Bucket:'TOP24_INTEREST' }))];
+    // R204: TOP24 artık sadece 24h gain rank sırası değil; hareket/volatilite ağırlıklı havuz.
+    // Sorun: geniş 24 modunda sıra bazen volatil olmayan ama rank/pinned coinleri öne alıyordu.
+    // Çözüm: Top10 zorunlu kilit korunur ama kendi içinde r54VolRank/range ile sıralanır; kalan 14 coin
+    // tüm vadeli havuzdan range + abs(change) + hacim + trade count skoruna göre seçilir.
+    const r205IsScalpVolatile = c => {
+      const vol = Number(c.volume || c.quoteVolume || 0);
+      const chg = Math.abs(Number(c.change24h ?? c.priceChangePercent ?? 0));
+      const price = Number(c.price || c.lastPrice || 0);
+      return price > 0 && vol >= 5000000 && chg >= 3;
+    };
+    const pinnedVol = pinned
+      .slice(0, R33_TOP_GAINER_LOCK_COUNT)
+      .filter(r205IsScalpVolatile)
+      .sort((a,b) => (b.r54VolRank-a.r54VolRank) || (b.rangePct-a.rangePct) || (b.volScore-a.volScore) || (b.volume-a.volume))
+      .map(c => ({ ...c, r54Bucket:'R205_TOP10_VOLATILE_LIQUID' }));
+    const restVol = rest
+      .filter(r205IsScalpVolatile)
+      .sort((a,b) => (b.r54VolRank-a.r54VolRank) || (b.rangePct-a.rangePct) || (Math.abs(Number(b.change24h||0))-Math.abs(Number(a.change24h||0))) || (b.volume-a.volume))
+      .slice(0, Math.max(0, lim - pinnedVol.length))
+      .map(c => ({ ...c, r54Bucket:'R205_VOLATILE_LIQUID_CANDIDATE' }));
+    rawOrdered = [...pinnedVol, ...restVol];
   }
 
   // Duplicate koruma: FAST6/TOP10/TOP24 sırasını koru.
@@ -10860,9 +11078,17 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       longDecisionRaw._r202k1m = k1mArr;
       longDecisionRaw._r202k3m = k3mArr;
       longDecisionRaw._r202TakerArr = takerArr;
+      longDecisionRaw._r206k5m = k5m;
+      longDecisionRaw._r206k15m = k15m;
+      longDecisionRaw._r206k1h = k1h;
+      longDecisionRaw._r206k4h = k4h;
       shortDecisionRaw._r202k1m = k1mArr;
       shortDecisionRaw._r202k3m = k3mArr;
       shortDecisionRaw._r202TakerArr = takerArr;
+      shortDecisionRaw._r206k5m = k5m;
+      shortDecisionRaw._r206k15m = k15m;
+      shortDecisionRaw._r206k1h = k1h;
+      shortDecisionRaw._r206k4h = k4h;
       const longDecision  = r120SingleBrainDecision('LONG', longDecisionRaw, longScore, minAutoScore);
       const shortDecision = r120SingleBrainDecision('SHORT', shortDecisionRaw, shortScore, minAutoScore);
       function decisionRank(side, d) {
@@ -11850,24 +12076,59 @@ async function bracketProtectionSnapshot(apiKey, apiSecret, symbol) {
   return { hasSL, hasTP, orderCount:orders.length };
 }
 
+async function r205FreshPositionOpen(apiKey, apiSecret, symbol) {
+  const sym = normalizeSymbol(symbol);
+  try {
+    invalidatePosRiskCache('R205_fresh_position_check');
+    const rows = await getPositionRiskCached(apiKey, apiSecret, { symbol:sym });
+    const row = Array.isArray(rows) ? rows.find(p => normalizeSymbol(p.symbol) === sym) : null;
+    const amt = Math.abs(parseFloat(row?.positionAmt || 0));
+    return { ok:true, open: amt > 0, row, amt };
+  } catch(e) {
+    return { ok:false, open:null, error:safeErrMsg(e) };
+  }
+}
+
 async function emergencyCloseIfBracketMissing(apiKey, apiSecret, pos, reason='SLTP_PROOF_FAIL') {
-  const sym = pos.symbol;
+  const sym = normalizeSymbol(pos.symbol);
+  // R206: proof/failsafe öncesi taze pozisyon yoksa -2022 close yoluna hiç girme.
+  const freshBeforeR206 = await freshOpenPositionForSymbol(apiKey, apiSecret, sym, 3).catch(e=>({ open:null, error:safeErrMsg(e) }));
+  if (freshBeforeR206.open === false) {
+    trailingState.delete(sym);
+    logAuto(`ℹ️ ${sym} ${reason}: R206 taze positionRisk pozisyon yok; proof/failsafe kapatma atlandı`);
+    return { closed:false, protected:false, positionGone:true, note:'R206_POSITION_ALREADY_CLOSED_BEFORE_FAILSAFE' };
+  }
   const snap = await bracketProtectionSnapshot(apiKey, apiSecret, sym);
   if (snap.hasSL && snap.hasTP) return { closed:false, protected:true, snap };
   const qty = Math.abs(parseFloat(pos.positionAmt || 0));
   if (!qty) return { closed:false, protected:false, snap, error:'qty yok' };
-  try {
-    await cancelAlgoOrders(apiKey, apiSecret, sym);
-    const isLong = pos.side === 'LONG' || parseFloat(pos.positionAmt||0) > 0;
-    const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol:sym, side:isLong?'SELL':'BUY', type:'MARKET', quantity:qty.toString(), reduceOnly:'true', positionSide:'BOTH'
-    });
+  const freshR205 = await r205FreshPositionOpen(apiKey, apiSecret, sym);
+  if (freshR205.ok && freshR205.open === false) {
     trailingState.delete(sym);
-    setCooldown(sym, COOLDOWN_CLOSE_MS, `${reason} korumasız pozisyon acil kapatıldı`);
-    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE', `${sym}: ${reason}; SL/TP eksikti, market reduce-only kapatıldı`, snap, 'WARNING');
-    return { closed:true, protected:false, snap, order:r };
+    logAuto(`ℹ️ ${sym} ${reason}: R205 taze positionRisk pozisyon yok dedi; acil kapatma tetiklenmedi`);
+    return { closed:false, protected:false, positionGone:true, snap, note:'R205_POSITION_ALREADY_CLOSED' };
+  }
+  try {
+    // R204: eski failsafe sadece reduceOnly MARKET atıyordu ve Binance -2022 verince pozisyon korumasız kalıyordu.
+    // Merkezi safeMarketClosePosition fonksiyonu önce algo emirleri iptal eder, taze pozisyon okur,
+    // reduceOnly dener; -2022 gelirse tekrar pozisyon okuyup controlled non-reduce fallback ile kapatır.
+    const closeRes = await safeMarketClosePosition(apiKey, apiSecret, sym, { reason:`${reason}_R204_FAILSAFE` });
+    if (closeRes.ok) {
+      trailingState.delete(sym);
+      setCooldown(sym, COOLDOWN_CLOSE_MS, `${reason} korumasız pozisyon R204 failsafe ile kapatıldı`);
+      pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE', `${sym}: ${reason}; SL/TP eksikti, R204 safe close ile kapatıldı${closeRes.fallback?' (fallback)':''}`, { ...snap, closeRes }, 'WARNING');
+      return { closed:true, protected:false, snap, order:closeRes.order, closeRes };
+    }
+    throw new Error(closeRes.error || 'R204 safe close başarısız');
   } catch(e) {
-    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE_FAIL', `${sym}: ${reason}; acil kapatma başarısız ${e.message}`, snap, 'CRITICAL');
+    // R206: -2022/reduceOnly yarışında pozisyon kapanmışsa kritik yazma; state temizle.
+    const freshAfterR206 = await freshOpenPositionForSymbol(apiKey, apiSecret, sym, 3).catch(()=>({ open:null }));
+    if (freshAfterR206.open === false) {
+      trailingState.delete(sym);
+      logAuto(`ℹ️ ${sym} ${reason}: R206 failsafe hata sonrası pozisyonun zaten kapandığını doğruladı; kritik yazılmadı`);
+      return { closed:false, protected:false, positionGone:true, snap, note:'R206_POSITION_CLOSED_AFTER_FAILSAFE_ERROR', error:safeErrMsg(e) };
+    }
+    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE_FAIL', `${sym}: ${reason}; R206 acil kapatma başarısız ${e.message}`, snap, 'CRITICAL');
     return { closed:false, protected:false, snap, error:e.message };
   }
 }
@@ -11887,6 +12148,13 @@ async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) 
   // TP mark'a yanlış tarafta kalmışsa emri anında tetikletmemek için panel TP'sinden yeniden hesapla.
   if (isLong && tpPrice <= mark) tpPrice = calcFallbackTP(entry, true, cfg.tpPct);
   if (!isLong && tpPrice >= mark) tpPrice = calcFallbackTP(entry, false, cfg.tpPct);
+
+  const freshBeforeR205 = await r205FreshPositionOpen(apiKey, apiSecret, sym);
+  if (freshBeforeR205.ok && freshBeforeR205.open === false) {
+    trailingState.delete(sym);
+    logAuto(`ℹ️ ${sym} ${reason}: R205 SL/TP güncelleme öncesi pozisyon kapanmış; proof/failsafe atlandı`);
+    return { ok:false, skipped:true, positionGone:true, safeSL, tpPrice, reason:'R205_POSITION_ALREADY_CLOSED_BEFORE_SLTP' };
+  }
 
   const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, safeSL, tpPrice, sym);
   if (!proof.ok) {
@@ -11915,6 +12183,12 @@ async function updateBracketWithProofJS(apiKey, apiSecret, pos, newSL, newTP, re
   const closeSide = isLong ? 'SELL' : 'BUY';
   const mark = parseFloat(pos.markPrice || pos.entryPrice || 0);
   const safeSL = isLong ? Math.min(parseFloat(newSL), mark * 0.9997) : Math.max(parseFloat(newSL), mark * 1.0003);
+  const freshBeforeR205 = await r205FreshPositionOpen(apiKey, apiSecret, sym);
+  if (freshBeforeR205.ok && freshBeforeR205.open === false) {
+    trailingState.delete(sym);
+    logAuto(`ℹ️ ${sym} ${reason}: R205 bracket güncelleme öncesi pozisyon kapanmış; proof/failsafe atlandı`);
+    return { ok:false, skipped:true, positionGone:true, safeSL, newTP, reason:'R205_POSITION_ALREADY_CLOSED_BEFORE_BRACKET' };
+  }
   const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, safeSL, newTP, sym);
   if (!proof.ok) {
     logAuto(`❌ ${sym} ${reason} bracket proof başarısız; failsafe kontrol`);
