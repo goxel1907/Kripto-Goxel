@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R195_SWING_BREAK_QUALITY_VALVE';
+const LAZARUS_BUILD = 'R197_RANGE_REVERSAL_SCOUT';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -2376,6 +2376,205 @@ function r194SwingBreakDetector(side='LONG', ctx={}) {
     swingHigh:+swingHigh.toFixed(8), swingLow:+swingLow.toFixed(8), breakPct:+breakPct.toFixed(3),
     volRatio:+volRatio.toFixed(2), bodyShare:+bodyShare.toFixed(2), closePos:+closePos.toFixed(2), seq,
     label:`R194Swing ${side} ${ok?'BOS✅':'bekle'} br:${breakPct.toFixed(2)}% vol:${volRatio.toFixed(2)}x seq:${seq}`
+  };
+}
+
+
+
+// ── R196: Günlük range lokasyonu + pump exhaustion grafiği ─────────────────
+// Amaç: botun "grafikte nerede olduğunu" bilmesi. TOP24 pump coinlerinde en büyük hata,
+// 5m swing/edge yüksek diye 24h range tepesinde LONG kovalamak veya dipte SHORT basmak.
+// Bu katman yeni endpoint istemez: zaten gelen ticker high/low/change ve mevcut 5m/15m/1h mumları kullanılır.
+function r196Rows(kl=[], n=24) {
+  return (Array.isArray(kl)?kl:[]).slice(-n).map(c=>({
+    o:r190N(c?.[1],0), h:r190N(c?.[2],0), l:r190N(c?.[3],0), c:r190N(c?.[4],0), v:r190N(c?.[5],0)
+  })).filter(x=>x.o>0 && x.h>0 && x.l>0 && x.c>0);
+}
+function r196RangePct(lastPrice=0, high=0, low=0) {
+  lastPrice = r190N(lastPrice,0); high = r190N(high,0); low = r190N(low,0);
+  if (!(lastPrice>0 && high>low)) return null;
+  return Math.max(0, Math.min(100, ((lastPrice-low)/(high-low))*100));
+}
+function r196RecentRejection(rows=[], side='LONG') {
+  side = String(side||'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const arr = (Array.isArray(rows)?rows:[]).slice(-5).filter(x=>x && x.h>x.l);
+  if (arr.length < 2) return { ok:false, score:0, label:'R196Reject:yok' };
+  let score = 0, wickHit = 0, redHit = 0, dumpHit = 0;
+  const last = arr.at(-1), prev = arr.at(-2);
+  const maxH = Math.max(...arr.map(x=>x.h));
+  const minL = Math.min(...arr.map(x=>x.l));
+  const last3High = Math.max(...arr.slice(-3).map(x=>x.h));
+  const last3Low  = Math.min(...arr.slice(-3).map(x=>x.l));
+  for (const x of arr.slice(-3)) {
+    const rng = Math.max(1e-12, x.h-x.l);
+    const bodyHi = Math.max(x.o,x.c), bodyLo = Math.min(x.o,x.c);
+    const upper = (x.h-bodyHi)/rng;
+    const lower = (bodyLo-x.l)/rng;
+    if (isL && upper >= 0.38 && x.h >= maxH*0.995) { wickHit++; score += 2; }
+    if (!isL && lower >= 0.38 && x.l <= minL*1.005) { wickHit++; score += 2; }
+    if (isL && x.c < x.o) { redHit++; score += 1; }
+    if (!isL && x.c > x.o) { redHit++; score += 1; }
+  }
+  const moveFromExtreme = isL ? r190Pct(last.c, last3High) : r190Pct(last3Low, last.c);
+  if (isL && moveFromExtreme <= -0.45) { dumpHit++; score += 2; }
+  if (!isL && moveFromExtreme <= -0.45) { dumpHit++; score += 2; }
+  const engulf = isL ? (last.c < prev.o && last.o >= prev.c) : (last.c > prev.o && last.o <= prev.c);
+  if (engulf) score += 2;
+  return { ok:score>=3, score, wickHit, redHit, dumpHit, engulf, moveFromExtreme:+moveFromExtreme.toFixed(2), label:`R196Reject ${side} s:${score} wick:${wickHit} mv:${moveFromExtreme.toFixed(2)}%` };
+}
+function r196Context(side='LONG', ctx={}) {
+  side = String(side||'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const lastPrice = r190N(ctx.lastPrice,0);
+  const meta = ctx.meta || {};
+  const high24 = r190N(meta.high ?? meta.highPrice, 0);
+  const low24  = r190N(meta.low ?? meta.lowPrice, 0);
+  const chg24  = r190N(meta.change24h ?? meta.change24hRaw ?? meta.priceChangePercent, 0);
+  const loc24  = r196RangePct(lastPrice, high24, low24);
+  const rows5  = r196Rows(ctx.k5m, 48);
+  const rows15 = r196Rows(ctx.k15m, 16);
+  const rows1h = r196Rows(ctx.k1h, 30);
+  const rows4h = r196Rows(ctx.k4h, 24);
+  const loc1h = rows1h.length ? r196RangePct(lastPrice, Math.max(...rows1h.map(x=>x.h)), Math.min(...rows1h.map(x=>x.l))) : null;
+  const loc4h = rows4h.length ? r196RangePct(lastPrice, Math.max(...rows4h.map(x=>x.h)), Math.min(...rows4h.map(x=>x.l))) : null;
+  const rej5  = r196RecentRejection(rows5, side);
+  const rej15 = r196RecentRejection(rows15, side);
+  const avgVol = rows5.slice(-8,-1).reduce((s,x)=>s+x.v,0)/Math.max(1, rows5.slice(-8,-1).length);
+  const rvol = avgVol>0 && rows5.length ? rows5.at(-1).v/avgVol : 1;
+  const price60 = rows5.length>=13 ? r190Pct(rows5.at(-1).c, rows5.at(-13).o) : 0;
+  const price180 = rows5.length>=37 ? r190Pct(rows5.at(-1).c, rows5.at(-37).o) : 0;
+  const topLoc = Number.isFinite(loc24) && loc24 >= 86;
+  const upperLoc = Number.isFinite(loc24) && loc24 >= 76;
+  const bottomLoc = Number.isFinite(loc24) && loc24 <= 14;
+  const lowerLoc = Number.isFinite(loc24) && loc24 <= 24;
+  const htfTop = (Number.isFinite(loc1h) && loc1h >= 82) || (Number.isFinite(loc4h) && loc4h >= 82);
+  const htfBottom = (Number.isFinite(loc1h) && loc1h <= 18) || (Number.isFinite(loc4h) && loc4h <= 18);
+  const pumpLongRisk = isL && (topLoc || (upperLoc && chg24 >= 8) || (upperLoc && htfTop));
+  const dumpShortRisk = !isL && (bottomLoc || (lowerLoc && chg24 <= -8) || (lowerLoc && htfBottom));
+  const rejection = isL ? (rej5.ok || rej15.ok) : (rej5.ok || rej15.ok);
+  const topExhaustion = !!(isL && pumpLongRisk && (rejection || rvol < 0.35 || price60 > 5.5 || chg24 >= 12));
+  const bottomExhaustion = !!(!isL && dumpShortRisk && (rejection || rvol < 0.35 || price60 < -5.5 || chg24 <= -12));
+  // Sert blok yalnızca uç lokasyon + yorgunlukta. Amaç frekansı öldürmek değil, tepeden LONG/dipten SHORT'u kesmek.
+  const hardBlock = !!(
+    (isL && ((topLoc && (rejection || chg24 >= 10 || rvol < 0.45)) || (topExhaustion && (rvol < 0.75 || rejection)))) ||
+    (!isL && ((bottomLoc && (rejection || chg24 <= -10 || rvol < 0.45)) || (bottomExhaustion && (rvol < 0.75 || rejection))))
+  );
+  const caution = !!(!hardBlock && ((isL && pumpLongRisk) || (!isL && dumpShortRisk)));
+  const rescueOk = !!(
+    ctx.strongFuel || ctx.squeeze || ctx.strongSwing ||
+    (ctx.footprintAligned && ctx.deepAligned && rvol >= 0.75) ||
+    (ctx.bodyReclaim && rvol >= 0.65)
+  );
+  const block = hardBlock && !rescueOk;
+  const sideTxt = isL ? 'LONG' : 'SHORT';
+  return {
+    ok:true, side:sideTxt, loc24:Number.isFinite(loc24)?+loc24.toFixed(1):null, loc1h:Number.isFinite(loc1h)?+loc1h.toFixed(1):null, loc4h:Number.isFinite(loc4h)?+loc4h.toFixed(1):null,
+    high24:+high24.toFixed(8), low24:+low24.toFixed(8), chg24:+chg24.toFixed(2), rvol:+rvol.toFixed(2), price60:+price60.toFixed(2), price180:+price180.toFixed(2),
+    pumpLongRisk, dumpShortRisk, topExhaustion, bottomExhaustion, rejection, hardBlock, rescueOk, block, caution,
+    label:`R196Range ${sideTxt} loc:${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% 1h:${Number.isFinite(loc1h)?loc1h.toFixed(0):'?'} 4h:${Number.isFinite(loc4h)?loc4h.toFixed(0):'?'} 24h:${chg24.toFixed(1)}% rvol:${rvol.toFixed(2)} rej:${rejection?'Y':'N'}${block?' BLOCK':caution?' dikkat':''}`,
+    reason: block
+      ? `R196 range lokasyonu: ${sideTxt} ${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% günlük range + pump/dump yorgunluğu; tepeden/dipten kovalamaz`
+      : caution
+        ? `R196 range dikkat: ${sideTxt} ${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% günlük range; güçlü yakıt ister`
+        : `R196 range temiz: ${sideTxt} loc ${Number.isFinite(loc24)?loc24.toFixed(0):'?'}%`
+  };
+}
+
+
+// ── R197: Range lokasyonu tek yönlü blok değil, ters-yön scout üretir ─────────
+// R196 tepedeki LONG'u veya dipteki SHORT'u keser. R197 aynı bağlamı ters tarafta
+// “fırsat adayı” olarak okur: günlük/1H/4H range tepesinde rejection + 5m MSS/flow varsa SHORT,
+// günlük/1H/4H range dibinde rejection + 5m reclaim/flow varsa LONG düşünür.
+// Kritik: Tek başına emir açtırmaz; R191 final vali ve mikro akış yine zorunludur.
+function r197RangeReversalScout(side='SHORT', ctx={}) {
+  side = String(side||'SHORT').toUpperCase();
+  const isL = side === 'LONG';
+  const rows = r196Rows(ctx.k5m, 18);
+  const none = { ok:false, strong:false, side, score:0, label:`R197${side}:yok`, reason:'range reversal scout yok' };
+  if (rows.length < 7) return none;
+  const last = rows.at(-1), prev = rows.at(-2);
+  if (!last || !prev || !(last.h>last.l) || !(prev.h>prev.l)) return none;
+  const r196Long = ctx.r196Long || {};
+  const r196Short = ctx.r196Short || {};
+  const loc24 = Number.isFinite(Number(r196Long.loc24)) ? Number(r196Long.loc24) : Number(r196Short.loc24);
+  const loc1h = Number.isFinite(Number(r196Long.loc1h)) ? Number(r196Long.loc1h) : Number(r196Short.loc1h);
+  const loc4h = Number.isFinite(Number(r196Long.loc4h)) ? Number(r196Long.loc4h) : Number(r196Short.loc4h);
+  const chg24 = Number.isFinite(Number(r196Long.chg24)) ? Number(r196Long.chg24) : Number(r196Short.chg24 || 0);
+  const avgVol = rows.slice(-8,-1).reduce((a,x)=>a+x.v,0) / Math.max(1, rows.slice(-8,-1).length);
+  const rvol = avgVol > 0 ? last.v / avgVol : 1;
+  const rng = Math.max(1e-12, last.h-last.l);
+  const body = Math.abs(last.c-last.o);
+  const bodyShare = body/rng;
+  const closePos = (last.c-last.l)/rng;
+  const taker = r190TakerRatio(ctx.takerArr || []);
+  const book = ctx.r125Flow?.book || {};
+  const spreadPct = r190N(book.spreadPct,0);
+  const fp = r192FootprintFromTickData(ctx.tickData || {}, side);
+  const deep = r192DeepOfiFromBook(book, side);
+  const microSide = String(book.microSide || 'NEUTRAL').toUpperCase();
+  const microPersist = String(book.microPersistSide || 'NEUTRAL').toUpperCase();
+  const microAligned = microSide === side || microPersist === side;
+  const microAgainst = microSide === (isL?'SHORT':'LONG') && microPersist === (isL?'SHORT':'LONG');
+  const rows190 = r190Rows5m(ctx.k5m, 10);
+  const price3 = rows190.length >= 4 ? r190Pct(rows190.at(-1).c, rows190.at(-4).o) : 0;
+  let seq = 0;
+  for (let i=rows190.length-1;i>=0;i--) {
+    const x=rows190[i]; if (!x) break;
+    const dir = x.c > x.o ? 'LONG' : x.c < x.o ? 'SHORT' : 'FLAT';
+    if (dir === side) seq++; else break;
+  }
+  const swing = r194SwingBreakDetector(side, {
+    rows: rows190, takerRatio:taker, rvol, price3, seq, atrPct:ctx.atrPct, spreadPct,
+    r192Footprint:fp, r192DeepOfi:deep,
+    vpinAligned:false, vpinAgainst:false, microAligned, microAgainst
+  });
+
+  // SHORT scout: tepe/premium/range üstü + yukarı fitil/rejection + 5m aşağı shift.
+  // LONG scout: dip/discount/range altı + aşağı fitil/rejection + 5m yukarı reclaim.
+  const topZone = !!(Number.isFinite(loc24) && loc24 >= 76) || !!(Number.isFinite(loc1h) && loc1h >= 82) || !!(Number.isFinite(loc4h) && loc4h >= 82) || !!r196Long.block || !!r196Long.caution || !!r196Long.topExhaustion;
+  const bottomZone = !!(Number.isFinite(loc24) && loc24 <= 24) || !!(Number.isFinite(loc1h) && loc1h <= 18) || !!(Number.isFinite(loc4h) && loc4h <= 18) || !!r196Short.block || !!r196Short.caution || !!r196Short.bottomExhaustion;
+  const zoneOk = isL ? bottomZone : topZone;
+  const rejection = r196RecentRejection(rows, isL ? 'SHORT' : 'LONG');
+  const prev3 = rows.slice(-4,-1);
+  const prev3High = Math.max(...prev3.map(x=>x.h));
+  const prev3Low = Math.min(...prev3.map(x=>x.l));
+  const mss = isL
+    ? (last.c > prev.h || last.c > prev3High || (last.c > last.o && closePos >= 0.68 && bodyShare >= 0.42))
+    : (last.c < prev.l || last.c < prev3Low || (last.c < last.o && closePos <= 0.32 && bodyShare >= 0.42));
+  const failedBreak = !isL
+    ? (last.h >= Math.max(...rows.slice(-7).map(x=>x.h))*0.995 && last.c < prev.c && closePos <= 0.45)
+    : (last.l <= Math.min(...rows.slice(-7).map(x=>x.l))*1.005 && last.c > prev.c && closePos >= 0.55);
+  const takerAligned = isL ? taker >= 1.06 : taker <= 0.94;
+  const flowAligned = !!(takerAligned || fp.aligned || deep.aligned || deep.strongAligned || swing.strong || microAligned);
+  const flowAgainst = !!(fp.against || deep.against || microAgainst || (isL ? taker <= 0.88 : taker >= 1.14));
+  const notLate = seq <= 3 && Math.abs(price3) <= Math.max(2.0, r190N(ctx.atrPct,1)*1.35);
+  const locNotExtremeAgainst = isL ? !(Number.isFinite(loc24) && loc24 > 70) : !(Number.isFinite(loc24) && loc24 < 30);
+  const setupProof = !!(rejection.ok || mss || failedBreak || swing.ok);
+  const ok = !!(zoneOk && setupProof && flowAligned && !flowAgainst && notLate && locNotExtremeAgainst && spreadPct < 0.18);
+  const strong = !!(ok && (mss || swing.strong) && (rejection.ok || fp.aligned || deep.strongAligned) && rvol >= 0.35);
+  let score = 0;
+  if (zoneOk) score += 4;
+  if (rejection.ok) score += 5;
+  if (mss) score += 6;
+  if (failedBreak) score += 4;
+  if (flowAligned) score += 5;
+  if (fp.aligned) score += 3;
+  if (deep.strongAligned) score += 4;
+  if (swing.strong) score += 5;
+  if (rvol >= 0.75) score += 2;
+  if (flowAgainst) score -= 8;
+  if (!notLate) score -= 6;
+  return {
+    ok, strong, side, score, zoneOk, loc24:Number.isFinite(loc24)?+loc24.toFixed(1):null,
+    loc1h:Number.isFinite(loc1h)?+loc1h.toFixed(1):null, loc4h:Number.isFinite(loc4h)?+loc4h.toFixed(1):null,
+    chg24:+chg24.toFixed(2), rvol:+rvol.toFixed(2), takerRatio:taker,
+    rejection, mss, failedBreak, flowAligned, flowAgainst, notLate, seq, price3:+price3.toFixed(2),
+    footprint:fp, deepOfi:deep, swing,
+    label:`R197RangeReversal ${side} ${ok?'ADAY✅':'bekle'} loc:${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% rej:${rejection.ok?'Y':'N'} mss:${mss?'Y':'N'} flow:${flowAligned?'Y':'N'} rvol:${rvol.toFixed(2)} taker:${taker}`,
+    reason: ok
+      ? `R197 range ters-yön scout: ${side} için ${isL?'dip/discount':'tepe/premium'} + rejection/MSS + canlı akış`
+      : `R197 range ters-yön bekle: ${side} için zone:${zoneOk?'Y':'N'} proof:${setupProof?'Y':'N'} flow:${flowAligned?'Y':'N'} against:${flowAgainst?'Y':'N'}`
   };
 }
 
@@ -5758,7 +5957,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (r120Bool(d.r190Edge?.r192Footprint?.aligned) && r120Bool(d.r190Edge?.r192DeepOfi?.aligned) && r120BrainNum(d.r190Edge?.r192FuelScore,0) >= 5) ||
     // R194/R195: swing BOS gerçek 5m kanıt sayılır ama sadece güçlü BOS ise.
     // Zayıf BOS (ok ama strong değil) tek başına düşük skor/edge bypass'ını açamaz.
-    r120Bool(d.r190Edge?.r194SwingBreak?.strong || (d.r190Edge?.r194SwingBreak?.ok && d.r190Edge?.r192FuelOk && r120BrainNum(d.r190Edge?.score,0) >= 28))
+    r120Bool(d.r190Edge?.r194SwingBreak?.strong || (d.r190Edge?.r194SwingBreak?.ok && d.r190Edge?.r192FuelOk && r120BrainNum(d.r190Edge?.score,0) >= 28)) ||
+    r120Bool((side === 'LONG' ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong))
   );
   const r191ForecastOnlyProof = r120Bool(r160Q4Proof && !r191Hard5mProof);
   let r191PerfCaution = false;
@@ -5840,6 +6040,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r191CounterTrapWeak = r120Bool(primaryMode === 'COUNTER_TRAP' && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r188HtfCounterPressure || r191TakerOrVpinAgainst));
   const r191FastScalpWeak = r120Bool(r133FastScalpOverride && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r191TakerOrVpinAgainst || r191LateNoFuel));
   const r191PerfCautionWeak = r120Bool(r191PerfCaution && !r191EarlyFuel && !r191Hard5mProof && (r159MomentumPass || r133FastScalpOverride || r191ForecastOnlyProof));
+  // R196: Grafikte nerede olduğumuzu son beyinde de koru.
+  // EvalDecision hard-veto yapsa bile R160/R159 brainAction bypass'ı bu range lokasyonunu delemesin.
+  const r196SideCtxBrain = side === 'LONG' ? d.r29?.r196?.long : d.r29?.r196?.short;
+  const r196RangeLocationBlock = r120Bool(r196SideCtxBrain?.block);
+  const r196RangeLocationCaution = r120Bool(r196SideCtxBrain?.caution);
   const r191RawOk = r120Bool(
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
@@ -5861,7 +6066,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r193HtfOnlyWeakProof ||
     r195LowScoreLowEdgeNoFuel ||
     r195WeakSwingLowQuality ||
-    r195R160LowEdgeFalse4of4
+    r195R160LowEdgeFalse4of4 ||
+    r196RangeLocationBlock
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
     ? `R191 final vali: ${[
@@ -5878,7 +6084,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r193HtfOnlyWeakProof?'HTF/stop-hunt kanıtı var ama gerçek 5m mum/footprint/deepOFI yok':'',
         r195LowScoreLowEdgeNoFuel?`düşük skor ${score}/${minScore} + düşük edge ${edge} + güçlü yakıt yok`:'',
         r195WeakSwingLowQuality?'R194 swing zayıf; TP/yakıt/edge kalite yok':'',
-        r195R160LowEdgeFalse4of4?'R160 4/4 görünüyor ama edge düşük; gerçek kaliteli 5m yakıt yok':''
+        r195R160LowEdgeFalse4of4?'R160 4/4 görünüyor ama edge düşük; gerçek kaliteli 5m yakıt yok':'',
+        r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):''
       ].filter(Boolean).join(' + ')}`
     : '';
   const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
@@ -8358,6 +8565,34 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       };
       const addTag = (tag) => { r29Context.tags.push(tag); };
 
+      // R196: günlük range lokasyonu + pump/dump yorgunluğu.
+      // JCT/ENA gibi günlük range'in %85-95 üstünde, zaten pump yapmış coinlerde LONG kovalamayı keser.
+      const r196LongCtx = r196Context('LONG', { meta:_coinMeta, lastPrice, k5m, k15m, k1h, k4h,
+        bodyReclaim: false, strongFuel: false, squeeze: false, strongSwing:false });
+      const r196ShortCtx = r196Context('SHORT', { meta:_coinMeta, lastPrice, k5m, k15m, k1h, k4h,
+        bodyReclaim: false, strongFuel: false, squeeze: false, strongSwing:false });
+      r29Context.r196 = { long:r196LongCtx, short:r196ShortCtx };
+      if (r196LongCtx.block) {
+        addRisk('LONG', 46, r196LongCtx.reason);
+        longScore = Math.round(longScore * 0.54);
+        signals.long.push(`⛔ ${r196LongCtx.label}`);
+        addTag('R196_RANGE_TOP_LONG_BLOCK');
+      } else if (r196LongCtx.caution) {
+        addRisk('LONG', 16, r196LongCtx.reason);
+        longScore = Math.round(longScore * 0.88);
+        signals.long.push(`⚠️ ${r196LongCtx.label}`);
+      }
+      if (r196ShortCtx.block) {
+        addRisk('SHORT', 46, r196ShortCtx.reason);
+        shortScore = Math.round(shortScore * 0.54);
+        signals.short.push(`⛔ ${r196ShortCtx.label}`);
+        addTag('R196_RANGE_BOTTOM_SHORT_BLOCK');
+      } else if (r196ShortCtx.caution) {
+        addRisk('SHORT', 16, r196ShortCtx.reason);
+        shortScore = Math.round(shortScore * 0.88);
+        signals.short.push(`⚠️ ${r196ShortCtx.label}`);
+      }
+
       // 24h yön bilgisi: negatif coin long'a düşen bıçak riski, pozitif coin short'a sıkışma riski.
       if (_chg24h <= -5) addRisk('LONG', 28, `24h ${_chg24h.toFixed(1)}% düşüş: long düşen bıçak`);
       else if (_chg24h <= -2.2) addRisk('LONG', 18, `24h ${_chg24h.toFixed(1)}% negatif: long dikkat`);
@@ -8397,6 +8632,40 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if (_bs >  0.48) addRisk('SHORT',16, `Piyasa geneli boğa (${marketBreadthStore.bull}↑/${marketBreadthStore.bear}↓)`);
       }
 
+
+      // R197: Range riski side-specific okunur; tepedeki LONG riski varsa doğrulanmış SHORT scout,
+      // dipteki SHORT riski varsa doğrulanmış LONG scout üretilir. Bu ters yön tek başına emir açtırmaz,
+      // sadece score/risk terazisini doğru tarafa çevirir.
+      const r197ShortScout = r197RangeReversalScout('SHORT', {
+        k5m, lastPrice, r196Long:r196LongCtx, r196Short:r196ShortCtx, tickData, r125Flow, takerArr, atrPct
+      });
+      const r197LongScout = r197RangeReversalScout('LONG', {
+        k5m, lastPrice, r196Long:r196LongCtx, r196Short:r196ShortCtx, tickData, r125Flow, takerArr, atrPct
+      });
+      r29Context.r197 = { long:r197LongScout, short:r197ShortScout };
+      if (r197ShortScout.ok) {
+        const add = r197ShortScout.strong ? 18 : 12;
+        shortScore = Math.min(shortScore + add, 100);
+        r29Context.shortRisk = Math.max(0, r29Context.shortRisk - (r197ShortScout.strong ? 24 : 14));
+        r29Context.longRisk = Math.min(100, r29Context.longRisk + (r197ShortScout.strong ? 10 : 6));
+        signals.short.push(`🔁 ${r197ShortScout.label} (+${add})`);
+        r29Context.shortNotes.push(r197ShortScout.reason);
+        addTag('R197_TOP_REVERSAL_SHORT');
+      } else if ((r196LongCtx.block || r196LongCtx.caution) && r197ShortScout.zoneOk) {
+        signals.short.push(`👀 ${r197ShortScout.label}`);
+      }
+      if (r197LongScout.ok) {
+        const add = r197LongScout.strong ? 18 : 12;
+        longScore = Math.min(longScore + add, 100);
+        r29Context.longRisk = Math.max(0, r29Context.longRisk - (r197LongScout.strong ? 24 : 14));
+        r29Context.shortRisk = Math.min(100, r29Context.shortRisk + (r197LongScout.strong ? 10 : 6));
+        signals.long.push(`🔁 ${r197LongScout.label} (+${add})`);
+        r29Context.longNotes.push(r197LongScout.reason);
+        addTag('R197_BOTTOM_REVERSAL_LONG');
+      } else if ((r196ShortCtx.block || r196ShortCtx.caution) && r197LongScout.zoneOk) {
+        signals.long.push(`👀 ${r197LongScout.label}`);
+      }
+
       // Tek bağlam tavanı: çok sayıda küçük ceza üst üste binip botu kör etmesin.
       r29Context.longRisk  = Math.min(100, Math.round(r29Context.longRisk));
       r29Context.shortRisk = Math.min(100, Math.round(r29Context.shortRisk));
@@ -8407,8 +8676,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       // Otomatik blok yalnızca ağır bağlam uyumsuzluğunda. Panel yine gösterir, bot kör olmaz.
       const _longRescue = _vwapLongReclaim && (r25WickTrapMap?.lowerTrap || _lowerWall) && longScore >= 76;
       const _shortRescue = _vwapShortReject && (r25WickTrapMap?.upperTrap || _upperWall) && shortScore >= 76;
-      r29Context.longAutoBlock  = r29Context.longRisk  >= 76 && !_longRescue;
-      r29Context.shortAutoBlock = r29Context.shortRisk >= 76 && !_shortRescue;
+      r29Context.longAutoBlock  = (r29Context.longRisk  >= 76 || r196LongCtx.block) && !_longRescue;
+      r29Context.shortAutoBlock = (r29Context.shortRisk >= 76 || r196ShortCtx.block) && !_shortRescue;
       if (r29Context.longRisk - r29Context.shortRisk >= 22) r29Context.preferSide = 'SHORT';
       else if (r29Context.shortRisk - r29Context.longRisk >= 22) r29Context.preferSide = 'LONG';
       else r29Context.preferSide = 'NEUTRAL';
@@ -9097,14 +9366,20 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         }
         // ── R27 PS bitti ──────────────────────────────────────────────────────
 
-        // R29: bağlam terazisi priorityScore'a tek aileden bağlanır; kural yığması yapmaz.
+        // R29/R196: bağlam terazisi priorityScore'a tek aileden bağlanır; kural yığması yapmaz.
         {
           const r29Risk = isL ? Number(r29Context.longRisk||0) : Number(r29Context.shortRisk||0);
           const r29Fav  = isL ? r29Context.preferSide==='LONG'  : r29Context.preferSide==='SHORT';
           const r29Vwap = isL ? r29Context.vwap?.longReclaim : r29Context.vwap?.shortReject;
+          const r196SideCtx = isL ? r29Context.r196?.long : r29Context.r196?.short;
+          const r197SideCtx = isL ? r29Context.r197?.long : r29Context.r197?.short;
+          addP(r197SideCtx?.ok, r197SideCtx?.strong ? 18 : 12, 'R197RangeReversal', 'macro', 28);
+          subP(r197SideCtx?.flowAgainst, 10, 'R197TersAkış');
           addP(r29Fav, 10, 'R29BağlamLehte', 'macro', 28);
           addP(r29Vwap, 8, 'VWAPTeyit', 'structure', 16);
           subP(r29Risk >= 45, Math.min(22, Math.round(r29Risk/5)), 'R29BağlamRisk');
+          subP(r196SideCtx?.caution, 8, 'R196RangeDikkat');
+          subP(r196SideCtx?.block, 28, 'R196TepedenDiptenKovalama');
         }
 
         const bridgeCount=[mtfBridgeOk,fundBridgeOk,oiBridgeOk,huntBridgeOk].filter(Boolean).length;
@@ -9178,6 +9453,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         );
         const signalDecayAutoBlock = !!(r22Decay.noAuto && (hardSweepForBridge || huntBridgeOk) && !fresh15mConfirm && !fresh5mImpulseOrRecent && !r60StrongTrendContinuation);
         const r29CtxBlock = isL ? !!r29Context.longAutoBlock : !!r29Context.shortAutoBlock;
+        const r196SideCtx = isL ? r29Context.r196?.long : r29Context.r196?.short;
+        const r196RangeBlock = !!(r196SideCtx?.block);
+        const r196RangeCaution = !!(r196SideCtx?.caution);
         // R75-FIX1: lateChase soft-veto. retestOk=true ise (hareket kaçmış ama fiyat geri döndü)
         // r74ImpulseEntryOk ve r74Top10ProScalperOk için hard-veto olmaktan çıkar.
         // retestOk yoksa (salt geç chase) hardVeto olarak kalır.
@@ -9185,7 +9463,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R155b: r75LateChaseHard hardVeto'dan çıkarıldı.
         // TOP10 5m pump momentumunda "geç giriş" çok sık tetikleniyor ve hardVeto → fatalDanger → rawEdge-55 zincirini başlatıyordu.
         // Kalibrasyon cezası (-8), r37LateChaseBlock ve r147 kontrolleri yeterli koruma sağlar.
-        const hardVeto = !!(poorLiquidity || atrBlocking || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock);
+        const hardVeto = !!(poorLiquidity || atrBlocking || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock || r196RangeBlock);
         const hardVetoReasons=[];
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
         if(atrBlocking) hardVetoReasons.push(`ATR gate %${atrPct.toFixed(2)}`);
@@ -9201,6 +9479,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(!mmOk) hardVetoReasons.push(`MM kesin ters ${mmTarget}(%${mmConf})`);
         if(signalDecayAutoBlock) hardVetoReasons.push(`Signal decay ${r22Decay.label}`);
         if(r29CtxBlock) hardVetoReasons.push(`R29 bağlam riski ${isL ? r29Context.longRisk : r29Context.shortRisk}`);
+        if(r196RangeBlock) hardVetoReasons.push(r196SideCtx?.reason || 'R196 günlük range tepesi/dibi risk');
 
         // R45: 5m SweepOnly REAL GATE — UI checkbox artık gerçek otomatik emir kapısıdır.
         // directSweepOk: gerçek likidite/sweep/stop-hunt ailesi. Sweep zorunlu AÇIK ise otomatik emir bununla sınırlıdır.
@@ -10151,6 +10430,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r46SpringQuality > 0) reasons.push(`🌱 R46 spring kalite +${r46SpringQuality}`);
         if(r46ExhaustionShort) reasons.push('🚨 R46 exhaustion short birleşimi');
         if((isL&&r29Context.preferSide==='LONG')||(!isL&&r29Context.preferSide==='SHORT')) reasons.push(`🧠 R29 bağlam lehte`);
+        if(r196RangeCaution && !r196RangeBlock) reasons.push(`⚠️ ${r196SideCtx?.label||'R196 range dikkat'}`);
         if(isL&&r29Context.vwap?.longReclaim) reasons.push('🧭 VWAP reclaim');
         if(!isL&&r29Context.vwap?.shortReject) reasons.push('🧭 VWAP reject');
         if(cmfSameSide) reasons.push('💧 CMF');
@@ -10200,6 +10480,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if(r22LiqWaterfall.adverse) blocks.push('Likidasyon şelalesi ters risk');
         if(isL && r29Context.longAutoBlock) blocks.push(`R29 bağlam LONG blok ${r29Context.longRisk}: ${r29Context.longNotes.slice(0,2).join(' + ')}`);
         if(!isL && r29Context.shortAutoBlock) blocks.push(`R29 bağlam SHORT blok ${r29Context.shortRisk}: ${r29Context.shortNotes.slice(0,2).join(' + ')}`);
+        if(r196RangeBlock) blocks.push(r196SideCtx?.reason || 'R196 günlük range lokasyonu blok');
         if(r190Edge?.spreadBlock) blocks.push(`R190 spread pahalı: ${r190Edge.spreadPct}%`);
         if(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) blocks.push(`R190 geç/ters akış riski: ${r190Edge.summary}`);
         if(r37LateChaseBlock) blocks.push(`R37 geç giriş/chase: ${r37Side?.reason||''}`);
