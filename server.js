@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R200_SHORT_BYPASS_LOW_EDGE_AUDIT';
+const LAZARUS_BUILD = 'R202_1M3M_MICRO_PULSE_FILTER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5510,6 +5510,110 @@ function r120BrainSensorSummary(d={}) {
   if (d.r93PiyasaEtiketi) bits.push(`Zemin:${d.r93PiyasaEtiketi}`);
   return bits.join(' · ');
 }
+
+// R202: 1m/3m Micro Pulse Filter
+// Amaç: 5m ana kararı bozmadan, ENA 16:36 gibi 5m long sinyali varken 1m/3m satışa dönmüş
+// girişleri son kapıda kesmek. Veri yoksa blok üretmez. Yeni ağır endpoint yok; kline cache 30-45sn.
+function r202KlineObj(k) {
+  return {
+    o: Number(k?.[1] || 0), h: Number(k?.[2] || 0), l: Number(k?.[3] || 0), c: Number(k?.[4] || 0),
+    v: Number(k?.[5] || 0), t: Number(k?.[0] || 0)
+  };
+}
+function r202LatestTakerRatio(takerArr=[]) {
+  try {
+    const last = Array.isArray(takerArr) && takerArr.length ? takerArr[takerArr.length-1] : null;
+    const r = Number(last?.buySellRatio ?? last?.buySellRatioSum ?? last?.buySellRatioValue ?? 0);
+    if (Number.isFinite(r) && r > 0) return r;
+    const buy = Number(last?.buyVol ?? last?.buyVolume ?? last?.takerBuyVol ?? 0);
+    const sell = Number(last?.sellVol ?? last?.sellVolume ?? last?.takerSellVol ?? 0);
+    return sell > 0 ? buy / sell : 1;
+  } catch(_) { return 1; }
+}
+function r202BodyStrength(c) {
+  const range = Math.max(1e-12, c.h - c.l);
+  return Math.abs(c.c - c.o) / range;
+}
+function r202ClosePos(c) {
+  const range = Math.max(1e-12, c.h - c.l);
+  return (c.c - c.l) / range;
+}
+function r202PivotBreak(kl=[], side='LONG') {
+  const arr = (Array.isArray(kl) ? kl : []).map(r202KlineObj).filter(x => x.c > 0);
+  if (arr.length < 6) return { ok:false, reason:'3m veri az' };
+  const last = arr[arr.length-1];
+  const prev = arr.slice(-7, -1);
+  const hi = Math.max(...prev.map(x=>x.h));
+  const lo = Math.min(...prev.map(x=>x.l));
+  const bodyHi = Math.max(last.o, last.c);
+  const bodyLo = Math.min(last.o, last.c);
+  const ok = side === 'LONG' ? bodyHi > hi * 1.00015 : bodyLo < lo * 0.99985;
+  const near = side === 'LONG' ? last.c > hi * 0.9985 : last.c < lo * 1.0015;
+  return { ok, near, hi, lo, lastClose:last.c, reason: ok?'3m gövde kırılımı':near?'3m kırılıma yakın':'3m kırılım yok' };
+}
+function r202PostSpikeFade(kl1m=[], side='LONG') {
+  const arr = (Array.isArray(kl1m) ? kl1m : []).map(r202KlineObj).filter(x => x.c > 0);
+  if (arr.length < 8) return { fade:false, pumpPct:0, redSeq:0, dropFromHighPct:0, reason:'1m veri az' };
+  const recent = arr.slice(-10);
+  const lows = recent.map(x=>x.l), highs = recent.map(x=>x.h);
+  const minL = Math.min(...lows), maxH = Math.max(...highs);
+  const last = recent[recent.length-1];
+  const pumpPct = minL > 0 ? ((maxH-minL)/minL*100) : 0;
+  const dropFromHighPct = maxH > 0 ? ((maxH-last.c)/maxH*100) : 0;
+  let downSeq=0, upSeq=0;
+  for (let i=recent.length-1;i>=0;i--) {
+    if (recent[i].c < recent[i].o) downSeq++; else break;
+  }
+  for (let i=recent.length-1;i>=0;i--) {
+    if (recent[i].c > recent[i].o) upSeq++; else break;
+  }
+  const fadeLong = side==='LONG' && pumpPct >= 2.0 && dropFromHighPct >= 0.45 && downSeq >= 2;
+  const fadeShort = side==='SHORT' && pumpPct >= 2.0 && ((last.c-minL)/Math.max(minL,1e-12)*100) >= 0.45 && upSeq >= 2;
+  return { fade: !!(fadeLong || fadeShort), pumpPct, redSeq:downSeq, greenSeq:upSeq, dropFromHighPct, reason: fadeLong?'pump sonrası 1m satışa dönmüş':fadeShort?'dump sonrası 1m alışa dönmüş':'fade yok' };
+}
+function r202MicroPreConfirm(kl1m=[], kl3m=[], side='LONG', takerArr=[]) {
+  const one = (Array.isArray(kl1m) ? kl1m : []).map(r202KlineObj).filter(x => x.c > 0);
+  const three = (Array.isArray(kl3m) ? kl3m : []).map(r202KlineObj).filter(x => x.c > 0);
+  if (one.length < 5 || three.length < 5) return { ok:false, boost:false, block:false, score:0, summary:'R202 veri yok/az; blok yok' };
+  const last3 = one.slice(-3);
+  const last1 = one[one.length-1];
+  const prev4 = one.slice(-5,-1);
+  const green = last3.filter(c=>c.c > c.o).length;
+  const red = last3.filter(c=>c.c < c.o).length;
+  const body = r202BodyStrength(last1);
+  const closePos = r202ClosePos(last1);
+  const avgVol = prev4.length ? prev4.reduce((a,c)=>a+c.v,0)/prev4.length : 0;
+  const volAccel = avgVol > 0 ? last1.v / avgVol : 1;
+  const taker = r202LatestTakerRatio(takerArr);
+  const pivot = r202PivotBreak(three, side);
+  const fade = r202PostSpikeFade(one, side);
+  const dirMomentum = side === 'LONG' ? green >= 2 : red >= 2;
+  const oppMomentum = side === 'LONG' ? red >= 2 : green >= 2;
+  const bodyOk = body >= 0.35;
+  const closeOk = side === 'LONG' ? closePos >= 0.55 : closePos <= 0.45;
+  const volOk = volAccel >= 1.15;
+  const takerOk = side === 'LONG' ? taker >= 1.08 : taker <= 0.92;
+  const takerBad = side === 'LONG' ? taker <= 0.92 : taker >= 1.08;
+  const checks = [dirMomentum, bodyOk, closeOk, volOk, pivot.ok || pivot.near, takerOk];
+  const score = checks.filter(Boolean).length;
+  // ENA 16:36 tarzı: 5m hâlâ LONG derken 1m/3m tepeden dönmüş + taker satıcı baskın.
+  const hardFadeBlock = fade.fade && oppMomentum && takerBad;
+  const coreFailBlock = !dirMomentum && !takerOk && !(pivot.ok || pivot.near);
+  const weakMicroBlock = score <= 1 && (!dirMomentum || takerBad);
+  const block = !!(hardFadeBlock || coreFailBlock || weakMicroBlock);
+  const boost = !!(!block && score >= 4 && dirMomentum && takerOk && (pivot.ok || pivot.near));
+  const summary = [
+    `1m:${side==='LONG'?green:red}/3 ${side}`,
+    `body:${body.toFixed(2)}`,
+    `pos:${closePos.toFixed(2)}`,
+    `vol×${volAccel.toFixed(2)}`,
+    `3m:${pivot.reason}`,
+    `taker:${taker.toFixed(3)}`,
+    fade.fade ? `FADE:${fade.reason}` : ''
+  ].filter(Boolean).join(' · ');
+  return { ok:true, boost, block, score, summary, dirMomentum, oppMomentum, bodyOk, closeOk, volOk, takerOk, takerBad, pivot, fade };
+}
+
 function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // R121: 5m kaldıraçlı fırsat beyni.
   // Eski Rxx modülleri burada sadece sensör kabul edilir. Nihai emir: tek beyin.
@@ -6143,8 +6247,18 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // WLD ekranında görülen açık: SHORT R160 4/4 etiketi, score 48 ve edge 6 ile emir yoluna ulaşmış.
   // R195 valisi yakıt varsa düşük edge'i affedebiliyordu; ancak 5m scalp'te edge<15 + score<55
   // hiçbir yönde (LONG veya SHORT) normal işlem kalitesi değildir. Bu valf tüm bypass yollarına uygulanır.
+  // R202: 1m/3m micro pulse final vali. Veri yoksa blok üretmez; sadece 5m karar ile mikro zamanlama açıkça çelişirse engeller.
+  const r202Micro = r202MicroPreConfirm(
+    d?._r202k1m || d?._r201k1m || d?.k1mArr || [],
+    d?._r202k3m || d?._r201k3m || d?.k3mArr || [],
+    side,
+    takerArr || []
+  );
+  const r202BoostActive = !!(r202Micro.boost);
+  const r202BlockActive = !!(r202Micro.block);
+
   const r200EliteRealFuel = r120Bool(
-    (r193EdgeObj.squeeze || r193EdgeObj.earlyContinuation || r193EdgeObj.r194SwingBreak?.strong || r120Bool((side === 'LONG' ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong))) &&
+    (r193EdgeObj.squeeze || r193EdgeObj.earlyContinuation || r193EdgeObj.r194SwingBreak?.strong || r202BoostActive || r120Bool((side === 'LONG' ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong))) &&
     (r193EdgeObj.r192FuelOk || r193FuelScore >= 8 || r120Bool(d.r118CandleStrong)) &&
     r125SideFlow.edge >= 10 &&
     r133LiveTradeCount >= 25 &&
@@ -6197,7 +6311,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r196RangeLocationBlock ||
     r200UltraLowEdgeScoreBlock ||
     r200R160LowEdgeAnySideBlock ||
-    r200R159R156LowEdgeAnySideBlock
+    r200R159R156LowEdgeAnySideBlock ||
+    r202BlockActive
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
     ? `R191 final vali: ${[
@@ -6218,7 +6333,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):'',
         r200UltraLowEdgeScoreBlock?`R200 ultra düşük kalite: ${side} edge ${edge} + skor ${score}; bypass kapalı`:'',
         r200R160LowEdgeAnySideBlock?`R200 ${side} R160 4/4 düşük edge ${edge}; elit canlı yakıt yok`:'',
-        r200R159R156LowEdgeAnySideBlock?`R200 ${side} R159/R156/R144 düşük edge ${edge}; elit canlı yakıt yok`:''
+        r200R159R156LowEdgeAnySideBlock?`R200 ${side} R159/R156/R144 düşük edge ${edge}; elit canlı yakıt yok`:'',
+        r202BlockActive?`R202 1m/3m mikro zamanlama ters: ${r202Micro?.summary||'core fail'}`:'',
+        r202BoostActive?`R202 1m/3m mikro destek: ${r202Micro?.score}/6`:''
       ].filter(Boolean).join(' + ')}`
     : '';
   const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
@@ -6268,6 +6385,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r142CalibrationNotes = r142Cal.notes;
   d.r142MemoryStats = { same:r142Cal.mem.same, opp:r142Cal.mem.opp, tags:r142Cal.mem.tags.slice(0,10) };
   d.r142FrequencySafeEdge = r142FrequencySafeEdge;
+  d.r202MicroPreConfirm = r202Micro;
+  d.r202MicroBlock = r202BlockActive;
+  d.r202MicroBoost = r202BoostActive;
   d.brainSummary = core.slice(0,500);
   d.brainSensors = sensorSummary;
   d.brainAdaptiveFloor = adaptiveFloor;
@@ -6730,7 +6850,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     startIcebergStream(full);
     // tickStream analyze'da await ile çağrılıyor
 
-    const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m] =
+    const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m,rK1m,rK3m] =
       await Promise.allSettled([
         cached(`k4h_${full}`,  30*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)),
         cached(`k1h_${full}`,   5*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)),
@@ -6746,6 +6866,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         cached(`oin_${full}`,  60*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
         // R153: btc5m paralel çekilir — seri await kaldırıldı
         cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`)),
+        // R202: 1m/3m micro pulse pre-confirmation; kısa cache, Promise.allSettled içinde paralel.
+        cached(`k1m_${full}`, 30*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1m&limit=12`)),
+        cached(`k3m_${full}`, 45*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=3m&limit=10`)),
       ]);
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
@@ -6760,6 +6883,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const takerArr = rTaker?.status==='fulfilled'&&Array.isArray(rTaker.value)?rTaker.value:[];
     const oiHist5m = rOIHist5m?.status==='fulfilled'&&Array.isArray(rOIHist5m.value)?rOIHist5m.value:[];
     const oiNowObj = rOINow?.status==='fulfilled'&&rOINow.value?rOINow.value:null;
+    const k1mArr = rK1m?.status==='fulfilled'&&Array.isArray(rK1m.value)?rK1m.value:[];
+    const k3mArr = rK3m?.status==='fulfilled'&&Array.isArray(rK3m.value)?rK3m.value:[];
 
     const lastPrice = k5m.length?parseFloat(k5m[k5m.length-1][4]):(k15m.length?parseFloat(k15m[k15m.length-1][4]):0);
     const lastTime  = k15m.length?parseInt(k15m[k15m.length-1][6]):Date.now();
@@ -10731,6 +10856,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       // Böylece ZEC/FET benzeri tepeden LONG veya dipten SHORT tuzaklarında ters tarafın temizliği kaçırılmaz.
       const longDecisionRaw  = evalDecision('LONG');
       const shortDecisionRaw = evalDecision('SHORT');
+      // R202: 1m/3m micro pre-confirmation verisini son beyne taşı.
+      longDecisionRaw._r202k1m = k1mArr;
+      longDecisionRaw._r202k3m = k3mArr;
+      shortDecisionRaw._r202k1m = k1mArr;
+      shortDecisionRaw._r202k3m = k3mArr;
       const longDecision  = r120SingleBrainDecision('LONG', longDecisionRaw, longScore, minAutoScore);
       const shortDecision = r120SingleBrainDecision('SHORT', shortDecisionRaw, shortScore, minAutoScore);
       function decisionRank(side, d) {
