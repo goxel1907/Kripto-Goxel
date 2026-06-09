@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R199_MOMENTUM_STRUCTURE_BREATH';
+const LAZARUS_BUILD = 'R200_SHORT_BYPASS_LOW_EDGE_AUDIT';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6138,6 +6138,40 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r196SideCtxBrain = side === 'LONG' ? d.r29?.r196?.long : d.r29?.r196?.short;
   const r196RangeLocationBlock = r120Bool(r196SideCtxBrain?.block);
   const r196RangeLocationCaution = r120Bool(r196SideCtxBrain?.caution);
+
+  // R200: SHORT/LONG simetrik düşük-edge bypass sigortası.
+  // WLD ekranında görülen açık: SHORT R160 4/4 etiketi, score 48 ve edge 6 ile emir yoluna ulaşmış.
+  // R195 valisi yakıt varsa düşük edge'i affedebiliyordu; ancak 5m scalp'te edge<15 + score<55
+  // hiçbir yönde (LONG veya SHORT) normal işlem kalitesi değildir. Bu valf tüm bypass yollarına uygulanır.
+  const r200EliteRealFuel = r120Bool(
+    (r193EdgeObj.squeeze || r193EdgeObj.earlyContinuation || r193EdgeObj.r194SwingBreak?.strong || r120Bool((side === 'LONG' ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong))) &&
+    (r193EdgeObj.r192FuelOk || r193FuelScore >= 8 || r120Bool(d.r118CandleStrong)) &&
+    r125SideFlow.edge >= 10 &&
+    r133LiveTradeCount >= 25 &&
+    !r191TakerOrVpinAgainst &&
+    !r192AgainstFinal &&
+    !r193OiAnomalyNoFuel &&
+    !r196RangeLocationBlock
+  );
+  const r200UltraLowEdgeScoreBlock = r120Bool(
+    (r160TrueCount >= 3 || r159MomentumPass || r156FastTop10Bypass || r133FastScalpOverride) &&
+    edge < 15 &&
+    score < Math.max(55, minScore - 15) &&
+    !r200EliteRealFuel
+  );
+  const r200R160LowEdgeAnySideBlock = r120Bool(
+    r160TrueCount >= 4 &&
+    edge < 35 &&
+    score < Math.max(58, minScore - 10) &&
+    !r200EliteRealFuel
+  );
+  const r200R159R156LowEdgeAnySideBlock = r120Bool(
+    (r159MomentumPass || r156FastTop10Bypass || r133FastScalpOverride) &&
+    edge < 35 &&
+    score < Math.max(55, minScore - 15) &&
+    !r200EliteRealFuel
+  );
+
   const r191RawOk = r120Bool(
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
@@ -6160,7 +6194,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r195LowScoreLowEdgeNoFuel ||
     r195WeakSwingLowQuality ||
     r195R160LowEdgeFalse4of4 ||
-    r196RangeLocationBlock
+    r196RangeLocationBlock ||
+    r200UltraLowEdgeScoreBlock ||
+    r200R160LowEdgeAnySideBlock ||
+    r200R159R156LowEdgeAnySideBlock
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
     ? `R191 final vali: ${[
@@ -6178,7 +6215,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r195LowScoreLowEdgeNoFuel?`düşük skor ${score}/${minScore} + düşük edge ${edge} + güçlü yakıt yok`:'',
         r195WeakSwingLowQuality?'R194 swing zayıf; TP/yakıt/edge kalite yok':'',
         r195R160LowEdgeFalse4of4?'R160 4/4 görünüyor ama edge düşük; gerçek kaliteli 5m yakıt yok':'',
-        r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):''
+        r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):'',
+        r200UltraLowEdgeScoreBlock?`R200 ultra düşük kalite: ${side} edge ${edge} + skor ${score}; bypass kapalı`:'',
+        r200R160LowEdgeAnySideBlock?`R200 ${side} R160 4/4 düşük edge ${edge}; elit canlı yakıt yok`:'',
+        r200R159R156LowEdgeAnySideBlock?`R200 ${side} R159/R156/R144 düşük edge ${edge}; elit canlı yakıt yok`:''
       ].filter(Boolean).join(' + ')}`
     : '';
   const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
@@ -6304,6 +6344,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r195LowScoreLowEdgeNoFuel = r195LowScoreLowEdgeNoFuel;
   d.r195WeakSwingLowQuality = r195WeakSwingLowQuality;
   d.r195R160LowEdgeFalse4of4 = r195R160LowEdgeFalse4of4;
+  d.r200EliteRealFuel = r200EliteRealFuel;
+  d.r200UltraLowEdgeScoreBlock = r200UltraLowEdgeScoreBlock;
+  d.r200R160LowEdgeAnySideBlock = r200R160LowEdgeAnySideBlock;
+  d.r200R159R156LowEdgeAnySideBlock = r200R159R156LowEdgeAnySideBlock;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
