@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R192_FOOTPRINT_DEEPOFI_FUEL_TRAIL';
+const LAZARUS_BUILD = 'R194_SWING_BREAK_EARLY_STRUCTURE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -2312,6 +2312,73 @@ function r192DeepOfiFromBook(book={}, side='LONG') {
   };
 }
 
+
+// ── R194: 5m Swing Break / Structure Shift detector ───────────────────────
+// Amaç: grafikteki yeşil/kırmızı okların gösterdiği ilk yapı kırılımını 5m hareketin
+// başında yakalamak. Tek başına kör emir açtırmaz; R190/R191 terazisine ERKEN KANIT verir.
+// Kural: son 5-7 mumluk pivot high/low gövde kapanışıyla kırılır + hacim + canlı akış teyidi.
+function r194SwingBreakDetector(side='LONG', ctx={}) {
+  side = String(side||'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const rows = (Array.isArray(ctx.rows) && ctx.rows.length ? ctx.rows : r190Rows5m(ctx.k5m, 12)).filter(r=>r && r.c>0);
+  if (rows.length < 7) return { ok:false, side, bos:false, volOk:false, flowOk:false, candleOk:false, label:'R194Swing:yetersiz' };
+  const last = rows.at(-1);
+  const prev = rows.slice(Math.max(0, rows.length-9), -1);
+  if (!last || prev.length < 5) return { ok:false, side, bos:false, volOk:false, flowOk:false, candleOk:false, label:'R194Swing:yetersiz' };
+
+  const pivH = [];
+  const pivL = [];
+  for (let i=1; i<prev.length-1; i++) {
+    const a=prev[i-1], b=prev[i], c=prev[i+1];
+    if (b.h > a.h && b.h >= c.h) pivH.push({ price:b.h, idx:i });
+    if (b.l < a.l && b.l <= c.l) pivL.push({ price:b.l, idx:i });
+  }
+  const rangeHigh = Math.max(...prev.slice(-7).map(x=>x.h));
+  const rangeLow  = Math.min(...prev.slice(-7).map(x=>x.l));
+  const swingHigh = (pivH.at(-1)?.price || rangeHigh);
+  const swingLow  = (pivL.at(-1)?.price || rangeLow);
+  const breakBuf = Math.max(0.00015, r190N(ctx.spreadPct,0) * 0.35 / 100);
+  const bosLong = last.c > swingHigh * (1 + breakBuf);
+  const bosShort = last.c < swingLow * (1 - breakBuf);
+  const bos = isL ? bosLong : bosShort;
+  const breakPct = isL ? r190Pct(last.c, swingHigh) : r190Pct(swingLow, last.c);
+
+  const vols = prev.slice(-7).map(x=>x.v).filter(v=>v>0);
+  const avgVol = vols.reduce((s,v)=>s+v,0) / Math.max(1, vols.length);
+  const volRatio = avgVol > 0 ? last.v / avgVol : 1;
+  const fp = ctx.r192Footprint || {};
+  const deep = ctx.r192DeepOfi || {};
+  // Normalde 1.30x isteriz; footprint+deepOFI birlikte güçlü ise 1.15x yeterli sayılır.
+  const volOk = volRatio >= 1.30 || (volRatio >= 1.15 && fp.aligned && deep.aligned);
+
+  const rng = Math.max(1e-12, last.h-last.l);
+  const body = Math.abs(last.c-last.o);
+  const bodyShare = body / rng;
+  const closePos = (last.c-last.l) / rng;
+  const candleOk = isL ? (last.c > last.o && closePos >= 0.60 && bodyShare >= 0.28) : (last.c < last.o && closePos <= 0.40 && bodyShare >= 0.28);
+
+  const taker = r190N(ctx.takerRatio, 1);
+  const takerOk = isL ? taker >= 1.06 : taker <= 0.94;
+  const flowOk = !!(
+    (takerOk || fp.aligned || deep.strongAligned || ctx.vpinAligned || ctx.microAligned) &&
+    !fp.against && !deep.against && !ctx.vpinAgainst && !ctx.microAgainst
+  );
+
+  const seq = r190N(ctx.seq, 0);
+  const price3 = Math.abs(r190N(ctx.price3, 0));
+  const atrPct = Math.max(0.25, r190N(ctx.atrPct, 0.8));
+  const notLate = seq <= 3 && price3 <= Math.max(1.35, atrPct * 1.25);
+  const notTooExtendedFromBreak = Math.abs(breakPct) <= Math.max(0.55, atrPct * 0.70);
+  const ok = !!(bos && volOk && flowOk && candleOk && notLate && notTooExtendedFromBreak);
+  const strong = !!(ok && volRatio >= 1.55 && (fp.strongAligned || deep.strongAligned || takerOk));
+  return {
+    ok, strong, side, bos, bosLong, bosShort, volOk, flowOk, candleOk, notLate, notTooExtendedFromBreak,
+    swingHigh:+swingHigh.toFixed(8), swingLow:+swingLow.toFixed(8), breakPct:+breakPct.toFixed(3),
+    volRatio:+volRatio.toFixed(2), bodyShare:+bodyShare.toFixed(2), closePos:+closePos.toFixed(2), seq,
+    label:`R194Swing ${side} ${ok?'BOS✅':'bekle'} br:${breakPct.toFixed(2)}% vol:${volRatio.toFixed(2)}x seq:${seq}`
+  };
+}
+
 function r190OiVector(oiHist5m=[], oiNowObj=null) {
   const arr = (Array.isArray(oiHist5m)?oiHist5m:[]).slice(-8).map(r190OiVal).filter(v=>v>0);
   const nowOi = r190OiVal(oiNowObj);
@@ -2382,9 +2449,13 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
   const microPersist = String(book.microPersistSide || 'NEUTRAL').toUpperCase();
   const microAligned = microSide === side || microPersist === side;
   const microAgainst = microSide === opp && microPersist === opp;
+  const r194SwingBreak = r194SwingBreakDetector(side, {
+    rows, takerRatio, rvol, price3, seq, atrPct: ctx.atrPct, spreadPct,
+    r192Footprint, r192DeepOfi, vpinAligned, vpinAgainst, microAligned, microAgainst
+  });
   const tooLate = !!(seq >= 4 || (dir5Abs > Math.max(1.05, r190N(ctx.atrPct,1)*0.90) && (isL ? rangePos > 0.82 : rangePos < 0.18)) || oiDecelLate);
   const momentumWindow = !!(dir3Ok && rvol >= 0.75 && oi.rising && takerAligned && !takerDivergence && !microAgainst && !tooLate);
-  const earlyContinuation = !!(momentumWindow && seq <= 3 && (oiAccelAligned || vpinAligned || takerStrong || squeeze || r192Footprint.aligned || r192DeepOfi.strongAligned) && spreadPct <= 0.12);
+  const earlyContinuation = !!((momentumWindow && seq <= 3 && (oiAccelAligned || vpinAligned || takerStrong || squeeze || r192Footprint.aligned || r192DeepOfi.strongAligned) && spreadPct <= 0.12) || r194SwingBreak.ok);
   const spreadCost15x = spreadPct * 15;
   const spreadBlock = !!(spreadPct >= 0.18 || spreadCost15x >= 3.2);
   const fakePump = !!(isL && (takerDivergence || (price3 > 0.45 && oi.falling) || (fund.rising && fund.last > 0.06 && longCrowded && !squeeze)));
@@ -2394,6 +2465,7 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
     (earlyContinuation ? 4 : 0) + (squeeze ? 5 : 0) + (r192SqzImminent ? 3 : 0) +
     (r192Footprint.strongAligned ? 4 : r192Footprint.aligned ? 2 : 0) +
     (r192DeepOfi.strongAligned ? 3 : r192DeepOfi.aligned ? 1 : 0) +
+    (r194SwingBreak.strong ? 4 : r194SwingBreak.ok ? 3 : 0) +
     (oiAccelAligned ? 2 : 0) + (takerStrong ? 2 : 0) + (microAligned ? 1 : 0) -
     (r192Footprint.against ? 4 : 0) - (r192DeepOfi.against ? 3 : 0) - (takerDivergence ? 4 : 0);
   const r192FuelOk = r192FuelScore >= 6 && !spreadBlock && !takerDivergence && !r192LiveAgainst;
@@ -2401,7 +2473,8 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
   let score = 0;
   const tags = [];
   const add=(ok,pts,tag)=>{ if(ok){ score += pts; tags.push(tag); } };
-  add(earlyContinuation, 18, 'earlyContinuation');
+  add(earlyContinuation && !r194SwingBreak.ok, 18, 'earlyContinuation');
+  add(r194SwingBreak.ok, r194SwingBreak.strong ? 20 : 16, r194SwingBreak.label);
   add(momentumWindow && !earlyContinuation, 8, 'momentumWindow');
   add(oiAccelAligned, 8, oi.label);
   add(vpinAligned, 7, `VPIN:${vpin?.vpin||0}/${vpinToxic}/${vpinDir}`);
@@ -2425,8 +2498,8 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
     momentumWindow, earlyContinuation, lateTrapRisk, tooLate, seq, rvol:+rvol.toFixed(2), price3:+price3.toFixed(2), price5:+price5.toFixed(2), rangePos:+rangePos.toFixed(2),
     oi, takerRatio, takerAligned, takerDivergence, vpinAligned, vpinAgainst, vpin, microAligned, microAgainst,
     squeeze, shortCrowded, longCrowded, funding:fund, spreadPct:+spreadPct.toFixed(4), spreadBlock,
-    r192Footprint, r192DeepOfi, r192SqzImminent, r192FuelScore:+r192FuelScore.toFixed(1), r192FuelOk, r192LiveAgainst,
-    summary:`R190/R192 ${side} ${earlyContinuation?'ERKEN':'izle'} fuel:${r192FuelScore.toFixed(1)} score:${score} p3:${price3.toFixed(2)}% seq:${seq} rvol:${rvol.toFixed(2)} taker:${takerRatio} ${oi.label} ${vpin?`VPIN:${vpin.vpin}/${vpinToxic}/${vpinDir}`:'VPIN:yok'} ${r192Footprint.label} ${r192DeepOfi.label} spread:${spreadPct.toFixed(4)}%`
+    r192Footprint, r192DeepOfi, r194SwingBreak, r192SqzImminent, r192FuelScore:+r192FuelScore.toFixed(1), r192FuelOk, r192LiveAgainst,
+    summary:`R190/R192/R194 ${side} ${earlyContinuation?'ERKEN':'izle'} fuel:${r192FuelScore.toFixed(1)} score:${score} p3:${price3.toFixed(2)}% seq:${seq} rvol:${rvol.toFixed(2)} taker:${takerRatio} ${oi.label} ${vpin?`VPIN:${vpin.vpin}/${vpinToxic}/${vpinDir}`:'VPIN:yok'} ${r192Footprint.label} ${r192DeepOfi.label} ${r194SwingBreak.label} spread:${spreadPct.toFixed(4)}%`
   };
 }
 
@@ -5679,7 +5752,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r120Bool(d.r118CandleStrong) ||
     (r120Bool(d.r117TrapSweepTaken) && r120Bool(d.r117BodyReclaimOk)) ||
     // R192: mum-içi footprint + top10 deep OFI beraber hizalıysa Q4 forecast-only değil, canlı kanıt sayılır.
-    (r120Bool(d.r190Edge?.r192Footprint?.aligned) && r120Bool(d.r190Edge?.r192DeepOfi?.aligned) && r120BrainNum(d.r190Edge?.r192FuelScore,0) >= 5)
+    (r120Bool(d.r190Edge?.r192Footprint?.aligned) && r120Bool(d.r190Edge?.r192DeepOfi?.aligned) && r120BrainNum(d.r190Edge?.r192FuelScore,0) >= 5) ||
+    // R194: 5m swing high/low gövde kırılımı + hacim + canlı akış varsa gerçek erken yapı kanıtıdır.
+    r120Bool(d.r190Edge?.r194SwingBreak?.ok)
   );
   const r191ForecastOnlyProof = r120Bool(r160Q4Proof && !r191Hard5mProof);
   let r191PerfCaution = false;
@@ -5692,6 +5767,44 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r191SpreadBad = r120Bool(d.r190Edge?.spreadBlock || d.poorLiquidity);
   const r192AgainstFinal = r120Bool(d.r190Edge?.r192LiveAgainst || d.r190Edge?.r192Footprint?.against || d.r190Edge?.r192DeepOfi?.against);
   const r191TakerOrVpinAgainst = r120Bool((d.r190Edge?.takerDivergence || d.r190Edge?.vpinAgainst || r189MicroAgainst || r192AgainstFinal) && !r191EarlyFuel);
+  // R193: IOUSDT ekranında görülen açık: HTF/stop-hunt + OI spike, 5m mum 0/12 ve zemin BOZUK iken
+  // R160 4/4 sayılıp emir açabiliyordu. 5m scalp'te HTF kanıtı tek başına yeterli değildir;
+  // en azından canlı footprint/deepOFI/yakıt veya temiz mum gerekir. Frekansı boğmamak için sadece kirli kombinasyonu keser.
+  const r193EdgeObj = d.r190Edge || {};
+  const r193Rvol = r120BrainNum(r193EdgeObj.rvol, r120BrainNum(d.r140Rvol?.ratio, 0));
+  const r193P3 = r120BrainNum(r193EdgeObj.price3, 0);
+  const r193FuelScore = r120BrainNum(r193EdgeObj.r192FuelScore, 0);
+  const r193EdgeScore = r120BrainNum(r193EdgeObj.score, 0);
+  const r193Oi15Abs = Math.abs(r120BrainNum(r193EdgeObj.oi?.oiChg15, r120BrainNum(d.r140OiVel?.velocity, 0)));
+  const r193ZeminText = String(d.zemin || d.zeminOzet || d.brainSummary || d.reason || '');
+  const r193BrokenGround = /BOZUK|kirli|dirty|risk/i.test(r193ZeminText);
+  const r193StrongLiveFuel = r120Bool(
+    r193EdgeObj.squeeze ||
+    r193EdgeObj.earlyContinuation ||
+    r193EdgeObj.r192FuelOk ||
+    r193EdgeObj.r194SwingBreak?.ok ||
+    (r193EdgeObj.r192Footprint?.strongAligned && r193EdgeObj.r192DeepOfi?.aligned && r193FuelScore >= 7) ||
+    (r193EdgeObj.r192DeepOfi?.strongAligned && r193EdgeObj.r192Footprint?.aligned && r193FuelScore >= 7)
+  );
+  const r193Current5mAgainst = r120Bool((side === 'LONG' && r193P3 <= -0.35) || (side === 'SHORT' && r193P3 >= 0.35));
+  const r193WeakZeroCandleDirtyFuel = r120Bool(
+    r188WeakCandle &&
+    !r193StrongLiveFuel &&
+    (r193BrokenGround || r193Rvol < 0.25 || r193Current5mAgainst || r193EdgeScore < 35)
+  );
+  const r193OiAnomalyNoFuel = r120Bool(
+    r193Oi15Abs >= 180 &&
+    !r193StrongLiveFuel &&
+    (r193Rvol < 0.45 || r188WeakCandle || r193BrokenGround)
+  );
+  const r193HtfOnlyWeakProof = r120Bool(
+    r191Hard5mProof &&
+    r188WeakCandle &&
+    !r193StrongLiveFuel &&
+    !r120Bool(d.r118CandleOk) &&
+    !r120Bool(d.r118CandleStrong) &&
+    !r120Bool(d.r117BodyReclaimOk)
+  );
   const r191LowScoreNoFuel = r120Bool(score < Math.max(52, minScore - 18) && !r191EarlyFuel && !r191Hard5mProof);
   const r191ForecastOnlyChase = r120Bool(r191ForecastOnlyProof && !r191EarlyFuel && score < Math.max(58, minScore - 12));
   const r191CounterTrapWeak = r120Bool(primaryMode === 'COUNTER_TRAP' && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r188HtfCounterPressure || r191TakerOrVpinAgainst));
@@ -5712,7 +5825,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r191ForecastOnlyChase ||
     r191CounterTrapWeak ||
     r191FastScalpWeak ||
-    r191PerfCautionWeak
+    r191PerfCautionWeak ||
+    r193WeakZeroCandleDirtyFuel ||
+    r193OiAnomalyNoFuel ||
+    r193HtfOnlyWeakProof
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
     ? `R191 final vali: ${[
@@ -5723,7 +5839,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r191ForecastOnlyChase?'forecast-only 4/4; gerçek 5m kanıt yok':'',
         r191CounterTrapWeak?'counter-trap zayıf kanıt':'',
         r191FastScalpWeak?'hızlı scalp zayıf kanıt':'',
-        r191PerfCautionWeak?'son performans kötü; zayıf bypass kapalı':''
+        r191PerfCautionWeak?'son performans kötü; zayıf bypass kapalı':'',
+        r193WeakZeroCandleDirtyFuel?'5m mum 0/12/zayıf + zemin/RVOL/yakıt kirli':'',
+        r193OiAnomalyNoFuel?`OI spike anomali (${r193Oi15Abs.toFixed(0)}%) ama canlı yakıt yok`:'',
+        r193HtfOnlyWeakProof?'HTF/stop-hunt kanıtı var ama gerçek 5m mum/footprint/deepOFI yok':''
       ].filter(Boolean).join(' + ')}`
     : '';
   const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
@@ -5843,6 +5962,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r191RawOk = r191RawOk;
   d.r191UnifiedEntryBlock = r191UnifiedEntryBlock;
   d.r191UnifiedBlockReason = r191UnifiedBlockReason;
+  d.r193WeakZeroCandleDirtyFuel = r193WeakZeroCandleDirtyFuel;
+  d.r193OiAnomalyNoFuel = r193OiAnomalyNoFuel;
+  d.r193HtfOnlyWeakProof = r193HtfOnlyWeakProof;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
@@ -8557,7 +8679,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           (tickData?.imbalance?.bear&&tickData.whaleBias==='WHALE_SELL'&&!isL)||
           (tickData?.deltaFlip==='BEAR_TO_BULL'&&tickData.whaleBias==='WHALE_BUY'&&isL)||
           (tickData?.deltaFlip==='BULL_TO_BEAR'&&tickData.whaleBias==='WHALE_SELL'&&!isL)||
-          (r190Edge?.earlyEntryOk);
+          (r190Edge?.earlyEntryOk)||
+          (r190Edge?.r194SwingBreak?.ok);
 
         const softEntry=
           (sw1?.swept&&!sw1?.confirmed)||
@@ -8846,7 +8969,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         addP(r37Side?.earlyImpulse, 10, 'R37Early');
         addP(r37Side?.retestOk, 8, 'R37Retest');
         addP(Number(r37Side?.earlyScore||0) >= 4, 5, 'R37Micro');
-        addP(r190Edge?.earlyContinuation, 18, 'R190Early');
+        addP(r190Edge?.earlyContinuation && !r190Edge?.r194SwingBreak?.ok, 18, 'R190Early');
+        addP(r190Edge?.r194SwingBreak?.ok, r190Edge?.r194SwingBreak?.strong ? 16 : 12, 'R194SwingBreak');
         addP(r190Edge?.momentumWindow && !r190Edge?.earlyContinuation, 8, 'R190Window');
         addP(r190Edge?.vpinAligned, 7, 'R190VPIN');
         addP(r190Edge?.squeeze, 16, 'R190Squeeze');
