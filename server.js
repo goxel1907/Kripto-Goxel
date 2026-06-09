@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R202_1M3M_MICRO_PULSE_FILTER';
+const LAZARUS_BUILD = 'R203_R202_TAKER_SCOPE_RUNTIME_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6252,7 +6252,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     d?._r202k1m || d?._r201k1m || d?.k1mArr || [],
     d?._r202k3m || d?._r201k3m || d?.k3mArr || [],
     side,
-    takerArr || []
+    d?._r202TakerArr || d?._r201TakerArr || d?.takerArr || []
   );
   const r202BoostActive = !!(r202Micro.boost);
   const r202BlockActive = !!(r202Micro.block);
@@ -10859,8 +10859,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       // R202: 1m/3m micro pre-confirmation verisini son beyne taşı.
       longDecisionRaw._r202k1m = k1mArr;
       longDecisionRaw._r202k3m = k3mArr;
+      longDecisionRaw._r202TakerArr = takerArr;
       shortDecisionRaw._r202k1m = k1mArr;
       shortDecisionRaw._r202k3m = k3mArr;
+      shortDecisionRaw._r202TakerArr = takerArr;
       const longDecision  = r120SingleBrainDecision('LONG', longDecisionRaw, longScore, minAutoScore);
       const shortDecision = r120SingleBrainDecision('SHORT', shortDecisionRaw, shortScore, minAutoScore);
       function decisionRank(side, d) {
