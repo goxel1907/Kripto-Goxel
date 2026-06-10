@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R209_WAVE_AI_AUTORISK_SCALP_ENGINE';
+const LAZARUS_BUILD = 'R210_R209_WAVE_SCOPE_RUNTIME_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6616,6 +6616,16 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r208ScalpCertified = r208ScalpCertified;
   d.r208Block = r208BlockActive;
 
+  // R210: R209 dalga beyni aynı scope içinde üretilir.
+  // R209'da reason/final vali r209WaveBlockActive değişkenini çağırıyordu ama değişken bu fonksiyonda tanımlı değildi.
+  // Bu yüzden AUTO_ANALYZE_* ReferenceError veriyordu. Artık veri yoksa safe false, veri varsa karar zincirine yazılır.
+  const r209Wave = r209WaveStructure(side, d);
+  const r209WaveBoostActive = !!(r209Wave && r209Wave.boost);
+  const r209WaveBlockActive = !!(r209Wave && r209Wave.block);
+  d.r209Wave = r209Wave;
+  d.r209WaveBoost = r209WaveBoostActive;
+  d.r209WaveBlock = r209WaveBlockActive;
+
   // R207: R206 grafik desteği artık düşük skoru otomatik affeden "elit yakıt" sayılmaz.
   // Grafik hafızası iyi olabilir; ama skor/edge/fiyat-zamanlama zayıfsa emir değil, aday izleme olmalı.
   const r200EliteRealFuel = r120Bool(
@@ -6736,6 +6746,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r205BypassScoreBlock ||
     r206BlockActive ||
     r208BlockActive ||
+    (r209WaveBlockActive && !r208ScalpCertified) ||
     r202BlockActive
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
@@ -6914,6 +6925,12 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r206Graph = r206Graph;
   d.r206GraphSupport = r206SupportActive;
   d.r206GraphBlock = r206BlockActive;
+  d.r208Pattern = r208Pattern;
+  d.r208ScalpCertified = r208ScalpCertified;
+  d.r208Block = r208BlockActive;
+  d.r209Wave = r209Wave;
+  d.r209WaveBoost = r209WaveBoostActive;
+  d.r209WaveBlock = r209WaveBlockActive;
   d.r204MicroWeak = r204MicroWeak;
   d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
