@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R213_REVERSAL_OPPORTUNITY_ROUTER';
+const LAZARUS_BUILD = 'R215_FAST_OPPORTUNITY_SCALP_BALANCER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6807,7 +6807,35 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r207LowEdgeHardBlock
   );
 
+  // ── R215: FAST OPPORTUNITY SCALP BALANCER ────────────────────────────────
+  // Amaç: botu kural yığınıyla boğmamak. Net 1m/3m + flow + grafik yapı desteği varsa
+  // sadece kaliteye yakın A/B+ vur-kaç fırsatını tekrar oyuna alır.
+  // Asla kör bypass değildir: 1m/3m ters, HTF/range ters, spread/taker ters, dalga blok varsa açmaz.
+  const r215FastOpportunityFloor = Math.max(62, minScore - 8);
+  const r215FreshMicroSupport = r120Bool(r202BoostActive || (r202Micro && Number(r202Micro.score||0) >= 4 && !r202BlockActive));
+  const r215GraphSupport = r120Bool(r206SupportActive || r208ScalpCertified || r209WaveBoostActive);
+  const r215FuelSupport = r120Bool(
+    d.r190Edge?.earlyContinuation || d.r190Edge?.squeeze || d.r190Edge?.r192FuelOk ||
+    Number(d.r190Edge?.fuel||0) >= 7 || Number(d.r190Edge?.score||0) >= 18
+  );
+  const r215LiveFlowSupport = r120Bool(
+    r125SideFlow.strong || r125SideFlow.edge >= 14 ||
+    (r134FlowAligned && r133LiveTradeCount >= 60) ||
+    (r134LiveDeltaAligned && r133LiveTradeCount >= 80 && r133LiveDeltaAbs >= 18)
+  );
+  const r215NoOppositeHard = r120Bool(
+    !fatalDanger && !r147NoProofCounterTrap && !r148WrongSideBlock && !r191SpreadBad &&
+    !r191TakerOrVpinAgainst && !r202BlockActive && !r206BlockActive && !r208BlockActive &&
+    !(r209WaveBlockActive && !r208ScalpCertified) && !r212RangeSideBlock && !r134OpposingLiveFlow
+  );
+  const r215APlusScalp = r120Bool(
+    dataMinimum && r215NoOppositeHard && score >= r215FastOpportunityFloor && edge >= 78 &&
+    r215LiveFlowSupport && (r215FreshMicroSupport || r215GraphSupport || r215FuelSupport) &&
+    (r160TrueCount >= 3 || r159Points >= 7 || r133FastScalpOverride || r208ScalpCertified || r209WaveBoostActive)
+  );
+
   const r191RawOk = r120Bool(
+    r215APlusScalp ||
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
     r156FastTop10Bypass ||
@@ -6833,9 +6861,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r200UltraLowEdgeScoreBlock ||
     r200R160LowEdgeAnySideBlock ||
     r200R159R156LowEdgeAnySideBlock ||
-    r204FastRouteNeedsMicroBlock ||
-    r204R160ThreeOfFourNeedsProofBlock ||
-    r205BypassScoreBlock ||
+    (r204FastRouteNeedsMicroBlock && !r215APlusScalp) ||
+    (r204R160ThreeOfFourNeedsProofBlock && !r215APlusScalp) ||
+    (r205BypassScoreBlock && !r215APlusScalp) ||
     r212RangeSideBlock ||
     r206BlockActive ||
     r208BlockActive ||
@@ -6865,6 +6893,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r204FastRouteNeedsMicroBlock?`R204 hızlı rota valisi: ${side} R156/R159/R144 için 1m/3m mikro teyit + gerçek mum/flow yetersiz (micro:${r202Micro?.score||0}/6, flow:${r125SideFlow.edge}, tick:${r133LiveTradeCount})`:'',
         r204R160ThreeOfFourNeedsProofBlock?`R204 R160 3/4 valisi: ${side} için mikro teyit/5m kanıt/flow yetersiz`:'',
         r205BypassScoreBlock?`R207/R205 mutlak score floor: ${side} skor ${score}/${minScore}, edge ${edge}; R156/R144/R160 taban ${r205NoBypassBelow}, R159 ${r159Points}p taban ${r205R159ScoreFloor}; düşük edge tabanı ${Math.max(70, minScore)}`:'',
+        r215APlusScalp?`R215 A+ hızlı fırsat dengesi: skor ${score}/${minScore}, edge ${edge}, flow ${r125SideFlow.edge}; micro:${r215FreshMicroSupport?'EVET':'hayır'} grafik:${r215GraphSupport?'EVET':'hayır'} fuel:${r215FuelSupport?'EVET':'hayır'}`:'',
         r212RangeSideBlock?`R212 range/bounce valisi: ${side} için loc24:${Number.isFinite(r212Loc24)?r212Loc24.toFixed(0):'?'} loc1h:${Number.isFinite(r212Loc1h)?r212Loc1h.toFixed(0):'?'} loc4h:${Number.isFinite(r212Loc4h)?r212Loc4h.toFixed(0):'?'}; güçlü 1m/3m devam kanıtı yok`:'',
         r206BlockActive?`R206/R212 grafik hafızası ters faz: ${r206Graph?.summary||'grafik uyumsuz'}`:'',
         r208BlockActive?`R208 yapı okuyucu blok: ${r208Pattern?.summary||'yapı uyumsuz'}`:'',
@@ -6876,7 +6905,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r202BoostActive?`R202 1m/3m mikro destek: ${r202Micro?.score}/6`:''
       ].filter(Boolean).join(' + ')}`
     : '';
-  const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
+  const ok = r120Bool((r191RawOk && !r191UnifiedEntryBlock) || r215APlusScalp);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -6902,7 +6931,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
   const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''} · R160:${r160TrueCount}/4(${[r160Q1Structure?'Y':'',r160Q2Flow?'A':'',r160Q3Momentum?'I':'',r160Q4Proof?'K':''].join('')})`;
 
   d.brainMode = primaryMode;
@@ -6926,6 +6955,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r202MicroPreConfirm = r202Micro;
   d.r202MicroBlock = r202BlockActive;
   d.r202MicroBoost = r202BoostActive;
+  d.r215APlusScalp = r215APlusScalp;
+  d.r215FastOpportunityFloor = r215FastOpportunityFloor;
+  d.r215FastOpportunity = { micro:r215FreshMicroSupport, graph:r215GraphSupport, fuel:r215FuelSupport, liveFlow:r215LiveFlowSupport, noOppositeHard:r215NoOppositeHard };
   d.brainSummary = core.slice(0,500);
   d.brainSensors = sensorSummary;
   d.brainAdaptiveFloor = adaptiveFloor;
@@ -7026,7 +7058,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r209WaveBoost = r209WaveBoostActive;
   d.r209WaveBlock = r209WaveBlockActive;
   d.r204MicroWeak = r204MicroWeak;
-  d.entryPermissionReason = ok ? (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`)) : 'R121_SINGLE_BRAIN_WATCH';
+  d.entryPermissionReason = ok ? (r215APlusScalp ? 'R215_FAST_OPPORTUNITY_SCALP' : (r148ReversalSideOk ? 'R148_BALANCED_TRAP_INVERSION' : (r133FastScalpOverride ? 'R135_FAST_EDGE_PASS' : `R121_SINGLE_BRAIN_${primaryMode}`))) : 'R121_SINGLE_BRAIN_WATCH';
   d.entryPermissionOk = ok;
   d.autoOk = ok;
   d.pass = ok;
@@ -7112,7 +7144,7 @@ function r213ApplyOppositePromotion(oppD={}, scout={}) {
   oppD.entryPermissionOk = true;
   oppD.brainAction = 'TRADE';
   oppD.tier = edge >= 82 && sc >= 65 ? 'A' : 'B+';
-  oppD.entryPermissionReason = 'R213_REVERSAL_OPPORTUNITY_ROUTER';
+  oppD.entryPermissionReason = 'R214_DASHBOARD_AUTOSYNC_NEAR_ENTRY_FIX';
   oppD.r213ReversalPromoted = true;
   oppD.r213ReversalReason = scout.reason;
   oppD.reason = `🔁 ${scout.reason} · ${String(oppD.reason || oppD.brainSummary || '').slice(0,420)}`;
@@ -14180,9 +14212,10 @@ async function runAutoScan(prioritySymbol=null) {
         const r207OrderEdge = Number(decisionChain?.brainConfidence ?? decisionChain?.edge ?? decisionChain?.calibratedEdge ?? 0);
         const r207BrainRoute = !!(decisionChain?.r160TraderDecision || decisionChain?.r159MomentumPass || decisionChain?.r156FastBypass || decisionChain?.r156FastTop10Bypass || decisionChain?.r133FastScalpOverride || decisionChain?.brainAction === 'TRADE');
         const r208OrderRescue = !!(decisionChain?.r208FloorRescue || (decisionChain?.r208ScalpCertified && Number(score||0) >= Math.max(60, Number(minScore||70)-10) && r207OrderEdge >= 70));
-        const r207OrderLowScore = !!(recommendation !== 'WAIT' && r207BrainRoute && Number(score || 0) < r207OrderScoreFloor && !r208OrderRescue);
-        const r207OrderLowEdge = !!(recommendation !== 'WAIT' && r207BrainRoute && r207OrderEdge > 0 && r207OrderEdge < 35 && Number(score || 0) < Math.max(70, Number(minScore || 70)));
-        if (r207OrderLowScore || r207OrderLowEdge || (decisionChain?.r205BypassScoreBlock && !r208OrderRescue) || (decisionChain?.r207R160FourScoreBlock && !r208OrderRescue) || decisionChain?.r207LowEdgeHardBlock || decisionChain?.r208Block) {
+        const r215OrderAPlus = !!decisionChain?.r215APlusScalp;
+        const r207OrderLowScore = !!(recommendation !== 'WAIT' && r207BrainRoute && Number(score || 0) < r207OrderScoreFloor && !r208OrderRescue && !r215OrderAPlus);
+        const r207OrderLowEdge = !!(recommendation !== 'WAIT' && r207BrainRoute && r207OrderEdge > 0 && r207OrderEdge < 35 && Number(score || 0) < Math.max(70, Number(minScore || 70)) && !r215OrderAPlus);
+        if (r207OrderLowScore || r207OrderLowEdge || (decisionChain?.r205BypassScoreBlock && !r208OrderRescue && !r215OrderAPlus) || (decisionChain?.r207R160FourScoreBlock && !r208OrderRescue && !r215OrderAPlus) || decisionChain?.r207LowEdgeHardBlock || decisionChain?.r208Block) {
           const why207 = r120AutoReason(decisionChain, `R207 emir öncesi mutlak kalite sigortası: skor ${score}/${minScore}, edge ${r207OrderEdge}; floor ${r207OrderScoreFloor}`);
           logAuto(`🧯 ${coin.symbol} ${why207}`);
           markAutoSkip(coin.symbol, why207, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, autoOk:false, r207OrderScoreFloor, r207OrderEdge, r207OrderLowScore, r207OrderLowEdge, ...r119BuildAutoDiag(decisionChain)});
@@ -14622,7 +14655,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R191: scan loop final check. Karar zinciri içindeki bütün bypasslar normalde
         // burada autoOk=false döner; yine de eski/legacy bir yol emre yaklaşırsa son kez kes.
-        if (decisionChain?.r191UnifiedEntryBlock || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) {
+        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r215APlusScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r215APlusScalp))) {
           const why = decisionChain?.r191UnifiedBlockReason || (decisionChain?.r190Edge?.spreadBlock ? `R190 spread pahalı: ${decisionChain?.r190Edge?.spreadPct}%` : `R190 geç giriş: ${decisionChain?.r190Edge?.summary||''}`);
           logAuto(`⛔ ${coin.symbol} ${why} — emir açılmadı`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r190:decisionChain?.r190Edge});
@@ -14741,7 +14774,8 @@ async function runAutoScan(prioritySymbol=null) {
           const r191PerfBad = Number(_p191.closed||0) >= 8 && (Number(_p191.wr||0) < 0.45 || Number(_p191.pf||0) < 0.80 || Number(_p191.net||0) < 0);
           const r191FastOrWeak = !!(decisionChain?.r159MomentumPass || decisionChain?.r133FastScalpOverride || decisionChain?.r191ForecastOnlyProof || String(decisionChain?.brainMode||'').includes('COUNTER_TRAP') || Number(score||0) < Number(effectiveMinScore||minScore||70));
           const r191EarlyFuel = !!(decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk);
-          const maxRoiRisk = r191PerfBad && r191FastOrWeak && !r191EarlyFuel ? 18 : (r191FastOrWeak && !r191EarlyFuel ? 24 : 32);
+          const r215HighConvictionScalp = !!decisionChain?.r215APlusScalp;
+          const maxRoiRisk = r215HighConvictionScalp ? 36 : (r191PerfBad && r191FastOrWeak && !r191EarlyFuel ? 18 : (r191FastOrWeak && !r191EarlyFuel ? 24 : 32));
           const capByRisk = Math.max(3, Math.floor(maxRoiRisk / Math.max(0.5, Number(userSLPct||1.5))));
           const oldLev = executeLeverage;
           executeLeverage = Math.min(executeLeverage, capByRisk);
