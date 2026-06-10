@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R219_3_SAFE_AUDITED_STRUCTURE_TARGET';
+const LAZARUS_BUILD = 'R219_4_ARMED_CHOCH_WATCHER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -14061,11 +14061,127 @@ function pushAutoCandidate(row) {
     .sort((a,b)=>tierRank(b.tier)-tierRank(a.tier) || b.score-a.score || (b.priorityScore||0)-(a.priorityScore||0) || b.ts-a.ts)
     .slice(0,12);
 }
+
+// ── R219.4 ARMED CHOCH WATCHER ─────────────────────────────────────────────
+// Amaç: R219.3 doğru şekilde "SSL/BSL alındı, CHOCH bekleniyor" dediğinde
+// fırsatı genel TOP24 turuna geri gömmemek. Bu worker emir açmaz; sadece en yakın
+// 1-2 setup'ı cache-sıcak / WS destekli şekilde izler ve yapı tamamlanınca
+// runAutoScan(symbol) ile mevcut güvenli emir yolunu öncelikli uyandırır.
+// Binance ban yememek için: max 2 coin, min 8sn recheck, global governor/backoff saygısı,
+// autoRunning sırasında REST bindirme yok, usedWeight yüksekse bekle.
+const r2194ArmedWatch = new Map(); // fullSymbol -> {symbol, side, ts, until, lastCheck, priority, reason, lastSummary}
+let r2194WatchTimer = null;
+const R2194_ARM_TTL_MS = 90 * 1000;
+const R2194_RECHECK_MS = 8 * 1000;
+const R2194_MAX_ARMED = 2;
+function r2194Num(v, d=0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function r2194Prune(now=Date.now()) {
+  for (const [sym, ev] of r2194ArmedWatch.entries()) {
+    if (!ev || now > Number(ev.until||0)) r2194ArmedWatch.delete(sym);
+  }
+  const rows = Array.from(r2194ArmedWatch.entries())
+    .sort((a,b)=>r2194Num(b[1]?.priority)-r2194Num(a[1]?.priority));
+  for (const [sym] of rows.slice(R2194_MAX_ARMED)) r2194ArmedWatch.delete(sym);
+}
+function r2194MaybeArm(symbol, row={}, reason='') {
+  try {
+    const full = normalizeSymbol(symbol);
+    if (!full || !full.endsWith('USDT')) return false;
+    const txt = [reason, row.reason, row.ictDashboard, row.htfTani, row.brainSummary, row.entryPermissionReason, row.r116HtfGuardReason]
+      .filter(Boolean).join(' | ');
+    const hasSSL = /SSL_ALINDI_CHOCH_BEKLENIYOR|SSL_ALINDI_MSS_VAR|SSL\s*wick\+body-reclaim|HTF_SSL_SEVIYESINDE_5M_MUM_IZLENIYOR/i.test(txt);
+    const hasBSL = /BSL_ALINDI_CHOCH_BEKLENIYOR|BSL_ALINDI_MSS_VAR|BSL\s*wick\+body-reclaim|HTF_BSL_SEVIYESINDE_5M_MUM_IZLENIYOR/i.test(txt);
+    if (!hasSSL && !hasBSL) return false;
+    const side = hasSSL && !hasBSL ? 'LONG' : hasBSL && !hasSSL ? 'SHORT' : (String(row.rec||'') === 'SHORT' ? 'SHORT' : 'LONG');
+    const priority = Math.max(
+      r2194Num(row.priorityScore),
+      r2194Num(row.score) + r2194Num(row.brainConfidence) * 0.35,
+      Math.abs(r2194Num(row.r125LiveDeltaPct)) + r2194Num(row.score) * 0.25
+    ) + (/CHOCH_BEKLENIYOR/i.test(txt) ? 22 : 0) + (/MSS_VAR/i.test(txt) ? 12 : 0);
+    const now = Date.now();
+    const prev = r2194ArmedWatch.get(full);
+    const next = {
+      symbol: full.replace('USDT',''), fullSymbol: full, side, ts: prev?.ts || now,
+      until: now + R2194_ARM_TTL_MS,
+      lastCheck: prev?.lastCheck || 0,
+      priority: Math.round(priority),
+      reason: String(txt).slice(0,180),
+      lastSummary: prev?.lastSummary || ''
+    };
+    r2194ArmedWatch.set(full, next);
+    r2194Prune(now);
+    if (!prev || now - Number(prev.ts||0) > 25_000) {
+      logAuto(`🟡 R219.4 CHOCH izleme silaha alındı: ${next.symbol} ${side} p:${next.priority}`);
+    }
+    return true;
+  } catch(_) { return false; }
+}
+function r2194ArmedStatus() {
+  const now = Date.now(); r2194Prune(now);
+  return Array.from(r2194ArmedWatch.values())
+    .sort((a,b)=>r2194Num(b.priority)-r2194Num(a.priority))
+    .map(x=>({symbol:x.symbol, side:x.side, priority:x.priority, ttlSec:Math.max(0, Math.ceil((x.until-now)/1000)), lastCheckSec:x.lastCheck?Math.round((now-x.lastCheck)/1000):null, summary:x.lastSummary||''}));
+}
+function r2194LooksReady(analysis, ev) {
+  try {
+    if (!analysis?.ok) return {ready:false, reason:'analiz ok değil'};
+    const dc = analysis.decisionChain || {};
+    const rec = String(analysis.recommendation || dc.rec || '').toUpperCase();
+    const sideOk = !ev?.side || rec === ev.side;
+    const txt = [dc.entryPermissionReason, dc.reason, dc.brainSummary, dc.ictDashboard, analysis.ictDashboard].filter(Boolean).join(' | ');
+    const structureReady = !!(dc.r219StructureTargetScalp || /R219_STRUCTURE_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i.test(txt));
+    const brainTrade = dc.brainAction === 'TRADE' && (dc.autoOk === true || dc.r160TraderDecision || dc.r159MomentumPass || dc.r156FastBypass);
+    const tierReady = dc.autoOk === true && ['A','B+'].includes(String(dc.tier||''));
+    const stillWaiting = /SSL_ALINDI_CHOCH_BEKLENIYOR|BSL_ALINDI_CHOCH_BEKLENIYOR|CHOCH_BEKLENIYOR/i.test(txt);
+    const block = !!(dc.r219StructureHardBlock || (dc.r219StructureTarget && dc.r219StructureTarget.block));
+    if (block) return {ready:false, drop:false, reason:'R219 yapı hard-block'};
+    if (sideOk && (structureReady || brainTrade || tierReady)) return {ready:true, reason: structureReady?'structure-ready':brainTrade?'brain-trade':'tier-ready'};
+    return {ready:false, drop:!stillWaiting && !structureReady && !brainTrade, reason: stillWaiting?'CHOCH bekliyor':'henüz hazır değil'};
+  } catch(e) { return {ready:false, reason:String(e?.message||e).slice(0,80)}; }
+}
+async function r2194ArmedWatcherTick() {
+  try {
+    if (!autoConfig?.enabled || autoRunning || isBinanceBackoffActive() || isPositionRiskCooldownActive() || isAutoPauseActive()) return;
+    if (typeof _resetGovWindowIfNeeded === 'function') _resetGovWindowIfNeeded();
+    if (r2194Num(binanceGov?.usedWeight) > 650) return;
+    const now = Date.now(); r2194Prune(now);
+    const rows = Array.from(r2194ArmedWatch.values())
+      .filter(ev => now - r2194Num(ev.lastCheck) >= R2194_RECHECK_MS)
+      .sort((a,b)=>r2194Num(b.priority)-r2194Num(a.priority));
+    const ev = rows[0];
+    if (!ev) return;
+    ev.lastCheck = now;
+    r2194ArmedWatch.set(ev.fullSymbol, ev);
+    try {
+      r130StartCombinedAggTradeStream([ev.fullSymbol], {replace:false});
+      startCVDStream(ev.fullSymbol);
+    } catch(_) {}
+    const analysis = await fetch(`http://localhost:${PORT}/api/analyze/${ev.fullSymbol}`).then(r=>r.json()).catch(e=>({ok:false,error:e?.message||String(e)}));
+    const chk = r2194LooksReady(analysis, ev);
+    ev.lastSummary = `${chk.reason}${analysis?.recommendation?` ${analysis.recommendation}`:''}`.slice(0,120);
+    r2194ArmedWatch.set(ev.fullSymbol, ev);
+    if (chk.ready) {
+      r2194ArmedWatch.delete(ev.fullSymbol);
+      logAuto(`🚀 R219.4 CHOCH hazır yakalandı: ${ev.symbol} ${ev.side} (${chk.reason}) — öncelikli emir taraması`);
+      if (!autoRunning && !isBinanceBackoffActive()) runAutoScan(ev.fullSymbol);
+    } else if (chk.drop) {
+      r2194ArmedWatch.delete(ev.fullSymbol);
+      logAuto(`⚪ R219.4 CHOCH izleme düştü: ${ev.symbol} ${ev.side} — ${chk.reason}`);
+    }
+  } catch(e) {
+    pushCritical('R2194_ARMED_WATCHER', e?.message || e, {}, 'WARNING');
+  }
+}
+
 function markAutoSkip(symbol, reason, row={}) {
   const key = toTurkishText(String(reason||'Bilinmeyen')).slice(0,90);
   autoScanState.skipped = (autoScanState.skipped||0) + 1;
   autoScanState.skipReasons[key] = (autoScanState.skipReasons[key]||0) + 1;
-  if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
+  if (symbol) {
+    const pushed = {symbol, reason:key, action:'Atlandı', ...row};
+    pushAutoCandidate(pushed);
+    r2194MaybeArm(symbol, pushed, key);
+  }
 }
 
 
@@ -14194,6 +14310,11 @@ app.get('/api/health', (_req, res) => {
           usedOrders: binanceGov.usedOrders,
           minuteStart: binanceGov.minuteStart,
         },
+        armedWatcher: {
+          active: !!r2194WatchTimer,
+          count: r2194ArmedWatch.size,
+          list: r2194ArmedStatus()
+        },
       },
       recentLogs: logs,
     });
@@ -14244,6 +14365,8 @@ function stopAutoTrader(silent=false) {
   if (r125FastWakeTimer) { clearInterval(r125FastWakeTimer); r125FastWakeTimer=null; }
   if (positionSyncTimer) { clearInterval(positionSyncTimer); positionSyncTimer=null; }
   if (fastManagerTimer) { clearInterval(fastManagerTimer); fastManagerTimer=null; }
+  if (r2194WatchTimer) { clearInterval(r2194WatchTimer); r2194WatchTimer=null; }
+  r2194ArmedWatch.clear();
   autoRunning = false;
   if (!silent) {
     resetAutoScanState({enabled:false, running:false, phase:'KAPALI', currentSymbol:null, nextScanDue:null});
@@ -15606,6 +15729,10 @@ function startAutoTrader() {
         }
       } catch(_) {}
     }, 5000);
+  }
+  // R219.4: CHOCH watcher ana taramadan bağımsız, ama REST güvenliklerini delen bir worker değildir.
+  if (!r2194WatchTimer) {
+    r2194WatchTimer = setInterval(r2194ArmedWatcherTick, 4000);
   }
   // R94: aktif vur-kaç çıkış motoru taramayı beklemez; açık pozisyonları 5sn döngüyle izler.
   if (!fastManagerTimer) {
