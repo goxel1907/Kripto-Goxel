@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R219_4_ARMED_CHOCH_WATCHER';
+const LAZARUS_BUILD = 'R222_R196_ATR_BREAKOUT_RESCUE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -2445,6 +2445,20 @@ function r196Context(side='LONG', ctx={}) {
   const rvol = avgVol>0 && rows5.length ? rows5.at(-1).v/avgVol : 1;
   const price60 = rows5.length>=13 ? r190Pct(rows5.at(-1).c, rows5.at(-13).o) : 0;
   const price180 = rows5.length>=37 ? r190Pct(rows5.at(-1).c, rows5.at(-37).o) : 0;
+
+  // R222: ATR genişleme ile aktif kırılımı exhaustion'dan ayır.
+  // Amaç: HMSTR tipi base -> breakout -> pullback -> devam hareketlerinde
+  // topLoc + chg24>=10 yüzünden bütün hızlı yolların kapanmasını engellemek.
+  // Yeni REST/WS yok; sadece mevcut 5m mumlarından hesaplanır.
+  const r222AtrArr = (arr=[]) => arr.map((c,i,a) => {
+    const h = r190N(c?.h, 0), l = r190N(c?.l, 0), pc = i ? r190N(a[i-1]?.c, 0) : r190N(c?.c, 0);
+    return Math.max(0, h-l, Math.abs(h-pc), Math.abs(l-pc));
+  });
+  const r222Avg = (arr=[]) => arr.reduce((sum,v)=>sum+r190N(v,0),0) / Math.max(1, arr.length);
+  const atrNow = rows5.length >= 9 ? r222Avg(r222AtrArr(rows5.slice(-8))) : 0;
+  const atrBase = rows5.length >= 28 ? r222Avg(r222AtrArr(rows5.slice(-28,-8))) : atrNow;
+  const atrExpanding = atrBase > 0 && atrNow > atrBase * 1.22;
+
   const topLoc = Number.isFinite(loc24) && loc24 >= 86;
   const upperLoc = Number.isFinite(loc24) && loc24 >= 76;
   const bottomLoc = Number.isFinite(loc24) && loc24 <= 14;
@@ -2456,11 +2470,22 @@ function r196Context(side='LONG', ctx={}) {
   const rejection = isL ? (rej5.ok || rej15.ok) : (rej5.ok || rej15.ok);
   const topExhaustion = !!(isL && pumpLongRisk && (rejection || rvol < 0.35 || price60 > 5.5 || chg24 >= 12));
   const bottomExhaustion = !!(!isL && dumpShortRisk && (rejection || rvol < 0.35 || price60 < -5.5 || chg24 <= -12));
+
+  // R222 aktif kırılım kurtarması:
+  // Range tepesinde LONG veya range dibinde SHORT normalde tehlikelidir;
+  // ancak ATR genişliyor + hacim canlı + ret yok + 60dk fiyat yönlü ise bu exhaustion değil,
+  // aktif genişleme olabilir. Bu sadece R196 blokunu yumuşatır; R219/R221 yapı, mikro, flow ve hard-block
+  // kontrolleri yine çalışır.
+  const breakoutActive = !!(isL
+    ? (topLoc && atrExpanding && !rejection && rvol >= 1.4 && price60 >= 2.5)
+    : (bottomLoc && atrExpanding && !rejection && rvol >= 1.4 && price60 <= -2.5)
+  );
+
   // Sert blok yalnızca uç lokasyon + yorgunlukta. Amaç frekansı öldürmek değil, tepeden LONG/dipten SHORT'u kesmek.
-  const hardBlock = !!(
+  const hardBlock = !!(!breakoutActive && (
     (isL && ((topLoc && (rejection || chg24 >= 10 || rvol < 0.45)) || (topExhaustion && (rvol < 0.75 || rejection)))) ||
     (!isL && ((bottomLoc && (rejection || chg24 <= -10 || rvol < 0.45)) || (bottomExhaustion && (rvol < 0.75 || rejection))))
-  );
+  ));
   const caution = !!(!hardBlock && ((isL && pumpLongRisk) || (!isL && dumpShortRisk)));
   const rescueOk = !!(
     ctx.strongFuel || ctx.squeeze || ctx.strongSwing ||
@@ -2472,8 +2497,9 @@ function r196Context(side='LONG', ctx={}) {
   return {
     ok:true, side:sideTxt, loc24:Number.isFinite(loc24)?+loc24.toFixed(1):null, loc1h:Number.isFinite(loc1h)?+loc1h.toFixed(1):null, loc4h:Number.isFinite(loc4h)?+loc4h.toFixed(1):null,
     high24:+high24.toFixed(8), low24:+low24.toFixed(8), chg24:+chg24.toFixed(2), rvol:+rvol.toFixed(2), price60:+price60.toFixed(2), price180:+price180.toFixed(2),
+    atrNow:+atrNow.toFixed(8), atrBase:+atrBase.toFixed(8), atrExpanding, breakoutActive,
     pumpLongRisk, dumpShortRisk, topExhaustion, bottomExhaustion, rejection, hardBlock, rescueOk, block, caution,
-    label:`R196Range ${sideTxt} loc:${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% 1h:${Number.isFinite(loc1h)?loc1h.toFixed(0):'?'} 4h:${Number.isFinite(loc4h)?loc4h.toFixed(0):'?'} 24h:${chg24.toFixed(1)}% rvol:${rvol.toFixed(2)} rej:${rejection?'Y':'N'}${block?' BLOCK':caution?' dikkat':''}`,
+    label:`R196Range ${sideTxt} loc:${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% 1h:${Number.isFinite(loc1h)?loc1h.toFixed(0):'?'} 4h:${Number.isFinite(loc4h)?loc4h.toFixed(0):'?'} 24h:${chg24.toFixed(1)}% rvol:${rvol.toFixed(2)} ATR:${atrExpanding?'EXP':'flat'} rej:${rejection?'Y':'N'}${breakoutActive?' KIRILIM-AKTIF':''}${block?' BLOCK':caution?' dikkat':''}`,
     reason: block
       ? `R196 range lokasyonu: ${sideTxt} ${Number.isFinite(loc24)?loc24.toFixed(0):'?'}% günlük range + pump/dump yorgunluğu; tepeden/dipten kovalamaz`
       : caution
@@ -3256,6 +3282,129 @@ function r219FiveMStructure(k5m, side) {
   if (opposite) { score-=2.5; minus.push('son mum karşı'); }
   return { ok:true, bos, mss, retest, fvg, impulse, opposite, score:r219R(score,1), net3:r219R(net3,2), net6:r219R(net6,2), summary:`R219 5m ${r219R(score,1)}p ${plus.join('+')||'yapı bekle'}${minus.length?' | '+minus.join('+'):''}` };
 }
+
+function r220AvgVol(rows=[], n=14) {
+  const r = Array.isArray(rows) ? rows.slice(-Math.max(3,n)) : [];
+  const vals = r.map(x=>Number(x?.v||0)).filter(v=>Number.isFinite(v) && v>=0);
+  return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+}
+function r220SfpWickImprint(k5m=[], levelObj=null, side='LONG') {
+  try {
+    const isL = side === 'LONG';
+    const rows = r219Rows(k5m, 18);
+    const level = Number(levelObj?.price || levelObj || 0);
+    const no = { ok:false, score:0, found:false, idx:-1, summary:'SFP:yok' };
+    if (!level || rows.length < 5) return no;
+    const avgV = r220AvgVol(rows.slice(0,-1), 12) || 1;
+    let best = { score:0, idx:-1, candle:null, reclaim:false };
+    for (let i=Math.max(0, rows.length-10); i<rows.length; i++) {
+      const c = rows[i];
+      const st = r219CandleStats(c);
+      if (!st.range) continue;
+      const swept = isL ? (c.l < level && c.c > level*0.9992) : (c.h > level && c.c < level*1.0008);
+      if (!swept) continue;
+      const pierce = isL ? Math.max(0, (level - c.l) / st.range) : Math.max(0, (c.h - level) / st.range);
+      const reclaim = isL ? st.closePos : (1 - st.closePos);
+      const volRatio = Math.min(2.5, Math.max(0, Number(c.v||0) / Math.max(1e-12, avgV)));
+      const bodyOk = st.bodyPct >= 0.18 ? 0.08 : -0.05;
+      const score = Math.max(0, Math.min(1, pierce*0.32 + reclaim*0.48 + (volRatio/2.5)*0.20 + bodyOk));
+      if (score > best.score) best = { score, idx:i, candle:c, reclaim: reclaim>=0.62 };
+    }
+    const s = r219R(best.score,2);
+    return { ok:true, score:s, found:best.idx>=0, idx:best.idx, reclaim:!!best.reclaim, summary:`SFP:${best.idx>=0?s:'yok'}${best.reclaim?'/reclaim':''}` };
+  } catch(e) { return { ok:false, score:0, found:false, idx:-1, summary:'SFP:hata' }; }
+}
+function r220PostSweepHL(k5m=[], k1m=[], k3m=[], levelObj=null, side='LONG') {
+  try {
+    const isL = side === 'LONG';
+    const rows = r219Rows(k5m, 28);
+    const r1 = r219Rows(k1m, 8), r3 = r219Rows(k3m, 8);
+    const level = Number(levelObj?.price || levelObj || 0);
+    const no = { ok:false, formed:false, micro:false, idx:-1, score:0, summary:'HL:veri yok' };
+    if (rows.length < 8) return no;
+    let sweepIdx = -1;
+    if (level) {
+      for (let i=Math.max(0, rows.length-12); i<rows.length-1; i++) {
+        const c = rows[i];
+        const swept = isL ? (c.l < level && c.c > level*0.9988) : (c.h > level && c.c < level*1.0012);
+        if (swept) sweepIdx = i;
+      }
+    }
+    if (sweepIdx < 0) {
+      // Level yoksa son 10 mumdaki lokal sweep/fitil adayı kullanılır; hard gereklilik değil, soft kalite.
+      const slice = rows.slice(-12,-1);
+      const minL = Math.min(...slice.map(x=>x.l)), maxH = Math.max(...slice.map(x=>x.h));
+      for (let i=rows.length-10; i<rows.length-1; i++) {
+        const c=rows[i], st=r219CandleStats(c);
+        if (isL && c.l <= minL*1.0008 && st.closePos>=0.55) sweepIdx=i;
+        if (!isL && c.h >= maxH*0.9992 && st.closePos<=0.45) sweepIdx=i;
+      }
+    }
+    if (sweepIdx < 0 || sweepIdx >= rows.length-1) return { ok:true, formed:false, micro:false, idx:sweepIdx, score:0, summary:'HL:sweep bekle' };
+    const after = rows.slice(sweepIdx+1);
+    const last = rows.at(-1);
+    let formed5 = false, pullPct = 0;
+    if (after.length >= 2) {
+      const extreme = isL ? Math.min(...after.map(x=>x.l)) : Math.max(...after.map(x=>x.h));
+      pullPct = isL ? r219Pct(last.c, extreme) : r219Pct(extreme, last.c);
+      const noNewExtreme = isL ? last.l > rows[sweepIdx].l*0.9995 : last.h < rows[sweepIdx].h*1.0005;
+      formed5 = noNewExtreme && pullPct >= 0.16 && (isL ? last.c >= last.o || r219CandleStats(last).closePos>=0.52 : last.c <= last.o || r219CandleStats(last).closePos<=0.48);
+    }
+    function microHL(r) {
+      if (r.length < 4) return false;
+      const a=r.at(-4), b=r.at(-3), c=r.at(-2), d=r.at(-1);
+      if (isL) return Math.min(c.l,d.l) > Math.min(a.l,b.l)*0.9995 && d.c > c.l*1.0008 && d.c >= d.o;
+      return Math.max(c.h,d.h) < Math.max(a.h,b.h)*1.0005 && d.c < c.h*0.9992 && d.c <= d.o;
+    }
+    const micro = microHL(r1) || microHL(r3);
+    const formed = formed5 || micro;
+    const score = (formed5?1.1:0) + (micro?0.9:0);
+    return { ok:true, formed, micro, idx:sweepIdx, score:r219R(score,1), pullPct:r219R(pullPct,2), summary:`HL:${formed?'var':'bekle'}${formed5?'/5m':''}${micro?'/micro':''}` };
+  } catch(e) { return { ok:false, formed:false, micro:false, idx:-1, score:0, summary:'HL:hata' }; }
+}
+function r220OiSweepBias(d={}, side='LONG') {
+  try {
+    const txt = [d.r140Summary, d.siksmaOzet, d.brainSummary, d.reason].filter(Boolean).join(' | ');
+    const m = txt.match(/OI\s*([+-])\s*([0-9]+(?:\.[0-9]+)?)%/i) || txt.match(/OI15m[:=]?\s*([+-]?[0-9]+(?:\.[0-9]+)?)%/i);
+    if (!m) return { score:0, oiPct:null, summary:'OI:sweep yok' };
+    const val = m.length>=3 ? (m[1]==='-'?-1:1)*Number(m[2]) : Number(m[1]);
+    let score = 0;
+    // Stop avı sonrası OI çözülmesi organik sweep kalitesini destekler; aşırı OI spike ise sadece güçlü flow varsa kabul edilir.
+    if (val <= -0.8) score += 0.8;
+    else if (val >= 2.2 && Math.abs(Number(d.r125LiveDeltaPct||0)) < 18) score -= 0.7;
+    else if (val >= 1.0 && Math.abs(Number(d.r125LiveDeltaPct||0)) >= 25) score += 0.25;
+    return { score:r219R(score,1), oiPct:r219R(val,2), summary:`OI:${r219R(val,2)}%${score>0?'/organik':score<0?'/dikkat':''}` };
+  } catch(e) { return { score:0, oiPct:null, summary:'OI:hata' }; }
+}
+function r220HurstRegime(k5m=[]) {
+  try {
+    const rows = r219Rows(k5m, 80);
+    if (rows.length < 30) return { score:0, H:null, regime:'UNKNOWN', summary:'Hurst:az veri' };
+    const prices = rows.map(x=>x.c);
+    const n = prices.length;
+    const mean = prices.reduce((a,b)=>a+b,0)/n;
+    let cum=0, max=-Infinity, min=Infinity, ss=0;
+    for (const p of prices) { const d=p-mean; cum+=d; max=Math.max(max,cum); min=Math.min(min,cum); ss+=d*d; }
+    const R = max-min, S = Math.sqrt(ss/n);
+    if (!(R>0) || !(S>0)) return { score:0, H:null, regime:'FLAT', summary:'Hurst:flat' };
+    const H = Math.max(0, Math.min(1.2, Math.log(R/S)/Math.log(n)));
+    const regime = H>0.62?'TREND':H<0.43?'MEAN_REVERT':'MIXED';
+    const score = regime==='MEAN_REVERT' ? 0.35 : regime==='TREND' ? 0.15 : -0.10;
+    return { score:r219R(score,2), H:r219R(H,2), regime, summary:`Hurst:${r219R(H,2)} ${regime}` };
+  } catch(e) { return { score:0, H:null, regime:'ERR', summary:'Hurst:hata' }; }
+}
+function r220WaveDeltaSoft(d={}, side='LONG') {
+  try {
+    const best = String(d.r125BestSide || '').toUpperCase();
+    const live = Number(d.r125LiveDeltaPct || 0);
+    let score = 0;
+    if (best === side && Math.abs(live) >= 12) score += 0.8;
+    else if (best && best !== 'NEUTRAL' && best !== side && Math.abs(live) >= 12) score -= 1.0;
+    else if ((side==='LONG' && live > 20) || (side==='SHORT' && live < -20)) score += 0.45;
+    else if ((side==='LONG' && live < -20) || (side==='SHORT' && live > 20)) score -= 0.55;
+    return { score:r219R(score,1), summary:`WaveΔ:${best||'NA'} ${r219R(live,1)}%${score<0?'/div':''}` };
+  } catch(e) { return { score:0, summary:'WaveΔ:hata' }; }
+}
 function r219StructureTargetEngine(side, d={}) {
   try {
     const isL=side==='LONG';
@@ -3276,29 +3425,141 @@ function r219StructureTargetEngine(side, d={}) {
     const targetRoomPct = target?.price ? (isL ? r219Pct(target.price,lastPrice) : r219Pct(lastPrice,target.price)) : 0;
     const trapDist = trap?.price ? r219AbsPct(lastPrice, trap.price) : 999;
     const counterDist = counter?.price ? r219AbsPct(lastPrice, counter.price) : 999;
+    const r220Sfp = r220SfpWickImprint(k5m, trap, side);
+    const r220HL = r220PostSweepHL(k5m, d._r202k1m||[], d._r202k3m||[], trap, side);
+    const r220Oi = r220OiSweepBias(d, side);
+    const r220Hurst = r220HurstRegime(k5m);
+    const r220Wave = r220WaveDeltaSoft(d, side);
+    const r220Quality = r219R((r220Sfp.score>=0.70?1.4:r220Sfp.score>=0.50?0.8:0) + (r220HL.formed?1.4:0) + Number(r220Oi.score||0) + Number(r220Hurst.score||0) + Number(r220Wave.score||0),1);
     const minRoom = Math.max(0.42, Math.min(1.15, Number(d.atrPct||0.45)*1.05));
     const roomOk = !target?.price || targetRoomPct >= minRoom;
     const atCounterNoAccept = !!(counter?.price && counterDist <= Math.max(0.35, Number(d.atrPct||0.4)*0.75) && !(structure.bos && structure.impulse && micro.aligned));
     const ictSame = !!(isL ? (ict?.longOk || d.r110YonUyumlu && d.r110ChoCH) : (ict?.shortOk || d.r110YonUyumlu && d.r110ChoCH));
     const sweptSame = !!(isL ? (ict?.sslSwept || d.r110SSLAlindi) : (ict?.bslSwept || d.r110BSLAlindi));
     const shiftSame = !!(structure.mss || structure.bos || (structure.retest && structure.impulse));
-    const sweepShift = !!(sweptSame && shiftSame && micro.aligned);
+    const postChochOk = !!(!sweptSame || r220HL.formed || (structure.bos && structure.impulse && micro.aligned));
+    const sfpOk = !!(!sweptSame || r220Sfp.score >= 0.45 || (structure.bos && structure.impulse));
+    const sweepShift = !!(sweptSame && shiftSame && micro.aligned && postChochOk && sfpOk);
     const continuation = !!(!sweptSame && structure.bos && structure.impulse && structure.retest && micro.aligned && roomOk && counterDist > 0.28);
     const breakoutAccepted = !!(structure.bos && structure.impulse && micro.aligned && roomOk && (counterDist > 0.28 || targetRoomPct >= minRoom*1.6));
-    const score = r219R((micro.aligned?3:0) + (shiftSame?3:0) + (sweepShift?2:0) + (continuation?2:0) + (breakoutAccepted?1.5:0) + (roomOk?1.5:0) - (micro.opposite?4:0) - (structure.opposite?3:0) - (atCounterNoAccept?4:0),1);
-    const route = sweepShift ? 'SWEEP_SHIFT_TARGET' : continuation ? 'BOS_RETEST_CONTINUATION_TARGET' : breakoutAccepted ? 'ACCEPTED_BREAKOUT_TARGET' : 'WAIT';
+    const rawScore = (micro.aligned?3:0) + (shiftSame?3:0) + (sweepShift?2:0) + (continuation?2:0) + (breakoutAccepted?1.5:0) + (roomOk?1.5:0) + r220Quality - (micro.opposite?4:0) - (structure.opposite?3:0) - (atCounterNoAccept?4:0);
+    const score = r219R(rawScore,1);
+    const route = sweepShift ? 'SWEEP_HL_SHIFT_TARGET' : continuation ? 'BOS_RETEST_CONTINUATION_TARGET' : breakoutAccepted ? 'ACCEPTED_BREAKOUT_TARGET' : 'WAIT';
     const hardBlock = !!(
-      micro.opposite || structure.opposite || !roomOk || atCounterNoAccept ||
+      micro.opposite || structure.opposite || !roomOk || atCounterNoAccept || (sweptSame && (!postChochOk || !sfpOk)) ||
       (isL && /BSL_ALINDI_CHOCH_BEKLENIYOR|BSL.*wick\+body-reclaim|HTF_BSL_SEVIYESINDE/i.test(String(d.ictDashboard||d.r110Phase||'')) && !breakoutAccepted) ||
       (!isL && /SSL_ALINDI_CHOCH_BEKLENIYOR|SSL.*wick\+body-reclaim|HTF_SSL_SEVIYESINDE/i.test(String(d.ictDashboard||d.r110Phase||'')) && !breakoutAccepted)
     );
     const ok = !!(!hardBlock && route!=='WAIT' && score>=6.5);
-    const summary = `R219 ${route} skor:${score} hedef:${r219R(targetRoomPct,2)}%/${r219R(minRoom,2)}% trap:${trap?.tf||trap?.label||'-'} ${trap?.price||'-'} u:${r219R(trapDist,2)}% · ${structure.summary} · ${micro.summary}`;
-    return { ok, block:hardBlock && !ok, route, score, targetRoomPct:r219R(targetRoomPct,2), minRoom:r219R(minRoom,2), target, trap, counter, trapDist:r219R(trapDist,2), counterDist:r219R(counterDist,2), roomOk, atCounterNoAccept, sweepShift, continuation, breakoutAccepted, micro, structure, htf, summary };
+    const summary = `R220 ${route} skor:${score} q:${r220Quality} hedef:${r219R(targetRoomPct,2)}%/${r219R(minRoom,2)}% trap:${trap?.tf||trap?.label||'-'} ${trap?.price||'-'} u:${r219R(trapDist,2)}% · ${r220Sfp.summary} · ${r220HL.summary} · ${r220Oi.summary} · ${r220Wave.summary} · ${structure.summary} · ${micro.summary}`;
+    return { ok, block:hardBlock && !ok, route, score, targetRoomPct:r219R(targetRoomPct,2), minRoom:r219R(minRoom,2), target, trap, counter, trapDist:r219R(trapDist,2), counterDist:r219R(counterDist,2), roomOk, atCounterNoAccept, sweepShift, continuation, breakoutAccepted, postChochOk, sfpOk, r220Quality, r220Sfp, r220HL, r220Oi, r220Hurst, r220Wave, micro, structure, htf, summary };
   } catch(e) {
     return { ok:false, block:false, route:'ERR', score:0, targetRoomPct:0, summary:`R219 hata: ${e?.message||e}` };
   }
 }
+
+// R221: EARLY TREND IGNITION ENGINE
+// Amaç: HMSTR tarzı 5m trend ilk ateşlemelerini kaçırmamak.
+// Bu motor yeni REST çağrısı yapmaz; mevcut kline/cache + R125/R140/R190 özetleri ile çalışır.
+// Structure hard-block'u bypass etmez; sadece temiz breakout/ignition setup'ını ayrı bir route olarak okur.
+function r221Num(x, d=0) { const n=Number(x); return Number.isFinite(n)?n:d; }
+function r221TextIncludes(txt, re) { try { return re.test(String(txt||'')); } catch(_) { return false; } }
+function r221ParseRvol(txt='') {
+  const s=String(txt||'');
+  const m=s.match(/RVOL[:=]?\s*(VERY_HIGH|HIGH|NORMAL|LOW|VERY_LOW)?\s*[×x]\s*([0-9]+(?:\.[0-9]+)?)/i) || s.match(/rvol[:=]?\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const mult = m ? Number(m[2]||m[1]) : 0;
+  const label = m && m[2] ? String(m[1]||'').toUpperCase() : '';
+  return { mult:Number.isFinite(mult)?mult:0, label };
+}
+function r221TrendIgnitionEngine(side, d={}) {
+  try {
+    const isL = side === 'LONG';
+    const k5m = d._r206k5m || [];
+    const k15m = d._r206k15m || [], k1h = d._r206k1h || [], k4h = d._r206k4h || [];
+    const r = r219Rows(k5m, 60);
+    const no = { ok:false, block:false, route:'WAIT', score:0, summary:'R221 veri yok' };
+    if (r.length < 18) return no;
+    const last = r.at(-1), prev = r.at(-2);
+    const st = r219CandleStats(last);
+    const lp = r221Num(d.lastPrice || d.price || d.markPrice || last.c, 0);
+    if (!lp) return no;
+
+    const htf = r219BuildHtfLevels(k15m, k1h, k4h, lp);
+    const target = isL ? htf.nearBSL : htf.nearSSL;
+    const counter = isL ? htf.nearBSL : htf.nearSSL;
+    const targetRoomPct = target?.price ? (isL ? r219Pct(target.price, lp) : r219Pct(lp, target.price)) : 9.99;
+    const counterDist = counter?.price ? r219AbsPct(lp, counter.price) : 999;
+    const micro = r219MicroPulse(d._r202k1m||[], d._r202k3m||[], side);
+    const structure = r219FiveMStructure(k5m, side);
+    const wave = r220WaveDeltaSoft(d, side);
+    const hurst = r220HurstRegime(k5m);
+
+    const txt = [d.r140Summary, d.brainSummary, d.reason, d.r125OrderflowSummary, d.r126FlowSummary, d.siksmaOzet]
+      .filter(Boolean).join(' | ');
+    const rv = r221ParseRvol(txt);
+    const best = String(d.r125BestSide || '').toUpperCase();
+    const live = r221Num(d.r125LiveDeltaPct, 0);
+    const taker = r221Num(d.r190Edge?.takerRatio, 1);
+    const liveWith = !!(best === side || (isL ? live >= 18 : live <= -18));
+    const liveStrong = !!(best === side && Math.abs(live) >= 20);
+    const liveAgainst = !!((best && best !== 'NEUTRAL' && best !== side && Math.abs(live) >= 16) || (isL ? live <= -30 : live >= 30));
+    const takerAgainst = Number.isFinite(taker) && (isL ? taker < 0.88 : taker > 1.12);
+
+    const net3 = r219Pct(last.c, r.at(-4).c);
+    const net5 = r219Pct(last.c, r.at(-6).c);
+    const net8 = r219Pct(last.c, r.at(-9).c);
+    const net12 = r219Pct(last.c, r.at(-13).c);
+    const sNet3 = isL ? net3 : -net3;
+    const sNet5 = isL ? net5 : -net5;
+    const sNet8 = isL ? net8 : -net8;
+    const sNet12 = isL ? net12 : -net12;
+    const lastDirOk = isL ? (last.c > last.o && st.closePos >= 0.58) : (last.c < last.o && st.closePos <= 0.42);
+    const dir5 = r.slice(-5).filter(k => isL ? k.c > k.o : k.c < k.o).length;
+    const prior = r.slice(-20, -6);
+    const priorHi = Math.max(...prior.map(k=>k.h));
+    const priorLo = Math.min(...prior.map(k=>k.l));
+    const priorMid = (priorHi + priorLo) / 2 || lp;
+    const baseRangePct = priorMid ? ((priorHi-priorLo)/priorMid*100) : 99;
+    const baseCompression = baseRangePct <= Math.max(1.25, Math.min(3.2, r221Num(d.atrPct,0.55)*4.2));
+    const recentHigh = Math.max(...r.slice(-10,-1).map(k=>k.h));
+    const recentLow = Math.min(...r.slice(-10,-1).map(k=>k.l));
+    const baseBreak = isL ? last.c > recentHigh*1.00015 : last.c < recentLow*0.99985;
+    const ignitionMove = sNet3 >= 0.45 || sNet5 >= 0.85 || (sNet8 >= 1.35 && dir5 >= 3);
+    const rvolOk = rv.mult >= 1.15 || /HIGH|VERY_HIGH/i.test(rv.label) || /RVOL:(HIGH|VERY_HIGH)/i.test(txt);
+    const oiOk = isL ? !/SAHTE_PUMP/i.test(txt) : !/SAHTE_DUMP|SAHTE_DÜŞÜŞ/i.test(txt);
+    const hasPullback = isL
+      ? (r.slice(-4,-1).some(k=>k.c<k.o || r219CandleStats(k).closePos<0.45) || structure.retest)
+      : (r.slice(-4,-1).some(k=>k.c>k.o || r219CandleStats(k).closePos>0.55) || structure.retest);
+    const lateNoPullback = sNet12 >= 7.2 && !hasPullback && !structure.retest;
+    const roomOk = targetRoomPct >= Math.max(0.48, Math.min(1.05, r221Num(d.atrPct,0.45)*1.0));
+    const counterWallNoAccept = counterDist <= Math.max(0.28, r221Num(d.atrPct,0.4)*0.65) && !(structure.bos && structure.impulse && micro.aligned);
+    const dirtyTxt = isL ? /WRONG_SIDE_TIMING\s+LONG|SAHTE_PUMP|SELL_WALL.*delta:SHORT/i : /WRONG_SIDE_TIMING\s+SHORT|SAHTE_DUMP|BUY_WALL.*delta:LONG/i;
+    const dirty = r221TextIncludes(txt, dirtyTxt);
+
+    let score = 0; const plus=[], minus=[];
+    if (baseCompression) { score+=1.0; plus.push(`base ${r219R(baseRangePct,2)}%`); } else minus.push(`base geniş ${r219R(baseRangePct,2)}%`);
+    if (baseBreak || structure.bos) { score+=2.0; plus.push('5m break/BOS'); } else minus.push('break yok');
+    if (ignitionMove) { score+=1.6; plus.push(`impulse ${r219R(sNet3,2)}/${r219R(sNet5,2)}%`); } else minus.push('impulse erken değil');
+    if (micro.aligned) { score+=2.0; plus.push('1m/3m hizalı'); } else if (micro.opposite) { score-=2.2; minus.push('micro ters'); }
+    if (liveWith) { score+=1.2; plus.push(`flow ${best||'delta'} ${r219R(live,1)}%`); } else minus.push(`flow zayıf ${best||'-'} ${r219R(live,1)}%`);
+    if (liveStrong) score+=0.7;
+    if (rvolOk) { score+=1.1; plus.push(`RVOL ${rv.mult||rv.label||'ok'}`); } else minus.push(`RVOL düşük ${rv.mult||0}`);
+    if (lastDirOk && dir5>=3) { score+=0.8; plus.push(`5m yön ${dir5}/5`); }
+    if (hasPullback && sNet8>=0.8) { score+=0.7; plus.push('pullback/devam'); }
+    if (roomOk) { score+=0.8; plus.push(`hedef ${r219R(targetRoomPct,2)}%`); } else minus.push(`hedef dar ${r219R(targetRoomPct,2)}%`);
+    score += Number(wave.score||0) * 0.7;
+    if (hurst.regime === 'TREND') score += 0.35;
+
+    const hardBlock = !!(dirty || !oiOk || liveAgainst || takerAgainst || micro.opposite || structure.opposite || !roomOk || counterWallNoAccept || lateNoPullback);
+    const ok = !!(!hardBlock && score >= 6.6 && ignitionMove && (baseBreak || structure.bos || (structure.impulse && hasPullback)) && (micro.aligned || (liveStrong && rvolOk)));
+    const route = ok ? (hasPullback ? 'EARLY_TREND_PULLBACK_IGNITION' : 'EARLY_TREND_BREAKOUT_IGNITION') : 'WAIT';
+    const summary = `R221 ${route} skor:${r219R(score,1)} hedef:${r219R(targetRoomPct,2)}% · ${plus.slice(0,6).join('+')||'bekle'}${minus.length?' | eksi:'+minus.slice(0,4).join('+'):''}${hardBlock?' | BLOCK':''}`;
+    return { ok, block:hardBlock && !ok, route, score:r219R(score,1), targetRoomPct:r219R(targetRoomPct,2), roomOk, lateNoPullback, baseRangePct:r219R(baseRangePct,2), sNet3:r219R(sNet3,2), sNet5:r219R(sNet5,2), sNet8:r219R(sNet8,2), liveWith, liveAgainst, rvolOk, rvol:rv, micro, structure, summary };
+  } catch(e) {
+    return { ok:false, block:false, route:'ERR', score:0, summary:`R221 hata: ${e?.message||e}` };
+  }
+}
+
 function r109CalcSweepReclaimScore(k5m, side) {
   const rows = Array.isArray(k5m) ? k5m.slice(-8).map(k => ({
     o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5]
@@ -7111,6 +7372,15 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     score >= r219Floor && edge >= 48 && Number(r219StructureTarget?.targetRoomPct || 0) >= Number(r219StructureTarget?.minRoom || 0)
   );
 
+
+  // R221: HMSTR tarzı erken trend ateşleme / hızlı continuation kapısı.
+  // R219 hard-block'u delmez; sadece 5m breakout + 1m/3m pulse + canlı flow/RVOL temizse çalışır.
+  const r221TrendIgnition = r221TrendIgnitionEngine(side, d);
+  const r221TrendIgnitionScalp = r120Bool(
+    dataMinimum && r219NoDirty && !r219BlockActive && r221TrendIgnition?.ok && r219LiveAligned &&
+    score >= Math.max(52, Number(minScore || 70) - 12) && edge >= 48
+  );
+
   // R218: GRAFİK GERÇEĞİ SCALP ROUTER
   // Amaç: filtre üstüne filtre değil; STG/BEAT/IO tarzı grafikte görünen gerçek 5m setup'ı
   // doğrudan karar verisi yapmak. Yalnızca 1m/3m zamanlama + 5m yapı + canlı akış aynı
@@ -7144,7 +7414,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   );
 
   const r191RawOk = r120Bool(
-    r219StructureTargetScalp || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp ||
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
     r156FastTop10Bypass ||
@@ -7170,9 +7440,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r200UltraLowEdgeScoreBlock ||
     r200R160LowEdgeAnySideBlock ||
     r200R159R156LowEdgeAnySideBlock ||
-    (r204FastRouteNeedsMicroBlock && !r219StructureTargetScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    (r204R160ThreeOfFourNeedsProofBlock && !r219StructureTargetScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    (r205BypassScoreBlock && !r219StructureTargetScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r204FastRouteNeedsMicroBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r204R160ThreeOfFourNeedsProofBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r205BypassScoreBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
     r212RangeSideBlock ||
     (r219BlockActive && !r219StructureTargetScalp) ||
     r206BlockActive ||
@@ -7200,8 +7470,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r200UltraLowEdgeScoreBlock?`R200 ultra düşük kalite: ${side} edge ${edge} + skor ${score}; bypass kapalı`:'',
         r200R160LowEdgeAnySideBlock?`R200 ${side} R160 4/4 düşük edge ${edge}; elit canlı yakıt yok`:'',
         r200R159R156LowEdgeAnySideBlock?`R200 ${side} R159/R156/R144 düşük edge ${edge}; elit canlı yakıt yok`:'',
-        r219BlockActive?`R219 structure target blok: ${r219StructureTarget?.summary||'hedef/yapı uygun değil'}`:'',
-        r219StructureTargetScalp?`R219 structure target: ${r219StructureTarget?.summary||'HTF sweep + 5m shift + target'}`:'',
+        r219BlockActive?`R220 structure accelerator blok: ${r219StructureTarget?.summary||'hedef/yapı uygun değil'}`:'',
+        r219StructureTargetScalp?`R220 structure accelerator: ${r219StructureTarget?.summary||'HTF sweep + 5m shift + target'}`:'',
         r204FastRouteNeedsMicroBlock?`R204 hızlı rota valisi: ${side} R156/R159/R144 için 1m/3m mikro teyit + gerçek mum/flow yetersiz (micro:${r202Micro?.score||0}/6, flow:${r125SideFlow.edge}, tick:${r133LiveTradeCount})`:'',
         r204R160ThreeOfFourNeedsProofBlock?`R204 R160 3/4 valisi: ${side} için mikro teyit/5m kanıt/flow yetersiz`:'',
         r205BypassScoreBlock?`R207/R205 mutlak score floor: ${side} skor ${score}/${minScore}, edge ${edge}; R156/R144/R160 taban ${r205NoBypassBelow}, R159 ${r159Points}p taban ${r205R159ScoreFloor}; düşük edge tabanı ${Math.max(70, minScore)}`:'',
@@ -7218,11 +7488,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r202BoostActive?`R202 1m/3m mikro destek: ${r202Micro?.score}/6`:''
       ].filter(Boolean).join(' + ')}`
     : '';
-  // R219.3: R219 structure hard-block direnç/supply long veya destek/demand short
+  // R219.3: R220 structure hard-block direnç/supply long veya destek/demand short
   // uyarısı verdiyse eski hızlı yollar (R217/R218/R215/R216) bunu bypass edemez.
   const r219AllowsLegacyRoutes = r120Bool(!r219BlockActive || r219StructureTargetScalp);
   const ok = r120Bool(
-    r219StructureTargetScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp ||
     (r219AllowsLegacyRoutes && ((r191RawOk && !r191UnifiedEntryBlock) || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp))
   );
 
@@ -7250,7 +7520,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
   const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r219StructureTargetScalp ? 'R219 STRUCTURE TARGET sweep+shift+hedef' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r219StructureTargetScalp ? 'R220 STRUCTURE ACCELERATOR SFP+HL+hedef' : r221TrendIgnitionScalp ? 'R221 ERKEN TREND IGNITION' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''} · R160:${r160TrueCount}/4(${[r160Q1Structure?'Y':'',r160Q2Flow?'A':'',r160Q3Momentum?'I':'',r160Q4Proof?'K':''].join('')})`;
 
   d.brainMode = primaryMode;
@@ -7280,8 +7550,10 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r219StructureTargetScalp = r219StructureTargetScalp;
   d.r219StructureTargetBlock = r219BlockActive;
   d.r219StructureTarget = r219StructureTarget;
+  d.r221TrendIgnitionScalp = r221TrendIgnitionScalp;
+  d.r221TrendIgnition = r221TrendIgnition;
   d.r218ChartTruthScalp = r218ChartTruthScalp;
-  d.r219StructureTargetMeta = { floor:r219Floor, live:r219LiveAligned, noDirty:r219NoDirty, ok:r219SupportActive, block:r219BlockActive, route:r219StructureTarget?.route, targetRoomPct:r219StructureTarget?.targetRoomPct };
+  d.r219StructureTargetMeta = { floor:r219Floor, live:r219LiveAligned, noDirty:r219NoDirty, ok:r219SupportActive, block:r219BlockActive, route:r219StructureTarget?.route, targetRoomPct:r219StructureTarget?.targetRoomPct, r221:r221TrendIgnition?.route, r221Score:r221TrendIgnition?.score };
   d.r218GraphTruthScalp = { floor:r218Floor, microScore:r218MicroScore, micro:r218MicroFresh, graph:r218GraphTruth, live:r218LiveImpulse, continuation:r218ContinuationSetup, breakout:r218BreakoutPulseSetup, reversal:r218ReverseScoutSetup, noWrong:r218NoWrongSide };
   d.r217FastPulse = { floor:r217FastPulseFloor, taker:r217Taker, takerWith:r217TakerWith, takerAgainst:r217TakerAgainst, pulse:r217PulseSource, noDirty:r217NoFastPulseDirty, fakeCycle:r217FakeCycle };
   d.r216R165Freq = { floor:r216R165Floor, flow:r216FlowEdge, proof:r216Has5mProof, r160Four:r216R160FourTrade, r160Three:r216R160ThreeTrade, fast:r216FastMomentumTrade };
@@ -7388,7 +7660,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r209WaveBlock = r209WaveBlockActive;
   d.r204MicroWeak = r204MicroWeak;
   d.entryPermissionReason = ok
-    ? (r219StructureTargetScalp ? 'R219_STRUCTURE_TARGET_ENGINE'
+    ? (r219StructureTargetScalp ? 'R220_STRUCTURE_ACCELERATOR'
+      : r221TrendIgnitionScalp ? 'R221_EARLY_TREND_IGNITION'
       : r218ChartTruthScalp ? 'R218_GRAPH_TRUTH_SCALP'
       : r217FastPulseScalp ? 'R217_FAST_PULSE_SCALP'
       : r215APlusScalp ? 'R215_FAST_OPPORTUNITY_SCALP'
@@ -14062,57 +14335,119 @@ function pushAutoCandidate(row) {
     .slice(0,12);
 }
 
-// ── R219.4 ARMED CHOCH WATCHER ─────────────────────────────────────────────
-// Amaç: R219.3 doğru şekilde "SSL/BSL alındı, CHOCH bekleniyor" dediğinde
-// fırsatı genel TOP24 turuna geri gömmemek. Bu worker emir açmaz; sadece en yakın
-// 1-2 setup'ı cache-sıcak / WS destekli şekilde izler ve yapı tamamlanınca
-// runAutoScan(symbol) ile mevcut güvenli emir yolunu öncelikli uyandırır.
-// Binance ban yememek için: max 2 coin, min 8sn recheck, global governor/backoff saygısı,
-// autoRunning sırasında REST bindirme yok, usedWeight yüksekse bekle.
-const r2194ArmedWatch = new Map(); // fullSymbol -> {symbol, side, ts, until, lastCheck, priority, reason, lastSummary}
+// ── R219.5 ARMED CHOCH WATCHER FASTLOCK ───────────────────────────────────
+// Amaç: R219.3/4 doğru şekilde "SSL/BSL alındı, CHOCH bekleniyor" dediğinde
+// fırsatı TOP24 turuna geri gömmemek. R219.5 değişiklikleri:
+// ① Silaha alınan aktif coin cache-first ilk kontrolü hemen alır.
+// ② Aktif ilk 2 aday 30sn kilitlenir; yeni adaylar bunları sürekli ezemez.
+// ③ Sadece gerçekten aktif listede kalan ilk 2 coin loga yazılır.
+// ④ lastCheck 8-10sn üstüne sarkarsa watcher kendini uyandırır.
+// ⑤ R219 hard-block kesinlikle bypass edilmez; worker emir açmaz, sadece güvenli runAutoScan yolunu uyandırır.
+// ⑥ Binance REST yükü sınırlı: max 2 coin, tek inflight analiz, global backoff/governor saygısı.
+const r2194ArmedWatch = new Map(); // fullSymbol -> {symbol, side, ts, until, lastCheck, lockUntil, priority, reason, lastSummary}
 let r2194WatchTimer = null;
+let r2194ImmediateTimer = null;
+let r2194InFlight = false;
 const R2194_ARM_TTL_MS = 90 * 1000;
 const R2194_RECHECK_MS = 8 * 1000;
+const R2194_STALE_WAKE_MS = 10 * 1000;
+const R2194_ACTIVE_LOCK_MS = 30 * 1000;
 const R2194_MAX_ARMED = 2;
 function r2194Num(v, d=0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function r2195IsLocked(ev, now=Date.now()) { return !!ev && r2194Num(ev.lockUntil) > now; }
 function r2194Prune(now=Date.now()) {
   for (const [sym, ev] of r2194ArmedWatch.entries()) {
     if (!ev || now > Number(ev.until||0)) r2194ArmedWatch.delete(sym);
   }
   const rows = Array.from(r2194ArmedWatch.entries())
     .sort((a,b)=>r2194Num(b[1]?.priority)-r2194Num(a[1]?.priority));
-  for (const [sym] of rows.slice(R2194_MAX_ARMED)) r2194ArmedWatch.delete(sym);
+  if (rows.length <= R2194_MAX_ARMED) return;
+  const locked = rows.filter(([,ev]) => r2195IsLocked(ev, now));
+  const unlocked = rows.filter(([,ev]) => !r2195IsLocked(ev, now));
+  const keep = new Set();
+  for (const [sym] of locked.slice(0, R2194_MAX_ARMED)) keep.add(sym);
+  for (const [sym] of unlocked) {
+    if (keep.size >= R2194_MAX_ARMED) break;
+    keep.add(sym);
+  }
+  for (const [sym] of rows) if (!keep.has(sym)) r2194ArmedWatch.delete(sym);
+}
+function r2195RowHardBlocked(row={}, txt='') {
+  const all = [txt, row.reason, row.reasonTR, row.entryPermissionReason, row.entryPermissionReasonTR, row.brainSummary, row.htfBlokSebep]
+    .filter(Boolean).join(' | ');
+  return !!(row.htfBlok || row.r219StructureHardBlock || row.r219HardBlock || /R219\s+structure\s+target\s+blok|R219\s+yapı\s+hard-block|hard-block|HTF\s+amir\s+blok/i.test(all));
+}
+function r2195CacheFirstCheck(row={}, ev={}) {
+  try {
+    if (r2195RowHardBlocked(row, ev.reason)) return {ready:false, reason:'cache: R220 yapı hard-block WAIT'};
+    const rec = String(row.rec || row.recommendation || '').toUpperCase();
+    const sideOk = !ev.side || !rec || rec === 'WAIT' || rec === ev.side;
+    const tier = String(row.tier || '').toUpperCase();
+    const autoOk = row.autoOk === true;
+    const tradeLike = /TRADE|EMIR|EMİR|R221_EARLY_TREND_IGNITION|R219_STRUCTURE_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i
+      .test([row.brainAction, row.entryPermissionReason, row.reason, row.brainSummary].filter(Boolean).join(' | '));
+    if (sideOk && (autoOk || ['A','B+'].includes(tier)) && tradeLike) return {ready:true, reason:'cache-ready'};
+    const scoreTxt = Number.isFinite(Number(row.score)) ? `skor ${row.score}` : 'skor yok';
+    const edgeTxt = Number.isFinite(Number(row.brainConfidence)) ? `edge ${row.brainConfidence}` : '';
+    const flowTxt = row.r125BestSide ? `flow ${row.r125BestSide}` : '';
+    return {ready:false, reason:['cache-wait', scoreTxt, edgeTxt, flowTxt].filter(Boolean).join(' ')};
+  } catch(e) { return {ready:false, reason:'cache-check hata'}; }
+}
+function r2195KickWatcherNow(delayMs=250) {
+  try {
+    if (r2194ImmediateTimer) return;
+    r2194ImmediateTimer = setTimeout(() => {
+      r2194ImmediateTimer = null;
+      r2194ArmedWatcherTick().catch(()=>{});
+    }, Math.max(50, Number(delayMs)||250));
+    if (r2194ImmediateTimer?.unref) r2194ImmediateTimer.unref();
+  } catch(_) {}
 }
 function r2194MaybeArm(symbol, row={}, reason='') {
   try {
     const full = normalizeSymbol(symbol);
     if (!full || !full.endsWith('USDT')) return false;
-    const txt = [reason, row.reason, row.ictDashboard, row.htfTani, row.brainSummary, row.entryPermissionReason, row.r116HtfGuardReason]
+    const txt = [reason, row.reason, row.ictDashboard, row.htfTani, row.brainSummary, row.entryPermissionReason, row.r116HtfGuardReason, row.r140Summary, row.r125OrderflowSummary, row.r126FlowSummary]
       .filter(Boolean).join(' | ');
     const hasSSL = /SSL_ALINDI_CHOCH_BEKLENIYOR|SSL_ALINDI_MSS_VAR|SSL\s*wick\+body-reclaim|HTF_SSL_SEVIYESINDE_5M_MUM_IZLENIYOR/i.test(txt);
     const hasBSL = /BSL_ALINDI_CHOCH_BEKLENIYOR|BSL_ALINDI_MSS_VAR|BSL\s*wick\+body-reclaim|HTF_BSL_SEVIYESINDE_5M_MUM_IZLENIYOR/i.test(txt);
-    if (!hasSSL && !hasBSL) return false;
-    const side = hasSSL && !hasBSL ? 'LONG' : hasBSL && !hasSSL ? 'SHORT' : (String(row.rec||'') === 'SHORT' ? 'SHORT' : 'LONG');
+    const hasIgnition = /R221_EARLY_TREND_IGNITION|R221 ERKEN TREND|Trend devamı|5m momentum|EXPANSION|RVOL:(?:HIGH|VERY_HIGH)|GERCEK_PUMP/i.test(txt) && !/SAHTE_PUMP|WRONG_SIDE_TIMING/i.test(txt);
+    if (!hasSSL && !hasBSL && !hasIgnition) return false;
+    const rowSideTxt = String(row.rec||row.recTR||row.reason||row.reasonTR||'').toUpperCase();
+    const side = hasSSL && !hasBSL ? 'LONG' : hasBSL && !hasSSL ? 'SHORT' : (/SHORT|DÜŞÜŞ|DUSUS/i.test(rowSideTxt) ? 'SHORT' : 'LONG');
     const priority = Math.max(
       r2194Num(row.priorityScore),
       r2194Num(row.score) + r2194Num(row.brainConfidence) * 0.35,
       Math.abs(r2194Num(row.r125LiveDeltaPct)) + r2194Num(row.score) * 0.25
-    ) + (/CHOCH_BEKLENIYOR/i.test(txt) ? 22 : 0) + (/MSS_VAR/i.test(txt) ? 12 : 0);
+    ) + (/CHOCH_BEKLENIYOR/i.test(txt) ? 22 : 0) + (/MSS_VAR/i.test(txt) ? 12 : 0) + (/EXPANSION|RVOL:(?:HIGH|VERY_HIGH)|R221_EARLY_TREND_IGNITION/i.test(txt) ? 18 : 0);
     const now = Date.now();
+    r2194Prune(now);
     const prev = r2194ArmedWatch.get(full);
+    const activeLocked = Array.from(r2194ArmedWatch.values()).filter(ev => r2195IsLocked(ev, now));
+    if (!prev && activeLocked.length >= R2194_MAX_ARMED) return false; // 30sn aktif kilit: yeni aday ezemez.
+    const firstArm = !prev;
+    const cacheChk = r2195CacheFirstCheck(row, {side, reason:txt});
     const next = {
-      symbol: full.replace('USDT',''), fullSymbol: full, side, ts: prev?.ts || now,
+      symbol: full.replace('USDT',''), fullSymbol: full, side,
+      ts: prev?.ts || now,
       until: now + R2194_ARM_TTL_MS,
-      lastCheck: prev?.lastCheck || 0,
+      lockUntil: prev?.lockUntil && Number(prev.lockUntil) > now ? Number(prev.lockUntil) : now + R2194_ACTIVE_LOCK_MS,
+      lastCheck: firstArm ? now : (prev?.lastCheck || now),
       priority: Math.round(priority),
       reason: String(txt).slice(0,180),
-      lastSummary: prev?.lastSummary || ''
+      lastSummary: firstArm ? cacheChk.reason : (prev?.lastSummary || cacheChk.reason || '')
     };
     r2194ArmedWatch.set(full, next);
     r2194Prune(now);
-    if (!prev || now - Number(prev.ts||0) > 25_000) {
-      logAuto(`🟡 R219.4 CHOCH izleme silaha alındı: ${next.symbol} ${side} p:${next.priority}`);
+    if (!r2194ArmedWatch.has(full)) return false; // Sadece gerçekten aktif ilk 2 için devam/log.
+    const survived = r2194ArmedWatch.get(full);
+    if (cacheChk.ready && !isBinanceBackoffActive() && !autoRunning) {
+      logAuto(`🚀 R221 WATCH cache-ready: ${survived.symbol} ${side} — güvenli öncelikli tarama`);
+      setTimeout(()=>{ try { if(!autoRunning && !isBinanceBackoffActive()) runAutoScan(full); } catch(_){} }, 250);
+    } else if (firstArm) {
+      logAuto(`🟡 R221 WATCH aktif izleme: ${survived.symbol} ${side} p:${survived.priority} kilit:${Math.ceil((survived.lockUntil-now)/1000)}sn · ${survived.lastSummary}`);
     }
+    r2195KickWatcherNow(300);
     return true;
   } catch(_) { return false; }
 }
@@ -14120,7 +14455,13 @@ function r2194ArmedStatus() {
   const now = Date.now(); r2194Prune(now);
   return Array.from(r2194ArmedWatch.values())
     .sort((a,b)=>r2194Num(b.priority)-r2194Num(a.priority))
-    .map(x=>({symbol:x.symbol, side:x.side, priority:x.priority, ttlSec:Math.max(0, Math.ceil((x.until-now)/1000)), lastCheckSec:x.lastCheck?Math.round((now-x.lastCheck)/1000):null, summary:x.lastSummary||''}));
+    .map(x=>({
+      symbol:x.symbol, side:x.side, priority:x.priority,
+      ttlSec:Math.max(0, Math.ceil((x.until-now)/1000)),
+      lockSec:Math.max(0, Math.ceil((r2194Num(x.lockUntil)-now)/1000)),
+      lastCheckSec:x.lastCheck?Math.round((now-x.lastCheck)/1000):null,
+      summary:x.lastSummary||''
+    }));
 }
 function r2194LooksReady(analysis, ev) {
   try {
@@ -14129,28 +14470,48 @@ function r2194LooksReady(analysis, ev) {
     const rec = String(analysis.recommendation || dc.rec || '').toUpperCase();
     const sideOk = !ev?.side || rec === ev.side;
     const txt = [dc.entryPermissionReason, dc.reason, dc.brainSummary, dc.ictDashboard, analysis.ictDashboard].filter(Boolean).join(' | ');
-    const structureReady = !!(dc.r219StructureTargetScalp || /R219_STRUCTURE_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i.test(txt));
+    const structureReady = !!(dc.r219StructureTargetScalp || dc.r221TrendIgnitionScalp || /R221_EARLY_TREND_IGNITION|R220_STRUCTURE_ACCELERATOR|R219_STRUCTURE_TARGET|SWEEP_HL_SHIFT_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i.test(txt));
     const brainTrade = dc.brainAction === 'TRADE' && (dc.autoOk === true || dc.r160TraderDecision || dc.r159MomentumPass || dc.r156FastBypass);
     const tierReady = dc.autoOk === true && ['A','B+'].includes(String(dc.tier||''));
     const stillWaiting = /SSL_ALINDI_CHOCH_BEKLENIYOR|BSL_ALINDI_CHOCH_BEKLENIYOR|CHOCH_BEKLENIYOR/i.test(txt);
     const block = !!(dc.r219StructureHardBlock || (dc.r219StructureTarget && dc.r219StructureTarget.block));
-    if (block) return {ready:false, drop:false, reason:'R219 yapı hard-block'};
+    if (block) return {ready:false, drop:false, reason:'R220 yapı hard-block WAIT'};
     if (sideOk && (structureReady || brainTrade || tierReady)) return {ready:true, reason: structureReady?'structure-ready':brainTrade?'brain-trade':'tier-ready'};
     return {ready:false, drop:!stillWaiting && !structureReady && !brainTrade, reason: stillWaiting?'CHOCH bekliyor':'henüz hazır değil'};
   } catch(e) { return {ready:false, reason:String(e?.message||e).slice(0,80)}; }
 }
+function r2195TriggerPriorityScan(ev, chk) {
+  let tries = 0;
+  const tryRun = () => {
+    tries++;
+    if (!autoConfig?.enabled || isBinanceBackoffActive() || isAutoPauseActive()) return;
+    if (!autoRunning) {
+      r2194ArmedWatch.delete(ev.fullSymbol);
+      logAuto(`🚀 R221 WATCH hazır yakalandı: ${ev.symbol} ${ev.side} (${chk.reason}) — öncelikli emir taraması`);
+      runAutoScan(ev.fullSymbol);
+      return;
+    }
+    if (tries <= 12) setTimeout(tryRun, 750);
+  };
+  tryRun();
+}
 async function r2194ArmedWatcherTick() {
+  if (r2194InFlight) return;
   try {
-    if (!autoConfig?.enabled || autoRunning || isBinanceBackoffActive() || isPositionRiskCooldownActive() || isAutoPauseActive()) return;
+    if (!autoConfig?.enabled || isBinanceBackoffActive() || isPositionRiskCooldownActive() || isAutoPauseActive()) return;
     if (typeof _resetGovWindowIfNeeded === 'function') _resetGovWindowIfNeeded();
     if (r2194Num(binanceGov?.usedWeight) > 650) return;
     const now = Date.now(); r2194Prune(now);
-    const rows = Array.from(r2194ArmedWatch.values())
+    const dueRows = Array.from(r2194ArmedWatch.values())
       .filter(ev => now - r2194Num(ev.lastCheck) >= R2194_RECHECK_MS)
       .sort((a,b)=>r2194Num(b.priority)-r2194Num(a.priority));
-    const ev = rows[0];
+    const ev = dueRows[0];
     if (!ev) return;
+    const age = now - r2194Num(ev.lastCheck);
+    if (autoRunning && age < R2194_STALE_WAKE_MS) return; // Normalde scan bitince çalışır; stale olursa kendini uyandırır.
+    r2194InFlight = true;
     ev.lastCheck = now;
+    ev.lastSummary = 'REST/WS doğrulama başladı';
     r2194ArmedWatch.set(ev.fullSymbol, ev);
     try {
       r130StartCombinedAggTradeStream([ev.fullSymbol], {replace:false});
@@ -14161,15 +14522,18 @@ async function r2194ArmedWatcherTick() {
     ev.lastSummary = `${chk.reason}${analysis?.recommendation?` ${analysis.recommendation}`:''}`.slice(0,120);
     r2194ArmedWatch.set(ev.fullSymbol, ev);
     if (chk.ready) {
-      r2194ArmedWatch.delete(ev.fullSymbol);
-      logAuto(`🚀 R219.4 CHOCH hazır yakalandı: ${ev.symbol} ${ev.side} (${chk.reason}) — öncelikli emir taraması`);
-      if (!autoRunning && !isBinanceBackoffActive()) runAutoScan(ev.fullSymbol);
+      r2195TriggerPriorityScan(ev, chk);
     } else if (chk.drop) {
       r2194ArmedWatch.delete(ev.fullSymbol);
-      logAuto(`⚪ R219.4 CHOCH izleme düştü: ${ev.symbol} ${ev.side} — ${chk.reason}`);
+      logAuto(`⚪ R221 WATCH izleme düştü: ${ev.symbol} ${ev.side} — ${chk.reason}`);
+    } else if (age >= R2194_STALE_WAKE_MS) {
+      // Çok konuşmasın; sadece stale watchdog gerçekten çalıştıysa kısa iz bırak.
+      autoScanState.lastAction = `R221 WATCH watcher kontrol: ${ev.symbol} ${ev.side} — ${ev.lastSummary}`;
     }
   } catch(e) {
-    pushCritical('R2194_ARMED_WATCHER', e?.message || e, {}, 'WARNING');
+    pushCritical('R220_ARMED_WATCHER', e?.message || e, {}, 'WARNING');
+  } finally {
+    r2194InFlight = false;
   }
 }
 
@@ -15030,7 +15394,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R189: Son emir öncesi 5m micro/kanıt freni. Karar motoru bir şekilde TRADE üretse bile
         // R160 3/4 + Q4 kanıtsız + zayıf mum/HTF karşı kombinasyonu canlı emir açamaz.
         // Bu R176 gibi recovery duvarı değildir; sadece eksik kanıtlı bypass'ı keser.
-        if (decisionChain?.r188NoProofGuard || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) {
+        if ((decisionChain?.r188NoProofGuard && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r221TrendIgnitionScalp))) {
           const why = decisionChain?.r190Edge?.spreadBlock
             ? `R190 spread pahalı: ${decisionChain.r190Edge.spreadPct}% — 15x ROI makas riski yüksek`
             : (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))
@@ -15149,7 +15513,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R191: scan loop final check. Karar zinciri içindeki bütün bypasslar normalde
         // burada autoOk=false döner; yine de eski/legacy bir yol emre yaklaşırsa son kez kes.
-        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r218ChartTruthScalp && !decisionChain?.r215APlusScalp && !decisionChain?.r216BalancedScalp && !decisionChain?.r217FastPulseScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || (decisionChain?.r219StructureTargetScalp || decisionChain?.r218ChartTruthScalp || decisionChain?.r215APlusScalp || decisionChain?.r216BalancedScalp || decisionChain?.r217FastPulseScalp)))) {
+        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r218ChartTruthScalp && !decisionChain?.r215APlusScalp && !decisionChain?.r216BalancedScalp && !decisionChain?.r217FastPulseScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || (decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r218ChartTruthScalp || decisionChain?.r215APlusScalp || decisionChain?.r216BalancedScalp || decisionChain?.r217FastPulseScalp)))) {
           const why = decisionChain?.r191UnifiedBlockReason || (decisionChain?.r190Edge?.spreadBlock ? `R190 spread pahalı: ${decisionChain?.r190Edge?.spreadPct}%` : `R190 geç giriş: ${decisionChain?.r190Edge?.summary||''}`);
           logAuto(`⛔ ${coin.symbol} ${why} — emir açılmadı`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r190:decisionChain?.r190Edge});
@@ -15363,12 +15727,12 @@ async function runAutoScan(prioritySymbol=null) {
         try {
           const panelLev218 = normalizeRequestedLeverage(leverage, 1);
           const binanceLev218 = Number(r137BaseMaxLev || panelLev218);
-          const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
+          const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
           if (cleanR218Lev && executeLeverage < panelLev218) {
             const oldLev218 = executeLeverage;
             executeLeverage = panelLev218;
             leverageNote += ` · R218 temiz grafik kaldıraç geri yükleme ${oldLev218}x→${executeLeverage}x`;
-            logAuto(`⚡ ${coin.symbol} ${decisionChain?.r219StructureTargetScalp?'R219 structure target':'R218 temiz grafik'} setup: panel kaldıracı korundu ${oldLev218}x→${executeLeverage}x`);
+            logAuto(`⚡ ${coin.symbol} ${decisionChain?.r219StructureTargetScalp?'R220 structure accelerator':decisionChain?.r221TrendIgnitionScalp?'R221 erken trend':'R218 temiz grafik'} setup: panel kaldıracı korundu ${oldLev218}x→${executeLeverage}x`);
           }
         } catch(_r218lev) {}
 
@@ -15436,7 +15800,7 @@ async function runAutoScan(prioritySymbol=null) {
             const wantedTP219 = Math.min(8.0, Math.max(1.45, room219 * 0.82));
             if (room219 >= minRoom219 && Math.abs(wantedTP219 - oldTP219) >= 0.12) {
               userTPPct = +wantedTP219.toFixed(2);
-              r219TargetPlanNote += ` · R219 structure TP %${oldTP219}→%${userTPPct} hedef:${room219.toFixed(2)}%`;
+              r219TargetPlanNote += ` · R220 structure TP %${oldTP219}→%${userTPPct} hedef:${room219.toFixed(2)}%`;
             }
             const trapPrice219 = Number(st219.trap?.price || 0);
             if (trapPrice219 > 0 && entryRef > 0) {
@@ -15444,14 +15808,14 @@ async function runAutoScan(prioritySymbol=null) {
               const oldSL219 = Number(userSLPct || 0);
               if (structSL219 > 0.38 && structSL219 < Math.min(2.45, oldSL219 + 0.62) && Math.abs(structSL219 - oldSL219) >= 0.08) {
                 userSLPct = +Math.max(0.55, structSL219).toFixed(2);
-                r219TargetPlanNote += ` · R219 structure SL %${oldSL219}→%${userSLPct}`;
+                r219TargetPlanNote += ` · R220 structure SL %${oldSL219}→%${userSLPct}`;
               }
             }
             targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
             stopPrice   = isLong ? +(entryRef * (1 - userSLPct/100)).toFixed(8) : +(entryRef * (1 + userSLPct/100)).toFixed(8);
             if (r219TargetPlanNote) logAuto(`🎯 ${coin.symbol}${r219TargetPlanNote}`);
           }
-        } catch(_r219tp) { logAuto(`⚠️ ${coin.symbol} R219 structure target plan hatası: ${String(_r219tp?.message||_r219tp).slice(0,80)}`); }
+        } catch(_r219tp) { logAuto(`⚠️ ${coin.symbol} R220 structure accelerator plan hatası: ${String(_r219tp?.message||_r219tp).slice(0,80)}`); }
 
         // R192: Yakıt bazlı TP planı — sabit TP büyütme değil, sadece gerçek yakıt varsa hedefi uzat.
         // R144 hızlı scalp / zayıf fuel aynı kalır; squeeze + footprint/deepOFI/VPIN devamında ortalama kazanan büyüsün.
@@ -15730,7 +16094,7 @@ function startAutoTrader() {
       } catch(_) {}
     }, 5000);
   }
-  // R219.4: CHOCH watcher ana taramadan bağımsız, ama REST güvenliklerini delen bir worker değildir.
+  // R219.5: CHOCH watcher ana taramadan bağımsız, ama REST güvenliklerini delen bir worker değildir.
   if (!r2194WatchTimer) {
     r2194WatchTimer = setInterval(r2194ArmedWatcherTick, 4000);
   }
