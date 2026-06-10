@@ -70,16 +70,40 @@ process.on('unhandledRejection', e => pushCritical('UNHANDLED_REJECTION', e));
 
 // ── CACHE ─────────────────────────────────────────────────────────────────────
 const cache = new Map();
-async function cached(key, ttl, fn) {
+const cacheInflight = new Map();
+function cacheEntry(key) { return cache.has(key) ? cache.get(key) : null; }
+function cacheFresh(key, minTtlMs=0) {
+  const ent = cacheEntry(key);
+  return !!(ent && Date.now() < Number(ent.exp||0) - Number(minTtlMs||0));
+}
+async function cached(key, ttl, fn, opts={}) {
+  // R233: aynı key için eşzamanlı public REST fırtınasını kesen single-flight cache.
+  // 429/418 sırasında eski veri varsa onu döndürür; analiz boş kalır ama Binance'e tekrar yük binmez.
   const now = Date.now();
-  if (cache.has(key)) { const {val,exp}=cache.get(key); if(now<exp)return val; }
-  const val = await fn();
-  cache.set(key, { val, exp: now+ttl });
-  return val;
+  const ent = cacheEntry(key);
+  if (ent && now < Number(ent.exp||0)) return ent.val;
+  if (cacheInflight.has(key)) {
+    try { return await cacheInflight.get(key); }
+    catch(e) { if (ent && opts.staleOnError !== false) return ent.val; throw e; }
+  }
+  const task = (async () => {
+    try {
+      const val = await fn();
+      cache.set(key, { val, exp: Date.now() + Number(ttl||0), ts: Date.now() });
+      return val;
+    } catch(e) {
+      if (ent && opts.staleOnError !== false) return ent.val;
+      throw e;
+    } finally {
+      cacheInflight.delete(key);
+    }
+  })();
+  cacheInflight.set(key, task);
+  return task;
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R232_BOS_DISPLACEMENT_TRAP_SMART_ENTRY';
+const LAZARUS_BUILD = 'R234_WS_KLINE_LIVE_CACHE_GOVERNOR';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -116,7 +140,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     if (binanceGov.backoffUntil > now && !String(scope).includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
     // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
-    if (binanceGov.usedWeight + weight > 850 || binanceGov.usedOrders + orderWeight > 70) {
+    if (binanceGov.usedWeight + weight > 520 || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
       await sleep(wait);
       _resetGovWindowIfNeeded();
@@ -124,7 +148,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
     // Çok sık istek atma: public daha seyrek, emir/pozisyon daha kontrollü.
-    const baseDelay = orderWeight ? 120 : (String(scope).includes('PUBLIC') ? 90 : 70);
+    const baseDelay = orderWeight ? 140 : (String(scope).includes('PUBLIC') ? 130 : 90);
     await sleep(baseDelay);
   };
   const prev = binanceGov.q.catch(()=>{});
@@ -585,12 +609,33 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
   };
 }
 
+const publicRestPacer = { lastAny:0, lastKline:0, lastMarketData:0 };
+async function r233PublicRestPace(path='') {
+  const p = String(path||'');
+  const isKline = p.includes('/klines');
+  const isMarketData = p.includes('/futures/data/') || p.includes('/openInterest') || p.includes('/depth');
+  // Kline fırtınası 429'un ana sebebi. WS/cached veri analizde ana kaynak; REST sadece tazeleme.
+  const minGap = isKline ? 220 : isMarketData ? 140 : 90;
+  const key = isKline ? 'lastKline' : isMarketData ? 'lastMarketData' : 'lastAny';
+  const now = Date.now();
+  const wait = Math.max(0, Number(publicRestPacer[key]||0) + minGap - now);
+  if (wait > 0) await sleep(wait);
+  publicRestPacer[key] = Date.now();
+  publicRestPacer.lastAny = Date.now();
+  if (typeof _resetGovWindowIfNeeded === 'function') _resetGovWindowIfNeeded();
+  // Gerçek limitlere yaklaşmadan scan'i yavaşlat; 429 gelirse 30sn tüm motor duruyor.
+  if (Number(binanceGov?.usedWeight||0) > 420) {
+    const w = 60000 - (Date.now() - Number(binanceGov.minuteStart||Date.now())) + 250;
+    if (w > 0 && w < 65000) await sleep(w);
+  }
+}
 async function bPub(path, qs='') {
   const now=Date.now();
   if(now-reqWindow>60000){reqCount=0;reqWindow=now;}
   reqCount++;
-  if(reqCount>800){const w=60000-(now-reqWindow);await sleep(w+1000);reqCount=0;reqWindow=Date.now();}
+  if(reqCount>450){const w=60000-(now-reqWindow);await sleep(w+1000);reqCount=0;reqWindow=Date.now();}
   await binanceThrottle('PUBLIC_REST', path.includes('/ticker/24hr') ? 5 : 1, 0);
+  await r233PublicRestPace(path);
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
   if(r.status===429||r.status===418){registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'));}
@@ -705,9 +750,9 @@ const posRiskCache = {
   lastSource: null,
   lastError: null,
 };
-const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
-const POS_RISK_TTL_ACTIVE = 10000;   // R154: 10sn (eskiden 4sn → dakikada 12 istek → 418 ban). fastManager da 10sn ile sync.
-const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
+const POS_RISK_TTL_NORMAL = 45000;   // R233: 45sn (pozisyon yok) — scan içi positionRisk 429 azaltma
+const POS_RISK_TTL_ACTIVE = 15000;   // R233: 15sn açık pozisyon — yönetim hızlı ama 429 üretmez
+const POS_RISK_RATELIMIT_MS = 120000; // R233: 120sn. 429 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
 
 function keyFingerprint(apiKey) {
@@ -1651,6 +1696,148 @@ function r130CombinedSummary() {
     const err = r130CombinedTickLastErr ? ` err:${r130CombinedTickLastErr}` : '';
     return `R135 combined:${state} sembol:${r130CombinedTickSymbols?.size||0} sonTick:${age==null?'yok':Math.round(age/1000)+'sn'}${noTick} restart:${r130CombinedTickRestartCount}${err}`;
   } catch(_) { return 'R135 combined:bilinmiyor'; }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R234 — WS KLINE LIVE CACHE GOVERNOR
+// Amaç: 1m/3m/5m BOS/impulse analizi REST TTL beklemesin. REST sadece ilk tarihçe
+// seed ve WS kopması fallback için kullanılır; son mum @kline stream'den canlı güncellenir.
+// Bu sayede R232 BOS displacement akıllı giriş korunur ama /fapi/v1/klines 429 fırtınası oluşmaz.
+// ─────────────────────────────────────────────────────────────────────────────
+const r234KlineIntervals = ['1m','3m','5m'];
+let r234KlineWS = null;
+let r234KlineKey = '';
+let r234KlineSymbols = new Set();
+let r234KlineLastMsgTs = 0;
+let r234KlineLastOpenTs = 0;
+let r234KlineLastErr = '';
+let r234KlineRestartCount = 0;
+let r234KlineLastStartTs = 0;
+const r234KlineRows = new Map(); // `${FULL}_${interval}` -> { row, ts, final }
+
+function r234KlineCacheKey(full, interval) { return `k${String(interval||'').toLowerCase()}_${String(full||'').toUpperCase()}`; }
+function r234KlineRowKey(full, interval) { return `${String(full||'').toUpperCase()}_${String(interval||'').toLowerCase()}`; }
+function r234StreamKlineName(full, interval) {
+  full = normalizeSymbol ? normalizeSymbol(full) : r125NormSymbol(full);
+  interval = String(interval||'').toLowerCase();
+  if (!full || !full.endsWith('USDT') || !r234KlineIntervals.includes(interval)) return '';
+  if (!r133IsAsciiFuturesSymbol(full)) return '';
+  return `${full.toLowerCase()}@kline_${interval}`;
+}
+function r234WsKlineToRow(k) {
+  return [
+    Number(k.t), String(k.o), String(k.h), String(k.l), String(k.c), String(k.v),
+    Number(k.T), String(k.q || '0'), Number(k.n || 0), String(k.V || '0'), String(k.Q || '0'), '0'
+  ];
+}
+function r234MergeKlineRow(arr, row, limit=160) {
+  const base = Array.isArray(arr) ? arr.slice() : [];
+  if (!Array.isArray(row) || !Number.isFinite(Number(row[0]))) return base.slice(-limit);
+  const openTs = Number(row[0]);
+  const idx = base.findIndex(x => Number(x?.[0]) === openTs);
+  if (idx >= 0) base[idx] = row;
+  else if (!base.length || openTs > Number(base[base.length-1]?.[0] || 0)) base.push(row);
+  else base.push(row);
+  base.sort((a,b)=>Number(a?.[0]||0)-Number(b?.[0]||0));
+  return base.slice(-limit);
+}
+function r234GetWsRow(full, interval, maxAgeMs=15000) {
+  const ent = r234KlineRows.get(r234KlineRowKey(full, interval));
+  if (!ent || !Array.isArray(ent.row)) return null;
+  if (Date.now() - Number(ent.ts||0) > maxAgeMs) return null;
+  return ent.row;
+}
+function r234StartCombinedKlineStream(symbols=[], opts={}) {
+  try {
+    const base = [];
+    for (const s0 of (Array.isArray(symbols)?symbols:[symbols])) {
+      const full = normalizeSymbol ? normalizeSymbol(s0) : r125NormSymbol(s0);
+      if (!full || !full.endsWith('USDT') || !r133IsAsciiFuturesSymbol(full)) continue;
+      if (!base.includes(full)) base.push(full);
+    }
+    // BTC 5m bağlamı analizde kullanılıyor; ayrı REST TTL beklemesin diye WS listesine eklenir.
+    if (!base.includes('BTCUSDT')) base.push('BTCUSDT');
+    if (!base.length) return;
+    const next = opts?.replace ? new Set(base) : new Set([...(r234KlineSymbols||[]), ...base]);
+    const arr = Array.from(next).slice(0, 26);
+    const streams = [];
+    for (const full of arr) for (const itv of r234KlineIntervals) {
+      const nm = r234StreamKlineName(full, itv);
+      if (nm) streams.push(nm);
+    }
+    const key = streams.sort().join('/');
+    const rs = r234KlineWS?.readyState;
+    if (r234KlineWS && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) && key === r234KlineKey) return;
+    // Sık scan listesi değişiminde WS reconnect fırtınası yapma; canlı veri varsa 8sn koru.
+    if (r234KlineWS && (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) && r234KlineLastMsgTs && Date.now()-r234KlineLastMsgTs < 8000 && Date.now()-r234KlineLastStartTs < 8000) return;
+    try { if (r234KlineWS) r234KlineWS.terminate?.(); } catch(_) {}
+    r234KlineSymbols = new Set(arr);
+    r234KlineKey = key;
+    if (!key) return;
+    const ws = new WebSocket(`${FAPI_WS_MARKET}/stream?streams=${key}`);
+    r234KlineWS = ws;
+    r234KlineLastStartTs = Date.now();
+    ws.on('open', () => { r234KlineLastOpenTs = Date.now(); r234KlineLastErr = ''; });
+    ws.on('message', data => {
+      try {
+        const msg = JSON.parse(data.toString());
+        const d = msg?.data || msg;
+        const k = d?.k;
+        const full = String(d?.s || k?.s || '').toUpperCase();
+        const itv = String(k?.i || '').toLowerCase();
+        if (!full || !r234KlineIntervals.includes(itv) || !k) return;
+        const row = r234WsKlineToRow(k);
+        r234KlineLastMsgTs = Date.now();
+        r234KlineRows.set(r234KlineRowKey(full, itv), { row, ts:r234KlineLastMsgTs, final:!!k.x });
+        // REST ile seed edilmiş tarihçeyi canlı son mumla güncelle. Cache exp canlı veri geldikçe uzar.
+        const ck = r234KlineCacheKey(full, itv);
+        const ent = cacheEntry(ck);
+        if (ent && Array.isArray(ent.val) && ent.val.length >= 5) {
+          const merged = r234MergeKlineRow(ent.val, row, Math.max(180, ent.val.length + 2));
+          const liveTtl = itv === '1m' ? 95_000 : itv === '3m' ? 210_000 : 360_000;
+          cache.set(ck, { val: merged, exp: Date.now() + liveTtl, ts: Date.now(), r234Ws:true });
+        }
+      } catch(_) {}
+    });
+    ws.on('close', (code, reason) => {
+      try { r234KlineLastErr = code ? `close:${code}${reason?':' + String(reason).slice(0,80):''}` : r234KlineLastErr; } catch(_) {}
+      r234KlineRestartCount++;
+      const restart = Array.from(r234KlineSymbols || []);
+      setTimeout(() => { try { r234StartCombinedKlineStream(restart, {replace:true}); } catch(_) {} }, 3000);
+    });
+    ws.on('error', e => { try { r234KlineLastErr = String(e?.message || e || 'ws_error').slice(0,160); } catch(_) {} });
+  } catch(_) {}
+}
+async function r234GetKlines(full, interval, limit, restTtlMs) {
+  full = normalizeSymbol ? normalizeSymbol(full) : r125NormSymbol(full);
+  interval = String(interval||'').toLowerCase();
+  const lim = Math.max(5, Number(limit)||100);
+  const ck = r234KlineCacheKey(full, interval);
+  const ent = cacheEntry(ck);
+  const wsRow = r234GetWsRow(full, interval, interval === '1m' ? 18_000 : interval === '3m' ? 25_000 : 35_000);
+  if (ent && Array.isArray(ent.val) && ent.val.length >= Math.min(8, lim) && wsRow) {
+    const merged = r234MergeKlineRow(ent.val, wsRow, Math.max(lim, ent.val.length));
+    cache.set(ck, { val: merged, exp: Date.now() + Math.max(60_000, Number(restTtlMs||0)), ts: Date.now(), r234Ws:true });
+    return merged.slice(-lim);
+  }
+  if (ent && Array.isArray(ent.val) && Date.now() < Number(ent.exp||0)) return ent.val.slice(-lim);
+  // REST bütçe doluyken tarihçe varsa stale kullan; kline REST 429 üretmesin.
+  if (ent && Array.isArray(ent.val) && ent.val.length >= Math.min(8, lim) && (isBinanceBackoffActive() || r2194Num(binanceGov?.usedWeight) > 520)) {
+    return wsRow ? r234MergeKlineRow(ent.val, wsRow, Math.max(lim, ent.val.length)).slice(-lim) : ent.val.slice(-lim);
+  }
+  const arr = await cached(ck, restTtlMs, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=${interval}&limit=${lim}`), {staleOnError:true});
+  if (Array.isArray(arr) && wsRow) return r234MergeKlineRow(arr, wsRow, Math.max(lim, arr.length)).slice(-lim);
+  return Array.isArray(arr) ? arr.slice(-lim) : [];
+}
+function r234KlineSummary() {
+  try {
+    const rs = r234KlineWS?.readyState;
+    const state = rs === WebSocket.OPEN ? 'OPEN' : rs === WebSocket.CONNECTING ? 'CONNECTING' : 'CLOSED';
+    const age = r234KlineLastMsgTs ? Math.round((Date.now()-r234KlineLastMsgTs)/1000)+'sn' : 'yok';
+    const err = r234KlineLastErr ? ` err:${r234KlineLastErr}` : '';
+    return `R234 klineWS:${state} sembol:${r234KlineSymbols?.size||0} row:${r234KlineRows.size} son:${age} restart:${r234KlineRestartCount}${err}`;
+  } catch(_) { return 'R234 klineWS:bilinmiyor'; }
 }
 
 function startCVDStream(symbol) {
@@ -8375,27 +8562,28 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // WS stream'leri başlat
     startCVDStream(full);
     startIcebergStream(full);
+    try { r234StartCombinedKlineStream([full], {replace:false}); } catch(_) {}
     // tickStream analyze'da await ile çağrılıyor
 
     const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m,rK1m,rK3m] =
       await Promise.allSettled([
-        cached(`k4h_${full}`,  30*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)),
-        cached(`k1h_${full}`,   5*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)),
-        cached(`k15m_${full}`, 90*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=15m&limit=200`)),
-        cached(`k5m_${full}`,  45*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=5m&limit=100`)),
+        cached(`k4h_${full}`,  45*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=160`)),
+        cached(`k1h_${full}`,  10*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=160`)),
+        cached(`k15m_${full}`, 3*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=15m&limit=120`)),
+        r234GetKlines(full, '5m', 100, 5*60*1000),
         cached(`fund_${full}`, 30*60*1000, ()=>bPub('/fapi/v1/fundingRate',`symbol=${full}&limit=10`)),
         cached(`oih_${full}`,  15*60*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=1h&limit=24`)),
         cached(`lsg_${full}`,  15*60*1000, ()=>bPub('/futures/data/globalLongShortAccountRatio',`symbol=${full}&period=1h&limit=12`)),
         cached(`lst_${full}`,  15*60*1000, ()=>bPub('/futures/data/topLongShortPositionRatio',`symbol=${full}&period=1h&limit=12`)),
         cached(`dep_${full}`,  60*1000, ()=>bPub('/fapi/v1/depth',`symbol=${full}&limit=100`)),
-        cached(`tak_${full}`,  30*1000, ()=>bPub('/futures/data/takerlongshortRatio',`symbol=${full}&period=5m&limit=6`)),
+        cached(`tak_${full}`,  60*1000, ()=>bPub('/futures/data/takerlongshortRatio',`symbol=${full}&period=5m&limit=6`)),
         cached(`oih5_${full}`, 90*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=5m&limit=12`)),
-        cached(`oin_${full}`,  60*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
+        cached(`oin_${full}`,  90*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
         // R153: btc5m paralel çekilir — seri await kaldırıldı
-        cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`)),
+        r234GetKlines('BTCUSDT', '5m', 24, 5*60*1000),
         // R212: 1m/3m micro pulse pre-confirmation; ENA sonrası ultra kısa cache, Promise.allSettled içinde paralel.
-        cached(`k1m_${full}`, 10*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1m&limit=20`)),
-        cached(`k3m_${full}`, 15*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=3m&limit=14`)),
+        r234GetKlines(full, '1m', 20, 5*60*1000),
+        r234GetKlines(full, '3m', 14, 5*60*1000),
       ]);
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
@@ -14857,7 +15045,7 @@ async function r2194ArmedWatcherTick() {
   try {
     if (!autoConfig?.enabled || isBinanceBackoffActive() || isPositionRiskCooldownActive() || isAutoPauseActive()) return;
     if (typeof _resetGovWindowIfNeeded === 'function') _resetGovWindowIfNeeded();
-    if (r2194Num(binanceGov?.usedWeight) > 650) return;
+    if (r2194Num(binanceGov?.usedWeight) > 360) return; // R233: watcher REST analizleri 429 üretmesin
     const now = Date.now(); r2194Prune(now);
     const dueRows = Array.from(r2194ArmedWatch.values())
       .filter(ev => now - r2194Num(ev.lastCheck) >= R2194_RECHECK_MS)
@@ -15007,7 +15195,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R232; R231/R230/R229/R228/R227/R226/R225/R224 korunur. 3m BOS displacement trap akıllı giriş + pozisyon senkron kilidi + ATR kalite guard aktif. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R234; R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -15030,6 +15218,13 @@ app.get('/api/health', (_req, res) => {
           usedWeight: binanceGov.usedWeight,
           usedOrders: binanceGov.usedOrders,
           minuteStart: binanceGov.minuteStart,
+        },
+        klineWS: {
+          summary: r234KlineSummary(),
+          active: !!r234KlineWS,
+          symbols: r234KlineSymbols?.size || 0,
+          rows: r234KlineRows.size,
+          lastMsgSec: r234KlineLastMsgTs ? Math.round((Date.now()-r234KlineLastMsgTs)/1000) : null
         },
         armedWatcher: {
           active: !!r2194WatchTimer,
@@ -15163,6 +15358,15 @@ async function runAutoScan(prioritySymbol=null) {
       autoScanState.phase = 'BINANCE_İSTEK_FRENİ';
       autoScanState.lastAction = `Binance geçici istek freni ${rem}sn — yeni işlem kapalı, açık pozisyon varsa takipte`;
       logAuto(`⏳ Binance geçici istek freni: ${rem}sn — yeni tarama/emir bekletiliyor`);
+      return;
+    }
+
+    // R234: 1m/3m/5m artık WS live-cache olduğu için public REST bütçe eşiği daha geniş.
+    // Sadece gerçek REST baskısı çok yükselirse 1 pencere bekletilir.
+    if (Number(binanceGov?.usedWeight||0) > 650) {
+      autoScanState.phase = 'VERİ_İSTEĞİ_DİNLENİYOR';
+      autoScanState.lastAction = 'R234 REST bütçe koruması — WS kline aktif, yalnız yüksek REST yükünde kısa bekleme';
+      logAuto('⏳ R234 REST bütçe koruması: WS kline aktif, yeni TOP24 tarama kısa bekletildi');
       return;
     }
 
@@ -15309,6 +15513,7 @@ async function runAutoScan(prioritySymbol=null) {
     try {
       const warmSymbols = (scanList||[]).slice(0,24).map(c => normalizeSymbol(c.fullSymbol || c.symbol)).filter(Boolean);
       r130StartCombinedAggTradeStream(warmSymbols, {replace:true});
+      r234StartCombinedKlineStream(warmSymbols, {replace:true});
       for (const fs of warmSymbols) startCVDStream(fs);
       // R130: WS açılışını uzun bekletme; combined stream arka planda akacak.
       await sleep(900);
@@ -15317,7 +15522,9 @@ async function runAutoScan(prioritySymbol=null) {
 
     // 3. Her coini analiz et
     for (const coin of scanList) {
-      if ((await getNewPosCount()) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
+      // R233: Her coin öncesi fresh positionRisk çağrısı 429 üretiyordu.
+      // Scan başındaki cached openPos sayısı yeterli; emir sonrası fresh kontrol zaten yapılıyor.
+      if (Number(autoScanState.positionCount||openPos.length||0) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
       autoScanState.currentSymbol = String(coin.symbol||coin.fullSymbol||'').replace('USDT','');
       autoScanState.checked = (autoScanState.checked||0) + 1;
 
