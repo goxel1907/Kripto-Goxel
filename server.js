@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R230_TRUE_DEATH_ONLY_ORDER_RELAY';
+const LAZARUS_BUILD = 'R232_BOS_DISPLACEMENT_TRAP_SMART_ENTRY';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -4934,6 +4934,14 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
     exitReason:null,resultNote:null,pnlUSDT:null,roiPct:null,
     closedAt:null,closedAtTR:null,cooldownMin:null,
   };
+  const existingOpen = tradeLedger.find(x => x && x.status === 'OPEN' && x.symbol === sym.replace('USDT',''));
+  if (existingOpen) {
+    Object.assign(existingOpen, row, { id: existingOpen.id || id, openedAt: existingOpen.openedAt || openedAt, openedAtTR: existingOpen.openedAtTR || trTime(openedAt) });
+    tradeLedger = [existingOpen, ...tradeLedger.filter(x => x !== existingOpen && x.id !== existingOpen.id)].slice(0,250);
+    saveTradeLedger();
+    try { logAuto(`🔒 R231 ledger dedupe: ${sym.replace('USDT','')} açık kart tekrar yazılmadı, mevcut OPEN güncellendi`); } catch(_) {}
+    return existingOpen;
+  }
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
   saveTradeLedger();
   // R181: Açılış bildirimi ledger kayıt anından direkt gider; karmaşık kart yolu bypass.
@@ -7765,6 +7773,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r226Hybrid = { r165Core:r226R165Core, r197Strong:r226R197Strong, liveProof:r226LiveProof, priceTrace:r226PriceTrace, fatalKill:r226FatalKill, softYield:r226SoftBlockCanYield, r197:r226R197SideScout?.label||'' };
   d.r227ExecutionCore = { ok:r227ExecutionCoreScalp, strongFlow:r227StrongFlow, priceTrace:r227PriceTrace, quality:r227QualityOk, deathVeto:r227DeathVeto, directionClean:r227DirectionClean, flowEdge:r227FlowEdge, ticks:r133LiveTradeCount, earlyFuel:r227EarlyFuel };
   d.r230TrueDeathRelay = { ok:r230TrueDeathRelayScalp, legacySignal:r230LegacyFrequencySignal, livePulse:r230LivePulseSignal, priceFuel:r230PriceOrFuel, quality:r230QualityOk, deathVeto:r230TrueDeathVeto, flowEdge:r227FlowEdge, ticks:r133LiveTradeCount };
+  d.r232BosQuality = r232BosDisplacementTrapCheck(d, side);
   d.r229TrueDeathOnly = { takerToxic:r229TakerToxic, microToxic:r229MicroToxic, opposingToxic:r229OpposingToxic, microBlock:!!r202BlockActive, opposingFlow:!!r134OpposingLiveFlow, wrongSide:!!r148WrongSideBlock };
   d.r225LivePulse = { floor:r225ScoreFloor, edgeFloor:r225EdgeFloor, liveBurst:r225LiveBurst, trace:r225FiveMTrace, wallOk:r225WallOk, noDirty:r225NoDirty, forecast:r225ForecastAligned, forecastConf:r225ForecastConf, structureRoom:r225StructureRoomOk };
   d.r224IgnitionNoDirty = r224IgnitionNoDirty;
@@ -12814,6 +12823,117 @@ app.post('/api/account', async (req, res) => {
   }
 });
 
+
+// ── R231: EMİR RELAY / POZİSYON SENKRON KİLİDİ ───────────────────────────────
+// Amaç: R230 frekans çekirdeği işlem açarken aynı sembolde/pending durumda ikinci emir,
+// çift kart veya stale positionRisk yüzünden max pozisyon bindirmesi oluşmasın.
+const r231PendingOrders = new Map();
+function r231PendingKey(symbol, side='') {
+  return `${normalizeSymbol(symbol)}:${String(side||'').toUpperCase()}`;
+}
+function r231PrunePendingOrders() {
+  const now = Date.now();
+  for (const [k,v] of r231PendingOrders.entries()) {
+    if (!v || Number(v.until||0) <= now) r231PendingOrders.delete(k);
+  }
+}
+function r231HasPendingOrder(symbol, side=null) {
+  r231PrunePendingOrders();
+  const full = normalizeSymbol(symbol);
+  if (side) return r231PendingOrders.has(r231PendingKey(full, side));
+  for (const k of r231PendingOrders.keys()) if (String(k).startsWith(full + ':')) return true;
+  return false;
+}
+function r231AcquireOrderSlot(symbol, side, source='ORDER', ttlMs=90000) {
+  r231PrunePendingOrders();
+  const full = normalizeSymbol(symbol);
+  const existing = [...r231PendingOrders.entries()].find(([k]) => String(k).startsWith(full + ':'));
+  if (existing) {
+    const remain = Math.max(1, Math.ceil((Number(existing[1]?.until||0)-Date.now())/1000));
+    return {ok:false, reason:`${full} pending emir kilidi aktif (${remain}sn): ${existing[1]?.source||'ORDER'}`};
+  }
+  const key = r231PendingKey(full, side);
+  r231PendingOrders.set(key, {symbol:full, side:String(side||'').toUpperCase(), source, at:Date.now(), until:Date.now()+ttlMs});
+  return {ok:true, key};
+}
+function r231ReleaseOrderSlot(symbol, side) {
+  try { r231PendingOrders.delete(r231PendingKey(symbol, side)); } catch(_) {}
+}
+
+
+// R232: 3m BOS DISPLACEMENT TRAP SMART ENTRY
+// Ham 3m BOS tek başına emir sebebi değildir. Uzun displacement mumu ile BOS gelirse
+// MM genelde likiditeyi toplatıp geri dönüş/retest yaptırır. Bu modül yeni REST/WS açmaz;
+// mevcut 1m/3m/5m kline cache'inden BOS kalitesini okur. Amaç: 3m BOS yok diye fırsatı
+// öldürmemek, BOS geldiyse de uzun mumun tepesinden/dibinden kör chase yapmamaktır.
+function r232Rows(arr=[], limit=40) {
+  return (Array.isArray(arr) ? arr : []).slice(-limit).map(k => {
+    if (Array.isArray(k)) return {o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5], t:+k[0]};
+    return {o:+(k.o??k.open??k[1]??0), h:+(k.h??k.high??k[2]??0), l:+(k.l??k.low??k[3]??0), c:+(k.c??k.close??k[4]??0), v:+(k.v??k.volume??k[5]??0), t:+(k.t??k.time??k[0]??0)};
+  }).filter(x => x && x.o>0 && x.h>0 && x.l>0 && x.c>0 && x.h>=x.l);
+}
+function r232Pct(a,b){ return b ? ((a-b)/b)*100 : 0; }
+function r232CandleStats(c){
+  const range=Math.max(1e-12, c.h-c.l);
+  const body=Math.abs(c.c-c.o);
+  const closePos=(c.c-c.l)/range;
+  const upper=c.h-Math.max(c.o,c.c);
+  const lower=Math.min(c.o,c.c)-c.l;
+  return {range, body, closePos, upper, lower, bodyPct:c.c?body/c.c*100:0, rangePct:c.c?range/c.c*100:0};
+}
+function r232BosDisplacementTrapCheck(d={}, side='LONG') {
+  try {
+    const isL = String(side||'').toUpperCase() !== 'SHORT';
+    const rows3 = r232Rows(d?._r202k3m || d?.k3mArr || d?.k3m || d?._r206k3m || [], 42);
+    const rows1 = r232Rows(d?._r202k1m || d?.k1mArr || d?.k1m || [], 12);
+    const rows5 = r232Rows(d?._r206k5m || d?.k5mArr || d?.k5m || [], 24);
+    const no = {ok:true, block:false, bos:false, accept:false, trap:false, reason:'R232 BOS veri yok', detail:{}};
+    if (rows3.length < 14) return no;
+    const last = rows3.at(-1), prev = rows3.at(-2);
+    const base = rows3.slice(-16,-1);
+    const prevBase = rows3.slice(-17,-2);
+    if (base.length < 8 || prevBase.length < 8) return no;
+    const baseHigh = Math.max(...base.map(x=>x.h));
+    const baseLow  = Math.min(...base.map(x=>x.l));
+    const prevHigh = Math.max(...prevBase.map(x=>x.h));
+    const prevLow  = Math.min(...prevBase.map(x=>x.l));
+    const bos = isL ? last.c > baseHigh * 1.00015 : last.c < baseLow * 0.99985;
+    const prevBos = isL ? prev.c > prevHigh * 1.00015 : prev.c < prevLow * 0.99985;
+    const avgRange = base.reduce((s,x)=>s+(x.h-x.l),0) / Math.max(1, base.length);
+    const avgBody  = base.reduce((s,x)=>s+Math.abs(x.c-x.o),0) / Math.max(1, base.length);
+    const st = r232CandleStats(last);
+    const rangeMult = avgRange>0 ? st.range/avgRange : 1;
+    const bodyMult  = avgBody>0 ? st.body/avgBody : 1;
+    const longDisplacement = !!(rangeMult >= 2.15 || bodyMult >= 2.05 || st.rangePct >= 1.05);
+    const closeExtreme = isL ? st.closePos >= 0.86 : st.closePos <= 0.14;
+    const wickReject = isL
+      ? (st.upper > Math.max(st.body, st.range*0.18) * 0.75 && st.closePos < 0.70)
+      : (st.lower > Math.max(st.body, st.range*0.18) * 0.75 && st.closePos > 0.30);
+    const level = isL ? prevHigh : prevLow;
+    const retestHold = !!(prevBos && (isL
+      ? (last.l <= level*1.0025 && last.c >= level*0.999 && st.closePos >= 0.42)
+      : (last.h >= level*0.9975 && last.c <= level*1.001 && st.closePos <= 0.58)
+    ));
+    const twoCloseAccept = !!(prevBos && bos && !wickReject && (isL ? last.c >= prev.c*0.998 : last.c <= prev.c*1.002) && rangeMult < 2.85);
+    const net1 = rows1.length >= 3 ? r232Pct(rows1.at(-1).c, rows1.at(-3).c) : 0;
+    const net5 = rows5.length >= 2 ? r232Pct(rows5.at(-1).c, rows5.at(-2).c) : 0;
+    const oneMinOpp = isL ? net1 <= -0.18 : net1 >= 0.18;
+    const fiveMinOpp = isL ? net5 <= -0.30 : net5 >= 0.30;
+    const accept = !!(retestHold || twoCloseAccept);
+    const trap = !!(bos && longDisplacement && !accept && (closeExtreme || wickReject || oneMinOpp || fiveMinOpp));
+    const block = !!trap;
+    const reason = block
+      ? `R232 BOS displacement tuzak bekle: 3m BOS uzun mum ${rangeMult.toFixed(1)}x/${bodyMult.toFixed(1)}x · retest/hold yok${oneMinOpp?' · 1m geri dönüş':''}${fiveMinOpp?' · 5m geri dönüş':''}${wickReject?' · wick reject':''}`
+      : bos
+        ? `R232 BOS kalite: ${accept?'kabul/retest var':'BOS var ama chase riski yok'} ${rangeMult.toFixed(1)}x/${bodyMult.toFixed(1)}x`
+        : `R232 BOS bekleme şart değil: BOS yok, canlı/frekans route kendi kalitesiyle karar verir`;
+    return {ok:true, block, bos, accept, trap, longDisplacement, closeExtreme, wickReject, retestHold, twoCloseAccept, oneMinOpp, fiveMinOpp, rangeMult:+rangeMult.toFixed(2), bodyMult:+bodyMult.toFixed(2), net1:+net1.toFixed(2), net5:+net5.toFixed(2), reason,
+      detail:{baseHigh,baseLow,prevHigh,prevLow,level,closePos:+st.closePos.toFixed(2),rangePct:+st.rangePct.toFixed(2),bodyPct:+st.bodyPct.toFixed(2)}};
+  } catch(e) {
+    return {ok:false, block:false, bos:false, accept:false, trap:false, reason:`R232 BOS kalite hata: ${String(e?.message||e).slice(0,80)}`, detail:{}};
+  }
+}
+
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
   const{apiKey,apiSecret,symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
@@ -12822,10 +12942,13 @@ app.post('/api/order', async (req, res) => {
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   const isLong=side.toUpperCase()==='LONG';
   const oSide=isLong?'BUY':'SELL', cSide=isLong?'SELL':'BUY';
+  const r231Slot = r231AcquireOrderSlot(sym, side, 'API_ORDER', 90000);
+  if (!r231Slot.ok) return res.status(409).json({ok:false,error:`R231 pending emir kilidi: ${r231Slot.reason}`});
   try{
     // R30: emir endpoint'i de pozisyon limitini korur; auto scan concurrency veya çift tıklama pozisyon bindirmesin.
     try {
-      const rows = await getPositionRiskCached(apiKey, apiSecret);
+      invalidatePositionRiskCache('R231_ORDER_LIMIT_PRECHECK');
+      const rows = await getPositionRisk(apiKey, apiSecret);
       const openRows = Array.isArray(rows) ? rows.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0) : [];
       const sameSym = openRows.find(p=>String(p.symbol||'').toUpperCase()===sym);
       if (sameSym) throw new Error(`${sym} zaten açık pozisyon var; ikinci emir engellendi`);
@@ -12985,6 +13108,7 @@ app.post('/api/order', async (req, res) => {
     // Korumasız pozisyon kalırsa acil reduce-only market kapat.
     if (!slResult.ok) {
       if (slResult.skippedClosed) {
+        r231ReleaseOrderSlot(sym, side);
         return res.status(400).json({
           ok:false,
           error:`${sym} pozisyon SL/TP yazılmadan önce kapanmış; rescue atlandı`,
@@ -13002,6 +13126,7 @@ app.post('/api/order', async (req, res) => {
       } catch(closeErr) {
         emergencyClose = { error: closeErr.message };
       }
+      r231ReleaseOrderSlot(sym, side);
       return res.status(400).json({
         ok:false,
         error:`${sym} SL/TP Binance üzerinde doğrulanamadı; korumasız pozisyon bırakılmadı, acil kapatma denendi`,
@@ -13023,6 +13148,7 @@ app.post('/api/order', async (req, res) => {
       details:{symbol:sym,side,quantity:qty,leverage:safeLeverage,requestedLeverage:levSet.requested,leverageAdjusted:levSet.adjusted,leverageReason:levSet.reason,entry:execPrice,target:finalTP,stop:finalSL}
     });
   }catch(e){
+    r231ReleaseOrderSlot(sym, side);
     pushCritical('ORDER_ROUTE_ERROR', `${sym}: ${e.message}`);
     res.status(400).json({error:e.message});
   }
@@ -14881,7 +15007,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R230; R229/R228/R227/R226/R225/R224 korunur. True-death-only order relay aktif. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R232; R231/R230/R229/R228/R227/R226/R225/R224 korunur. 3m BOS displacement trap akıllı giriş + pozisyon senkron kilidi + ATR kalite guard aktif. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -16119,7 +16245,8 @@ async function runAutoScan(prioritySymbol=null) {
           );
           const r199BadQuality = !!(Number(score||0) < 70 || Number(decisionChain?.brainConfidence||0) < 35 || e199.lateTrapRisk || e199.r192LiveAgainst || e199.takerDivergence || e199.spreadBlock);
           if (r199StrongFuel && !r199BadQuality) {
-            const rows199 = Array.isArray(k5m) ? k5m.slice(-9, -1) : [];
+            const rows199Src = (typeof k5m !== 'undefined' && Array.isArray(k5m)) ? k5m : (Array.isArray(analysis?.k5m) ? analysis.k5m : []);
+            const rows199 = Array.isArray(rows199Src) ? rows199Src.slice(-9, -1) : [];
             let structDist = 0;
             if (rows199.length >= 5) {
               if (isLong) {
@@ -16155,6 +16282,48 @@ async function runAutoScan(prioritySymbol=null) {
         if (userRR < minRR) {
           logAuto(`${coin.symbol} final R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
           markAutoSkip(coin.symbol, `Final RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
+          continue;
+        }
+
+        // R232: 3m BOS displacement trap / smart entry guard.
+        // 3m BOS'u şart koşmaz; fakat BOS uzun displacement mumu ile geldiyse tepe/dip chase yapmaz.
+        // Retest/hold, iki kapanış kabulü veya kaliteli yapı yoksa bekler. Yeni Binance isteği yoktur.
+        try {
+          const r232q = r232BosDisplacementTrapCheck(decisionChain || {}, recommendation);
+          if (r232q?.block) {
+            logAuto(`🛡 ${coin.symbol} ${r232q.reason}`);
+            markAutoSkip(coin.symbol, r232q.reason, {rec:recommendation, tier:decisionChain?.tier, score, reason:decisionChain?.reason, r232:r232q});
+            continue;
+          } else if (r232q?.bos) {
+            try { logAuto(`🧠 ${coin.symbol} ${r232q.reason}`); } catch(_) {}
+          }
+        } catch(_r232bos) { logAuto(`⚠️ ${coin.symbol} R232 BOS kalite guard hata: ${String(_r232bos?.message||_r232bos).slice(0,80)}`); }
+
+        // R231: ATR yüksekken gerçek kalite koruması.
+        // R230 frekans açıldıktan sonra WLD tipinde: ATR çok yüksek + RVOL çok düşük + 3m BOS yok + p3 negatif/HTF ters ise
+        // bu artık "aptal fren" değil; stop mesafesi/likidite kalitesi bozuk gerçek risk filtresidir.
+        try {
+          const e231 = decisionChain?.r190Edge || {};
+          const txt231 = [decisionChain?.reason, decisionChain?.brainSummary, decisionChain?.r125OrderflowSummary, decisionChain?.r126FlowSummary, decisionChain?.r140Summary, decisionChain?.htfTani].filter(Boolean).join(' ');
+          const atr231 = Number(analysis?.leverage?.atrPct || decisionChain?.atrPct || decisionChain?.r15?.atrGate?.atrPct || 0);
+          const rvM = String(txt231).match(/(?:RVOL:[A-Z_]+×|\brvol:)(-?\d+(?:\.\d+)?)/i);
+          const rv231 = rvM ? Number(rvM[1]) : Number(e231.rvol || e231.rvolRatio || 1);
+          const p3Neg231 = /\bp3:-/i.test(txt231);
+          const no3mBos231 = /3m\s*BOS\s*yok/i.test(txt231);
+          const htfTers231 = /HTF\s*akış\s*ters|HTF:ters|HTF[^·,;]{0,30}ters/i.test(txt231);
+          const neutral231 = /mumTahmin:NEUTRAL|mumTahmin:NOTR/i.test(txt231);
+          const strongOverride231 = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || e231.squeeze || e231.r192FuelOk || e231.r194SwingBreak?.strong);
+          const atrQualityBlock231 = !!(atr231 >= 4.0 && rv231 > 0 && rv231 <= 0.25 && (no3mBos231 || p3Neg231) && (htfTers231 || neutral231) && !strongOverride231);
+          if (atrQualityBlock231) {
+            const why231 = `R231 ATR kalite koruması: ATR%${atr231.toFixed(2)} yüksek + RVOL ${rv231.toFixed(2)} düşük + ${no3mBos231?'3m BOS yok ':''}${p3Neg231?'p3 negatif ':''}${htfTers231?'HTF ters ':''}${neutral231?'mum nötr ':''}— giriş iptal`;
+            logAuto(`🛡 ${coin.symbol} ${why231}`);
+            markAutoSkip(coin.symbol, why231, {rec:recommendation, tier:decisionChain?.tier, score, atrPct:atr231, rvol:rv231, reason:decisionChain?.reason});
+            continue;
+          }
+        } catch(_r231atr) { logAuto(`⚠️ ${coin.symbol} R231 ATR kalite guard hata: ${String(_r231atr?.message||_r231atr).slice(0,80)}`); }
+
+        if (r231HasPendingOrder(coin.fullSymbol, recommendation) || r231HasPendingOrder(coin.fullSymbol)) {
+          markAutoSkip(coin.symbol, 'R231 pending emir kilidi: aynı sembolde emir doğrulaması sürüyor', {rec:recommendation, score});
           continue;
         }
 
