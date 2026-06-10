@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R210_R209_WAVE_SCOPE_RUNTIME_FIX';
+const LAZARUS_BUILD = 'R213_REVERSAL_OPPORTUNITY_ROUTER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5656,6 +5656,30 @@ function r206Reject(arr=[], side='LONG') {
   const rejectShort = side==='SHORT' && lower>0.42 && green>=2;
   return { reject:!!(rejectLong||rejectShort), upper, lower, red, green };
 }
+
+// ── R212: Fresh MTF / HTF hard context helpers ─────────────────────────────
+// ENA dersi: 5m/OI spike sinyali, 4H+1H+15m düşüş ve taze 1m/3m satışa karşı LONG'u ezmemeli.
+function r212HtfTrendState(arr=[], side='LONG') {
+  const a = r206Arr(arr, 80);
+  if (a.length < 10) return { ok:false, bear:false, bull:false, red:0, green:0, slope10:0, lowerCloses:0, higherCloses:0, label:'R212 HTF veri az' };
+  const last = a.slice(-10);
+  const red = last.filter(c => c.c < c.o).length;
+  const green = last.filter(c => c.c > c.o).length;
+  let lowerCloses=0, higherCloses=0;
+  for (let i=1;i<last.length;i++) {
+    if (last[i].c < last[i-1].c) lowerCloses++;
+    if (last[i].c > last[i-1].c) higherCloses++;
+  }
+  const slope10 = r206Pct(last[last.length-1].c, last[0].c);
+  const bear = !!(slope10 <= -3.0 || (red >= 6 && lowerCloses >= 6) || (red >= 7 && slope10 < -1.0));
+  const bull = !!(slope10 >= 3.0 || (green >= 6 && higherCloses >= 6) || (green >= 7 && slope10 > 1.0));
+  return { ok:true, bear, bull, red, green, slope10:+slope10.toFixed(2), lowerCloses, higherCloses, label:`R212 HTF red:${red}/10 green:${green}/10 slope:${slope10.toFixed(2)}%` };
+}
+function r212RangeNumber(x, fallback=null) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function r206GraphMemoryProbability(side='LONG', d={}) {
   try {
     side = normalizeSide(side) || String(side||'LONG').toUpperCase();
@@ -5682,6 +5706,8 @@ function r206GraphMemoryProbability(side='LONG', d={}) {
     const r197Ctx = side==='LONG' ? d?.r29?.r197?.long : d?.r29?.r197?.short;
     const r196Ctx = side==='LONG' ? d?.r29?.r196?.long : d?.r29?.r196?.short;
     const r198Ctx = side==='LONG' ? d?.r29?.r198?.long : d?.r29?.r198?.short;
+    const htf4 = r212HtfTrendState(k4h, side);
+    const htf1 = r212HtfTrendState(k1h, side);
 
     const dir1 = isLong ? s1>0.10 : s1<-0.10;
     const dir3 = isLong ? s3>0.12 : s3<-0.12;
@@ -5691,6 +5717,10 @@ function r206GraphMemoryProbability(side='LONG', d={}) {
     const opp5 = isLong ? s5<-0.22 : s5>0.22;
     const htfAgainst = isLong ? (s15<-0.35 && s1h<-0.55) : (s15>0.35 && s1h>0.55);
     const htfWith = isLong ? (s15>0.25 || s1h>0.45) : (s15<-0.25 || s1h<-0.45);
+    // R212 S2: 4H ana trend + 1H/15m aynı yönde ters ise 5m spike/OI tek başına yeterli değil.
+    const r212HtfMajorAgainst = isLong
+      ? !!(htf4.bear && (htf1.bear || s1h < -0.35 || s15 < -0.25))
+      : !!(htf4.bull && (htf1.bull || s1h > 0.35 || s15 > 0.25));
     const premiumLong = isLong && ((loc5.ok && loc5.loc>0.82) || (loc15.ok && loc15.loc>0.82));
     const discountShort = !isLong && ((loc5.ok && loc5.loc<0.18) || (loc15.ok && loc15.loc<0.18));
     const goodLocation = isLong ? ((loc5.ok && loc5.loc<0.76) || r197Ctx?.strong) : ((loc5.ok && loc5.loc>0.24) || r197Ctx?.strong);
@@ -5709,6 +5739,7 @@ function r206GraphMemoryProbability(side='LONG', d={}) {
     else if (flowSide && flowSide !== side && Math.abs(liveDelta)>=18) { bad++; minus.push(`flow ters ${flowSide}`); }
     if (goodLocation) { score++; plus.push('range konum uygun'); }
     if (htfWith) { score++; plus.push('HTF akış destek'); } else if (htfAgainst) { bad++; minus.push('HTF akış ters'); }
+    if (r212HtfMajorAgainst) { bad+=3; minus.push(`R212 4H/1H ana trend ters (${htf4.label})`); }
     if (r197Ctx?.strong) { score+=2; plus.push('R197 ters dönüş güçlü'); }
     if (r198Ctx?.block) { bad+=2; minus.push('HTF zone kabul yok'); }
     else if (r198Ctx?.caution) { bad++; minus.push('HTF zone dikkat'); }
@@ -5721,13 +5752,14 @@ function r206GraphMemoryProbability(side='LONG', d={}) {
     const earlyLeg = (dir1 && dir3 && (pivot.ok || pivot.near) && !fade.fade && !takerAgainst);
     const exhaustion = (premiumLong || discountShort) && (fade.fade || rej5.reject || takerAgainst) && !r197Ctx?.strong;
     const strongSupport = score>=8 && bad<=2 && earlyLeg && !r198Ctx?.block && !r196Ctx?.block;
-    const block = (micro.block && bad>=3) || exhaustion || (opp1 && opp3 && takerAgainst && !r197Ctx?.strong) || (r198Ctx?.block && bad>=2);
+    const block = (micro.block && bad>=3) || exhaustion || (opp1 && opp3 && takerAgainst && !r197Ctx?.strong) || (r198Ctx?.block && bad>=2) || (r212HtfMajorAgainst && micro.block && !r197Ctx?.strong) || (r212HtfMajorAgainst && takerAgainst && !micro.boost && !r197Ctx?.strong);
     const caution = !block && (bad>=3 || (premiumLong || discountShort) || htfAgainst);
     const state = block ? 'WRONG_SIDE_TIMING' : strongSupport ? 'EARLY_VALIDATED' : caution ? 'CAUTION' : score>=6 ? 'VALID' : 'WAIT';
     const locTxt = loc5.ok ? `5mLoc:${Math.round(loc5.loc*100)}%` : '';
     return {
       ok:true, block:!!block, caution:!!caution, strongSupport:!!strongSupport,
-      score, bad, state, earlyLeg, exhaustion,
+      score, bad, state, earlyLeg, exhaustion, r212HtfMajorAgainst,
+      htf:{ h4:htf4, h1:htf1 },
       slopes:{ m1:+s1.toFixed(3), m3:+s3.toFixed(3), m5:+s5.toFixed(3), m15:+s15.toFixed(3), h1:+s1h.toFixed(3), h4:+s4h.toFixed(3) },
       range:{ m5:loc5, m15:loc15, h1:loc1h, h4:loc4h },
       summary:`${state} ${side} score:${score}/10 bad:${bad} ${locTxt} · +${plus.slice(0,5).join(', ')}${minus.length?' · -'+minus.slice(0,5).join(', '):''}`
@@ -5860,6 +5892,55 @@ function r208MarketStructureReader(side='LONG', d={}) {
 
 // ── R209: WAVE + AUTO/MANUAL RISK SCALP ENGINE ──────────────────────────────
 // STG/BEAT tarzı okunan dalga: HH/HL, LH/LL, BOS, reclaim/reject.
+
+
+// ── R211: DASHBOARD WAVE + MANUAL/AUTO RISK ENVELOPE ───────────────────────
+// Amaç: botu yeni emir kurallarıyla boğmak değil; panelde görünen marj/kaldıraç
+// seçimini gerçek TP/SL/BE/trailing oranlarıyla hizalamak ve bunu status'a taşımak.
+function r211RiskEnvelope({balance=0, panelMargin=0, autoMargin=0, panelTP=3, panelSL=1.7, panelTrailing=1.5, panelBE=0.8, panelLev=15, autoLevMax=15, decisionChain={}}={}) {
+  balance = Number(balance||0); panelMargin = Number(panelMargin||0); autoMargin = Number(autoMargin||0);
+  panelTP = Number(panelTP||3); panelSL = Number(panelSL||1.7); panelTrailing = Number(panelTrailing||1.5); panelBE = Number(panelBE||0.8);
+  const ratio = balance>0 && panelMargin>0 ? panelMargin / balance : 0;
+  const hasManualMargin = panelMargin > 0 && (autoMargin<=0 || Math.abs(panelMargin-autoMargin) > Math.max(1.5, autoMargin*0.20));
+  let mode = hasManualMargin ? 'MANUAL_OVERRIDE' : 'AUTO_BALANCE';
+  let margin = hasManualMargin ? panelMargin : (autoMargin || panelMargin || 8);
+  let tp = panelTP, sl = panelSL, trailing = panelTrailing, be = panelBE;
+  let riskBand = 'STANDARD';
+  if (hasManualMargin) {
+    // Kullanıcı marjı bilinçli büyüttüyse bot onu kesmez; ama hedef/nefes/BE oranını ona göre ayarlar.
+    if (ratio > 0.30) { riskBand='VERY_AGGRESSIVE'; tp=Math.max(tp,5.0); trailing=Math.max(trailing,2.5); be=Math.min(be,0.30); }
+    else if (ratio > 0.22) { riskBand='AGGRESSIVE'; tp=Math.max(tp,4.0); trailing=Math.max(trailing,2.0); be=Math.min(be,0.50); }
+    else if (ratio > 0.15) { riskBand='NORMAL'; tp=Math.max(tp,3.2); trailing=Math.max(trailing,1.6); be=Math.min(be,0.70); }
+  } else {
+    // Otomatik modda ana amaç bakiye korumak; TP/trailing agresifleştirilmez.
+    margin = Math.max(8, margin);
+  }
+  // Grafik motoru güçlü yapı görüyorsa hedef ve trailing bir miktar nefes alır; ters/weak ise panelde kalır.
+  const strongGraph = !!(decisionChain?.r208ScalpCertified || decisionChain?.r209Wave?.boost || decisionChain?.r206GraphSupport || decisionChain?.r202Micro?.boost || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r190Edge?.squeeze);
+  if (strongGraph) { tp = Math.max(tp, Math.min(6.0, panelTP*1.25)); trailing = Math.max(trailing, Math.min(2.4, panelTrailing*1.25)); }
+  const lev = Math.max(1, Math.min(Number(panelLev||15), Number(autoLevMax||panelLev||15)));
+  return {
+    mode, riskBand, balance:+balance.toFixed(2), margin:+margin.toFixed(2), ratio:+(ratio*100).toFixed(1),
+    leverage:lev, tp:+tp.toFixed(2), sl:+sl.toFixed(2), trailing:+trailing.toFixed(2), be:+be.toFixed(2),
+    note:`R211 ${mode}: marj ${margin.toFixed(2)}$${balance?` / bakiye ${balance.toFixed(2)}$ (%${(ratio*100).toFixed(1)})`:''} → TP%${tp.toFixed(2)} trailing%${trailing.toFixed(2)} BE%${be.toFixed(2)}`
+  };
+}
+
+async function r211StatusRiskPreview() {
+  try {
+    const cfg = autoConfig || {};
+    let bal = 0;
+    if (cfg.apiKey && cfg.apiSecret) bal = await r209ReadAvailableUSDT(cfg.apiKey, cfg.apiSecret).catch(()=>0);
+    const wr = r209RecentWR(20);
+    const km = r209KellyMargin(bal || Number(cfg.usdtAmount||0)*4, wr, Number(cfg.tpPct||3), Number(cfg.slPct||1.7));
+    return r211RiskEnvelope({
+      balance:bal, panelMargin:Number(cfg.usdtAmount||0), autoMargin:km.margin,
+      panelTP:Number(cfg.tpPct||3), panelSL:Number(cfg.slPct||1.7), panelTrailing:Number(cfg.trailingPct||1.5), panelBE:Number(cfg.breakEvenPct||0.8),
+      panelLev:Number(cfg.leverage||15), autoLevMax:Number(cfg.vurKacMaxLev||cfg.leverage||15)
+    });
+  } catch(e) { return {ok:false, error:safeErrMsg(e)}; }
+}
+
 function r209Pivots(arr=[], look=2) {
   const a=r206Arr(arr,120), piv=[];
   for (let i=look;i<a.length-look;i++) {
@@ -6626,6 +6707,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r209WaveBoost = r209WaveBoostActive;
   d.r209WaveBlock = r209WaveBlockActive;
 
+  // R212: Range altından bounce ederken SHORT kovalamayı kes; range tepesinden LONG kovalamayı da simetrik uyar.
+  const r212LocCtx = r196SideCtxBrain || {};
+  const r212Loc24 = r212RangeNumber(r212LocCtx.loc24, null);
+  const r212Loc1h = r212RangeNumber(r212LocCtx.loc1h, null);
+  const r212Loc4h = r212RangeNumber(r212LocCtx.loc4h, null);
+  const r212BottomForShort = side === 'SHORT' && ((Number.isFinite(r212Loc24) && r212Loc24 <= 30) || (Number.isFinite(r212Loc1h) && r212Loc1h <= 25) || (Number.isFinite(r212Loc4h) && r212Loc4h <= 25));
+  const r212TopForLong = side === 'LONG' && ((Number.isFinite(r212Loc24) && r212Loc24 >= 70) || (Number.isFinite(r212Loc1h) && r212Loc1h >= 75) || (Number.isFinite(r212Loc4h) && r212Loc4h >= 75));
+  const r212StrongContinuationProof = !!(r202BoostActive && (r208ScalpCertified || r209WaveBoostActive) && r125SideFlow.edge >= 12 && r133LiveTradeCount >= 25 && !r191TakerOrVpinAgainst);
+  const r212RangeSideBlock = r120Bool((r212BottomForShort || r212TopForLong) && !r212StrongContinuationProof && !r208ScalpCertified && !r209WaveBoostActive);
+  d.r212RangeSideBlock = r212RangeSideBlock;
+
   // R207: R206 grafik desteği artık düşük skoru otomatik affeden "elit yakıt" sayılmaz.
   // Grafik hafızası iyi olabilir; ama skor/edge/fiyat-zamanlama zayıfsa emir değil, aday izleme olmalı.
   const r200EliteRealFuel = r120Bool(
@@ -6744,6 +6836,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r204FastRouteNeedsMicroBlock ||
     r204R160ThreeOfFourNeedsProofBlock ||
     r205BypassScoreBlock ||
+    r212RangeSideBlock ||
     r206BlockActive ||
     r208BlockActive ||
     (r209WaveBlockActive && !r208ScalpCertified) ||
@@ -6772,7 +6865,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r204FastRouteNeedsMicroBlock?`R204 hızlı rota valisi: ${side} R156/R159/R144 için 1m/3m mikro teyit + gerçek mum/flow yetersiz (micro:${r202Micro?.score||0}/6, flow:${r125SideFlow.edge}, tick:${r133LiveTradeCount})`:'',
         r204R160ThreeOfFourNeedsProofBlock?`R204 R160 3/4 valisi: ${side} için mikro teyit/5m kanıt/flow yetersiz`:'',
         r205BypassScoreBlock?`R207/R205 mutlak score floor: ${side} skor ${score}/${minScore}, edge ${edge}; R156/R144/R160 taban ${r205NoBypassBelow}, R159 ${r159Points}p taban ${r205R159ScoreFloor}; düşük edge tabanı ${Math.max(70, minScore)}`:'',
-        r206BlockActive?`R206 grafik hafızası ters faz: ${r206Graph?.summary||'grafik uyumsuz'}`:'',
+        r212RangeSideBlock?`R212 range/bounce valisi: ${side} için loc24:${Number.isFinite(r212Loc24)?r212Loc24.toFixed(0):'?'} loc1h:${Number.isFinite(r212Loc1h)?r212Loc1h.toFixed(0):'?'} loc4h:${Number.isFinite(r212Loc4h)?r212Loc4h.toFixed(0):'?'}; güçlü 1m/3m devam kanıtı yok`:'',
+        r206BlockActive?`R206/R212 grafik hafızası ters faz: ${r206Graph?.summary||'grafik uyumsuz'}`:'',
         r208BlockActive?`R208 yapı okuyucu blok: ${r208Pattern?.summary||'yapı uyumsuz'}`:'',
         r209WaveBlockActive?`R209 dalga yapı blok: ${r209Wave?.summary||'dalga uyumsuz'}`:'',
         r209WaveBoostActive?`R209 dalga yapı destek: ${r209Wave?.summary||'dalga destek'}`:'',
@@ -6950,6 +7044,82 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
 
 function r120AutoReason(decisionChain={}, fallback='Bekle') {
   return String(decisionChain?.brainSummary || fallback || '5m Fırsat Beyni izle').replace(/R\d+[^·,]*/g, '').replace(/\s+/g,' ').trim().slice(0,500);
+}
+
+
+// ── R213: REVERSAL OPPORTUNITY ROUTER ─────────────────────────────────────
+// Amaç: Yanlış yöne gelen sinyali kör şekilde ters emre çevirmek değil;
+// LONG neden bloklandıysa bunun SHORT fırsatı olup olmadığını, SHORT neden bloklandıysa
+// bunun LONG fırsatı olup olmadığını taze 1m/3m + dalga + range + flow ile tekrar tartmak.
+// Bu modül sadece karşı tarafın kendi kanıtı varsa WATCH kararını kontrollü B+/A adaya yükseltir.
+function r213Num(x, fb=0) { const n = Number(x); return Number.isFinite(n) ? n : fb; }
+function r213Bool(x) { return !!x; }
+function r213SideEdge(d={}, side='LONG') {
+  const flow = d?.r125Flow || {};
+  return side === 'LONG' ? r213Num(flow.longEdge, 0) : r213Num(flow.shortEdge, 0);
+}
+function r213OppositeScout(blockedSide='LONG', blockedD={}, oppSide='SHORT', oppD={}, minScore=70) {
+  try {
+    const blockedPass = !!blockedD?.pass;
+    const oppPass = !!oppD?.pass;
+    // Zaten karşı taraf normal karar motorundan geçmişse burada sadece etiket verilir; ekstra zorlamayız.
+    if (!blockedD || !oppD || oppPass) return { promote:false, rank:0, reason:'R213 gerek yok' };
+
+    const blockedBecauseWrongSide = !!(
+      blockedD.r202MicroBlock || blockedD.r206GraphBlock || blockedD.r208Block || blockedD.r209WaveBlock ||
+      blockedD.r212RangeSideBlock || blockedD.r196RangeLocationBlock || blockedD.r148WrongSideBlock ||
+      /ters faz|mikro zamanlama ters|range\/bounce|R212|R206|R208|R209|lokasyon|tepe|dip|fade/i.test(String(blockedD.r191UnifiedBlockReason || blockedD.reason || blockedD.brainSummary || ''))
+    );
+    if (blockedPass || !blockedBecauseWrongSide) return { promote:false, rank:0, reason:'R213 ters fırsat sebebi yok' };
+
+    const sc = r213Num(oppD.score, 0);
+    const edge = r213Num(oppD.brainConfidence ?? oppD.r142CalibratedEdge ?? oppD.edge, 0);
+    const floor = Math.max(58, r213Num(minScore,70) - 12);
+    const sideFlow = r213SideEdge(oppD, oppSide);
+    const liveTicks = r213Num(oppD.r133LiveTradeCount, 0);
+
+    const oppSupport = !!(
+      oppD.r202MicroBoost || oppD.r206GraphSupport || oppD.r208ScalpCertified || oppD.r209WaveBoost ||
+      oppD.r117HtfReverseOk || oppD.r148ReversalSideOk ||
+      (oppSide === 'LONG' ? oppD?.r29?.r197?.long?.strong : oppD?.r29?.r197?.short?.strong)
+    );
+    const oppBlocked = !!(
+      oppD.r202MicroBlock || oppD.r206GraphBlock || oppD.r208Block || oppD.r209WaveBlock || oppD.r212RangeSideBlock ||
+      oppD.r191TakerOrVpinAgainst || oppD.r192AgainstFinal || oppD.r193OiAnomalyNoFuel || oppD.r196RangeLocationBlock ||
+      oppD.r205BypassScoreBlock || oppD.r207R160FourScoreBlock || oppD.r207LowEdgeHardBlock || oppD.hardVeto || oppD.brainFatalDanger
+    );
+
+    // Karşı yön için kendi kanıtı yoksa, sadece ana yön bloklandı diye ters işlem açılmaz.
+    const scoreOk = sc >= floor && (edge >= 60 || oppD.r208ScalpCertified || oppD.r206GraphSupport || oppD.r209WaveBoost);
+    const flowOk = sideFlow >= 8 || oppD.r202MicroBoost || oppD.r208ScalpCertified || oppD.r209WaveBoost;
+    const freshnessOk = liveTicks === 0 || liveTicks >= 12; // veri yoksa tek başına bloklama; varsa çok zayıf olmasın
+    const promote = !!(!oppBlocked && oppSupport && scoreOk && flowOk && freshnessOk);
+    const rank = (oppSupport?60:0) + sc + edge*0.8 + sideFlow*2 + (oppD.r208ScalpCertified?45:0) + (oppD.r209WaveBoost?32:0) + (oppD.r206GraphSupport?25:0) + (oppD.r202MicroBoost?20:0) - (oppBlocked?500:0);
+    const reason = promote
+      ? `R213 ters fırsat yönlendirici: ${blockedSide} blok sebebi gerçek ters-faz; ${oppSide} için mikro/dalga/range kanıtı var (skor ${sc}/${minScore}, edge ${edge}, flow ${sideFlow})`
+      : `R213 ters fırsat yok: ${blockedSide} bloklandı ama ${oppSide} kendi kanıtı yetersiz (skor ${sc}/${minScore}, edge ${edge}, flow ${sideFlow}, destek:${oppSupport?'EVET':'hayır'}, blok:${oppBlocked?'EVET':'hayır'})`;
+    return { promote, rank, reason, blockedSide, oppSide, sc, edge, sideFlow, oppSupport, oppBlocked, scoreOk, flowOk };
+  } catch(e) {
+    return { promote:false, rank:0, reason:`R213 safe hata: ${safeErrMsg(e)}` };
+  }
+}
+function r213ApplyOppositePromotion(oppD={}, scout={}) {
+  if (!oppD || !scout?.promote) return oppD;
+  const edge = r213Num(oppD.brainConfidence ?? oppD.r142CalibratedEdge, 0);
+  const sc = r213Num(oppD.score, 0);
+  oppD.pass = true;
+  oppD.autoOk = true;
+  oppD.entryPermissionOk = true;
+  oppD.brainAction = 'TRADE';
+  oppD.tier = edge >= 82 && sc >= 65 ? 'A' : 'B+';
+  oppD.entryPermissionReason = 'R213_REVERSAL_OPPORTUNITY_ROUTER';
+  oppD.r213ReversalPromoted = true;
+  oppD.r213ReversalReason = scout.reason;
+  oppD.reason = `🔁 ${scout.reason} · ${String(oppD.reason || oppD.brainSummary || '').slice(0,420)}`;
+  oppD.brainSummary = oppD.reason.slice(0,500);
+  oppD.blocks = [];
+  oppD.reasons = [oppD.reason];
+  return oppD;
 }
 
 
@@ -7345,14 +7515,14 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         cached(`lsg_${full}`,  15*60*1000, ()=>bPub('/futures/data/globalLongShortAccountRatio',`symbol=${full}&period=1h&limit=12`)),
         cached(`lst_${full}`,  15*60*1000, ()=>bPub('/futures/data/topLongShortPositionRatio',`symbol=${full}&period=1h&limit=12`)),
         cached(`dep_${full}`,  60*1000, ()=>bPub('/fapi/v1/depth',`symbol=${full}&limit=100`)),
-        cached(`tak_${full}`,  5*60*1000, ()=>bPub('/futures/data/takerlongshortRatio',`symbol=${full}&period=5m&limit=6`)),
+        cached(`tak_${full}`,  30*1000, ()=>bPub('/futures/data/takerlongshortRatio',`symbol=${full}&period=5m&limit=6`)),
         cached(`oih5_${full}`, 90*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=5m&limit=12`)),
         cached(`oin_${full}`,  60*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
         // R153: btc5m paralel çekilir — seri await kaldırıldı
         cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`)),
-        // R202: 1m/3m micro pulse pre-confirmation; kısa cache, Promise.allSettled içinde paralel.
-        cached(`k1m_${full}`, 30*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1m&limit=12`)),
-        cached(`k3m_${full}`, 45*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=3m&limit=10`)),
+        // R212: 1m/3m micro pulse pre-confirmation; ENA sonrası ultra kısa cache, Promise.allSettled içinde paralel.
+        cached(`k1m_${full}`, 10*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1m&limit=20`)),
+        cached(`k3m_${full}`, 15*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=3m&limit=14`)),
       ]);
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
@@ -11357,6 +11527,22 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       shortDecisionRaw._r206k4h = k4h;
       const longDecision  = r120SingleBrainDecision('LONG', longDecisionRaw, longScore, minAutoScore);
       const shortDecision = r120SingleBrainDecision('SHORT', shortDecisionRaw, shortScore, minAutoScore);
+
+      // R213: Kör reverse değil; bloklanan yönün sebebi gerçekten ters fırsat mı diye karşı tarafı tekrar tart.
+      const r213LongToShort = r213OppositeScout('LONG', longDecision, 'SHORT', shortDecision, minAutoScore);
+      const r213ShortToLong = r213OppositeScout('SHORT', shortDecision, 'LONG', longDecision, minAutoScore);
+      if (r213LongToShort.promote && (!r213ShortToLong.promote || r213LongToShort.rank >= r213ShortToLong.rank + 10)) {
+        r213ApplyOppositePromotion(shortDecision, r213LongToShort);
+        longDecision.r213ReverseInvite = r213LongToShort;
+      } else if (r213ShortToLong.promote && (!r213LongToShort.promote || r213ShortToLong.rank >= r213LongToShort.rank + 10)) {
+        r213ApplyOppositePromotion(longDecision, r213ShortToLong);
+        shortDecision.r213ReverseInvite = r213ShortToLong;
+      } else if (r213LongToShort.promote && r213ShortToLong.promote) {
+        // İki taraf da reverse istiyorsa piyasa kararsız: hiçbirini zorla açma.
+        longDecision.r213ReverseConflict = r213LongToShort;
+        shortDecision.r213ReverseConflict = r213ShortToLong;
+      }
+
       function decisionRank(side, d) {
         if (!d || !d.pass) return -9999;
         const tierPts = d.tier === 'A' ? 300 : d.tier === 'B+' ? 210 : d.tier === 'B' ? 90 : 0;
@@ -11368,7 +11554,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const missingPenalty = d.cvdMissing ? 18 : 0;
         const balancePts = Number(d.r148BalanceBonus || 0) * 3.0 - Number(d.r148WrongPenalty || 0) * 3.0 + (d.r148ReversalSideOk ? 38 : 0) - (d.r148WrongSideBlock ? 120 : 0);
         const r190Pts = (d.r190Edge?.earlyContinuation ? 34 : 0) + (d.r190Edge?.squeeze ? 24 : 0) + (d.r190Edge?.momentumWindow ? 10 : 0) - (d.r190Edge?.lateTrapRisk ? 55 : 0) - (d.r190Edge?.spreadBlock ? 75 : 0);
-        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts + r190Pts - vetoPenalty - missingPenalty;
+        const r213Pts = d.r213ReversalPromoted ? 70 : 0;
+        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts + r190Pts + r213Pts - vetoPenalty - missingPenalty;
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
@@ -13626,9 +13813,10 @@ app.post('/api/auto/config', (req, res) => {
   }
 });
 
-app.get('/api/auto/status', (req, res) => {
+app.get('/api/auto/status', async (req, res) => {
+  const r211EffectiveRisk = await r211StatusRiskPreview();
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
-    config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
+    config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(),
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
@@ -14460,11 +14648,14 @@ async function runAutoScan(prioritySymbol=null) {
           const wr209 = r209RecentWR(20);
           const km209 = r209KellyMargin(bal209 || Number(executeUsdtAmount||0)*4, wr209, userTPPct, userSLPct);
           const rp209 = r209ManualAutoParams({balance:bal209, panelMargin:executeUsdtAmount, autoMargin:km209.margin, tp:userTPPct, sl:userSLPct, trail:trailingPct, be:breakEvenPct, decisionChain});
-          executeUsdtAmount = rp209.margin;
-          userTPPct = rp209.tp; userSLPct = rp209.sl;
-          r209RiskNote = ` · R209 ${rp209.mode}: bakiye ${bal209?bal209.toFixed(2):'?'}$, marj ${executeUsdtAmount}$ (${rp209.ratio}%), TP%${userTPPct}, trailing%${rp209.trailing}, BE%${rp209.be}`;
+          const rp211 = r211RiskEnvelope({balance:bal209, panelMargin:Number(usdtAmount||executeUsdtAmount||0), autoMargin:km209.margin, panelTP:userTPPct, panelSL:userSLPct, panelTrailing:trailingPct, panelBE:breakEvenPct, panelLev:executeLeverage, autoLevMax:cfg.vurKacMaxLev||executeLeverage, decisionChain});
+          executeUsdtAmount = rp211.margin;
+          userTPPct = rp211.tp; userSLPct = rp211.sl;
+          decisionChain.r211EffectiveRisk = rp211;
+          cfg._r211LastEffectiveRisk = rp211;
+          r209RiskNote = ` · ${rp211.note}`;
           leverageNote += r209RiskNote;
-          logAuto(`⚖️ ${coin.symbol}${r209RiskNote}`);
+          logAuto(`⚖️ ${coin.symbol} ${rp211.note}`);
         } catch(_r209risk) { logAuto(`⚠️ ${coin.symbol} R209 oto/manüel risk hesabı atlandı: ${String(_r209risk?.message||_r209risk).slice(0,80)}`); }
         const r137BaseMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(executeUsdtAmount||usdtAmount||0) * executeLeverage).catch(()=>null);
         if (r137BaseMaxLev && executeLeverage > r137BaseMaxLev) {
@@ -14836,8 +15027,8 @@ async function runAutoScan(prioritySymbol=null) {
             peakPnl:0, peakRealPct:0,
             r91Exit:{active:true, mode:'İZLE', exitScore:0, reasons:['pozisyon yeni açıldı'], pnlPct:0, realProfitPct:0, peakPnl:0, pullbackPct:0, givebackRoi:0},
             exitMode:'İZLE', profitLockLevel:0,
-            config:{ trailing:true, trailingPct, trailStep, breakEvenPct,
-              entryPrice:orderResp.executedPrice||analysis.price, targetTP:orderResp.details?.target||targetPrice },
+            config:{ trailing:true, trailingPct:(decisionChain?.r211EffectiveRisk?.trailing||trailingPct), trailStep, breakEvenPct:(decisionChain?.r211EffectiveRisk?.be||breakEvenPct),
+              entryPrice:orderResp.executedPrice||analysis.price, targetTP:orderResp.details?.target||targetPrice, r211EffectiveRisk:decisionChain?.r211EffectiveRisk||null },
             entryReason:{
               score, longScore, shortScore,
               reason: decisionChain?.reason || `${recommendation} A-Tier`,
@@ -14845,7 +15036,7 @@ async function runAutoScan(prioritySymbol=null) {
               mm: analysis.marketMaker?.target,
               cvd: analysis.cvd?.momentum,
               funding: analysis.funding?.current,
-              panel:{ usdtAmount:executeUsdtAmount, leverage:executeLeverage, panelLeverage:leverage, slPct:userSLPct, tpPct:userTPPct, leverageNote },
+              panel:{ usdtAmount:executeUsdtAmount, leverage:executeLeverage, panelLeverage:leverage, slPct:userSLPct, tpPct:userTPPct, trailingPct:(decisionChain?.r211EffectiveRisk?.trailing||trailingPct), breakEvenPct:(decisionChain?.r211EffectiveRisk?.be||breakEvenPct), leverageNote, r211EffectiveRisk:decisionChain?.r211EffectiveRisk||null },
             },
             entryDiscipline:{ canliGirisIziOk:r85CanliGirisIziOk, terazi:r85Terazi, r47:r85R47, timing:r85TimingPts, flow:r85FlowPts, sadeceFundingDestek:r85SadeceFundingDestek, bartiDisiplinOk:r85BartiDisiplinOk },
             managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${trSideLabel(recommendation)} açıldı — skor:${score} terazi:${r85Terazi}`, urgency:'LOW', lastCheck:Date.now() },
