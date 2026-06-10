@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R224_DEEP_FREQUENCY_UNBLOCK_AUDIT';
+const LAZARUS_BUILD = 'R226_HYBRID_R165_R197_R225_FREQUENCY_CORE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -7412,6 +7412,84 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     score >= Math.max(50, Number(minScore || 70) - 14) && edge >= 45
   );
 
+  // R225: LIVE PULSE FREQUENCY RESTORE
+  // Amaç: 5m'de net canlı akış + 5m yön izi varken botu score/R220 WAIT duvarında bırakmamak.
+  // Bu kör bypass değildir: spread, taker/VPIN ters, 1m/3m ters, fatal danger, yakın HTF duvarı ve
+  // gerçek yapı/fake-flow blokları korunur. Sadece H/HMSTR tipi "yükselişi görüyor ama emir yok"
+  // durumunda, güçlü canlı flow + forecast/aggression/5m trace varsa B+ scalp route açar.
+  const r225ForecastSide = String(d.r125Flow?.r126?.forecast?.side || '').toUpperCase();
+  const r225ForecastConf = r120BrainNum(d.r125Flow?.r126?.forecast?.confidence, 0);
+  const r225ForecastAligned = r120Bool(r134ForecastAligned || (r225ForecastSide === side && r225ForecastConf >= 72));
+  const r225LiveBurst = r120Bool(
+    (r125SideFlow.edge >= 18 && r125SideFlow.against <= Math.max(4, r125SideFlow.edge - 8) && r133LiveTradeCount >= 35) ||
+    (r125SideFlow.strong && r133LiveTradeCount >= 60) ||
+    (r134LiveDeltaAligned && r133LiveTradeCount >= 120 && r133LiveDeltaAbs >= 24) ||
+    (r216FlowEdge >= 18 && r133LiveTradeCount >= 80)
+  );
+  const r225FiveMTrace = r120Bool(
+    r225ForecastAligned || r134AggressionAligned || r202BoostActive || r208ScalpCertified || r209WaveBoostActive ||
+    r193StrongLiveFuel || d.r190Edge?.earlyContinuation || d.r190Edge?.squeeze || d.r190Edge?.r192FuelOk ||
+    d.r140Phase?.phase === 'EXPANSION' || (r216Has5mProof && r216CandlePts >= 3)
+  );
+  const r225WallOk = r120Bool(
+    r146CounterDist > 0.55 || d.r116AcceptedCounterBreak || d.r117BodyReclaimOk || d.r117MssOk ||
+    htfReclaim || htfReverse || squeeze || r193StrongLiveFuel || r208ScalpCertified
+  );
+  const r225StructureRoomOk = r120Bool(
+    !r219BlockActive || Number(r219StructureTarget?.targetRoomPct || 0) >= Math.max(0.35, Number(r219StructureTarget?.minRoom || 0) * 0.55)
+  );
+  const r225NoDirty = r120Bool(
+    dataMinimum && !fatalDanger && !r191SpreadBad && !r191TakerOrVpinAgainst && !r217TakerAgainst &&
+    !r202BlockActive && !r134OpposingLiveFlow && !r147NoProofCounterTrap && !r148WrongSideBlock &&
+    !r193WeakZeroCandleDirtyFuel && !r193OiAnomalyNoFuel && !r195R160LowEdgeFalse4of4 &&
+    !(r209WaveBlockActive && !r208ScalpCertified && !r193StrongLiveFuel) && r225WallOk && r225StructureRoomOk
+  );
+  const r225ScoreFloor = Math.max(36, Number(minScore || 70) - 28);
+  const r225EdgeFloor = 24;
+  const r225FastLivePulseScalp = r120Bool(
+    dataMinimum && r225NoDirty && r225LiveBurst && r225FiveMTrace &&
+    score >= r225ScoreFloor && edge >= r225EdgeFloor
+  );
+
+  // R226: R165/R197 + R225 KUSURSUZ HİBRİT FREKANS ÇEKİRDEĞİ
+  // Amaç: eski R165/R197'nin erken işlem alma edge'ini geri getirirken R225'in canlı pulse,
+  // Binance/API, SL/TP, spread/taker/micro güvenliklerini bozmamak.
+  // Bu route sadece ölümcül olmayan eski final frenlerini yumuşatır; kör market bypass değildir.
+  const r226R197SideScout = side === 'LONG' ? (d.r29?.r197?.long || {}) : (d.r29?.r197?.short || {});
+  const r226R197Strong = r120Bool(r226R197SideScout?.strong || (r226R197SideScout?.ok && Number(r226R197SideScout?.score||0) >= 66));
+  const r226R165Core = r120Bool(
+    (r160TraderDecision && r160TrueCount >= 4 && score >= Math.max(40, Number(minScore||70) - 28) && edge >= 34) ||
+    (r160TraderDecision && r160TrueCount >= 3 && score >= Math.max(48, Number(minScore||70) - 18) && edge >= 46 && (r216Has5mProof || r225FiveMTrace)) ||
+    (r159MomentumPass && r159Points >= 7 && score >= Math.max(46, Number(minScore||70) - 24) && edge >= 42) ||
+    (r156FastTop10Bypass && score >= Math.max(48, Number(minScore||70) - 22) && edge >= 48) ||
+    (r226R197Strong && score >= Math.max(38, Number(minScore||70) - 30) && edge >= 36)
+  );
+  const r226LiveProof = r120Bool(
+    r225LiveBurst || r216LiveOk || r225ForecastAligned || r134AggressionAligned ||
+    (r125SideFlow.edge >= 10 && r133LiveTradeCount >= 25) ||
+    (r134LiveDeltaAligned && r133LiveTradeCount >= 30 && r133LiveDeltaAbs >= 14) ||
+    r193StrongLiveFuel
+  );
+  const r226PriceTrace = r120Bool(
+    r225FiveMTrace || r216Has5mProof || r202BoostActive || r208ScalpCertified || r209WaveBoostActive ||
+    d.r190Edge?.earlyContinuation || d.r190Edge?.squeeze || d.r190Edge?.r192FuelOk ||
+    d.r140Phase?.phase === 'EXPANSION' || r226R197Strong
+  );
+  const r226FatalKill = r120Bool(
+    fatalDanger || r191SpreadBad || r191TakerOrVpinAgainst || r217TakerAgainst ||
+    r202BlockActive || r134OpposingLiveFlow || r148WrongSideBlock ||
+    d.poorLiquidity || d.atrExtremeBlock || d.signalDecayAutoBlock ||
+    d.r41FallingKnifeBlock || d.r41RisingKnifeBlock
+  );
+  const r226SoftBlockCanYield = r120Bool(
+    r226LiveProof && r226PriceTrace && (r225StructureRoomOk || !r219BlockActive || r226R197Strong) &&
+    !(r209WaveBlockActive && !r208ScalpCertified && !r209WaveBoostActive && !r193StrongLiveFuel && !r226R197Strong) &&
+    !r193WeakZeroCandleDirtyFuel && !r193OiAnomalyNoFuel && !r195R160LowEdgeFalse4of4
+  );
+  const r226HybridFrequencyScalp = r120Bool(
+    dataMinimum && r226R165Core && r226LiveProof && r226PriceTrace && !r226FatalKill && r226SoftBlockCanYield
+  );
+
   // R218: GRAFİK GERÇEĞİ SCALP ROUTER
   // Amaç: filtre üstüne filtre değil; STG/BEAT/IO tarzı grafikte görünen gerçek 5m setup'ı
   // doğrudan karar verisi yapmak. Yalnızca 1m/3m zamanlama + 5m yapı + canlı akış aynı
@@ -7445,7 +7523,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   );
 
   const r191RawOk = r120Bool(
-    r219StructureTargetScalp || r221TrendIgnitionScalp || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp ||
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
     r156FastTop10Bypass ||
@@ -7456,29 +7534,29 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r191SpreadBad ||
     r191LateNoFuel ||
     r191TakerOrVpinAgainst ||
-    r191LowScoreNoFuel ||
-    r191ForecastOnlyChase ||
+    (r191LowScoreNoFuel && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r191ForecastOnlyChase && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
     r191CounterTrapWeak ||
-    r191FastScalpWeak ||
+    (r191FastScalpWeak && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
     r191PerfCautionWeak ||
     r193WeakZeroCandleDirtyFuel ||
     r193OiAnomalyNoFuel ||
-    r193HtfOnlyWeakProof ||
-    r195LowScoreLowEdgeNoFuel ||
+    (r193HtfOnlyWeakProof && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r195LowScoreLowEdgeNoFuel && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
     r195WeakSwingLowQuality ||
     r195R160LowEdgeFalse4of4 ||
     r196RangeLocationBlock ||
-    r200UltraLowEdgeScoreBlock ||
-    r200R160LowEdgeAnySideBlock ||
-    r200R159R156LowEdgeAnySideBlock ||
-    (r204FastRouteNeedsMicroBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    (r204R160ThreeOfFourNeedsProofBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    (r205BypassScoreBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    r212RangeSideBlock ||
-    (r219BlockActive && !r219StructureTargetScalp) ||
-    r206BlockActive ||
-    r208BlockActive ||
-    (r209WaveBlockActive && !r208ScalpCertified) ||
+    (r200UltraLowEdgeScoreBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r200R160LowEdgeAnySideBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r200R159R156LowEdgeAnySideBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r204FastRouteNeedsMicroBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r204R160ThreeOfFourNeedsProofBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r205BypassScoreBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r212RangeSideBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r219BlockActive && !r219StructureTargetScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r206BlockActive && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r208BlockActive && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
+    (r209WaveBlockActive && !r208ScalpCertified && !r225FastLivePulseScalp && !r226HybridFrequencyScalp) ||
     r202BlockActive
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
@@ -7521,9 +7599,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     : '';
   // R219.3: R220 structure hard-block direnç/supply long veya destek/demand short
   // uyarısı verdiyse eski hızlı yollar (R217/R218/R215/R216) bunu bypass edemez.
-  const r219AllowsLegacyRoutes = r120Bool(!r219BlockActive || r219StructureTargetScalp);
+  const r219AllowsLegacyRoutes = r120Bool(!r219BlockActive || r219StructureTargetScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp);
   const ok = r120Bool(
-    r219StructureTargetScalp || r221TrendIgnitionScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp ||
     (r219AllowsLegacyRoutes && ((r191RawOk && !r191UnifiedEntryBlock) || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp))
   );
 
@@ -7551,7 +7629,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
   const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r219StructureTargetScalp ? 'R220 STRUCTURE ACCELERATOR SFP+HL+hedef' : r221TrendIgnitionScalp ? 'R221 ERKEN TREND IGNITION' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r219StructureTargetScalp ? 'R220 STRUCTURE ACCELERATOR SFP+HL+hedef' : r221TrendIgnitionScalp ? 'R221 ERKEN TREND IGNITION' : r225FastLivePulseScalp ? 'R225 LIVE PULSE FREKANS SCALP' : r226HybridFrequencyScalp ? 'R226 R165/R197 HİBRİT FREKANS' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''} · R160:${r160TrueCount}/4(${[r160Q1Structure?'Y':'',r160Q2Flow?'A':'',r160Q3Momentum?'I':'',r160Q4Proof?'K':''].join('')})`;
 
   d.brainMode = primaryMode;
@@ -7582,10 +7660,14 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r219StructureTargetBlock = r219BlockActive;
   d.r219StructureTarget = r219StructureTarget;
   d.r221TrendIgnitionScalp = r221TrendIgnitionScalp;
+  d.r225FastLivePulseScalp = r225FastLivePulseScalp;
+  d.r226HybridFrequencyScalp = r226HybridFrequencyScalp;
+  d.r226Hybrid = { r165Core:r226R165Core, r197Strong:r226R197Strong, liveProof:r226LiveProof, priceTrace:r226PriceTrace, fatalKill:r226FatalKill, softYield:r226SoftBlockCanYield, r197:r226R197SideScout?.label||'' };
+  d.r225LivePulse = { floor:r225ScoreFloor, edgeFloor:r225EdgeFloor, liveBurst:r225LiveBurst, trace:r225FiveMTrace, wallOk:r225WallOk, noDirty:r225NoDirty, forecast:r225ForecastAligned, forecastConf:r225ForecastConf, structureRoom:r225StructureRoomOk };
   d.r224IgnitionNoDirty = r224IgnitionNoDirty;
   d.r221TrendIgnition = r221TrendIgnition;
   d.r218ChartTruthScalp = r218ChartTruthScalp;
-  d.r219StructureTargetMeta = { floor:r219Floor, live:r219LiveAligned, noDirty:r219NoDirty, r224IgnitionNoDirty, ok:r219SupportActive, block:r219BlockActive, route:r219StructureTarget?.route, targetRoomPct:r219StructureTarget?.targetRoomPct, r221:r221TrendIgnition?.route, r221Score:r221TrendIgnition?.score };
+  d.r219StructureTargetMeta = { floor:r219Floor, live:r219LiveAligned, noDirty:r219NoDirty, r224IgnitionNoDirty, ok:r219SupportActive, block:r219BlockActive, route:r219StructureTarget?.route, targetRoomPct:r219StructureTarget?.targetRoomPct, r221:r221TrendIgnition?.route, r221Score:r221TrendIgnition?.score, r225:r225FastLivePulseScalp, r226:r226HybridFrequencyScalp };
   d.r218GraphTruthScalp = { floor:r218Floor, microScore:r218MicroScore, micro:r218MicroFresh, graph:r218GraphTruth, live:r218LiveImpulse, continuation:r218ContinuationSetup, breakout:r218BreakoutPulseSetup, reversal:r218ReverseScoutSetup, noWrong:r218NoWrongSide };
   d.r217FastPulse = { floor:r217FastPulseFloor, taker:r217Taker, takerWith:r217TakerWith, takerAgainst:r217TakerAgainst, pulse:r217PulseSource, noDirty:r217NoFastPulseDirty, fakeCycle:r217FakeCycle };
   d.r216R165Freq = { floor:r216R165Floor, flow:r216FlowEdge, proof:r216Has5mProof, r160Four:r216R160FourTrade, r160Three:r216R160ThreeTrade, fast:r216FastMomentumTrade };
@@ -7694,6 +7776,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.entryPermissionReason = ok
     ? (r219StructureTargetScalp ? 'R220_STRUCTURE_ACCELERATOR'
       : r221TrendIgnitionScalp ? 'R221_EARLY_TREND_IGNITION'
+      : r225FastLivePulseScalp ? 'R225_LIVE_PULSE_FREQ_SCALP'
+      : r226HybridFrequencyScalp ? 'R226_HYBRID_R165_R197_FREQ_SCALP'
       : r218ChartTruthScalp ? 'R218_GRAPH_TRUTH_SCALP'
       : r217FastPulseScalp ? 'R217_FAST_PULSE_SCALP'
       : r215APlusScalp ? 'R215_FAST_OPPORTUNITY_SCALP'
@@ -14416,7 +14500,7 @@ function r2195CacheFirstCheck(row={}, ev={}) {
     const sideOk = !ev.side || !rec || rec === 'WAIT' || rec === ev.side;
     const tier = String(row.tier || '').toUpperCase();
     const autoOk = row.autoOk === true;
-    const tradeLike = /TRADE|EMIR|EMİR|R221_EARLY_TREND_IGNITION|R219_STRUCTURE_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i
+    const tradeLike = /TRADE|EMIR|EMİR|R225_LIVE_PULSE_FREQ_SCALP|R221_EARLY_TREND_IGNITION|R219_STRUCTURE_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i
       .test([row.brainAction, row.entryPermissionReason, row.reason, row.brainSummary].filter(Boolean).join(' | '));
     if (sideOk && (autoOk || ['A','B+'].includes(tier)) && tradeLike) return {ready:true, reason:'cache-ready'};
     const scoreTxt = Number.isFinite(Number(row.score)) ? `skor ${row.score}` : 'skor yok';
@@ -14512,12 +14596,12 @@ function r2194LooksReady(analysis, ev) {
     const rec = String(analysis.recommendation || dc.rec || '').toUpperCase();
     const sideOk = !ev?.side || rec === ev.side;
     const txt = [dc.entryPermissionReason, dc.reason, dc.brainSummary, dc.ictDashboard, analysis.ictDashboard].filter(Boolean).join(' | ');
-    const structureReady = !!(dc.r219StructureTargetScalp || dc.r221TrendIgnitionScalp || /R221_EARLY_TREND_IGNITION|R220_STRUCTURE_ACCELERATOR|R219_STRUCTURE_TARGET|SWEEP_HL_SHIFT_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i.test(txt));
+    const structureReady = !!(dc.r219StructureTargetScalp || dc.r221TrendIgnitionScalp || dc.r225FastLivePulseScalp || dc.r226HybridFrequencyScalp || /R221_EARLY_TREND_IGNITION|R220_STRUCTURE_ACCELERATOR|R219_STRUCTURE_TARGET|SWEEP_HL_SHIFT_TARGET|SWEEP_SHIFT_TARGET|BOS_RETEST_CONTINUATION_TARGET|ACCEPTED_BREAKOUT_TARGET/i.test(txt));
     const brainTrade = dc.brainAction === 'TRADE' && (dc.autoOk === true || dc.r160TraderDecision || dc.r159MomentumPass || dc.r156FastBypass);
     const tierReady = dc.autoOk === true && ['A','B+'].includes(String(dc.tier||''));
     const stillWaiting = /SSL_ALINDI_CHOCH_BEKLENIYOR|BSL_ALINDI_CHOCH_BEKLENIYOR|CHOCH_BEKLENIYOR/i.test(txt);
     const block = !!(dc.r219StructureHardBlock || (dc.r219StructureTarget && dc.r219StructureTarget.block));
-    if (block) return {ready:false, drop:false, reason:'R220 yapı hard-block WAIT'};
+    if (block && !dc.r225FastLivePulseScalp && !dc.r226HybridFrequencyScalp) return {ready:false, drop:false, reason:'R220 yapı hard-block WAIT'};
     if (sideOk && (structureReady || brainTrade || tierReady)) return {ready:true, reason: structureReady?'structure-ready':brainTrade?'brain-trade':'tier-ready'};
     return {ready:false, drop:!stillWaiting && !structureReady && !brainTrade, reason: stillWaiting?'CHOCH bekliyor':'henüz hazır değil'};
   } catch(e) { return {ready:false, reason:String(e?.message||e).slice(0,80)}; }
@@ -15050,7 +15134,9 @@ async function runAutoScan(prioritySymbol=null) {
         const r162BrainBypassActive = r120Bool(
           decisionChain?.r160TraderDecision ||
           decisionChain?.r159MomentumPass ||
-          decisionChain?.r156FastBypass
+          decisionChain?.r156FastBypass ||
+          decisionChain?.r225FastLivePulseScalp ||
+          decisionChain?.r226HybridFrequencyScalp
         );
         const r121BrainTradeOk = !!(
           decisionChain?.brainAction === 'TRADE' &&
@@ -15115,10 +15201,10 @@ async function runAutoScan(prioritySymbol=null) {
         const r215OrderAPlus = !!decisionChain?.r215APlusScalp;
         const r216OrderBalanced = !!decisionChain?.r216BalancedScalp;
         const r217OrderPulse = !!decisionChain?.r217FastPulseScalp;
-        const r224OrderIgnition = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r224IgnitionNoDirty);
+        const r224OrderIgnition = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r224IgnitionNoDirty);
         const r207OrderLowScore = !!(recommendation !== 'WAIT' && r207BrainRoute && Number(score || 0) < r207OrderScoreFloor && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition);
         const r207OrderLowEdge = !!(recommendation !== 'WAIT' && r207BrainRoute && r207OrderEdge > 0 && r207OrderEdge < 35 && Number(score || 0) < Math.max(70, Number(minScore || 70)) && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition);
-        if (r207OrderLowScore || r207OrderLowEdge || (decisionChain?.r205BypassScoreBlock && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse) || (decisionChain?.r207R160FourScoreBlock && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse) || decisionChain?.r207LowEdgeHardBlock || decisionChain?.r208Block) {
+        if (r207OrderLowScore || r207OrderLowEdge || (decisionChain?.r205BypassScoreBlock && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition) || (decisionChain?.r207R160FourScoreBlock && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition) || (decisionChain?.r207LowEdgeHardBlock && !r224OrderIgnition) || decisionChain?.r208Block) {
           const why207 = r120AutoReason(decisionChain, `R207 emir öncesi mutlak kalite sigortası: skor ${score}/${minScore}, edge ${r207OrderEdge}; floor ${r207OrderScoreFloor}`);
           logAuto(`🧯 ${coin.symbol} ${why207}`);
           markAutoSkip(coin.symbol, why207, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, autoOk:false, r207OrderScoreFloor, r207OrderEdge, r207OrderLowScore, r207OrderLowEdge, ...r119BuildAutoDiag(decisionChain)});
@@ -15317,9 +15403,9 @@ async function runAutoScan(prioritySymbol=null) {
         // Amaç: PREMIUM_HIGH + RSI yüksek diye aktif 5m breakout/continuation'ı öldürmemek.
         // Bu kör bypass değildir: R196 breakoutActive + gerçek momentum/entry izi + edge/skor tabanı ister.
         const r223SideR196 = isLong ? (ctx?.r196?.long || {}) : (ctx?.r196?.short || {});
-        const r223HasActiveBreakout = !!(r223SideR196?.breakoutActive || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp);
+        const r223HasActiveBreakout = !!(r223SideR196?.breakoutActive || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp);
         const r223MomentumTrace = !!(
-          decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp ||
+          decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp ||
           decisionChain?.fresh5mImpulseOrRecent || decisionChain?.r37EarlyOk ||
           decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.r192FuelOk ||
           decisionChain?.r190Edge?.squeeze || decisionChain?.r160Q3Momentum || decisionChain?.r159MomentumPass
@@ -15340,7 +15426,7 @@ async function runAutoScan(prioritySymbol=null) {
           decisionChain?.r75RetestBridgeOk || decisionChain?.r51DirectSweepMinEdgeOk ||
           decisionChain?.r50AutoPermissionOk || decisionChain?.r74Top10ProScalperOk ||
           decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk ||
-          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || r223ActiveBreakoutRescue ||
+          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || r223ActiveBreakoutRescue ||
           decisionChain?.directSweepOk || decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent || decisionChain?.r190Edge?.earlyEntryOk
         );
         const r81StrongBPlusSoftPass = !!(
@@ -15371,7 +15457,7 @@ async function runAutoScan(prioritySymbol=null) {
         const r88DevamOnayiOk = !!(
           r88GeriTestOnayiOk || r88KirilimOnayiOk || r88GeriKazanimOnayiOk ||
           r88TazeImpulsOnayiOk || r88SweepZamanlamaOnayiOk ||
-          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || r223ActiveBreakoutRescue ||
+          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || r223ActiveBreakoutRescue ||
           decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.squeeze
         );
         const r88RiskliBolgeKuvvetli = !!(antiChaseZone || antiChaseRsi || decisionChain?.r39TargetNearBlock || sideCtxRisk >= 30);
@@ -15467,7 +15553,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R189: Son emir öncesi 5m micro/kanıt freni. Karar motoru bir şekilde TRADE üretse bile
         // R160 3/4 + Q4 kanıtsız + zayıf mum/HTF karşı kombinasyonu canlı emir açamaz.
         // Bu R176 gibi recovery duvarı değildir; sadece eksik kanıtlı bypass'ı keser.
-        if ((decisionChain?.r188NoProofGuard && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r221TrendIgnitionScalp))) {
+        if ((decisionChain?.r188NoProofGuard && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp))) {
           const why = decisionChain?.r190Edge?.spreadBlock
             ? `R190 spread pahalı: ${decisionChain.r190Edge.spreadPct}% — 15x ROI makas riski yüksek`
             : (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))
@@ -15482,7 +15568,7 @@ async function runAutoScan(prioritySymbol=null) {
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
         const r38FngStrongDecision = r162BrainBypassActive || (Number(decisionChain?.priorityScore||0) >= 76 && (decisionChain?.r37EarlyOk || decisionChain?.scalperBridge || decisionChain?.r38RetestBridgeOk));
-        const r224FngIgnitionOk = !!(decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r224IgnitionNoDirty);
+        const r224FngIgnitionOk = !!(decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r224IgnitionNoDirty);
         if (fgSignal==='EXTREME_GREED' && isLong && !(r224FngIgnitionOk || (r38AutoTopMover && r38FngStrongDecision)))  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
         if (fgSignal==='EXTREME_FEAR'  && isShort && !(r224FngIgnitionOk || (r38AutoTopMover && r38FngStrongDecision))) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
         if ((fgSignal==='EXTREME_GREED' && isLong) || (fgSignal==='EXTREME_FEAR' && isShort)) logAuto(`🟡 ${coin.symbol} F&G soft geçildi: top-mover + güçlü 5m karar zinciri`);
@@ -15587,13 +15673,13 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R191: scan loop final check. Karar zinciri içindeki bütün bypasslar normalde
         // burada autoOk=false döner; yine de eski/legacy bir yol emre yaklaşırsa son kez kes.
-        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r218ChartTruthScalp && !decisionChain?.r215APlusScalp && !decisionChain?.r216BalancedScalp && !decisionChain?.r217FastPulseScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || (decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r218ChartTruthScalp || decisionChain?.r215APlusScalp || decisionChain?.r216BalancedScalp || decisionChain?.r217FastPulseScalp)))) {
+        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r218ChartTruthScalp && !decisionChain?.r215APlusScalp && !decisionChain?.r216BalancedScalp && !decisionChain?.r217FastPulseScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || (decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r218ChartTruthScalp || decisionChain?.r215APlusScalp || decisionChain?.r216BalancedScalp || decisionChain?.r217FastPulseScalp)))) {
           const why = decisionChain?.r191UnifiedBlockReason || (decisionChain?.r190Edge?.spreadBlock ? `R190 spread pahalı: ${decisionChain?.r190Edge?.spreadPct}%` : `R190 geç giriş: ${decisionChain?.r190Edge?.summary||''}`);
           logAuto(`⛔ ${coin.symbol} ${why} — emir açılmadı`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r190:decisionChain?.r190Edge});
           continue;
         }
-        if (decisionChain?.r209Wave?.block && !decisionChain?.r208ScalpCertified && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r224IgnitionNoDirty) {
+        if (decisionChain?.r209Wave?.block && !decisionChain?.r208ScalpCertified && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r224IgnitionNoDirty) {
           const why209 = `R209 dalga yapı blok: ${decisionChain.r209Wave.summary}`;
           logAuto(`⛔ ${coin.symbol} ${why209}`);
           markAutoSkip(coin.symbol, why209, {rec:recommendation, tier:decisionChain?.tier, score, r209Wave:decisionChain.r209Wave});
@@ -15801,12 +15887,12 @@ async function runAutoScan(prioritySymbol=null) {
         try {
           const panelLev218 = normalizeRequestedLeverage(leverage, 1);
           const binanceLev218 = Number(r137BaseMaxLev || panelLev218);
-          const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
+          const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
           if (cleanR218Lev && executeLeverage < panelLev218) {
             const oldLev218 = executeLeverage;
             executeLeverage = panelLev218;
             leverageNote += ` · R218 temiz grafik kaldıraç geri yükleme ${oldLev218}x→${executeLeverage}x`;
-            logAuto(`⚡ ${coin.symbol} ${decisionChain?.r219StructureTargetScalp?'R220 structure accelerator':decisionChain?.r221TrendIgnitionScalp?'R221 erken trend':'R218 temiz grafik'} setup: panel kaldıracı korundu ${oldLev218}x→${executeLeverage}x`);
+            logAuto(`⚡ ${coin.symbol} ${decisionChain?.r219StructureTargetScalp?'R220 structure accelerator':decisionChain?.r221TrendIgnitionScalp?'R221 erken trend':decisionChain?.r225FastLivePulseScalp?'R225 canlı pulse':decisionChain?.r226HybridFrequencyScalp?'R226 hibrit frekans':'R218 temiz grafik'} setup: panel kaldıracı korundu ${oldLev218}x→${executeLeverage}x`);
           }
         } catch(_r218lev) {}
 
