@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R219_STRUCTURE_TARGET_ENGINE';
+const LAZARUS_BUILD = 'R219_1_API_SAFE_STRUCTURE_TARGET';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -92,7 +92,12 @@ let r150LastScanBeginTs = 0;
 // Amaç: tarama/pozisyon/SLTP çağrılarını tek sıraya alıp 429/418/-1003 riskini azaltmak.
 // Kesin Binance limitine yaslanmak yerine güvenli alt eşik kullanılır; WS verisi analizde önceliklidir.
 const binanceGov = {
+  // R219.1: Tek global sıra API testini/ticaret imzalı isteklerini public tarama kuyruğunun arkasına atabiliyordu.
+  // q eski uyumluluk için kalır; gerçek akış public/signed/priority lane olarak ayrılır.
   q: Promise.resolve(),
+  publicQ: Promise.resolve(),
+  signedQ: Promise.resolve(),
+  priorityQ: Promise.resolve(),
   minuteStart: Date.now(),
   usedWeight: 0,
   usedOrders: 0,
@@ -109,10 +114,15 @@ function _resetGovWindowIfNeeded() {
   }
 }
 async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
+  const sc = String(scope || 'REST');
+  const isPriority = /EMERGENCY|API_TEST|ACCOUNT_TEST|USER_BALANCE|USER_ACCOUNT/i.test(sc);
+  const isPublic = /PUBLIC/i.test(sc);
+  const laneName = isPriority ? 'priorityQ' : (isPublic ? 'publicQ' : 'signedQ');
   const job = async () => {
     _resetGovWindowIfNeeded();
     const now = Date.now();
-    if (binanceGov.backoffUntil > now && !String(scope).includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
+    // R219.1: API bağlantı testi ve acil pozisyon kapatma public scan backoff'una takılmaz.
+    if (binanceGov.backoffUntil > now && !isPriority && !sc.includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
     // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
     if (binanceGov.usedWeight + weight > 850 || binanceGov.usedOrders + orderWeight > 70) {
@@ -122,13 +132,15 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     }
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
-    // Çok sık istek atma: public daha seyrek, emir/pozisyon daha kontrollü.
-    const baseDelay = orderWeight ? 120 : (String(scope).includes('PUBLIC') ? 90 : 70);
+    // Priority/API test cevap hızı için düşük gecikme; public tarama ayrı kuyrukta kalır.
+    const baseDelay = isPriority ? 15 : (orderWeight ? 120 : (isPublic ? 90 : 70));
     await sleep(baseDelay);
   };
-  const prev = binanceGov.q.catch(()=>{});
-  binanceGov.q = prev.then(job, job);
-  return binanceGov.q;
+  const prev = (binanceGov[laneName] || Promise.resolve()).catch(()=>{});
+  binanceGov[laneName] = prev.then(job, job);
+  // Eski diagnostics queueActive alanı için genel q da canlı sayılır.
+  binanceGov.q = Promise.allSettled([binanceGov.publicQ, binanceGov.signedQ, binanceGov.priorityQ]);
+  return binanceGov[laneName];
 }
 function registerBinanceBackoff(reason='rate-limit', seconds=45) {
   const sec = Math.max(5, Math.min(180, Number(seconds)||45));
@@ -12097,6 +12109,14 @@ app.post('/api/account', async (req, res) => {
   apiKey = String(apiKey || '').trim();
   apiSecret = String(apiSecret || '').trim();
   if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'API key gerekli' });
+  // R219.1: URL/IP değişince localStorage'daki maskeli secret Binance'a gönderilirse test boşa bekleyip timeout'a düşmesin.
+  if (/^[•*xX.\-\s]{8,}$/.test(apiSecret) || apiSecret.includes('••')) {
+    return res.status(400).json({
+      ok:false,
+      error:'Maskeli API Secret ile Binance bağlantı testi yapılamaz. Sıfırla yapıp gerçek Secretı yeniden yapıştır.',
+      hint:'API Key, Railway URL veya IP değiştiyse panelde Sıfırla → gerçek API Key + gerçek API Secret → Kaydet → Bağlantıyı Test Et.'
+    });
+  }
 
   const errors = [];
   const sources = [];
@@ -12224,26 +12244,43 @@ app.post('/api/account', async (req, res) => {
   }
 
   try {
-    // Çalışan hatasız sürüme en yakın sıra: önce balance/account, sonra positionRisk.
-    const bal3 = await trySigned('v3/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance'));
-    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
+    // R219.1 API SAFE RESTORE:
+    // Eski R217 okuma sırası korunur ama 6 imzalı endpoint seri 10sn bekleyip browser'da
+    // "signal timed out" üretmesin diye: v3 balance/account paralel, fallback sadece gerekirse.
+    const fastTimeout = 6500;
+    const pri = { __emergency:true };
 
-    const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
+    const [bal3r, acc3r] = await Promise.allSettled([
+      trySigned('v3/balance.fast', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance', pri, fastTimeout)),
+      trySigned('v3/account.fast', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account', pri, fastTimeout))
+    ]);
+    const bal3 = bal3r.status === 'fulfilled' ? bal3r.value : null;
+    const acc3 = acc3r.status === 'fulfilled' ? acc3r.value : null;
+    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
     if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
 
-    const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
-    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+    if (!balanceSources.length || !signedOk) {
+      const [acc2r, bal2r] = await Promise.allSettled([
+        trySigned('v2/account.fallback', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account', pri, fastTimeout)),
+        trySigned('v2/balance.fallback', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance', pri, fastTimeout))
+      ]);
+      const acc2 = acc2r.status === 'fulfilled' ? acc2r.value : null;
+      const bal2 = bal2r.status === 'fulfilled' ? bal2r.value : null;
+      if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+      if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
+    }
 
-    const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
-    if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
+    if (!balanceSources.length && signedOk) {
+      const acc1 = await trySigned('v1/account.lastFallback', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account', pri, fastTimeout));
+      if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
+    }
 
-    const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
-    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
-
-    // R18: /api/account içinde de positionRisk cache kullanılır; API sekmesi açıkken
-    // aynı endpoint'i tekrar tekrar dövüp -1003 üretmez. Balance/account okuma sırası R14 gibi kalır.
-    const pr = await trySigned('positionRisk/cache', () => getPositionRiskCached(apiKey, apiSecret));
-    if (pr) setPositions(pr, positionRiskState.lastSource || 'positionRisk/cache');
+    // Pozisyonlar yoksa positionRisk'i de priority ve kısa timeout ile oku. Balance bulunduysa test cevap hızını bozmaz.
+    if (signedOk && positions.length === 0) {
+      let pr = await trySigned('v3/positionRisk.fast', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk', pri, 5500));
+      if (!pr) pr = await trySigned('v2/positionRisk.fast', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', pri, 4500));
+      if (pr) setPositions(pr, pr === null ? 'positionRisk.fast' : 'positionRisk.fast');
+    }
 
     if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
     if (!Number.isFinite(u)) u = 0;
