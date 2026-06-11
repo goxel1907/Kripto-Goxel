@@ -103,7 +103,7 @@ async function cached(key, ttl, fn, opts={}) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R241_CHANNEL_PRIORITY_DASHBOARD_WORKER';
+const LAZARUS_BUILD = 'R243_ROUTE_REGEX_PRIORITY_BRAIN_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1469,6 +1469,74 @@ function r142MemoryStats(side='LONG', d={}, mode='NO_EDGE') {
   };
   return { tags, same:countStats(sameSide), opp:countStats(oppSide) };
 }
+
+// ── R242: ROUTE PRIORITY / PERFORMANCE BRAIN ───────────────────────────────
+// Hangi R rotası son saatlerde gerçekten para kazandırıyor? Hard-block yapmaz;
+// edge/risk kalibrasyonuna küçük ve kayan pencere etkisi verir. R235 REALIZED_PNL
+// düzeltmesi sayesinde tradeLedger artık bu iş için yeterli veri sağlar.
+function r242ExtractRouteKey(v='') {
+  const txt = String(v || '').toUpperCase();
+  // Rota isimleri genelde R230_TRUE_DEATH_ORDER_RELAY gibi alt çizgiyle gelir.
+  // JS regex'te '_' word-char olduğu için \b, R230_ formatında 230 sonunda eşleşmez.
+  // Bu yüzden rota kodundan sonra '_' veya gerçek kelime sınırı kabul edilir.
+  const m = txt.match(/\bR(\d{2,4})(?:_|\b)/);
+  return m ? `R${m[1]}` : 'OTHER';
+}
+function r242RowRouteKey(row={}) {
+  return r242ExtractRouteKey([row.entryPermissionReason, row.brainMode, row.openReason, row.reason, row.entryReason?.reason].filter(Boolean).join(' | '));
+}
+function r242RouteStats(lookbackMs = 12*60*60*1000, minN = 6) {
+  const cutoff = Date.now() - Number(lookbackMs || 0);
+  const by = new Map();
+  const rows = Array.isArray(tradeLedger) ? tradeLedger : [];
+  for (const r of rows) {
+    const closedAt = Number(r?.closedAt || 0);
+    if (!closedAt || closedAt < cutoff) continue;
+    const pnl = Number(r?.pnlUSDT);
+    if (!Number.isFinite(pnl)) continue;
+    const key = r242RowRouteKey(r);
+    if (!by.has(key)) by.set(key, {route:key,n:0,wins:0,losses:0,grossWin:0,grossLoss:0,net:0});
+    const s = by.get(key);
+    s.n++; s.net += pnl;
+    if (pnl > 0) { s.wins++; s.grossWin += pnl; }
+    else if (pnl < 0) { s.losses++; s.grossLoss += Math.abs(pnl); }
+  }
+  return Array.from(by.values()).map(s => {
+    const wr = s.n ? s.wins / s.n * 100 : 0;
+    const pf = s.grossLoss > 0 ? s.grossWin / s.grossLoss : (s.grossWin > 0 ? 99 : 0);
+    return {route:s.route,n:s.n,wins:s.wins,losses:s.losses,wr:+wr.toFixed(1),pf:+pf.toFixed(2),net:+s.net.toFixed(2),grossWin:+s.grossWin.toFixed(2),grossLoss:+s.grossLoss.toFixed(2),reliable:s.n>=Number(minN||0)};
+  }).sort((a,b)=>(Number(b.reliable)-Number(a.reliable)) || (b.pf-a.pf) || (b.net-a.net));
+}
+function r242RouteCandidateKey(d={}) {
+  if (d?.r241ChannelPriorityScalp) return 'R241';
+  if (d?.r239DevisoTrendlineMotorScalp) return 'R239';
+  if (d?.r238TrendlineBreakoutScalp) return 'R238';
+  if (d?.r221TrendIgnitionScalp) return 'R221';
+  if (d?.r219StructureTargetScalp) return 'R220';
+  if (d?.r225FastLivePulseScalp) return 'R225';
+  if (d?.r226HybridFrequencyScalp) return 'R226';
+  if (d?.r227ExecutionCoreScalp) return 'R227';
+  if (d?.r230TrueDeathRelayScalp) return 'R230';
+  return r242ExtractRouteKey([d?.entryPermissionReason, d?.brainMode, d?.reason, d?.brainSummary].filter(Boolean).join(' | '));
+}
+function r242RoutePerformanceSignal(routeKey='OTHER', lookbackMs=12*60*60*1000, minN=6) {
+  const key = String(routeKey || 'OTHER').toUpperCase();
+  const st = r242RouteStats(lookbackMs, minN).find(x => x.route === key);
+  if (!st || !st.reliable) return {active:false, route:key, adj:0, flag:0, label:'', stats:st || null};
+  let adj = 0, flag = 0;
+  if (st.pf >= 1.45 && st.net > 1) adj = 5;
+  else if (st.pf >= 1.20 && st.net > 0) adj = 3;
+  else if (st.pf <= 0.55 && st.net < -2) { adj = -6; flag = 2; }
+  else if (st.pf <= 0.75 && st.net < -1) { adj = -4; flag = 1; }
+  const label = adj ? `R242 rota performansı ${key}: ${st.n} işlem WR%${st.wr} PF${st.pf} net ${st.net}$ ${adj>0?'+':''}${adj}` : '';
+  return {active:!!adj, route:key, adj, flag, label, stats:st};
+}
+function r242RouteStatsSummary(limit=8) {
+  try {
+    return r242RouteStats(12*60*60*1000, 4).slice(0, limit);
+  } catch(_) { return []; }
+}
+
 function r142CalibrateEdge(side='LONG', d={}, mode='NO_EDGE', rawEdge=0, score=0) {
   const notes = [];
   let adj = 0;
@@ -1502,6 +1570,9 @@ function r142CalibrateEdge(side='LONG', d={}, mode='NO_EDGE', rawEdge=0, score=0
   if (liveAgainst) { adj -= 10; notes.push('live-opposite:-10'); }
   const liveWith = (side==='LONG' && deltaPct >= 18) || (side==='SHORT' && deltaPct <= -18) || (forecastSide === side && forecastConf >= 70);
   if (liveWith && !late) { adj += 5; notes.push('live-align:+5'); }
+  const r242Key = r242RouteCandidateKey(d);
+  const r242Sig = r242RoutePerformanceSignal(r242Key, 12*60*60*1000, 6);
+  if (r242Sig.active) { adj += r242Sig.adj; notes.push(`${r242Sig.route} PF${r242Sig.stats?.pf} ${r242Sig.adj>0?'+':''}${r242Sig.adj}`); }
   // Trade frequency protection: do not turn soft calibration into a new hard gate.
   // Raw edge remains visible and may still pass if data is fresh; calibration mainly ranks side and weakens repeated losers.
   const calibrated = r142Clamp(Math.round(Number(rawEdge||0) + adj), 0, 100);
@@ -7940,7 +8011,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // uyarısı verdiyse eski hızlı yollar (R217/R218/R215/R216) bunu bypass edemez.
   const r219AllowsLegacyRoutes = r120Bool(!r219BlockActive || r219StructureTargetScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp);
   const ok = r120Bool(
-    r219StructureTargetScalp || r221TrendIgnitionScalp || r238TrendlineScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp || r241ChannelPriorityScalp || r238TrendlineScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp ||
     (r219AllowsLegacyRoutes && ((r191RawOk && !r191UnifiedEntryBlock) || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp))
   );
 
@@ -13191,6 +13262,8 @@ function r236QualityRiskScale(side='LONG', d={}, symbol='') {
   const pumpChase = side==='LONG' ? p3 >= 5.0 : p3 <= -5.0;
   const daily = r235DailyTrendAlign(d, side);
   const trust = r235SymbolTrustScore(symbol, side);
+  const routeKey = r242RouteCandidateKey(d);
+  const routePerf = r242RoutePerformanceSignal(routeKey, 4*60*60*1000, 5);
   const hasRealProof = !!(d?.r219StructureTargetScalp || d?.r221TrendIgnitionScalp || d?.r117BodyReclaimOk || d?.r117MssOk || /SSL_ALINDI|BSL_ALINDI|body-reclaim|SFP|sweep/i.test(txt));
 
   let flags = 0;
@@ -13203,6 +13276,8 @@ function r236QualityRiskScale(side='LONG', d={}, symbol='') {
   if (pumpChase) { flags++; reasons.push(`p3 chase ${p3.toFixed(2)}`); }
   if (daily.block) { flags += daily.extremeNoProof ? 3 : 2; reasons.push(daily.label || `24h trend ters ${daily.chg24}%`); }
   if (trust.hard) { flags += 2; reasons.push(trust.label); }
+  if (routePerf.active && routePerf.adj < 0) { flags += Math.max(1, routePerf.flag || 1); reasons.push(routePerf.label); }
+  else if (routePerf.active && routePerf.adj > 0) { flags = Math.max(0, flags - 1); reasons.push(routePerf.label); }
 
   // FOLKS tipi: gerçekten ezici R125 + hizalı forecast olan güçlü hareketler tam boyuta yakın kalsın.
   if (flowEdge >= 18 && f.aligned && !daily.block) flags = Math.max(0, flags - 3);
@@ -13219,7 +13294,7 @@ function r236QualityRiskScale(side='LONG', d={}, symbol='') {
   const label = marginMult < 1
     ? `R236 kalite risk ölçekleme: ${flags} bayrak → marjin×${marginMult.toFixed(2)}, SL×${slCapMult.toFixed(2)} (${reasons.slice(0,4).join(' + ')})`
     : '';
-  return {marginMult, slCapMult, flags, label, reasons, rvol:+rvol.toFixed(2), p3:+p3.toFixed(2), forecast:f, flowEdge, daily, trust, noCandle, lowRvol, weakForecast, negativeP3, pumpChase};
+  return {marginMult, slCapMult, flags, label, reasons, rvol:+rvol.toFixed(2), p3:+p3.toFixed(2), forecast:f, flowEdge, daily, trust, routeKey, routePerf, noCandle, lowRvol, weakForecast, negativeP3, pumpChase};
 }
 
 
@@ -13251,6 +13326,8 @@ function r240FinalRiskCap(side='LONG', d={}, symbol='', score=0, panelMargin=0, 
     const oiM = String(txt).match(/OI15:\s*([+-]?\d+(?:\.\d+)?)%/i);
     const oi15 = oiM ? Number(oiM[1]) : 0;
     const oiAnomaly = Number.isFinite(oi15) && Math.abs(oi15) >= 300;
+    const routeKey = r242RouteCandidateKey(d);
+    const routePerf = r242RoutePerformanceSignal(routeKey, 4*60*60*1000, 5);
 
     let severity = 0;
     const reasons = [];
@@ -13265,6 +13342,8 @@ function r240FinalRiskCap(side='LONG', d={}, symbol='', score=0, panelMargin=0, 
     if (lowRvol) { severity += 1; reasons.push(`RVOL ${rvol.toFixed(2)}`); }
     if (p3Bad) { severity += 1; reasons.push(`p3 ${p3.toFixed(2)}`); }
     if (oiAnomaly) { severity += 1; reasons.push(`OI15 anomali ${oi15.toFixed(0)}%`); }
+    if (routePerf.active && routePerf.adj < 0) { severity += Math.max(1, routePerf.flag || 1); reasons.push(routePerf.label); }
+    else if (routePerf.active && routePerf.adj > 0) { severity = Math.max(0, severity - 1); reasons.push(routePerf.label); }
 
     // R239/R238 gerçek trendline+Deviso veya R221/R219 yapısı varsa sadece çok kötü skorda hafiflet.
     if (structural) severity = Math.max(0, severity - 3);
@@ -15937,7 +16016,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R241; R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -15993,6 +16072,10 @@ app.get('/api/health', (_req, res) => {
           hot: r241ChannelHotList(8),
           lastError: r241ChannelLastErr || null
         },
+        routePerformance: {
+          summary: 'R243 rota performansı son12s: regex fix; hard-block yok; edge/risk küçük kalibrasyon',
+          rows: r242RouteStatsSummary(10)
+        },
         armedWatcher: {
           active: !!r2194WatchTimer,
           count: r2194ArmedWatch.size,
@@ -16020,7 +16103,7 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', async (req, res) => {
   const r211EffectiveRisk = await r211StatusRiskPreview();
-  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
+  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R243 rota performansı son12s: regex fix; hard-block yok; edge/risk küçük kalibrasyon', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
     config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:r241ScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(),
