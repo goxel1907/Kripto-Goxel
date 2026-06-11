@@ -103,7 +103,7 @@ async function cached(key, ttl, fn, opts={}) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R237_R236_R166_SL_LOCK_FIX';
+const LAZARUS_BUILD = 'R241_CHANNEL_PRIORITY_DASHBOARD_WORKER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -7615,6 +7615,32 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     score >= Math.max(50, Number(minScore || 70) - 14) && edge >= 45
   );
 
+  // R238: 5m trendline breakout + retest route.
+  // Düşen trend çizgisi yukarı kırılır/retest tutarsa LONG, yükselen trend çizgisi aşağı kırılır/retest tutarsa SHORT.
+  // 1m/3m teyit ve hacim gerekir; yeni REST yok, R234 WS kline cache kullanılır.
+  const r238Trendline = r238TrendlineBreakoutEngine(d?._r206k5m || [], d?._r202k3m || [], d?._r202k1m || [], side, d?.symbol || d?.fullSymbol || '');
+  const r239DevisoMotor = r239DevisoMotorEngine(d?._r206k5m || [], side, d?.symbol || d?.fullSymbol || '');
+  const r241ChannelPriority = r241ChannelPriorityEngine(d?._r206k5m || [], d?._r202k3m || [], d?._r202k1m || [], side, d?.symbol || d?.fullSymbol || '', d);
+  const r241ChannelPriorityScalp = r120Bool(
+    r241ChannelPriority?.entryOk && Number(r241ChannelPriority?.score || 0) >= 56 &&
+    !fatalDanger && !r191SpreadBad && !r191TakerOrVpinAgainst && !r217TakerAgainst &&
+    !r202BlockActive && !r134OpposingLiveFlow && !r148WrongSideBlock &&
+    !d.poorLiquidity && !d.atrExtremeBlock && !d.signalDecayAutoBlock
+  );
+  const r239TrendlineMotorScalp = r120Bool(
+    Number(r238Trendline?.score || 0) >= 52 && r239DevisoMotor?.entryOk &&
+    !fatalDanger && !r191SpreadBad && !r191TakerOrVpinAgainst && !r217TakerAgainst &&
+    !r202BlockActive && !r134OpposingLiveFlow && !r148WrongSideBlock &&
+    !d.poorLiquidity && !d.atrExtremeBlock && !d.signalDecayAutoBlock
+  );
+  const r238TrendlineScalp = r120Bool(
+    ((r238Trendline?.ok && Number(r238Trendline?.score || 0) >= 60) || r239TrendlineMotorScalp) &&
+    !fatalDanger && !r191SpreadBad && !r191TakerOrVpinAgainst && !r217TakerAgainst &&
+    !r202BlockActive && !r134OpposingLiveFlow && !r148WrongSideBlock &&
+    !d.poorLiquidity && !d.atrExtremeBlock && !d.signalDecayAutoBlock
+  );
+  const r239DevisoTrendlineMotorScalp = r239TrendlineMotorScalp;
+
   // R225: LIVE PULSE FREQUENCY RESTORE
   // Amaç: 5m'de net canlı akış + 5m yön izi varken botu score/R220 WAIT duvarında bırakmamak.
   // Bu kör bypass değildir: spread, taker/VPIN ters, 1m/3m ters, fatal danger, yakın HTF duvarı ve
@@ -7794,7 +7820,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // R236: R225/R226/R227/R230 hızlı route kalite/timing kapısı.
   // Frekansı boğmaz; kalite sorunlarını risk ölçeklemeye çevirir, sadece timing/flash durumlarını bekletir:
   // forecast NEUTRAL/ters + formasyon yok + düşük RVOL/p3 ters, flash-crash, aşırı fitilli coin, ters günlük trend.
-  const r235FastRouteCandidate = r120Bool(r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp);
+  const r235FastRouteCandidate = r120Bool(r238TrendlineScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp);
   const r235FastQuality = r235FastRouteCandidate ? r235FastRouteQualityGate(side, d, d.symbol || d.fullSymbol || '') : {ok:true, reason:'route yok'};
   if (r235FastRouteCandidate && !r235FastQuality.ok) {
     r225FastLivePulseScalp = false;
@@ -7836,7 +7862,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   );
 
   const r191RawOk = r120Bool(
-    r219StructureTargetScalp || r221TrendIgnitionScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp || r238TrendlineScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp ||
     (!hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock && dataMinimum && r148ScoreOk && passEdge >= edgeNeed) ||
     (r133FastScalpOverride && !r147NoProofCounterTrap && !r148WrongSideBlock) ||
     r156FastTop10Bypass ||
@@ -7862,9 +7888,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (r200UltraLowEdgeScoreBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r230TrueDeathRelayScalp) ||
     (r200R160LowEdgeAnySideBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r230TrueDeathRelayScalp) ||
     (r200R159R156LowEdgeAnySideBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r230TrueDeathRelayScalp) ||
-    (r204FastRouteNeedsMicroBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    (r204R160ThreeOfFourNeedsProofBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
-    (r205BypassScoreBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r204FastRouteNeedsMicroBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r238TrendlineScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r204R160ThreeOfFourNeedsProofBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r238TrendlineScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
+    (r205BypassScoreBlock && !r219StructureTargetScalp && !r221TrendIgnitionScalp && !r238TrendlineScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r218ChartTruthScalp && !r215APlusScalp && !r216BalancedScalp && !r217FastPulseScalp) ||
     (r212RangeSideBlock && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r230TrueDeathRelayScalp) ||
     (r219BlockActive && !r219StructureTargetScalp && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r230TrueDeathRelayScalp) ||
     (r206BlockActive && !r225FastLivePulseScalp && !r226HybridFrequencyScalp && !r227ExecutionCoreScalp && !r230TrueDeathRelayScalp) ||
@@ -7914,7 +7940,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // uyarısı verdiyse eski hızlı yollar (R217/R218/R215/R216) bunu bypass edemez.
   const r219AllowsLegacyRoutes = r120Bool(!r219BlockActive || r219StructureTargetScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp);
   const ok = r120Bool(
-    r219StructureTargetScalp || r221TrendIgnitionScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp ||
+    r219StructureTargetScalp || r221TrendIgnitionScalp || r238TrendlineScalp || r225FastLivePulseScalp || r226HybridFrequencyScalp || r227ExecutionCoreScalp || r230TrueDeathRelayScalp ||
     (r219AllowsLegacyRoutes && ((r191RawOk && !r191UnifiedEntryBlock) || r218ChartTruthScalp || r217FastPulseScalp || r215APlusScalp || r216BalancedScalp))
   );
 
@@ -7942,7 +7968,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
   const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
   const core = ok
-    ? `🧠 5m Fırsat Beyni ${side}: ${r219StructureTargetScalp ? 'R220 STRUCTURE ACCELERATOR SFP+HL+hedef' : r221TrendIgnitionScalp ? 'R221 ERKEN TREND IGNITION' : r225FastLivePulseScalp ? 'R225 LIVE PULSE FREKANS SCALP' : r230TrueDeathRelayScalp ? 'R230 TRUE-DEATH EMİR RELAY' : r227ExecutionCoreScalp ? 'R227 FREKANS EMİR ÇEKİRDEĞİ' : r226HybridFrequencyScalp ? 'R226 R165/R197 HİBRİT FREKANS' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
+    ? `🧠 5m Fırsat Beyni ${side}: ${r219StructureTargetScalp ? 'R220 STRUCTURE ACCELERATOR SFP+HL+hedef' : r221TrendIgnitionScalp ? 'R221 ERKEN TREND IGNITION' : r241ChannelPriorityScalp ? 'R241 KANAL ÖNCELİK PUAN WORKER' : r239DevisoTrendlineMotorScalp ? 'R239 DEVISO+TRENDLINE MOTOR WORKER' : r238TrendlineScalp ? 'R238 TRENDLINE KIRILIM/RETEST WORKER' : r225FastLivePulseScalp ? 'R225 LIVE PULSE FREKANS SCALP' : r230TrueDeathRelayScalp ? 'R230 TRUE-DEATH EMİR RELAY' : r227ExecutionCoreScalp ? 'R227 FREKANS EMİR ÇEKİRDEĞİ' : r226HybridFrequencyScalp ? 'R226 R165/R197 HİBRİT FREKANS' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''} · R160:${r160TrueCount}/4(${[r160Q1Structure?'Y':'',r160Q2Flow?'A':'',r160Q3Momentum?'I':'',r160Q4Proof?'K':''].join('')})`;
 
   d.brainMode = primaryMode;
@@ -7973,6 +7999,12 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r219StructureTargetBlock = r219BlockActive;
   d.r219StructureTarget = r219StructureTarget;
   d.r221TrendIgnitionScalp = r221TrendIgnitionScalp;
+  d.r238TrendlineBreakoutScalp = r238TrendlineScalp;
+  d.r238TrendlineBreakout = r238Trendline;
+  d.r241ChannelPriorityScalp = r241ChannelPriorityScalp;
+  d.r241ChannelPriority = r241ChannelPriority;
+  d.r239DevisoTrendlineMotorScalp = r239DevisoTrendlineMotorScalp;
+  d.r239DevisoMotor = r239DevisoMotor;
   d.r225FastLivePulseScalp = r225FastLivePulseScalp;
   d.r226HybridFrequencyScalp = r226HybridFrequencyScalp;
   d.r227ExecutionCoreScalp = r227ExecutionCoreScalp;
@@ -7987,7 +8019,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r224IgnitionNoDirty = r224IgnitionNoDirty;
   d.r221TrendIgnition = r221TrendIgnition;
   d.r218ChartTruthScalp = r218ChartTruthScalp;
-  d.r219StructureTargetMeta = { floor:r219Floor, live:r219LiveAligned, noDirty:r219NoDirty, r224IgnitionNoDirty, ok:r219SupportActive, block:r219BlockActive, route:r219StructureTarget?.route, targetRoomPct:r219StructureTarget?.targetRoomPct, r221:r221TrendIgnition?.route, r221Score:r221TrendIgnition?.score, r225:r225FastLivePulseScalp, r226:r226HybridFrequencyScalp, r227:r227ExecutionCoreScalp, r230:r230TrueDeathRelayScalp };
+  d.r219StructureTargetMeta = { floor:r219Floor, live:r219LiveAligned, noDirty:r219NoDirty, r224IgnitionNoDirty, ok:r219SupportActive, block:r219BlockActive, route:r219StructureTarget?.route, targetRoomPct:r219StructureTarget?.targetRoomPct, r221:r221TrendIgnition?.route, r221Score:r221TrendIgnition?.score, r238:r238TrendlineScalp, r238Score:r238Trendline?.score, r241:r241ChannelPriorityScalp, r241Score:r241ChannelPriority?.score, r239:r239DevisoTrendlineMotorScalp, r239Score:r239DevisoMotor?.score, r239Ratio:r239DevisoMotor?.ratio, r225:r225FastLivePulseScalp, r226:r226HybridFrequencyScalp, r227:r227ExecutionCoreScalp, r230:r230TrueDeathRelayScalp };
   d.r218GraphTruthScalp = { floor:r218Floor, microScore:r218MicroScore, micro:r218MicroFresh, graph:r218GraphTruth, live:r218LiveImpulse, continuation:r218ContinuationSetup, breakout:r218BreakoutPulseSetup, reversal:r218ReverseScoutSetup, noWrong:r218NoWrongSide };
   d.r217FastPulse = { floor:r217FastPulseFloor, taker:r217Taker, takerWith:r217TakerWith, takerAgainst:r217TakerAgainst, pulse:r217PulseSource, noDirty:r217NoFastPulseDirty, fakeCycle:r217FakeCycle };
   d.r216R165Freq = { floor:r216R165Floor, flow:r216FlowEdge, proof:r216Has5mProof, r160Four:r216R160FourTrade, r160Three:r216R160ThreeTrade, fast:r216FastMomentumTrade };
@@ -8096,6 +8128,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.entryPermissionReason = ok
     ? (r219StructureTargetScalp ? 'R220_STRUCTURE_ACCELERATOR'
       : r221TrendIgnitionScalp ? 'R221_EARLY_TREND_IGNITION'
+      : r241ChannelPriorityScalp ? 'R241_CHANNEL_PRIORITY_WORKER' : r239DevisoTrendlineMotorScalp ? 'R239_DEVISO_TRENDLINE_MOTOR' : r238TrendlineScalp ? 'R238_TRENDLINE_BREAK_RETEST'
       : r225FastLivePulseScalp ? 'R225_LIVE_PULSE_FREQ_SCALP'
       : r230TrueDeathRelayScalp ? 'R230_TRUE_DEATH_ORDER_RELAY'
       : r227ExecutionCoreScalp ? 'R227_EXECUTION_CORE_UNBLOCK'
@@ -13189,6 +13222,506 @@ function r236QualityRiskScale(side='LONG', d={}, symbol='') {
   return {marginMult, slCapMult, flags, label, reasons, rvol:+rvol.toFixed(2), p3:+p3.toFixed(2), forecast:f, flowEdge, daily, trust, noCandle, lowRvol, weakForecast, negativeP3, pumpChase};
 }
 
+
+
+// ── R240: FINAL LOW-SCORE / OI-ANOMALY RISK CAP ─────────────────────────────
+// Amaç: işlem sıklığını bozmadan R227/R230 düşük skorlu ama edge şişmiş sinyallerin
+// tam marjinle açılmasını engellemek. Bu guard emir iptal etmez; sadece son emirden
+// hemen önce marjin ve SL için üst sınır koyar. R239/R238/R221/R219 gerçek yapı
+// kanıtı olan işlemler tam boyutu korur.
+function r240FinalRiskCap(side='LONG', d={}, symbol='', score=0, panelMargin=0, currentMargin=0, currentSL=0) {
+  try {
+    const txt = r235Text(d);
+    const sc = Number(score||d?.score||d?.longScore||d?.shortScore||0) || 0;
+    const routeFast = !!(d?.r225FastLivePulseScalp || d?.r226HybridFrequencyScalp || d?.r227ExecutionCoreScalp || d?.r230TrueDeathRelayScalp || /R225|R226|R227|R230/.test(String(d?.entryPermissionReason||d?.reason||'')));
+    const structural = !!(d?.r241ChannelPriorityScalp || d?.r239DevisoTrendlineMotorScalp || d?.r238TrendlineBreakoutScalp || d?.r221TrendIgnitionScalp || d?.r219StructureTargetScalp || /R241|R239|R238|R221|R220 STRUCTURE/.test(String(d?.entryPermissionReason||d?.reason||'')));
+    if (!routeFast && !structural) return {active:false, marginMult:1, slMax:null, label:''};
+
+    const noCandle = /formasyon yok|mum teyidi zayıf|puan\s*[0-5]\s*\/\s*12/i.test(txt);
+    const caution = /CAUTION|HTF\s*akış\s*ters|3m\s*BOS\s*yok|kalite duvarı|sahte-pump/i.test(txt);
+    const no3mBos = /3m\s*BOS\s*yok/i.test(txt);
+    const htfTers = /HTF\s*akış\s*ters|HTF:ters|ters\s+15m|ters\s+1H|ters\s+4H/i.test(txt);
+    const lateChase = /late-chase|geç-pump|p3:\s*[+]?([5-9]|\d{2,})/i.test(txt);
+    const f = r235Forecast(d, side);
+    const weakForecast = !!(f.neutral || f.against || (side==='LONG' ? f.slope < -0.05 : f.slope > 0.05));
+    const rvol = r235Rvol(d);
+    const lowRvol = rvol > 0 && rvol < 0.45;
+    const p3 = r235P3(d);
+    const p3Bad = side==='LONG' ? p3 < -0.15 || p3 >= 5 : p3 > 0.15 || p3 <= -5;
+    const oiM = String(txt).match(/OI15:\s*([+-]?\d+(?:\.\d+)?)%/i);
+    const oi15 = oiM ? Number(oiM[1]) : 0;
+    const oiAnomaly = Number.isFinite(oi15) && Math.abs(oi15) >= 300;
+
+    let severity = 0;
+    const reasons = [];
+    if (sc > 0 && sc < 30) { severity += 4; reasons.push(`skor ${sc}<30`); }
+    else if (sc > 0 && sc < 45) { severity += 3; reasons.push(`skor ${sc}<45`); }
+    else if (sc > 0 && sc < 55) { severity += 2; reasons.push(`skor ${sc}<55`); }
+    if (noCandle) { severity += 1; reasons.push('mum/formasyon zayıf'); }
+    if (caution) { severity += 1; reasons.push('CAUTION/HTF/3m risk'); }
+    if (no3mBos) { severity += 1; reasons.push('3m BOS yok'); }
+    if (htfTers) { severity += 1; reasons.push('HTF/ters seviye'); }
+    if (weakForecast) { severity += 1; reasons.push(`forecast ${f.side} c${f.conf}`); }
+    if (lowRvol) { severity += 1; reasons.push(`RVOL ${rvol.toFixed(2)}`); }
+    if (p3Bad) { severity += 1; reasons.push(`p3 ${p3.toFixed(2)}`); }
+    if (oiAnomaly) { severity += 1; reasons.push(`OI15 anomali ${oi15.toFixed(0)}%`); }
+
+    // R239/R238 gerçek trendline+Deviso veya R221/R219 yapısı varsa sadece çok kötü skorda hafiflet.
+    if (structural) severity = Math.max(0, severity - 3);
+    if (severity <= 1) return {active:false, marginMult:1, slMax:null, severity, reasons, label:''};
+
+    let marginMult = 1.0, slMax = null;
+    if (severity >= 7) { marginMult = 0.20; slMax = 0.55; }
+    else if (severity >= 5) { marginMult = 0.25; slMax = 0.60; }
+    else if (severity >= 4) { marginMult = 0.35; slMax = 0.70; }
+    else if (severity >= 2) { marginMult = 0.55; slMax = 0.85; }
+
+    const pm = Number(panelMargin||currentMargin||0) || 0;
+    const cm = Number(currentMargin||pm||0) || 0;
+    const minM = pm > 0 ? Math.min(cm, Math.max(3, pm * 0.15)) : 0;
+    const cappedMargin = pm > 0 ? +Math.max(minM, pm * marginMult).toFixed(2) : cm;
+    const finalMargin = cm > 0 ? Math.min(cm, cappedMargin) : cappedMargin;
+    const finalSL = slMax && Number(currentSL||0) > 0 ? Math.min(Number(currentSL), slMax) : Number(currentSL||0);
+    const active = !!((finalMargin > 0 && cm > 0 && finalMargin < cm - 0.001) || (finalSL > 0 && Number(currentSL||0) > 0 && finalSL < Number(currentSL) - 0.001));
+    const label = active ? `R240 final risk cap: sev:${severity} → marjin≤${marginMult.toFixed(2)} panel, SL≤%${slMax} (${reasons.slice(0,5).join(' + ')})` : '';
+    return {active, marginMult, slMax, finalMargin:+finalMargin.toFixed(2), finalSL:+finalSL.toFixed(2), severity, reasons, oi15, structural, routeFast, label};
+  } catch(e) { return {active:false, marginMult:1, slMax:null, label:`R240 hata:${String(e?.message||e).slice(0,80)}`}; }
+}
+
+// ── R238: 5m TRENDLINE BREAK + RETEST WORKER ────────────────────────────────
+// Amaç: 5m düşen trend çizgisi yukarı kırıldığında LONG, yükselen trend çizgisi aşağı
+// kırıldığında SHORT fırsatını geç kalmadan yakalamak. Yeni REST/WS açmaz; R234 1m/3m/5m
+// kline live cache'i kullanır. Worker sadece ön-izleme/cache üretir, emir göndermez.
+const r238TrendlineState = new Map();
+let r238TrendlineTimer = null;
+let r238TrendlineLastTickTs = 0;
+let r238TrendlineLastErr = '';
+let r238TrendlineScanCount = 0;
+
+function r238N(v, fb=0){ const n=Number(v); return Number.isFinite(n) ? n : fb; }
+function r238Rows(arr=[], limit=100){ return r232Rows(arr, limit); }
+function r238LineValue(line, x){ return line && Number.isFinite(line.slope) && Number.isFinite(line.intercept) ? line.slope*x + line.intercept : 0; }
+function r238AtrPct(rows=[], p=14){
+  const r = r238Rows(rows, Math.max(p+2, 40));
+  if (r.length < p+2) return 0.8;
+  const trs=[];
+  for (let i=1;i<r.length;i++) trs.push(Math.max(r[i].h-r[i].l, Math.abs(r[i].h-r[i-1].c), Math.abs(r[i].l-r[i-1].c)) / Math.max(1e-12,r[i-1].c) * 100);
+  const a=trs.slice(-p).reduce((s,x)=>s+x,0)/Math.max(1,Math.min(p,trs.length));
+  return Number.isFinite(a) && a>0 ? a : 0.8;
+}
+function r238VolumeRatio(rows=[]){
+  const r = r238Rows(rows, 40);
+  if (r.length < 12) return 1;
+  const last = r.at(-1)?.v || 0;
+  const base = r.slice(-21,-1).map(x=>x.v||0).filter(x=>x>0);
+  const avg = base.reduce((s,x)=>s+x,0)/Math.max(1,base.length);
+  return avg>0 ? last/avg : 1;
+}
+function r238RsiValues(rows=[], period=14){
+  const r=r238Rows(rows, 100); const out=[];
+  if (r.length < period+2) return [];
+  const closes=r.map(x=>x.c);
+  for (let i=0;i<closes.length;i++) {
+    if (i < period) { out.push(50); continue; }
+    let g=0,l=0;
+    for (let j=i-period+1;j<=i;j++){ const d=closes[j]-closes[j-1]; if (d>=0) g+=d; else l-=d; }
+    const ag=g/period, al=l/period;
+    out.push(al===0 ? 100 : 100-(100/(1+ag/al)));
+  }
+  return out;
+}
+function r238Pivots(rows=[], wing=2, limit=70){
+  const r=r238Rows(rows, limit);
+  const highs=[], lows=[];
+  for (let i=wing;i<r.length-wing;i++) {
+    let isH=true,isL=true;
+    for (let j=i-wing;j<=i+wing;j++) {
+      if (j===i) continue;
+      if (r[i].h <= r[j].h) isH=false;
+      if (r[i].l >= r[j].l) isL=false;
+    }
+    if (isH) highs.push({i, price:r[i].h, t:r[i].t, c:r[i].c});
+    if (isL) lows.push({i, price:r[i].l, t:r[i].t, c:r[i].c});
+  }
+  return {rows:r, highs, lows};
+}
+function r238FitLine(points=[], currentIndex=0){
+  const pts=(Array.isArray(points)?points:[]).slice(-4);
+  if (pts.length < 2) return null;
+  const n=pts.length;
+  const sx=pts.reduce((s,p)=>s+p.i,0), sy=pts.reduce((s,p)=>s+p.price,0);
+  const sxx=pts.reduce((s,p)=>s+p.i*p.i,0), sxy=pts.reduce((s,p)=>s+p.i*p.price,0);
+  const den=n*sxx-sx*sx;
+  if (Math.abs(den)<1e-12) return null;
+  const slope=(n*sxy-sx*sy)/den;
+  const intercept=(sy-slope*sx)/n;
+  const now=slope*currentIndex+intercept;
+  const first=pts[0], last=pts.at(-1);
+  const span=Math.max(1,last.i-first.i);
+  const slopePctPerBar = now>0 ? (slope/now*100) : 0;
+  const monotonicDown = pts.slice(1).every((p,idx)=>p.price <= pts[idx].price*1.006);
+  const monotonicUp   = pts.slice(1).every((p,idx)=>p.price >= pts[idx].price*0.994);
+  return {slope, intercept, now, slopePctPerBar:+slopePctPerBar.toFixed(4), first, last, span, monotonicDown, monotonicUp, touches:pts.length};
+}
+function r238MicroConfirm(k1m=[], k3m=[], side='LONG'){
+  const isL=String(side).toUpperCase()!=='SHORT';
+  const r1=r238Rows(k1m,8), r3=r238Rows(k3m,8);
+  const one = r1.length>=4 ? ((r1.at(-1).c-r1.at(-4).o)/Math.max(1e-12,r1.at(-4).o)*100) : 0;
+  const three = r3.length>=3 ? ((r3.at(-1).c-r3.at(-3).o)/Math.max(1e-12,r3.at(-3).o)*100) : 0;
+  const last1=r1.at(-1), last3=r3.at(-1);
+  const oneBody = last1 ? (last1.c-last1.o)/Math.max(1e-12,last1.o)*100 : 0;
+  const threeBody = last3 ? (last3.c-last3.o)/Math.max(1e-12,last3.o)*100 : 0;
+  const ok = isL ? (one>=-0.05 && three>=-0.08 && (oneBody>=-0.08 || threeBody>=0)) : (one<=0.05 && three<=0.08 && (oneBody<=0.08 || threeBody<=0));
+  const strong = isL ? (one>=0.12 && three>=0.16) : (one<=-0.12 && three<=-0.16);
+  return {ok, strong, one:+one.toFixed(3), three:+three.toFixed(3), oneBody:+oneBody.toFixed(3), threeBody:+threeBody.toFixed(3), label:`1m:${one.toFixed(2)}% 3m:${three.toFixed(2)}%`};
+}
+function r238MotorEase(rows=[], side='LONG'){
+  const r=r238Rows(rows,70); const rs=r238RsiValues(r,14);
+  if (r.length<35 || rs.length!==r.length) return {ok:false, label:'motor veri yok'};
+  const leg=(from,to)=>{
+    const p0=r[from]?.c, p1=r[to]?.c, r0=rs[from], r1=rs[to];
+    const pricePct=Math.abs((p1-p0)/Math.max(1e-12,p0)*100);
+    const rsiDelta=Math.abs(r1-r0);
+    const effort = pricePct>0.01 ? rsiDelta/pricePct : 99;
+    return {pricePct, rsiDelta, effort};
+  };
+  const a=leg(r.length-25, r.length-13), b=leg(r.length-13, r.length-1);
+  const improving = b.effort < a.effort*0.82 && b.pricePct >= 0.25;
+  const exhausted = b.effort <= 1.15 && b.pricePct >= 1.2;
+  return {ok:true, improving, exhausted, prev:+a.effort.toFixed(2), now:+b.effort.toFixed(2), pricePct:+b.pricePct.toFixed(2), rsiDelta:+b.rsiDelta.toFixed(2), label:`motor ${a.effort.toFixed(2)}→${b.effort.toFixed(2)}${improving?' kolaylaşıyor':''}${exhausted?' doyum-yakın':''}`};
+}
+function r238TrendlineBreakoutEngine(k5m=[], k3m=[], k1m=[], side='LONG', symbol=''){
+  try {
+    const isL=String(side).toUpperCase()!=='SHORT';
+    const piv=r238Pivots(k5m,2,80), rows=piv.rows;
+    const no={ok:false, route:false, side, score:0, priority:0, reason:'R238 trendline veri yetersiz'};
+    if (rows.length<38 || piv.highs.length<2 || piv.lows.length<2) return no;
+    const idx=rows.length-1, last=rows.at(-1), prev=rows.at(-2);
+    const atrp=r238AtrPct(rows), tol=Math.max(0.10, Math.min(0.42, atrp*0.16));
+    const volRatio=r238VolumeRatio(rows);
+    const upper=r238FitLine(piv.highs.slice(-5), idx);
+    const lower=r238FitLine(piv.lows.slice(-5), idx);
+    if (!upper || !lower) return no;
+    const upperNow=r238LineValue(upper,idx), upperPrev=r238LineValue(upper,idx-1);
+    const lowerNow=r238LineValue(lower,idx), lowerPrev=r238LineValue(lower,idx-1);
+    const closePos=(last.c-last.l)/Math.max(1e-12,last.h-last.l);
+    const bodyPct=Math.abs(last.c-last.o)/Math.max(1e-12,last.o)*100;
+    const descending = upper.slopePctPerBar <= -0.045 && upper.monotonicDown && upper.touches>=2;
+    const ascending  = lower.slopePctPerBar >= 0.045 && lower.monotonicUp && lower.touches>=2;
+    const breakUp = !!(descending && prev.c <= upperPrev*(1+tol/100) && last.c >= upperNow*(1+tol/100) && closePos>=0.52);
+    const breakDown = !!(ascending && prev.c >= lowerPrev*(1-tol/100) && last.c <= lowerNow*(1-tol/100) && closePos<=0.48);
+    const retestLong = !!(descending && last.l <= upperNow*(1+(tol*1.8)/100) && last.c >= upperNow*(1-tol*0.25/100) && closePos>=0.45 && last.c>=last.o*0.998);
+    const retestShort= !!(ascending && last.h >= lowerNow*(1-(tol*1.8)/100) && last.c <= lowerNow*(1+tol*0.25/100) && closePos<=0.55 && last.c<=last.o*1.002);
+    const micro=r238MicroConfirm(k1m,k3m,side);
+    const motor=r238MotorEase(rows,side);
+    const volOk = volRatio >= (isL ? (breakUp?1.02:0.78) : (breakDown?1.02:0.78));
+    const fakeout = isL ? (last.c < upperNow*(1-tol/100) || closePos<0.35) : (last.c > lowerNow*(1+tol/100) || closePos>0.65);
+    const setup = isL ? (breakUp || retestLong) : (breakDown || retestShort);
+    let score=0; const why=[];
+    if (setup) { score+=32; why.push(isL ? (breakUp?'düşen trend kırılımı':'düşen trend retest/hold') : (breakDown?'yükselen trend kırılımı':'yükselen trend retest/hold')); }
+    if (micro.ok) { score+=18; why.push(`1m/3m teyit ${micro.label}`); }
+    if (micro.strong) { score+=8; why.push('micro güçlü'); }
+    if (volOk) { score+=12; why.push(`hacim ${volRatio.toFixed(2)}x`); }
+    if (bodyPct >= Math.max(0.12, atrp*0.12)) { score+=8; why.push(`gövde ${bodyPct.toFixed(2)}%`); }
+    if (motor.improving) { score+=8; why.push(motor.label); }
+    if (motor.exhausted) { score-=10; why.push('motor doyum-yakın'); }
+    if (fakeout) { score-=22; why.push('fakeout riski'); }
+    const mode = isL ? 'DESC_TREND_BREAK_LONG' : 'ASC_TREND_BREAK_SHORT';
+    const ok = !!(setup && micro.ok && volOk && !fakeout && score>=60);
+    const lineNow = isL ? upperNow : lowerNow;
+    const distPct = lineNow>0 ? ((last.c-lineNow)/lineNow*100) : 0;
+    const reason = `R238 trendline ${ok?'TRADE':'İZLE'} ${isL?'LONG':'SHORT'}: ${why.join(' + ') || 'kırılım/retest yok'} · ${isL?'üst':'alt'} çizgi ${lineNow.toFixed(8)} fark ${distPct.toFixed(2)}% · ATR${atrp.toFixed(2)} tol${tol.toFixed(2)} · kanal ${descending?'düşen':''}${ascending?' yükselen':''}`;
+    return {ok, route:ok, side:isL?'LONG':'SHORT', mode, score:Math.max(0,Math.min(100,Math.round(score))), priority: ok?Math.max(70,Math.min(110,Math.round(score+20))):Math.round(score), breakUp, breakDown, retestLong, retestShort, micro, motor, volRatio:+volRatio.toFixed(2), bodyPct:+bodyPct.toFixed(2), atrPct:+atrp.toFixed(2), tolPct:+tol.toFixed(2), fakeout, descending, ascending, upperNow:+upperNow.toFixed(8), lowerNow:+lowerNow.toFixed(8), distPct:+distPct.toFixed(2), reason};
+  } catch(e) { return {ok:false, route:false, side, score:0, priority:0, reason:`R238 trendline hata: ${String(e?.message||e).slice(0,80)}`}; }
+}
+function r238CachedKlines(full, interval, limit=100){
+  try {
+    const ent = cacheEntry(r234KlineCacheKey(normalizeSymbol(full), interval));
+    const arr = ent && Array.isArray(ent.val) ? ent.val : [];
+    const ws = r234GetWsRow(normalizeSymbol(full), interval, interval==='1m'?18000:interval==='3m'?25000:35000);
+    const merged = ws ? r234MergeKlineRow(arr, ws, Math.max(limit, arr.length||limit)) : arr;
+    return Array.isArray(merged) ? merged.slice(-limit) : [];
+  } catch(_) { return []; }
+}
+function r238TrendlineWorkerTick(){
+  try {
+    r238TrendlineLastTickTs = Date.now(); r238TrendlineLastErr=''; r238TrendlineScanCount++;
+    const syms = Array.from(r234KlineSymbols||[]).filter(s=>s && s!=='BTCUSDT').slice(0,25);
+    for (const full of syms) {
+      const k5=r238CachedKlines(full,'5m',100), k3=r238CachedKlines(full,'3m',30), k1=r238CachedKlines(full,'1m',40);
+      if (k5.length < 38) continue;
+      const long=r238TrendlineBreakoutEngine(k5,k3,k1,'LONG',full);
+      const short=r238TrendlineBreakoutEngine(k5,k3,k1,'SHORT',full);
+      const best = (Number(long.priority||0) >= Number(short.priority||0)) ? long : short;
+      r238TrendlineState.set(full, {ts:Date.now(), symbol:full, long, short, best});
+    }
+    for (const [k,v] of r238TrendlineState.entries()) if (Date.now()-Number(v?.ts||0) > 5*60*1000) r238TrendlineState.delete(k);
+  } catch(e) { r238TrendlineLastErr=String(e?.message||e).slice(0,120); }
+}
+function r238TrendlineSummary(){
+  try {
+    const age = r238TrendlineLastTickTs ? Math.round((Date.now()-r238TrendlineLastTickTs)/1000)+'sn' : 'yok';
+    const hot = Array.from(r238TrendlineState.values()).filter(x=>x?.best?.priority>=65).sort((a,b)=>(b.best.priority||0)-(a.best.priority||0)).slice(0,4).map(x=>`${String(x.symbol).replace('USDT','')}:${x.best.side[0]}${x.best.priority}`).join(',');
+    return `R238 trendlineWorker:${r238TrendlineTimer?'ON':'OFF'} state:${r238TrendlineState.size} son:${age} hot:${hot||'-'}${r238TrendlineLastErr?' err:'+r238TrendlineLastErr:''}`;
+  } catch(e) { return `R238 trendlineWorker hata:${String(e?.message||e).slice(0,80)}`; }
+}
+
+// ── R239: DEVISO / RSI-FİYAT MOTORU + TRENDLINE WORKER ─────────────────────
+// Video mantığı: aynı tür sinyalin (Cross10/Cross20/M1/M2) bir önceki aynı tür sinyaline göre
+// fiyat % hareketi / RSI eforu ilişkisi ölçülür. Bu kodda ratio = |ΔRSI| / |ΔFiyat%|.
+// Ratio sert düşüyorsa fiyat daha az RSI eforuyla gidiyor → trend başlangıcı/güçlenme.
+// Ratio 1'e yaklaşırsa hareket kolaylığı doyuma yaklaşır → kâr koruma/geç chase riski.
+// Yeni REST açmaz; R234 WS kline cache kullanılır. Worker emir göndermez, sadece sıcak yapı üretir.
+const r239DevisoState = new Map();
+let r239DevisoTimer = null;
+let r239DevisoLastTickTs = 0;
+let r239DevisoLastErr = '';
+let r239DevisoScanCount = 0;
+function r239Ema(vals=[], p=10){
+  const out=[]; const k=2/(p+1); let ema=null;
+  for (const v of vals) { const n=Number(v); ema = ema==null ? n : (n*k + ema*(1-k)); out.push(ema); }
+  return out;
+}
+function r239Macd(closes=[]){
+  const e12=r239Ema(closes,12), e26=r239Ema(closes,26);
+  const line=closes.map((_,i)=>(Number(e12[i]||0)-Number(e26[i]||0)));
+  const sig=r239Ema(line,9);
+  const hist=line.map((v,i)=>v-Number(sig[i]||0));
+  return {line, sig, hist};
+}
+function r239CrossEvents(rows=[]){
+  const r=r238Rows(rows,120);
+  const rs=r238RsiValues(r,14);
+  if (r.length < 45 || rs.length !== r.length) return [];
+  const closes=r.map(x=>x.c);
+  const rsiE10=r239Ema(rs,10), rsiE20=r239Ema(rs,20);
+  const mac=r239Macd(closes);
+  const ev=[];
+  const add=(i,type,dir)=>{
+    if (i<18 || !r[i]) return;
+    ev.push({i, t:r[i].t, type, dir, price:r[i].c, rsi:rs[i]});
+  };
+  for (let i=1;i<r.length;i++) {
+    const r0=rs[i-1], r1=rs[i];
+    if (r0 <= rsiE10[i-1] && r1 > rsiE10[i]) add(i,'CROSS10','LONG');
+    if (r0 >= rsiE10[i-1] && r1 < rsiE10[i]) add(i,'CROSS10','SHORT');
+    if (r0 <= rsiE20[i-1] && r1 > rsiE20[i]) add(i,'CROSS20','LONG');
+    if (r0 >= rsiE20[i-1] && r1 < rsiE20[i]) add(i,'CROSS20','SHORT');
+    if (mac.line[i-1] <= mac.sig[i-1] && mac.line[i] > mac.sig[i]) add(i,'M1','LONG');
+    if (mac.line[i-1] >= mac.sig[i-1] && mac.line[i] < mac.sig[i]) add(i,'M1','SHORT');
+    if (mac.hist[i-1] <= 0 && mac.hist[i] > 0) add(i,'M2','LONG');
+    if (mac.hist[i-1] >= 0 && mac.hist[i] < 0) add(i,'M2','SHORT');
+  }
+  return ev.slice(-80);
+}
+function r239RatioBetween(prev, cur){
+  const pricePct=Math.abs((Number(cur.price)-Number(prev.price))/Math.max(1e-12,Number(prev.price))*100);
+  const rsiDelta=Math.abs(Number(cur.rsi)-Number(prev.rsi));
+  const ratio = pricePct > 0.015 ? (rsiDelta / pricePct) : 99;
+  return {pricePct, rsiDelta, ratio};
+}
+function r239DevisoMotorEngine(rows=[], side='LONG', symbol=''){
+  try {
+    const isL=String(side).toUpperCase()!=='SHORT';
+    const dir=isL?'LONG':'SHORT';
+    const ev=r239CrossEvents(rows).filter(x=>x.dir===dir);
+    if (ev.length < 3) return {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R239 Deviso veri/sinyal az'};
+    const byType={};
+    for (const e of ev) (byType[e.type] ||= []).push(e);
+    let best=null;
+    for (const [type, list] of Object.entries(byType)) {
+      if (list.length < 3) continue;
+      const a=list.at(-3), b=list.at(-2), c=list.at(-1);
+      const prev=r239RatioBetween(a,b), now=r239RatioBetween(b,c);
+      const ageBars = r238Rows(rows,120).length - 1 - c.i;
+      const priceDirOk = isL ? c.price >= b.price*0.998 : c.price <= b.price*1.002;
+      const improving = now.ratio < prev.ratio*0.78 && now.pricePct >= 0.18 && priceDirOk;
+      const continuing = now.ratio < prev.ratio*0.95 && now.pricePct >= 0.12 && priceDirOk;
+      const exitRisk = now.ratio <= 1.25 && now.pricePct >= 0.75;
+      const fresh = ageBars <= 9;
+      let score=0;
+      if (improving) score += 42;
+      else if (continuing) score += 25;
+      if (fresh) score += Math.max(0, 18 - ageBars*2);
+      if (now.ratio > 1.35 && now.ratio < 9.5) score += 12;
+      if (now.pricePct >= 0.45) score += 10;
+      if (exitRisk) score -= 18;
+      const obj={ok:true, type, side:dir, fresh, ageBars, improving, continuing, exitRisk,
+        entryOk:!!((improving || continuing) && fresh && !exitRisk && score>=42),
+        score:Math.max(0,Math.min(100,Math.round(score))), priority:Math.round(score+(improving?24:10)),
+        prevRatio:+prev.ratio.toFixed(2), ratio:+now.ratio.toFixed(2), pricePct:+now.pricePct.toFixed(2), rsiDelta:+now.rsiDelta.toFixed(2),
+        reason:`R239 Deviso ${dir} ${type}: ratio ${prev.ratio.toFixed(2)}→${now.ratio.toFixed(2)}${improving?' kolaylaştı':''}${continuing&&!improving?' devam':''}${exitRisk?' doyum/1 bölgesi':''} · fiyat%${now.pricePct.toFixed(2)} RSIΔ${now.rsiDelta.toFixed(2)} yaş:${ageBars}`};
+      if (!best || obj.priority > best.priority) best=obj;
+    }
+    return best || {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R239 Deviso aynı tür zincir yok'};
+  } catch(e) { return {ok:false, entryOk:false, score:0, priority:0, side:String(side).toUpperCase(), reason:`R239 Deviso hata: ${String(e?.message||e).slice(0,80)}`}; }
+}
+function r239DevisoWorkerTick(){
+  try {
+    r239DevisoLastTickTs=Date.now(); r239DevisoLastErr=''; r239DevisoScanCount++;
+    const syms = Array.from(r234KlineSymbols||[]).filter(s=>s && s!=='BTCUSDT').slice(0,25);
+    for (const full of syms) {
+      const k5=r238CachedKlines(full,'5m',120);
+      if (k5.length < 45) continue;
+      const long=r239DevisoMotorEngine(k5,'LONG',full);
+      const short=r239DevisoMotorEngine(k5,'SHORT',full);
+      const best=(Number(long.priority||0) >= Number(short.priority||0)) ? long : short;
+      r239DevisoState.set(full,{ts:Date.now(), symbol:full, long, short, best});
+    }
+    for (const [k,v] of r239DevisoState.entries()) if (Date.now()-Number(v?.ts||0)>7*60*1000) r239DevisoState.delete(k);
+  } catch(e) { r239DevisoLastErr=String(e?.message||e).slice(0,120); }
+}
+function r239DevisoSummary(){
+  try {
+    const age=r239DevisoLastTickTs ? Math.round((Date.now()-r239DevisoLastTickTs)/1000)+'sn' : 'yok';
+    const hot=Array.from(r239DevisoState.values()).filter(x=>x?.best?.priority>=42).sort((a,b)=>(b.best.priority||0)-(a.best.priority||0)).slice(0,4).map(x=>`${String(x.symbol).replace('USDT','')}:${x.best.side[0]}${x.best.score}/${x.best.ratio||'-'}`).join(',');
+    return `R239 devisoWorker:${r239DevisoTimer?'ON':'OFF'} state:${r239DevisoState.size} son:${age} hot:${hot||'-'}${r239DevisoLastErr?' err:'+r239DevisoLastErr:''}`;
+  } catch(e) { return `R239 devisoWorker hata:${String(e?.message||e).slice(0,80)}`; }
+}
+
+
+// ── R241: CHANNEL / TRENDLINE PRIORITY SCORE WORKER ─────────────────────────
+// Amaç: 5m'de sadece "kırıldı mı?" değil, kanal içi salınım + kırılım + retest/hold
+// yapısını önem sırasına göre puanlamak. Hard rule stack değil; 5m yapı ana çekirdek,
+// 1m/3m, flow/R125, RVOL, mumTahmin ve Deviso yardımcı puandır. Worker REST açmaz.
+const r241ChannelState = new Map();
+let r241ChannelTimer = null;
+let r241ChannelLastTickTs = 0;
+let r241ChannelLastErr = '';
+let r241ChannelScanCount = 0;
+function r241Clamp(n,a=0,b=100){ n=Number(n); return Number.isFinite(n)?Math.max(a,Math.min(b,n)):a; }
+function r241CandlePos(row){ const r=Math.max(1e-12,Number(row?.h||0)-Number(row?.l||0)); return (Number(row?.c||0)-Number(row?.l||0))/r; }
+function r241LineAt(line, i){ return line ? r238LineValue(line, i) : 0; }
+function r241ChannelPriorityEngine(k5m=[], k3m=[], k1m=[], side='LONG', symbol='', d={}){
+  try{
+    const isL=String(side).toUpperCase()!=='SHORT';
+    const dir=isL?'LONG':'SHORT';
+    const rows=r238Rows(k5m,90);
+    if(rows.length<38) return {ok:false, entryOk:false, side:dir, score:0, priority:0, reason:'R241 kanal veri yetersiz', table:[]};
+    const {highs,lows}=r238Pivots(rows,2,70);
+    const idx=rows.length-1, prevIdx=rows.length-2;
+    const last=rows.at(-1), prev=rows.at(-2) || last;
+    const upper=r238FitLine(highs.slice(-5), idx);
+    const lower=r238FitLine(lows.slice(-5), idx);
+    const atrp=r238AtrPct(rows,14);
+    const tol=Math.max(0.10, Math.min(0.42, atrp*0.28));
+    const upperNow=r241LineAt(upper,idx), lowerNow=r241LineAt(lower,idx);
+    const upperPrev=r241LineAt(upper,prevIdx), lowerPrev=r241LineAt(lower,prevIdx);
+    const validChannel=!!(upper&&lower&&upperNow>0&&lowerNow>0&&Math.abs(upperNow-lowerNow)/Math.max(1e-12,last.c)*100>0.35);
+    const top=Math.max(upperNow,lowerNow), bot=Math.min(upperNow,lowerNow);
+    const widthPct=validChannel ? (top-bot)/Math.max(1e-12,last.c)*100 : 0;
+    const pos=validChannel ? r241Clamp((last.c-bot)/Math.max(1e-12,top-bot),0,1) : 0.5;
+    const uSlope=Number(upper?.slopePctPerBar||0), lSlope=Number(lower?.slopePctPerBar||0);
+    const descending=validChannel && uSlope < -0.015 && lSlope < -0.015;
+    const ascending=validChannel && uSlope > 0.015 && lSlope > 0.015;
+    const ranging=validChannel && Math.abs(uSlope)<0.025 && Math.abs(lSlope)<0.025;
+    const cp=r241CandlePos(last);
+    const bodyPct=(last.c-last.o)/Math.max(1e-12,last.o)*100;
+    const volRatio=r238VolumeRatio(rows);
+    const micro=r238MicroConfirm(k1m,k3m,dir);
+    const deviso=r239DevisoMotorEngine(rows,dir,symbol);
+    const f=r235Forecast(d,dir);
+    const rvol = r235Rvol(d) || volRatio;
+    const flowEdge = isL ? r235Num(d?.r125Flow?.longEdge ?? d?.r125Flow?.edge ?? 0,0) : r235Num(d?.r125Flow?.shortEdge ?? d?.r125Flow?.edge ?? 0,0);
+    const bestSide=String(d?.r125BestSide || d?.r125Flow?.bestSide || '').toUpperCase();
+    const liveDelta=Number(d?.r125LiveDeltaPct ?? d?.r125Flow?.liveDeltaPct ?? 0) || 0;
+
+    const breakUp = validChannel && upperNow>0 && last.c > upperNow*(1+tol/100) && prev.c <= upperPrev*(1+tol*1.25/100);
+    const breakDown = validChannel && lowerNow>0 && last.c < lowerNow*(1-tol/100) && prev.c >= lowerPrev*(1-tol*1.25/100);
+    const bodyAcceptLong = validChannel && last.c > upperNow*(1+tol*0.55/100) && bodyPct > Math.max(0.04, atrp*0.08) && cp >= 0.58;
+    const bodyAcceptShort = validChannel && last.c < lowerNow*(1-tol*0.55/100) && bodyPct < -Math.max(0.04, atrp*0.08) && cp <= 0.42;
+    const holdLong = validChannel && last.c >= upperNow*(1-tol*0.35/100) && rows.slice(-3).filter(x=>x.c >= r241LineAt(upper, rows.indexOf(x))*(1-tol*0.55/100)).length>=2;
+    const holdShort = validChannel && last.c <= lowerNow*(1+tol*0.35/100) && rows.slice(-3).filter(x=>x.c <= r241LineAt(lower, rows.indexOf(x))*(1+tol*0.55/100)).length>=2;
+    const retestLong = validChannel && last.l <= upperNow*(1+tol*1.25/100) && last.c >= upperNow*(1-tol*0.25/100) && cp>=0.45;
+    const retestShort= validChannel && last.h >= lowerNow*(1-tol*1.25/100) && last.c <= lowerNow*(1+tol*0.25/100) && cp<=0.55;
+    const lowerBounce = validChannel && ascending && pos <= 0.36 && last.l <= bot*(1+tol*1.35/100) && bodyPct >= -atrp*0.10 && cp>=0.45;
+    const upperReject = validChannel && descending && pos >= 0.64 && last.h >= top*(1-tol*1.35/100) && bodyPct <= atrp*0.10 && cp<=0.55;
+    const median=(top+bot)/2;
+    const medianReclaimLong = validChannel && ascending && prev.c < median && last.c > median && bodyPct>0;
+    const medianRejectShort = validChannel && descending && prev.c > median && last.c < median && bodyPct<0;
+    const fakeoutLong = validChannel && last.h > upperNow*(1+tol/100) && last.c < upperNow*(1-tol*0.25/100);
+    const fakeoutShort= validChannel && last.l < lowerNow*(1-tol/100) && last.c > lowerNow*(1+tol*0.25/100);
+
+    let structure=0, microPts=0, flowPts=0, quality=0, penalty=0; const why=[];
+    if(isL){
+      if(descending && breakUp){ structure+=30; why.push('5m düşen kanal üst kırılım +30'); }
+      else if(breakUp){ structure+=24; why.push('5m üst çizgi kırılım +24'); }
+      if(bodyAcceptLong){ structure+=14; why.push('gövde kabul +14'); }
+      if(retestLong || holdLong){ structure+=14; why.push((retestLong?'retest tuttu':'üstünde tutundu')+' +14'); }
+      if(lowerBounce){ structure+=26; why.push('yükselen kanal alt bant long +26'); }
+      if(medianReclaimLong){ structure+=7; why.push('kanal orta çizgi reclaim +7'); }
+      if(fakeoutLong){ penalty+=18; why.push('fitil/fakeout -18'); }
+    } else {
+      if(ascending && breakDown){ structure+=30; why.push('5m yükselen kanal alt kırılım +30'); }
+      else if(breakDown){ structure+=24; why.push('5m alt çizgi kırılım +24'); }
+      if(bodyAcceptShort){ structure+=14; why.push('gövde kabul +14'); }
+      if(retestShort || holdShort){ structure+=14; why.push((retestShort?'retest reddi':'altında tutundu')+' +14'); }
+      if(upperReject){ structure+=26; why.push('düşen kanal üst bant short +26'); }
+      if(medianRejectShort){ structure+=7; why.push('kanal orta çizgi reject +7'); }
+      if(fakeoutShort){ penalty+=18; why.push('fitil/fakeout -18'); }
+    }
+    if(micro.strong){ microPts+=16; why.push('1m+3m güçlü uyum +16'); }
+    else if(micro.ok){ microPts+=9; why.push('1m/3m yeterli uyum +9'); }
+    else { penalty+=4; why.push('1m/3m tam dönmedi -4'); }
+    if(flowEdge>=18){ flowPts+=14; why.push(`R125 edge ${flowEdge} +14`); }
+    else if(flowEdge>=8){ flowPts+=9; why.push(`R125 edge ${flowEdge} +9`); }
+    if(bestSide===dir){ flowPts+=4; why.push('R125 yön aynı +4'); }
+    if(isL ? liveDelta>=18 : liveDelta<=-18){ flowPts+=4; why.push('canlı delta aynı +4'); }
+    if(rvol>=1.05){ quality+=5; why.push(`RVOL ${rvol.toFixed(2)} +5`); }
+    else if(rvol>=0.55){ quality+=3; why.push(`RVOL ${rvol.toFixed(2)} +3`); }
+    else if(rvol>0){ penalty+=4; why.push(`RVOL düşük ${rvol.toFixed(2)} -4`); }
+    if(f.aligned){ quality+=6; why.push(`mumTahmin ${f.side} c${f.conf} +6`); }
+    else if(f.against){ penalty+=8; why.push(`mumTahmin ters ${f.side} -8`); }
+    if(deviso?.entryOk){ quality+=8; why.push('Deviso kolaylaşma +8'); }
+    else if(deviso?.continuing){ quality+=4; why.push('Deviso devam +4'); }
+    if(deviso?.exitRisk){ penalty+=8; why.push('Deviso doyum/1 bölgesi -8'); }
+
+    structure=r241Clamp(structure,0,60); microPts=r241Clamp(microPts,0,20); flowPts=r241Clamp(flowPts,0,22); quality=r241Clamp(quality,0,20);
+    const raw=structure+microPts+flowPts+quality-penalty;
+    const score=Math.round(r241Clamp(raw,0,100));
+    const coreOk = structure>=30 || (structure>=24 && (microPts+flowPts)>=18) || (structure>=26 && quality>=10);
+    const entryOk = !!(validChannel && coreOk && score>=56 && !((isL&&fakeoutLong)||(!isL&&fakeoutShort)));
+    const mode = isL
+      ? (breakUp?'DESC/UPPER_BREAK_LONG':lowerBounce?'ASC_CHANNEL_PULLBACK_LONG':medianReclaimLong?'ASC_MEDIAN_RECLAIM_LONG':'LONG_WATCH')
+      : (breakDown?'ASC/LOWER_BREAK_SHORT':upperReject?'DESC_CHANNEL_REJECT_SHORT':medianRejectShort?'DESC_MEDIAN_REJECT_SHORT':'SHORT_WATCH');
+    const table=[
+      {k:'5m yapı',v:structure,max:60,n:validChannel?`${mode} pos:${Math.round(pos*100)}% width:${widthPct.toFixed(2)}%`:'kanal yok'},
+      {k:'1m/3m',v:microPts,max:20,n:micro.label},
+      {k:'Akış/R125',v:flowPts,max:22,n:`edge:${flowEdge} side:${bestSide||'-'} delta:${liveDelta.toFixed(1)}%`},
+      {k:'Kalite',v:quality,max:20,n:`RVOL:${rvol.toFixed(2)} forecast:${f.side||'NEUTRAL'} c${f.conf||0} deviso:${deviso?.ratio||'-'}`},
+      {k:'Ceza',v:-penalty,max:0,n:why.filter(x=>x.includes('-')).slice(0,3).join(', ')||'yok'}
+    ];
+    const reason=`R241 kanal ${entryOk?'TRADE':'İZLE'} ${dir}: ${mode} · puan ${score}/100 · yapı ${structure}/60, mikro ${microPts}/20, akış ${flowPts}/22, kalite ${quality}/20, ceza ${penalty} · ${why.slice(0,7).join(' · ')}`;
+    return {ok:entryOk, entryOk, route:entryOk, side:dir, mode, score, priority:entryOk?Math.max(72,score+18):score, structure, microPts, flowPts, quality, penalty, table, reason, validChannel, descending, ascending, ranging, pos:+pos.toFixed(2), widthPct:+widthPct.toFixed(2), upperNow:+upperNow.toFixed(8), lowerNow:+lowerNow.toFixed(8), bodyPct:+bodyPct.toFixed(2), volRatio:+volRatio.toFixed(2), rvol:+rvol.toFixed(2), flowEdge, bestSide, liveDelta:+liveDelta.toFixed(1), forecast:f, micro, deviso, breakUp, breakDown, retestLong, retestShort, holdLong, holdShort, lowerBounce, upperReject, fakeout:isL?fakeoutLong:fakeoutShort};
+  }catch(e){ return {ok:false, entryOk:false, side:String(side).toUpperCase(), score:0, priority:0, reason:`R241 kanal hata: ${String(e?.message||e).slice(0,90)}`, table:[]}; }
+}
+function r241ChannelWorkerTick(){
+  try{
+    r241ChannelLastTickTs=Date.now(); r241ChannelLastErr=''; r241ChannelScanCount++;
+    const syms=Array.from(r234KlineSymbols||[]).filter(s=>s&&s!=='BTCUSDT').slice(0,25);
+    for(const full of syms){
+      const k5=r238CachedKlines(full,'5m',100), k3=r238CachedKlines(full,'3m',32), k1=r238CachedKlines(full,'1m',45);
+      if(k5.length<38) continue;
+      const long=r241ChannelPriorityEngine(k5,k3,k1,'LONG',full,{});
+      const short=r241ChannelPriorityEngine(k5,k3,k1,'SHORT',full,{});
+      const best=(Number(long.priority||0)>=Number(short.priority||0))?long:short;
+      r241ChannelState.set(full,{ts:Date.now(),symbol:full,long,short,best});
+    }
+    for(const [k,v] of r241ChannelState.entries()) if(Date.now()-Number(v?.ts||0)>7*60*1000) r241ChannelState.delete(k);
+  }catch(e){ r241ChannelLastErr=String(e?.message||e).slice(0,120); }
+}
+function r241ChannelHotList(limit=8){
+  return Array.from(r241ChannelState.values()).sort((a,b)=>(b.best?.priority||0)-(a.best?.priority||0)).slice(0,limit).map(x=>({symbol:String(x.symbol||'').replace('USDT',''), side:x.best?.side, score:x.best?.score||0, priority:x.best?.priority||0, mode:x.best?.mode||'', table:x.best?.table||[], reason:x.best?.reason||''}));
+}
+function r241ChannelSummary(){
+  try{
+    const age=r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000)+'sn':'yok';
+    const hot=r241ChannelHotList(4).filter(x=>x.priority>=52).map(x=>`${x.symbol}:${String(x.side||'?')[0]}${x.score}`).join(',');
+    return `R241 channelWorker:${r241ChannelTimer?'ON':'OFF'} state:${r241ChannelState.size} son:${age} hot:${hot||'-'}${r241ChannelLastErr?' err:'+r241ChannelLastErr:''}`;
+  }catch(e){ return `R241 channelWorker hata:${String(e?.message||e).slice(0,80)}`; }
+}
+
+
 async function r235ImmediateRealizedPnlSync(row={}, state={}, cls={}) {
   try {
     if (!autoConfig?.apiKey || !autoConfig?.apiSecret || !row || !row.symbol) return row;
@@ -15404,7 +15937,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R237; R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R241; R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -15435,6 +15968,31 @@ app.get('/api/health', (_req, res) => {
           rows: r234KlineRows.size,
           lastMsgSec: r234KlineLastMsgTs ? Math.round((Date.now()-r234KlineLastMsgTs)/1000) : null
         },
+        trendlineWorker: {
+          summary: r238TrendlineSummary(),
+          active: !!r238TrendlineTimer,
+          stateCount: r238TrendlineState.size,
+          lastTickSec: r238TrendlineLastTickTs ? Math.round((Date.now()-r238TrendlineLastTickTs)/1000) : null,
+          scanCount: r238TrendlineScanCount,
+          lastError: r238TrendlineLastErr || null
+        },
+        devisoWorker: {
+          summary: r239DevisoSummary(),
+          active: !!r239DevisoTimer,
+          stateCount: r239DevisoState.size,
+          lastTickSec: r239DevisoLastTickTs ? Math.round((Date.now()-r239DevisoLastTickTs)/1000) : null,
+          scanCount: r239DevisoScanCount,
+          lastError: r239DevisoLastErr || null
+        },
+        channelWorker: {
+          summary: r241ChannelSummary(),
+          active: !!r241ChannelTimer,
+          stateCount: r241ChannelState.size,
+          lastTickSec: r241ChannelLastTickTs ? Math.round((Date.now()-r241ChannelLastTickTs)/1000) : null,
+          scanCount: r241ChannelScanCount,
+          hot: r241ChannelHotList(8),
+          lastError: r241ChannelLastErr || null
+        },
         armedWatcher: {
           active: !!r2194WatchTimer,
           count: r2194ArmedWatch.size,
@@ -15462,8 +16020,9 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', async (req, res) => {
   const r211EffectiveRisk = await r211StatusRiskPreview();
+  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
-    config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
+    config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:r241ScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(),
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
@@ -15850,7 +16409,7 @@ async function runAutoScan(prioritySymbol=null) {
         const r215OrderAPlus = !!decisionChain?.r215APlusScalp;
         const r216OrderBalanced = !!decisionChain?.r216BalancedScalp;
         const r217OrderPulse = !!decisionChain?.r217FastPulseScalp;
-        const r224OrderIgnition = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r224IgnitionNoDirty);
+        const r224OrderIgnition = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r224IgnitionNoDirty);
         const r207OrderLowScore = !!(recommendation !== 'WAIT' && r207BrainRoute && Number(score || 0) < r207OrderScoreFloor && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition);
         const r207OrderLowEdge = !!(recommendation !== 'WAIT' && r207BrainRoute && r207OrderEdge > 0 && r207OrderEdge < 35 && Number(score || 0) < Math.max(70, Number(minScore || 70)) && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition);
         if (r207OrderLowScore || r207OrderLowEdge || (decisionChain?.r205BypassScoreBlock && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition) || (decisionChain?.r207R160FourScoreBlock && !r208OrderRescue && !r215OrderAPlus && !r216OrderBalanced && !r217OrderPulse && !r224OrderIgnition) || (decisionChain?.r207LowEdgeHardBlock && !r224OrderIgnition) || (decisionChain?.r208Block && !r224OrderIgnition)) {
@@ -16052,9 +16611,9 @@ async function runAutoScan(prioritySymbol=null) {
         // Amaç: PREMIUM_HIGH + RSI yüksek diye aktif 5m breakout/continuation'ı öldürmemek.
         // Bu kör bypass değildir: R196 breakoutActive + gerçek momentum/entry izi + edge/skor tabanı ister.
         const r223SideR196 = isLong ? (ctx?.r196?.long || {}) : (ctx?.r196?.short || {});
-        const r223HasActiveBreakout = !!(r223SideR196?.breakoutActive || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp);
+        const r223HasActiveBreakout = !!(r223SideR196?.breakoutActive || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp);
         const r223MomentumTrace = !!(
-          decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp ||
+          decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp ||
           decisionChain?.fresh5mImpulseOrRecent || decisionChain?.r37EarlyOk ||
           decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.r192FuelOk ||
           decisionChain?.r190Edge?.squeeze || decisionChain?.r160Q3Momentum || decisionChain?.r159MomentumPass
@@ -16075,7 +16634,7 @@ async function runAutoScan(prioritySymbol=null) {
           decisionChain?.r75RetestBridgeOk || decisionChain?.r51DirectSweepMinEdgeOk ||
           decisionChain?.r50AutoPermissionOk || decisionChain?.r74Top10ProScalperOk ||
           decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk ||
-          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || r223ActiveBreakoutRescue ||
+          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || r223ActiveBreakoutRescue ||
           decisionChain?.directSweepOk || decisionChain?.r37EarlyOk || decisionChain?.fresh5mImpulseOrRecent || decisionChain?.r190Edge?.earlyEntryOk
         );
         const r81StrongBPlusSoftPass = !!(
@@ -16106,7 +16665,7 @@ async function runAutoScan(prioritySymbol=null) {
         const r88DevamOnayiOk = !!(
           r88GeriTestOnayiOk || r88KirilimOnayiOk || r88GeriKazanimOnayiOk ||
           r88TazeImpulsOnayiOk || r88SweepZamanlamaOnayiOk ||
-          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || r223ActiveBreakoutRescue ||
+          decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || r223ActiveBreakoutRescue ||
           decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.squeeze
         );
         const r88RiskliBolgeKuvvetli = !!(antiChaseZone || antiChaseRsi || decisionChain?.r39TargetNearBlock || sideCtxRisk >= 30);
@@ -16183,7 +16742,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // R116: Son emir öncesi HTF amir kontrolü. Analiz zinciri bir sebeple geçse bile 1H/4H karşı seviyede legacy emir açılmaz.
-        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 55)) {
+        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r241ChannelPriorityScalp && !decisionChain?.r239DevisoTrendlineMotorScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 55)) {
           const why = r120AutoReason(decisionChain, `HTF likidite amiri — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r116CounterLevel:decisionChain?.r116CounterLevel, r116CounterDist:decisionChain?.r116CounterDist, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -16192,7 +16751,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R114: Son savunma. WLD tipi hata: B+ / Sweep+StopHunt / MM_UP_SWEEP ama 5m body-shift aşağı.
         // Bu durumda wick avı bitmemiş sayılır; 5m gövde reclaim veya ICT/squeeze yapı onayı beklenir.
-        if (decisionChain?.r114TrapBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 60)) {
+        if (decisionChain?.r114TrapBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r241ChannelPriorityScalp && !decisionChain?.r239DevisoTrendlineMotorScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 60)) {
           const why = r120AutoReason(decisionChain, `5m body-shift tuzağı — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r114Shift:decisionChain?.r114Shift, r114ReclaimOk:decisionChain?.r114ReclaimOk, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -16202,7 +16761,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R189: Son emir öncesi 5m micro/kanıt freni. Karar motoru bir şekilde TRADE üretse bile
         // R160 3/4 + Q4 kanıtsız + zayıf mum/HTF karşı kombinasyonu canlı emir açamaz.
         // Bu R176 gibi recovery duvarı değildir; sadece eksik kanıtlı bypass'ı keser.
-        if ((decisionChain?.r188NoProofGuard && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp))) {
+        if ((decisionChain?.r188NoProofGuard && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r241ChannelPriorityScalp && !decisionChain?.r239DevisoTrendlineMotorScalp && !decisionChain?.r238TrendlineBreakoutScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp))) {
           const why = decisionChain?.r190Edge?.spreadBlock
             ? `R190 spread pahalı: ${decisionChain.r190Edge.spreadPct}% — 15x ROI makas riski yüksek`
             : (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))
@@ -16217,7 +16776,7 @@ async function runAutoScan(prioritySymbol=null) {
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
         const r38FngStrongDecision = r162BrainBypassActive || (Number(decisionChain?.priorityScore||0) >= 76 && (decisionChain?.r37EarlyOk || decisionChain?.scalperBridge || decisionChain?.r38RetestBridgeOk));
-        const r224FngIgnitionOk = !!(decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r224IgnitionNoDirty);
+        const r224FngIgnitionOk = !!(decisionChain?.r221TrendIgnitionScalp || decisionChain?.r219StructureTargetScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r224IgnitionNoDirty);
         if (fgSignal==='EXTREME_GREED' && isLong && !(r224FngIgnitionOk || (r38AutoTopMover && r38FngStrongDecision)))  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
         if (fgSignal==='EXTREME_FEAR'  && isShort && !(r224FngIgnitionOk || (r38AutoTopMover && r38FngStrongDecision))) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
         if ((fgSignal==='EXTREME_GREED' && isLong) || (fgSignal==='EXTREME_FEAR' && isShort)) logAuto(`🟡 ${coin.symbol} F&G soft geçildi: top-mover + güçlü 5m karar zinciri`);
@@ -16322,13 +16881,13 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R191: scan loop final check. Karar zinciri içindeki bütün bypasslar normalde
         // burada autoOk=false döner; yine de eski/legacy bir yol emre yaklaşırsa son kez kes.
-        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !decisionChain?.r218ChartTruthScalp && !decisionChain?.r215APlusScalp && !decisionChain?.r216BalancedScalp && !decisionChain?.r217FastPulseScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || (decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r218ChartTruthScalp || decisionChain?.r215APlusScalp || decisionChain?.r216BalancedScalp || decisionChain?.r217FastPulseScalp)))) {
+        if ((decisionChain?.r191UnifiedEntryBlock && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r241ChannelPriorityScalp && !decisionChain?.r239DevisoTrendlineMotorScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !decisionChain?.r218ChartTruthScalp && !decisionChain?.r215APlusScalp && !decisionChain?.r216BalancedScalp && !decisionChain?.r217FastPulseScalp) || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk || (decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r218ChartTruthScalp || decisionChain?.r215APlusScalp || decisionChain?.r216BalancedScalp || decisionChain?.r217FastPulseScalp)))) {
           const why = decisionChain?.r191UnifiedBlockReason || (decisionChain?.r190Edge?.spreadBlock ? `R190 spread pahalı: ${decisionChain?.r190Edge?.spreadPct}%` : `R190 geç giriş: ${decisionChain?.r190Edge?.summary||''}`);
           logAuto(`⛔ ${coin.symbol} ${why} — emir açılmadı`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r190:decisionChain?.r190Edge});
           continue;
         }
-        if (decisionChain?.r209Wave?.block && !decisionChain?.r208ScalpCertified && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !decisionChain?.r224IgnitionNoDirty) {
+        if (decisionChain?.r209Wave?.block && !decisionChain?.r208ScalpCertified && !decisionChain?.r221TrendIgnitionScalp && !decisionChain?.r219StructureTargetScalp && !decisionChain?.r241ChannelPriorityScalp && !decisionChain?.r239DevisoTrendlineMotorScalp && !decisionChain?.r225FastLivePulseScalp && !decisionChain?.r226HybridFrequencyScalp && !decisionChain?.r227ExecutionCoreScalp && !decisionChain?.r230TrueDeathRelayScalp && !decisionChain?.r224IgnitionNoDirty) {
           const why209 = `R209 dalga yapı blok: ${decisionChain.r209Wave.summary}`;
           logAuto(`⛔ ${coin.symbol} ${why209}`);
           markAutoSkip(coin.symbol, why209, {rec:recommendation, tier:decisionChain?.tier, score, r209Wave:decisionChain.r209Wave});
@@ -16361,7 +16920,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R236: kalite kaynaklı zayıflığı işlem iptali yerine risk ölçeklemeye çevir.
         // Flash/spike gibi timing blokları yukarıdaki R235 gate ile bekletilir; burada sadece marjin/SL küçültülür.
         try {
-          const route236 = !!(decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || /R225|R226|R227|R230/.test(String(decisionChain?.entryPermissionReason||decisionChain?.reason||'')));
+          const route236 = !!(decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || /R241|R239|R238|R225|R226|R227|R230/.test(String(decisionChain?.entryPermissionReason||decisionChain?.reason||'')));
           if (route236) {
             const rs236 = r236QualityRiskScale(recommendation, decisionChain || {}, coin.fullSymbol || coin.symbol);
             decisionChain.r236QualityRiskScale = rs236;
@@ -16376,6 +16935,22 @@ async function runAutoScan(prioritySymbol=null) {
             }
           }
         } catch(_r236risk) { logAuto(`⚠️ ${coin.symbol} R236 kalite risk ölçekleme hatası: ${String(_r236risk?.message||_r236risk).slice(0,80)}`); }
+
+        // R240: R236 çalışsa bile düşük skorlu R227/R230 edge-şişmesi tam marjine dönemeyecek.
+        // İşlem iptal edilmez; sadece son emir büyüklüğü ve SL mesafesi güvenli üst sınıra çekilir.
+        try {
+          const cap240 = r240FinalRiskCap(recommendation, decisionChain || {}, coin.fullSymbol || coin.symbol, score, Number(usdtAmount||0), Number(executeUsdtAmount||0), Number(userSLPct||0));
+          decisionChain.r240FinalRiskCap = cap240;
+          if (cap240?.active) {
+            const oldM240 = Number(executeUsdtAmount||0);
+            const oldSL240 = Number(userSLPct||0);
+            if (Number(cap240.finalMargin||0) > 0) executeUsdtAmount = +Number(cap240.finalMargin).toFixed(2);
+            if (Number(cap240.finalSL||0) > 0) userSLPct = +Number(cap240.finalSL).toFixed(2);
+            leverageNote += ` · ${cap240.label}`;
+            decisionChain.reason = String(decisionChain.reason||'') + ` · ${cap240.label}`;
+            logAuto(`🧯 ${coin.symbol} ${cap240.label} · marj ${oldM240}→${executeUsdtAmount} USDT · SL% ${oldSL240}→${userSLPct}`);
+          }
+        } catch(_r240cap) { logAuto(`⚠️ ${coin.symbol} R240 final risk cap hatası: ${String(_r240cap?.message||_r240cap).slice(0,80)}`); }
 
         const r137BaseMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(executeUsdtAmount||usdtAmount||0) * executeLeverage).catch(()=>null);
         if (r137BaseMaxLev && executeLeverage > r137BaseMaxLev) {
@@ -16562,7 +17137,7 @@ async function runAutoScan(prioritySymbol=null) {
         try {
           const panelLev218 = normalizeRequestedLeverage(leverage, 1);
           const binanceLev218 = Number(r137BaseMaxLev || panelLev218);
-          const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
+          const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
           if (cleanR218Lev && executeLeverage < panelLev218) {
             const oldLev218 = executeLeverage;
             executeLeverage = panelLev218;
@@ -16730,7 +17305,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R235: hızlı route final kalite kapısı — analiz içi route false'a düşse de finalde tekrar denetlenir.
         try {
-          const route235 = !!(decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || /R225|R226|R227|R230/.test(String(decisionChain?.entryPermissionReason||decisionChain?.reason||'')));
+          const route235 = !!(decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || /R241|R239|R238|R225|R226|R227|R230/.test(String(decisionChain?.entryPermissionReason||decisionChain?.reason||'')));
           if (route235) {
             const q235 = r235FastRouteQualityGate(recommendation, decisionChain || {}, coin.fullSymbol || coin.symbol);
             if (!q235.ok) {
@@ -16989,6 +17564,15 @@ function startAutoTrader() {
   // R219.5: CHOCH watcher ana taramadan bağımsız, ama REST güvenliklerini delen bir worker değildir.
   if (!r2194WatchTimer) {
     r2194WatchTimer = setInterval(r2194ArmedWatcherTick, 4000);
+  }
+  if (!r238TrendlineTimer) {
+    r238TrendlineTimer = setInterval(r238TrendlineWorkerTick, 7000);
+  }
+  if (!r239DevisoTimer) {
+    r239DevisoTimer = setInterval(r239DevisoWorkerTick, 7000);
+  }
+  if (!r241ChannelTimer) {
+    r241ChannelTimer = setInterval(r241ChannelWorkerTick, 7000);
   }
   // R94: aktif vur-kaç çıkış motoru taramayı beklemez; açık pozisyonları 5sn döngüyle izler.
   if (!fastManagerTimer) {
