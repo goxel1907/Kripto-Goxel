@@ -155,7 +155,7 @@ async function r245BalanceRowsForPrecheck(apiKey, apiSecret) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R255_ARMED_WATCHER_GRAPH_BYPASS_FIX';
+const LAZARUS_BUILD = 'R256_DEVISSO_FVG_ENGULF_TREND_FILTER';
 const R246_AUDIT = 'R246 strict manual margin/leverage: optional panel override; default off. Only Binance hard leverage limit and lot/tick/minNotional rounding may change panel margin/leverage.';
 function r246StrictManualOn(cfg={}) {
   const v = cfg?.strictManualMode;
@@ -13810,7 +13810,7 @@ function r238TrendlineSummary(){
   } catch(e) { return `R238 trendlineWorker hata:${String(e?.message||e).slice(0,80)}`; }
 }
 
-// ── R253 / R239: DEVISS0 EFFORT RATIO DIRECTION FIX + TRENDLINE WORKER ───────
+// ── R256 / R239: DEVISS0 FVG + ENGULF + EFFORT RATIO TREND FILTER ─────
 // Transcript mantığı: aynı tür sinyal zincirinde (Cross10/Cross20/M1/M2) iki anchor arası
 // Ratio = |ΔRSI| / |ΔFiyat%| olarak okunur. Ratio DÜŞÜYORSA kolaylaşma/lehte,
 // 1 bölgesine yaklaşıyorsa doyum/çıkış riski, ARTIYORSA lehte bonus verilmez.
@@ -13874,13 +13874,142 @@ function r239RatioBetween(prev, cur){
   const pricePerRsi = pricePct / safeRsi;
   return {pricePct, rsiDelta, pricePerRsi, effortPerMove, ratio:effortPerMove, effortRatio:effortPerMove};
 }
+
+// ── R256: DevisSo içine FVG fill + Engulf sonrası teyit + hassas trend bağlamı ──
+// Yeni Binance/REST çağrısı yok. Sadece R234/R238 kline cache mumlarını okur.
+function r256Pct(a,b){ a=Number(a); b=Number(b); return (Number.isFinite(a)&&Number.isFinite(b)&&b!==0) ? ((a-b)/b*100) : 0; }
+function r256ClosePos(row){ const h=Number(row?.h||0), l=Number(row?.l||0), c=Number(row?.c||0); return h>l ? (c-l)/(h-l) : 0.5; }
+function r256BodyMid(row){ return (Number(row?.o||0)+Number(row?.c||0))/2; }
+function r256BodyPct(row){ const o=Number(row?.o||0), c=Number(row?.c||0); return o>0 ? Math.abs((c-o)/o*100) : 0; }
+function r256FvgZones(rows=[]){
+  const r=r238Rows(rows,90); const zones=[];
+  for(let i=2;i<r.length;i++){
+    const a=r[i-2], c=r[i];
+    if(!a||!c) continue;
+    if(Number(a.h)>0 && Number(c.l)>0 && a.h < c.l){
+      const lo=Number(a.h), hi=Number(c.l); const w=(hi-lo)/Math.max(1e-12,c.c)*100;
+      if(w>=0.035) zones.push({type:'BULL', i, bornTs:c.t, zoneLow:lo, zoneHigh:hi, widthPct:+w.toFixed(3)});
+    }
+    if(Number(a.l)>0 && Number(c.h)>0 && a.l > c.h){
+      const lo=Number(c.h), hi=Number(a.l); const w=(hi-lo)/Math.max(1e-12,c.c)*100;
+      if(w>=0.035) zones.push({type:'BEAR', i, bornTs:c.t, zoneLow:lo, zoneHigh:hi, widthPct:+w.toFixed(3)});
+    }
+  }
+  return zones.slice(-18);
+}
+function r256FvgAnalysis(rows=[], side='LONG'){
+  try{
+    const r=r238Rows(rows,90); const last=r.at(-1); if(r.length<8||!last) return {ok:false, scoreAdj:0, label:'FVG veri yok'};
+    const isL=String(side).toUpperCase()!=='SHORT'; const want=isL?'BULL':'BEAR'; const opp=isL?'BEAR':'BULL';
+    const zones=r256FvgZones(r); if(!zones.length) return {ok:false, scoreAdj:0, label:'FVG yok'};
+    const evalZone=(z)=>{
+      const after=r.slice(z.i+1); const mid=(z.zoneLow+z.zoneHigh)/2; const width=Math.max(1e-12,z.zoneHigh-z.zoneLow);
+      let fillPct=0, touched=false, hold=false, invalid=false, distPct=0;
+      if(z.type==='BULL'){
+        const minL=after.length?Math.min(...after.map(x=>Number(x.l||Infinity))):Number(last.l||Infinity);
+        fillPct=r241Clamp((z.zoneHigh-minL)/width,0,1.35); touched=fillPct>=0.18 || Number(last.l)<=z.zoneHigh;
+        hold=touched && Number(last.c)>=mid && Number(last.c)>=z.zoneLow*0.998;
+        invalid=Number(last.c)<z.zoneLow*0.996;
+        distPct=((Number(last.c)-z.zoneHigh)/Math.max(1e-12,z.zoneHigh))*100;
+      } else {
+        const maxH=after.length?Math.max(...after.map(x=>Number(x.h||0))):Number(last.h||0);
+        fillPct=r241Clamp((maxH-z.zoneLow)/width,0,1.35); touched=fillPct>=0.18 || Number(last.h)>=z.zoneLow;
+        hold=touched && Number(last.c)<=mid && Number(last.c)<=z.zoneHigh*1.002;
+        invalid=Number(last.c)>z.zoneHigh*1.004;
+        distPct=((z.zoneLow-Number(last.c))/Math.max(1e-12,z.zoneLow))*100;
+      }
+      const age=r.length-1-z.i;
+      return {...z, age, mid:+mid.toFixed(8), fillPct:+fillPct.toFixed(2), touched, hold, invalid, distPct:+distPct.toFixed(2)};
+    };
+    const aligned=zones.filter(z=>z.type===want).map(evalZone).sort((a,b)=>{
+      const ah=(a.hold?40:0)+(a.touched?12:0)-a.age, bh=(b.hold?40:0)+(b.touched?12:0)-b.age; return bh-ah;
+    })[0]||null;
+    const opposing=zones.filter(z=>z.type===opp).map(evalZone).sort((a,b)=>{
+      const ar=(a.touched?18:0)+(a.hold?24:0)-Math.abs(a.distPct)*2-a.age*0.3;
+      const br=(b.touched?18:0)+(b.hold?24:0)-Math.abs(b.distPct)*2-b.age*0.3;
+      return br-ar;
+    })[0]||null;
+    const alignedHold=!!(aligned && aligned.hold && !aligned.invalid && aligned.age<=24);
+    const alignedFresh=!!(aligned && aligned.touched && !aligned.invalid && aligned.age<=18 && aligned.fillPct>=0.25 && aligned.fillPct<=1.12);
+    const opposingRisk=!!(opposing && opposing.touched && opposing.hold && opposing.age<=20 && !opposing.invalid);
+    const nearOpp=!!(opposing && opposing.distPct>=-0.18 && opposing.distPct<=0.65 && opposing.age<=16);
+    let scoreAdj=0; const parts=[];
+    if(alignedHold){ scoreAdj+=14; parts.push(`${want} FVG fill-hold +14`); }
+    else if(alignedFresh){ scoreAdj+=8; parts.push(`${want} FVG fill ${aligned.fillPct} +8`); }
+    if(opposingRisk){ scoreAdj-=16; parts.push(`${opp} FVG ters fill/reject -16`); }
+    else if(nearOpp){ scoreAdj-=8; parts.push(`${opp} FVG yakın direnç/destek -8`); }
+    return {ok:true, alignedHold, alignedFresh, opposingRisk, nearOpp, scoreAdj, aligned, opposing, label:parts.join(' · ')||`FVG nötr ${aligned?want+' age:'+aligned.age:''}`};
+  }catch(e){ return {ok:false, scoreAdj:0, label:`FVG hata:${String(e?.message||e).slice(0,60)}`}; }
+}
+function r256EngulfAnalysis(rows=[], side='LONG'){
+  try{
+    const r=r238Rows(rows,32); const isL=String(side).toUpperCase()!=='SHORT'; if(r.length<5) return {ok:false, scoreAdj:0, label:'engulf veri yok'};
+    let found=null;
+    for(let i=Math.max(1,r.length-8); i<r.length; i++){
+      const p=r[i-1], c=r[i]; if(!p||!c) continue;
+      const pBear=p.c<p.o, pBull=p.c>p.o, cBull=c.c>c.o, cBear=c.c<c.o;
+      const pBody=Math.abs(p.c-p.o), cBody=Math.abs(c.c-c.o);
+      const bull=cBull && pBear && c.o<=p.c*1.002 && c.c>=p.o*0.998 && cBody>=pBody*0.70;
+      const bear=cBear && pBull && c.o>=p.c*0.998 && c.c<=p.o*1.002 && cBody>=pBody*0.70;
+      if((isL&&bull)||(!isL&&bear)) found={i, type:isL?'BULL_ENGULF':'BEAR_ENGULF', row:c, prev:p, bodyPct:r256BodyPct(c), mid:r256BodyMid(c)};
+    }
+    if(!found) return {ok:false, scoreAdj:0, label:'engulf yok'};
+    const after=r.slice(found.i+1); const last=r.at(-1); const high=Number(found.row.h), low=Number(found.row.l), mid=Number(found.mid);
+    let follow=false, hold=false, invalid=false;
+    if(isL){
+      follow=after.some(x=>Number(x.c)>high*1.001) || (found.i===r.length-1 && r256ClosePos(last)>=0.62);
+      hold=Number(last.c)>=mid && Number(last.l)>=low*0.996;
+      invalid=Number(last.c)<mid*0.998 || Number(last.c)<low*1.002;
+    } else {
+      follow=after.some(x=>Number(x.c)<low*0.999) || (found.i===r.length-1 && r256ClosePos(last)<=0.38);
+      hold=Number(last.c)<=mid && Number(last.h)<=high*1.004;
+      invalid=Number(last.c)>mid*1.002 || Number(last.c)>high*0.998;
+    }
+    const age=r.length-1-found.i; let scoreAdj=0; const parts=[];
+    if(follow&&hold&&age<=5){ scoreAdj+=12; parts.push(`${found.type} sonrası devam +12`); }
+    else if(hold&&age<=5){ scoreAdj+=6; parts.push(`${found.type} sonrası hold +6`); }
+    if(invalid&&age<=5){ scoreAdj-=14; parts.push(`${found.type} sonrası invalid -14`); }
+    return {ok:true, found:true, type:found.type, age, follow, hold, invalid, scoreAdj, bodyPct:+found.bodyPct.toFixed(2), label:parts.join(' · ')||`${found.type} nötr age:${age}`};
+  }catch(e){ return {ok:false, scoreAdj:0, label:`engulf hata:${String(e?.message||e).slice(0,60)}`}; }
+}
+function r256TrendContext(rows=[], side='LONG'){
+  try{
+    const r=r238Rows(rows,80); const isL=String(side).toUpperCase()!=='SHORT'; if(r.length<28) return {ok:false, scoreAdj:0, label:'trend veri yok'};
+    const closes=r.map(x=>Number(x.c)); const e9=r239Ema(closes,9), e21=r239Ema(closes,21);
+    const last=r.at(-1), prev=r.at(-5)||r.at(-2)||last;
+    const emaBull=Number(e9.at(-1))>Number(e21.at(-1))*1.0005, emaBear=Number(e9.at(-1))<Number(e21.at(-1))*0.9995;
+    const closeSlope=r256Pct(last.c, prev.c)/Math.max(1, Math.min(5,r.length-1));
+    const piv=r238Pivots(r,2,70); const hs=piv.highs.slice(-3), ls=piv.lows.slice(-3);
+    const higherHighs=hs.length>=2 && hs.at(-1).price>hs.at(-2).price*1.002;
+    const higherLows=ls.length>=2 && ls.at(-1).price>ls.at(-2).price*1.002;
+    const lowerHighs=hs.length>=2 && hs.at(-1).price<hs.at(-2).price*0.998;
+    const lowerLows=ls.length>=2 && ls.at(-1).price<ls.at(-2).price*0.998;
+    const upTrend=(emaBull && closeSlope>=0.018) || (higherHighs&&higherLows) || (emaBull&&higherLows);
+    const downTrend=(emaBear && closeSlope<=-0.018) || (lowerHighs&&lowerLows) || (emaBear&&lowerHighs);
+    const aligned=isL?upTrend:downTrend; const against=isL?downTrend:upTrend;
+    const strongAligned=aligned && Math.abs(closeSlope)>=0.035;
+    const strongAgainst=against && Math.abs(closeSlope)>=0.035;
+    let scoreAdj=0; const parts=[];
+    if(strongAligned){ scoreAdj+=12; parts.push(`${isL?'yükseliş':'düşüş'} trend hassas uyum +12`); }
+    else if(aligned){ scoreAdj+=7; parts.push(`${isL?'yükseliş':'düşüş'} trend uyum +7`); }
+    if(strongAgainst){ scoreAdj-=18; parts.push(`ters ${isL?'düşüş':'yükseliş'} trend güçlü -18`); }
+    else if(against){ scoreAdj-=9; parts.push(`ters ${isL?'düşüş':'yükseliş'} trend -9`); }
+    return {ok:true, aligned, against, strongAligned, strongAgainst, scoreAdj, closeSlope:+closeSlope.toFixed(3), emaBull, emaBear, higherHighs, higherLows, lowerHighs, lowerLows, label:parts.join(' · ')||`trend nötr slope:${closeSlope.toFixed(3)}%/bar`};
+  }catch(e){ return {ok:false, scoreAdj:0, label:`trend hata:${String(e?.message||e).slice(0,60)}`}; }
+}
 function r239DevisoMotorEngine(rows=[], side='LONG', symbol=''){
   try {
     const isL=String(side).toUpperCase()!=='SHORT';
     const dir=isL?'LONG':'SHORT';
     const allRows = r238Rows(rows,120);
     const ev=r239CrossEvents(rows).filter(x=>x.dir===dir);
-    if (ev.length < 3) return {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R253 DevisSo effort ratio: veri/sinyal az'};
+    const fvg=r256FvgAnalysis(allRows, dir);
+    const engulf=r256EngulfAnalysis(allRows, dir);
+    const trendCtx=r256TrendContext(allRows, dir);
+    if (ev.length < 3) {
+      const ctxScore = Math.max(0, Math.min(100, Math.round((fvg.scoreAdj||0)+(engulf.scoreAdj||0)+(trendCtx.scoreAdj||0)+30)));
+      return {ok:false, entryOk:false, score:ctxScore, priority:ctxScore, side:dir, fvg, engulf, trendCtx, reason:`R256 DevisSo: ratio sinyali az · ${fvg.label} · ${engulf.label} · ${trendCtx.label}`};
+    }
     const byType={};
     for (const e of ev) (byType[e.type] ||= []).push(e);
     let best=null;
@@ -13893,18 +14022,18 @@ function r239DevisoMotorEngine(rows=[], side='LONG', symbol=''){
       const sameTypeFresh = ageBars <= 9;
       const enoughMove = now.pricePct >= 0.16;
       const rsiUsable = now.rsiDelta >= 0.35;
-      // R253: transcript oranı effortPerMove = |ΔRSI| / |ΔFiyat%|.
-      // Sadece bu oran karşılaştırılır. Ratio düşerse kolaylaşma/lehte; artarsa lehte bonus yok.
       const ratioDown = now.effortPerMove < prev.effortPerMove * 0.86;
       const ratioUp = now.effortPerMove > prev.effortPerMove * 1.16;
       const ratioStable = !ratioDown && !ratioUp;
       const priceExpansion = now.pricePct >= Math.max(0.16, prev.pricePct * 0.62);
       const improving = !!(priceDirOk && enoughMove && rsiUsable && priceExpansion && ratioDown);
       const continuing = !!(priceDirOk && enoughMove && rsiUsable && priceExpansion && ratioStable);
-      // Ratio 1 bölgesine yaklaşırsa girişte risk, pozisyon yönetiminde kâr koruma uyarısıdır.
       const oneZoneRisk = !!(now.effortPerMove >= 0.74 && now.effortPerMove <= 1.35 && now.pricePct >= 0.45);
       const effortDivergenceRisk = !!(now.effortPerMove <= 0.85 && now.pricePct >= 0.75 && now.rsiDelta <= 1.2);
-      const exitRisk = !!(oneZoneRisk || effortDivergenceRisk);
+      const fvgRisk = !!(fvg?.opposingRisk && !fvg?.alignedHold && !fvg?.alignedFresh);
+      const engulfInvalid = !!(engulf?.invalid && !engulf?.follow);
+      const strongTrendAgainst = !!trendCtx?.strongAgainst;
+      const exitRisk = !!(oneZoneRisk || effortDivergenceRisk || fvgRisk || engulfInvalid || strongTrendAgainst);
       let score=0;
       if (improving) score += 40;
       else if (continuing) score += 24;
@@ -13913,23 +14042,32 @@ function r239DevisoMotorEngine(rows=[], side='LONG', symbol=''){
       if (now.pricePct >= 0.45) score += 10;
       if (ratioDown) score += 8;
       if (ratioStable && now.effortPerMove > 1.35 && now.effortPerMove < 18) score += 4;
+      // R256: FVG fill/hold, engulf sonrası teyit ve hassas trend bağlamı DevisSo puanına eklenir.
+      score += Number(fvg?.scoreAdj||0);
+      score += Number(engulf?.scoreAdj||0);
+      score += Number(trendCtx?.scoreAdj||0);
       if (!rsiUsable) score -= 12;
-      if (exitRisk) score -= 20;
+      if (oneZoneRisk || effortDivergenceRisk) score -= 20;
+      if (fvgRisk) score -= 12;
+      if (engulfInvalid) score -= 10;
+      if (strongTrendAgainst) score -= 10;
       if (!priceDirOk) score -= 18;
       const clippedScore = Math.max(0, Math.min(100, Math.round(score)));
+      const structureAssistOk = !!((fvg?.alignedHold || fvg?.alignedFresh || engulf?.follow || trendCtx?.aligned) && !strongTrendAgainst && !fvgRisk);
       const obj={ok:true, type, side:dir, fresh:sameTypeFresh, ageBars,
         improving, continuing, ratioDown, ratioUp, ratioStable, exitRisk, oneZoneRisk, effortDivergenceRisk,
-        entryOk:!!((improving || continuing) && sameTypeFresh && !exitRisk && clippedScore>=44),
-        score:clippedScore, priority:Math.round(clippedScore+(improving?22:(continuing?10:0))),
+        fvg, engulf, trendCtx, fvgRisk, engulfInvalid, strongTrendAgainst,
+        entryOk:!!(((improving || continuing || structureAssistOk) && sameTypeFresh && !exitRisk && clippedScore>=44)),
+        score:clippedScore, priority:Math.round(clippedScore+(improving?22:(continuing?10:0))+(structureAssistOk?8:0)),
         prevRatio:+prev.effortPerMove.toFixed(2), ratio:+now.effortPerMove.toFixed(2),
         prevPricePerRsi:+prev.pricePerRsi.toFixed(2), pricePerRsi:+now.pricePerRsi.toFixed(2),
         prevEffortPerMove:+prev.effortPerMove.toFixed(2), effortPerMove:+now.effortPerMove.toFixed(2),
         pricePct:+now.pricePct.toFixed(2), rsiDelta:+now.rsiDelta.toFixed(2),
-        reason:`R253 DevisSo ${dir} ${type}: ratio ${prev.effortPerMove.toFixed(2)}→${now.effortPerMove.toFixed(2)}${ratioDown?' kolaylaşma':ratioUp?' zorlaşma':' sabit'}${oneZoneRisk?' 1-bölge/doyum':''}${effortDivergenceRisk?' düşük-RSI-efor risk':''} · fiyat%${now.pricePct.toFixed(2)} RSIΔ${now.rsiDelta.toFixed(2)} yaş:${ageBars}`};
+        reason:`R256 DevisSo ${dir} ${type}: ratio ${prev.effortPerMove.toFixed(2)}→${now.effortPerMove.toFixed(2)}${ratioDown?' kolaylaşma':ratioUp?' zorlaşma':' sabit'}${oneZoneRisk?' 1-bölge/doyum':''}${effortDivergenceRisk?' düşük-RSI-efor risk':''} · ${fvg.label} · ${engulf.label} · ${trendCtx.label} · fiyat%${now.pricePct.toFixed(2)} RSIΔ${now.rsiDelta.toFixed(2)} yaş:${ageBars}`};
       if (!best || obj.priority > best.priority) best=obj;
     }
-    return best || {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R253 DevisSo effort ratio: aynı tür zincir yok'};
-  } catch(e) { return {ok:false, entryOk:false, score:0, priority:0, side:String(side).toUpperCase(), reason:`R253 DevisSo hata: ${String(e?.message||e).slice(0,80)}`}; }
+    return best || {ok:false, entryOk:false, score:0, priority:0, side:dir, fvg, engulf, trendCtx, reason:`R256 DevisSo: aynı tür ratio zincir yok · ${fvg.label} · ${engulf.label} · ${trendCtx.label}`};
+  } catch(e) { return {ok:false, entryOk:false, score:0, priority:0, side:String(side).toUpperCase(), reason:`R256 DevisSo hata: ${String(e?.message||e).slice(0,80)}`}; }
 }
 function r239DevisoWorkerTick(){
   try {
@@ -16453,7 +16591,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R255; ArmedWatcher R220 bypass listesi ana grafik omurgasıyla hizalandı: R249/R241/R239/R238/R221/R219 adayları artık watcher hızlı-yolda eski R220 yapı hard-block WAIT'e takılmaz; normal final risk kapıları korunur. R254 final gate whitelist fix korunur. R253 DevisSo effort-ratio yön düzeltmesi korunur: gerçek transcript Ratio=|ΔRSI|/|ΔFiyat%|; ratio düşerse kolaylaşma/lehte, 1 bölgesine yaklaşırsa doyum/çıkış riski, ratio artarsa lehte bonus verilmez. R250; short/long parite + kesin tekrar freni aktif: R249 ana grafik router long ve short'u simetrik değerlendirir; aynı sembol/aynı yön kâr/zarar kapanışından sonra ledger tabanlı tekrar giriş freni çalışır; son işlemler tek yöne yığılırsa aynı yöne yeni giriş için güçlü ana grafik/flow şartı aranır. R249; ana grafik router aktif: R241 kanal, R238 trendline kırılım/retest ve R239 Deviso kararın ana omurgasıdır; R225/R226/R227/R230 artık tek başına ana sebep değil, yapı onayı varsa yardımcı ateşleme olur. Formasyon/mum/R125/R126/R140/R190 yardımcı puan/timing verisidir; STRICT marj modu karar kapısını bypass etmez. R248; route ledger key fix aktif: açılan işlemin R227/R230/R241 gibi gerçek route kodu tradeLedger'a açık/kapanış boyunca yazılır; R242 rota performansı OTHER'a gömülmez. R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R253/R239 DevisSo effort-ratio transcript motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 anchor zinciri yalnız effortPerMove ratio yönüyle trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R256; DevisSo içine FVG fill/hold, engulf sonrası teyit ve hassas trend bağlamı eklendi; LONG/SHORT için FVG boşluk doldurma + ters FVG risk + engulf invalid + trend yönü DevisSo puanına işlenir; yeni REST yok. R255; ArmedWatcher R220 bypass listesi ana grafik omurgasıyla hizalandı: R249/R241/R239/R238/R221/R219 adayları artık watcher hızlı-yolda eski R220 yapı hard-block WAIT'e takılmaz; normal final risk kapıları korunur. R254 final gate whitelist fix korunur. R253 DevisSo effort-ratio yön düzeltmesi korunur: gerçek transcript Ratio=|ΔRSI|/|ΔFiyat%|; ratio düşerse kolaylaşma/lehte, 1 bölgesine yaklaşırsa doyum/çıkış riski, ratio artarsa lehte bonus verilmez. R250; short/long parite + kesin tekrar freni aktif: R249 ana grafik router long ve short'u simetrik değerlendirir; aynı sembol/aynı yön kâr/zarar kapanışından sonra ledger tabanlı tekrar giriş freni çalışır; son işlemler tek yöne yığılırsa aynı yöne yeni giriş için güçlü ana grafik/flow şartı aranır. R249; ana grafik router aktif: R241 kanal, R238 trendline kırılım/retest ve R239 Deviso kararın ana omurgasıdır; R225/R226/R227/R230 artık tek başına ana sebep değil, yapı onayı varsa yardımcı ateşleme olur. Formasyon/mum/R125/R126/R140/R190 yardımcı puan/timing verisidir; STRICT marj modu karar kapısını bypass etmez. R248; route ledger key fix aktif: açılan işlemin R227/R230/R241 gibi gerçek route kodu tradeLedger'a açık/kapanış boyunca yazılır; R242 rota performansı OTHER'a gömülmez. R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R253/R239 DevisSo effort-ratio transcript motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 anchor zinciri yalnız effortPerMove ratio yönüyle trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -16511,7 +16649,7 @@ app.get('/api/health', (_req, res) => {
           lastError: r241ChannelLastErr || null
         },
         routePerformance: {
-          summary: 'R254 graph-primary final-gate whitelist fix; R250 parity/cooldown + R249 router korunur',
+          summary: 'R256 FVG+Engulf DevisSo; R255 watcher bypass + R254 gate + R250 parity korunur',
           rows: r242RouteStatsSummary(10)
         },
         armedWatcher: {
@@ -16542,7 +16680,7 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', async (req, res) => {
   const r211EffectiveRisk = await r211StatusRiskPreview();
-  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R254 graph-primary final-gate whitelist fix; R250 parity/cooldown + R249 router korunur', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
+  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R256 FVG+Engulf DevisSo; R255 watcher bypass + R254 gate + R250 parity korunur', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
     config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:r241ScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(),
