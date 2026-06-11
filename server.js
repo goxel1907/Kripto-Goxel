@@ -155,7 +155,7 @@ async function r245BalanceRowsForPrecheck(apiKey, apiSecret) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R246_STRICT_MANUAL_MARGIN_LEVERAGE';
+const LAZARUS_BUILD = 'R247_TELEGRAM_SOFT_FAIL_GUARD';
 const R246_AUDIT = 'R246 strict manual margin/leverage: optional panel override; default off. Only Binance hard leverage limit and lot/tick/minNotional rounding may change panel margin/leverage.';
 function r246StrictManualOn(cfg={}) {
   const v = cfg?.strictManualMode;
@@ -4689,7 +4689,7 @@ const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 let   tgLastSent = 0;
 let   tgQueue = Promise.resolve();
-const TG_MIN_GAP = 1200; // art arda mesajı düşürme; kısa gecikmeyle sıraya al
+const TG_MIN_GAP = 1500; // R247: Telegram flood/abort riskini azalt; kısa gecikmeyle sıraya al
 const r185OrderOpenSent = new Set();
 
 function tgEsc(v) {
@@ -4704,6 +4704,37 @@ function tgNum(v, d=2) {
 }
 function tgEnabled() { return !!(TG_TOKEN && TG_CHAT_ID); }
 
+// R247: Telegram gönderim hataları işlem motorunu/uyarı geçmişini kirletmesin.
+// Telegram bildirim yardımcı kanaldır; emir açma/kapatma sebebi değildir. Abort/timeout/HTML
+// parse vb. hatalar criticalEvents içine yazılmaz, health içinde yumuşak sayaç olarak görünür.
+const r247TelegramSoftState = { count:0, aborted:0, timeout:0, http:0, lastAt:0, lastError:'', lastScope:'' };
+function r247TelegramSoftFail(scope, err) {
+  const msg = safeErrMsg(err || 'telegram_soft_fail');
+  const low = msg.toLowerCase();
+  r247TelegramSoftState.count += 1;
+  r247TelegramSoftState.lastAt = Date.now();
+  r247TelegramSoftState.lastError = msg;
+  r247TelegramSoftState.lastScope = String(scope || 'TELEGRAM');
+  if (low.includes('abort') || low.includes('aborted') || low.includes('user aborted')) r247TelegramSoftState.aborted += 1;
+  else if (low.includes('timeout') || low.includes('timed out')) r247TelegramSoftState.timeout += 1;
+  else if (low.includes('http') || low.includes('bad request') || low.includes('too many')) r247TelegramSoftState.http += 1;
+  try { console.warn(`⚠️ Telegram soft-fail (${scope}): ${msg}`); } catch(_) {}
+  return {ok:false, soft:true, error:msg, scope:String(scope || 'TELEGRAM')};
+}
+function r247TelegramHealth() {
+  return {
+    enabled: tgEnabled(),
+    softFailCount: r247TelegramSoftState.count,
+    aborted: r247TelegramSoftState.aborted,
+    timeout: r247TelegramSoftState.timeout,
+    http: r247TelegramSoftState.http,
+    lastError: r247TelegramSoftState.lastError || null,
+    lastScope: r247TelegramSoftState.lastScope || null,
+    lastAgoSec: r247TelegramSoftState.lastAt ? Math.round((Date.now()-r247TelegramSoftState.lastAt)/1000) : null,
+    note: 'R247: Telegram hata/abort artık critical uyarı değildir; işlem motorunu durdurmaz.'
+  };
+}
+
 async function r184DirectTelegramText(text, silent=false) {
   if (!tgEnabled()) return {ok:false, skipped:true, reason:'telegram_env_missing', error:'telegram_env_missing'};
   try {
@@ -4715,19 +4746,17 @@ async function r184DirectTelegramText(text, silent=false) {
         text: String(text).slice(0,3900),
         disable_notification: !!silent,
       }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
     });
     const data = await res.json().catch(()=>({}));
     if (!res.ok || data.ok === false) {
       const err = data.description || `HTTP_${res.status}`;
-      try { pushCritical('R184_TELEGRAM_DIRECT_FAIL', new Error(err), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
-      return {ok:false, error:err, status:res.status, data};
+      return r247TelegramSoftFail('R184_TELEGRAM_DIRECT_FAIL', err);
     }
     return {ok:true, messageId:data?.result?.message_id || null};
   } catch(e) {
     const err = String(e?.message || e);
-    try { pushCritical('R184_TELEGRAM_DIRECT_EXCEPTION', new Error(err), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
-    return {ok:false, error:err};
+    return r247TelegramSoftFail('R184_TELEGRAM_DIRECT_EXCEPTION', err);
   }
 }
 
@@ -4746,7 +4775,7 @@ async function tgSendNow(text, silent=false) {
         parse_mode: 'HTML',
         disable_notification: !!silent,
       }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(15000),
     });
     const data = await res.json().catch(()=>({}));
     if (!res.ok || data.ok === false) {
@@ -4762,21 +4791,17 @@ async function tgSendNow(text, silent=false) {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({chat_id:TG_CHAT_ID, text:plain.slice(0,3900), disable_notification:!!silent}),
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(15000),
         });
         const d2 = await r2.json().catch(()=>({}));
         if (r2.ok && d2.ok !== false) return {ok:true, fallback:'plain_text', originalError:err};
       } catch(_fallbackErr) {}
-      try { pushCritical('TELEGRAM_SEND_FAIL', new Error(err), { symbol:'TELEGRAM' }, 'WARN'); } catch(_) {}
-      console.log('⚠️ Telegram gönderim hatası:', err);
-      return {ok:false, error:err};
+      return r247TelegramSoftFail('TELEGRAM_SEND_FAIL_HTTP', err);
     }
     return {ok:true};
   } catch(e) {
     const err = String(e?.message || e).slice(0,160);
-    try { pushCritical('TELEGRAM_SEND_FAIL', new Error(err), { symbol:'TELEGRAM' }, 'WARN'); } catch(_) {}
-    console.log('⚠️ Telegram gönderim exception:', err);
-    return {ok:false, error:err};
+    return r247TelegramSoftFail('TELEGRAM_SEND_FAIL_EXCEPTION', err);
   }
 }
 
@@ -16173,7 +16198,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -16197,6 +16222,7 @@ app.get('/api/health', (_req, res) => {
           usedOrders: binanceGov.usedOrders,
           minuteStart: binanceGov.minuteStart,
         },
+        telegram: r247TelegramHealth(),
         klineWS: {
           summary: r234KlineSummary(),
           active: !!r234KlineWS,
@@ -18256,7 +18282,7 @@ async function tgSaveLedgerBackup() {
           text: payload,
           disable_notification: true,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(20000),
       });
     } else {
       // Büyükse document olarak gönder
