@@ -155,7 +155,7 @@ async function r245BalanceRowsForPrecheck(apiKey, apiSecret) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R249_GRAPH_PRIMARY_ROUTER';
+const LAZARUS_BUILD = 'R253_DEVISSO_EFFORT_RATIO_DIRECTION_FIX';
 const R246_AUDIT = 'R246 strict manual margin/leverage: optional panel override; default off. Only Binance hard leverage limit and lot/tick/minNotional rounding may change panel margin/leverage.';
 function r246StrictManualOn(cfg={}) {
   const v = cfg?.strictManualMode;
@@ -13810,11 +13810,13 @@ function r238TrendlineSummary(){
   } catch(e) { return `R238 trendlineWorker hata:${String(e?.message||e).slice(0,80)}`; }
 }
 
-// ── R239: DEVISO / RSI-FİYAT MOTORU + TRENDLINE WORKER ─────────────────────
-// Video mantığı: aynı tür sinyalin (Cross10/Cross20/M1/M2) bir önceki aynı tür sinyaline göre
-// fiyat % hareketi / RSI eforu ilişkisi ölçülür. Bu kodda ratio = |ΔRSI| / |ΔFiyat%|.
-// Ratio sert düşüyorsa fiyat daha az RSI eforuyla gidiyor → trend başlangıcı/güçlenme.
-// Ratio 1'e yaklaşırsa hareket kolaylığı doyuma yaklaşır → kâr koruma/geç chase riski.
+// ── R253 / R239: DEVISS0 EFFORT RATIO DIRECTION FIX + TRENDLINE WORKER ───────
+// Transcript mantığı: aynı tür sinyal zincirinde (Cross10/Cross20/M1/M2) iki anchor arası
+// Ratio = |ΔRSI| / |ΔFiyat%| olarak okunur. Ratio DÜŞÜYORSA kolaylaşma/lehte,
+// 1 bölgesine yaklaşıyorsa doyum/çıkış riski, ARTIYORSA lehte bonus verilmez.
+// pricePerRsi sadece debug/ters oran olarak tutulur; karar karşılaştırmalarında kullanılmaz.
+// C20/L20 candle-collatz ana DevisSo motoru değildir; sadece ayrı yapı/sinyal fikridir.
+// DevisSo tek başına kör emir değildir: R249 grafik router içinde kanal/trendline/flow ile yardımcı ana puandır.
 // Yeni REST açmaz; R234 WS kline cache kullanılır. Worker emir göndermez, sadece sıcak yapı üretir.
 const r239DevisoState = new Map();
 let r239DevisoTimer = null;
@@ -13859,17 +13861,26 @@ function r239CrossEvents(rows=[]){
   return ev.slice(-80);
 }
 function r239RatioBetween(prev, cur){
-  const pricePct=Math.abs((Number(cur.price)-Number(prev.price))/Math.max(1e-12,Number(prev.price))*100);
-  const rsiDelta=Math.abs(Number(cur.rsi)-Number(prev.rsi));
-  const ratio = pricePct > 0.015 ? (rsiDelta / pricePct) : 99;
-  return {pricePct, rsiDelta, ratio};
+  const prevPrice = Math.max(1e-12, Number(prev?.price || 0));
+  const curPrice = Number(cur?.price || 0);
+  const pricePct = Math.abs((curPrice - prevPrice) / prevPrice * 100);
+  const rsiDelta = Math.abs(Number(cur?.rsi || 0) - Number(prev?.rsi || 0));
+  const safeRsi = Math.max(0.05, rsiDelta);
+  const safeMove = Math.max(0.015, pricePct);
+  // R253: transcriptteki gerçek Ratio = RSI eforu / fiyat yüzdesi.
+  // Karar motoru yalnızca bu oranı karşılaştırır: düşüş=kolaylaşma, artış=lehte değil.
+  const effortPerMove = safeRsi / safeMove;
+  // Debug/ekran uyumluluğu için ters oran korunur; hiçbir lehte ratio karşılaştırmasında kullanılmaz.
+  const pricePerRsi = pricePct / safeRsi;
+  return {pricePct, rsiDelta, pricePerRsi, effortPerMove, ratio:effortPerMove, effortRatio:effortPerMove};
 }
 function r239DevisoMotorEngine(rows=[], side='LONG', symbol=''){
   try {
     const isL=String(side).toUpperCase()!=='SHORT';
     const dir=isL?'LONG':'SHORT';
+    const allRows = r238Rows(rows,120);
     const ev=r239CrossEvents(rows).filter(x=>x.dir===dir);
-    if (ev.length < 3) return {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R239 Deviso veri/sinyal az'};
+    if (ev.length < 3) return {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R253 DevisSo effort ratio: veri/sinyal az'};
     const byType={};
     for (const e of ev) (byType[e.type] ||= []).push(e);
     let best=null;
@@ -13877,28 +13888,48 @@ function r239DevisoMotorEngine(rows=[], side='LONG', symbol=''){
       if (list.length < 3) continue;
       const a=list.at(-3), b=list.at(-2), c=list.at(-1);
       const prev=r239RatioBetween(a,b), now=r239RatioBetween(b,c);
-      const ageBars = r238Rows(rows,120).length - 1 - c.i;
-      const priceDirOk = isL ? c.price >= b.price*0.998 : c.price <= b.price*1.002;
-      const improving = now.ratio < prev.ratio*0.78 && now.pricePct >= 0.18 && priceDirOk;
-      const continuing = now.ratio < prev.ratio*0.95 && now.pricePct >= 0.12 && priceDirOk;
-      const exitRisk = now.ratio <= 1.25 && now.pricePct >= 0.75;
-      const fresh = ageBars <= 9;
+      const ageBars = allRows.length - 1 - c.i;
+      const priceDirOk = isL ? Number(c.price) >= Number(b.price)*0.998 : Number(c.price) <= Number(b.price)*1.002;
+      const sameTypeFresh = ageBars <= 9;
+      const enoughMove = now.pricePct >= 0.16;
+      const rsiUsable = now.rsiDelta >= 0.35;
+      // R253: transcript oranı effortPerMove = |ΔRSI| / |ΔFiyat%|.
+      // Sadece bu oran karşılaştırılır. Ratio düşerse kolaylaşma/lehte; artarsa lehte bonus yok.
+      const ratioDown = now.effortPerMove < prev.effortPerMove * 0.86;
+      const ratioUp = now.effortPerMove > prev.effortPerMove * 1.16;
+      const ratioStable = !ratioDown && !ratioUp;
+      const priceExpansion = now.pricePct >= Math.max(0.16, prev.pricePct * 0.62);
+      const improving = !!(priceDirOk && enoughMove && rsiUsable && priceExpansion && ratioDown);
+      const continuing = !!(priceDirOk && enoughMove && rsiUsable && priceExpansion && ratioStable);
+      // Ratio 1 bölgesine yaklaşırsa girişte risk, pozisyon yönetiminde kâr koruma uyarısıdır.
+      const oneZoneRisk = !!(now.effortPerMove >= 0.74 && now.effortPerMove <= 1.35 && now.pricePct >= 0.45);
+      const effortDivergenceRisk = !!(now.effortPerMove <= 0.85 && now.pricePct >= 0.75 && now.rsiDelta <= 1.2);
+      const exitRisk = !!(oneZoneRisk || effortDivergenceRisk);
       let score=0;
-      if (improving) score += 42;
-      else if (continuing) score += 25;
-      if (fresh) score += Math.max(0, 18 - ageBars*2);
-      if (now.ratio > 1.35 && now.ratio < 9.5) score += 12;
+      if (improving) score += 40;
+      else if (continuing) score += 24;
+      if (sameTypeFresh) score += Math.max(0, 18 - ageBars*2);
+      if (priceDirOk) score += 8;
       if (now.pricePct >= 0.45) score += 10;
-      if (exitRisk) score -= 18;
-      const obj={ok:true, type, side:dir, fresh, ageBars, improving, continuing, exitRisk,
-        entryOk:!!((improving || continuing) && fresh && !exitRisk && score>=42),
-        score:Math.max(0,Math.min(100,Math.round(score))), priority:Math.round(score+(improving?24:10)),
-        prevRatio:+prev.ratio.toFixed(2), ratio:+now.ratio.toFixed(2), pricePct:+now.pricePct.toFixed(2), rsiDelta:+now.rsiDelta.toFixed(2),
-        reason:`R239 Deviso ${dir} ${type}: ratio ${prev.ratio.toFixed(2)}→${now.ratio.toFixed(2)}${improving?' kolaylaştı':''}${continuing&&!improving?' devam':''}${exitRisk?' doyum/1 bölgesi':''} · fiyat%${now.pricePct.toFixed(2)} RSIΔ${now.rsiDelta.toFixed(2)} yaş:${ageBars}`};
+      if (ratioDown) score += 8;
+      if (ratioStable && now.effortPerMove > 1.35 && now.effortPerMove < 18) score += 4;
+      if (!rsiUsable) score -= 12;
+      if (exitRisk) score -= 20;
+      if (!priceDirOk) score -= 18;
+      const clippedScore = Math.max(0, Math.min(100, Math.round(score)));
+      const obj={ok:true, type, side:dir, fresh:sameTypeFresh, ageBars,
+        improving, continuing, ratioDown, ratioUp, ratioStable, exitRisk, oneZoneRisk, effortDivergenceRisk,
+        entryOk:!!((improving || continuing) && sameTypeFresh && !exitRisk && clippedScore>=44),
+        score:clippedScore, priority:Math.round(clippedScore+(improving?22:(continuing?10:0))),
+        prevRatio:+prev.effortPerMove.toFixed(2), ratio:+now.effortPerMove.toFixed(2),
+        prevPricePerRsi:+prev.pricePerRsi.toFixed(2), pricePerRsi:+now.pricePerRsi.toFixed(2),
+        prevEffortPerMove:+prev.effortPerMove.toFixed(2), effortPerMove:+now.effortPerMove.toFixed(2),
+        pricePct:+now.pricePct.toFixed(2), rsiDelta:+now.rsiDelta.toFixed(2),
+        reason:`R253 DevisSo ${dir} ${type}: ratio ${prev.effortPerMove.toFixed(2)}→${now.effortPerMove.toFixed(2)}${ratioDown?' kolaylaşma':ratioUp?' zorlaşma':' sabit'}${oneZoneRisk?' 1-bölge/doyum':''}${effortDivergenceRisk?' düşük-RSI-efor risk':''} · fiyat%${now.pricePct.toFixed(2)} RSIΔ${now.rsiDelta.toFixed(2)} yaş:${ageBars}`};
       if (!best || obj.priority > best.priority) best=obj;
     }
-    return best || {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R239 Deviso aynı tür zincir yok'};
-  } catch(e) { return {ok:false, entryOk:false, score:0, priority:0, side:String(side).toUpperCase(), reason:`R239 Deviso hata: ${String(e?.message||e).slice(0,80)}`}; }
+    return best || {ok:false, entryOk:false, score:0, priority:0, side:dir, reason:'R253 DevisSo effort ratio: aynı tür zincir yok'};
+  } catch(e) { return {ok:false, entryOk:false, score:0, priority:0, side:String(side).toUpperCase(), reason:`R253 DevisSo hata: ${String(e?.message||e).slice(0,80)}`}; }
 }
 function r239DevisoWorkerTick(){
   try {
@@ -14814,6 +14845,83 @@ function getCooldownRemainMs(symbol, desiredSide=null, decisionChain=null) {
   if (!info) return 0;
   if (desiredSide && canBypassCooldownForReverse(info, desiredSide, decisionChain)) return 0;
   return info.remainMs;
+}
+
+// R250: Yön simetrisi + kapanış sonrası kesin tekrar giriş freni.
+// Amaç: R249 grafik router long/short taraflarını eşit ciddiyetle kovalasın;
+// aynı sembol/aynı yön kâr-kapanışından saniyeler sonra tekrar giriş yapmasın.
+// Bu bir short/long zorlaması değildir; sadece son yön yığılması ve cooldown kaçaklarını frenler.
+function r250RecentSameSideCloseGuard(symbol, desiredSide) {
+  const sym = String(symbol || '').replace('USDT','').toUpperCase();
+  const side = normalizeSide(desiredSide);
+  if (!sym || !side || !Array.isArray(tradeLedger)) return {block:false};
+  const rows = tradeLedger.filter(r =>
+    r && r.status === 'CLOSED' &&
+    String(r.symbol || '').replace('USDT','').toUpperCase() === sym &&
+    normalizeSide(r.side) === side && Number(r.closedAt || 0) > 0
+  ).sort((a,b)=>Number(b.closedAt||0)-Number(a.closedAt||0));
+  const last = rows[0];
+  if (!last) return {block:false};
+  const pnl = Number(last.pnlUSDT);
+  const age = Date.now() - Number(last.closedAt || 0);
+  const holdMs = Number.isFinite(pnl) && pnl < 0 ? CD_LOSS_MS : (Number.isFinite(pnl) && pnl > 0 ? CD_PROFIT_MS : CD_MANUAL_MS);
+  if (age >= 0 && age < holdMs) {
+    return {
+      block:true,
+      remainMs: holdMs - age,
+      reason: `R250 kesin tekrar freni: ${sym} ${trSideLabel(side)} son kapanıştan ${Math.ceil(age/1000)}sn sonra tekrar açılmaz; kalan ${Math.ceil((holdMs-age)/60000)}dk`,
+      lastPnl: Number.isFinite(pnl) ? pnl : null,
+      lastClosedAt: Number(last.closedAt || 0)
+    };
+  }
+  return {block:false};
+}
+
+function r250RecentDirectionStats(limit=6, lookbackMs=2*60*60*1000) {
+  const cutoff = Date.now() - lookbackMs;
+  const rows = (Array.isArray(tradeLedger) ? tradeLedger : [])
+    .filter(r => r && r.status === 'CLOSED' && Number(r.closedAt||0) >= cutoff && normalizeSide(r.side))
+    .sort((a,b)=>Number(b.closedAt||0)-Number(a.closedAt||0))
+    .slice(0, limit);
+  return rows.map(r => ({ side:normalizeSide(r.side), pnl:Number(r.pnlUSDT||0), symbol:String(r.symbol||'') }));
+}
+
+function r250DirectionalParityGuard(desiredSide, decisionChain={}, score=0) {
+  const side = normalizeSide(desiredSide);
+  if (!side) return {block:false};
+  const recent = r250RecentDirectionStats(6, 2*60*60*1000);
+  if (recent.length < 3) return {block:false, recent};
+  let streak = 0;
+  for (const r of recent) { if (r.side === side) streak++; else break; }
+  const sameLosses = recent.filter(r => r.side === side && Number(r.pnl) < 0).length;
+  const g = decisionChain?.r249GraphPrimary || {};
+  const flowEdge = Number(g.flowEdge || decisionChain?.r125Flow?.edge || 0);
+  const flowAgainst = Number(g.flowAgainst || 0);
+  const channelScore = Number(g.channelScore || 0);
+  const trendScore = Number(g.trendScore || 0);
+  const devisoScore = Number(g.devisoScore || 0);
+  const primary = !!g.primary || !!decisionChain?.r249GraphPrimaryScalp;
+  const strongGraph = primary && (
+    channelScore >= 74 || trendScore >= 74 ||
+    (flowEdge >= 16 && flowEdge >= flowAgainst + 6) ||
+    (devisoScore >= 52 && (channelScore >= 60 || trendScore >= 60)) ||
+    Number(score||0) >= 84
+  );
+  if (streak >= 3 && !strongGraph) {
+    return {
+      block:true,
+      reason:`R250 yön-parite freni: son ${streak} işlem ${trSideLabel(side)}; yeni ${trSideLabel(side)} için çok güçlü grafik/flow şart (kanal:${channelScore}, trend:${trendScore}, Deviso:${devisoScore}, flow:${flowEdge}/${flowAgainst})`,
+      recent
+    };
+  }
+  if (sameLosses >= 2 && !strongGraph) {
+    return {
+      block:true,
+      reason:`R250 yön kayıp freni: son 2s içinde ${trSideLabel(side)} tarafı ${sameLosses} zarar yazdı; aynı yön için güçlü ana grafik onayı beklenir`,
+      recent
+    };
+  }
+  return {block:false, recent, streak, sameLosses, strongGraph};
 }
 function getCooldownList() {
   const list = [];
@@ -16325,7 +16433,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R249; ana grafik router aktif: R241 kanal, R238 trendline kırılım/retest ve R239 Deviso kararın ana omurgasıdır; R225/R226/R227/R230 artık tek başına ana sebep değil, yapı onayı varsa yardımcı ateşleme olur. Formasyon/mum/R125/R126/R140/R190 yardımcı puan/timing verisidir; STRICT marj modu karar kapısını bypass etmez. R248; route ledger key fix aktif: açılan işlemin R227/R230/R241 gibi gerçek route kodu tradeLedger'a açık/kapanış boyunca yazılır; R242 rota performansı OTHER'a gömülmez. R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R253; DevisSo effort-ratio yön düzeltmesi aktif: gerçek transcript Ratio=|ΔRSI|/|ΔFiyat%|; aynı tür Cross10/Cross20/M1/M2 zincirinde ratio düşerse kolaylaşma/lehte, 1 bölgesine yaklaşırsa doyum/çıkış riski, ratio artarsa lehte bonus verilmez. pricePerRsi sadece debug ters orandır; karar karşılaştırmasında kullanılmaz. R250; short/long parite + kesin tekrar freni aktif: R249 ana grafik router long ve short'u simetrik değerlendirir; aynı sembol/aynı yön kâr/zarar kapanışından sonra ledger tabanlı tekrar giriş freni çalışır; son işlemler tek yöne yığılırsa aynı yöne yeni giriş için güçlü ana grafik/flow şartı aranır. R249; ana grafik router aktif: R241 kanal, R238 trendline kırılım/retest ve R239 Deviso kararın ana omurgasıdır; R225/R226/R227/R230 artık tek başına ana sebep değil, yapı onayı varsa yardımcı ateşleme olur. Formasyon/mum/R125/R126/R140/R190 yardımcı puan/timing verisidir; STRICT marj modu karar kapısını bypass etmez. R248; route ledger key fix aktif: açılan işlemin R227/R230/R241 gibi gerçek route kodu tradeLedger'a açık/kapanış boyunca yazılır; R242 rota performansı OTHER'a gömülmez. R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R253/R239 DevisSo effort-ratio transcript motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 anchor zinciri yalnız effortPerMove ratio yönüyle trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -16383,7 +16491,7 @@ app.get('/api/health', (_req, res) => {
           lastError: r241ChannelLastErr || null
         },
         routePerformance: {
-          summary: 'R249 graph-primary router + R248 route-ledger key fix; hard-block sadece yapısız hızlı route için',
+          summary: 'R250 short/long parity + cooldown guard; R249 graph-primary router korunur',
           rows: r242RouteStatsSummary(10)
         },
         armedWatcher: {
@@ -16414,7 +16522,7 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', async (req, res) => {
   const r211EffectiveRisk = await r211StatusRiskPreview();
-  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R249 graph-primary router + R248 route-ledger key fix; hard-block sadece yapısız hızlı route için', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
+  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R250 short/long parity + cooldown guard; R249 graph-primary router korunur', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
     config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:r241ScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(),
@@ -16838,6 +16946,24 @@ async function runAutoScan(prioritySymbol=null) {
             continue;
           }
           logAuto(`🔁 ${coin.symbol} bekleme ters yön izni: eski ${trSideLabel(postCd.side)}, yeni ${trSideLabel(recommendation)}, terazi ${decisionChain?.priorityScore||0}`);
+        }
+
+        // R250: CooldownMap kaçsa bile tradeLedger'dan son kapanışı kontrol et.
+        // PLAY LONG kârından 5sn sonra yeniden LONG açıp zarara dönme gibi durumları keser.
+        const r250SameCloseGuard = r250RecentSameSideCloseGuard(fullSymCheck, recommendation);
+        if (r250SameCloseGuard?.block) {
+          markAutoSkip(coin.symbol, r250SameCloseGuard.reason, {rec:recommendation, tier:'CD', score, reason:r250SameCloseGuard.reason, r250SameCloseGuard});
+          logAuto(`⛔ ${coin.symbol} ${r250SameCloseGuard.reason}`);
+          continue;
+        }
+
+        // R250: R249 long/short taraflarını simetrik takip eder; son işlemler tek yöne yığıldıysa
+        // aynı yöne yeni giriş için daha güçlü kanal/trendline/Deviso+flow kanıtı ister.
+        const r250ParityGuard = r250DirectionalParityGuard(recommendation, decisionChain, score);
+        if (r250ParityGuard?.block) {
+          markAutoSkip(coin.symbol, r250ParityGuard.reason, {rec:recommendation, tier:'R250_PARITY', score, reason:r250ParityGuard.reason, r250ParityGuard});
+          logAuto(`⚖️ ${coin.symbol} ${r250ParityGuard.reason}`);
+          continue;
         }
 
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
