@@ -102,8 +102,73 @@ async function cached(key, ttl, fn, opts={}) {
   return task;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R245 — REST BUDGET / BALANCE + KLINE GUARD
+// Amaç: R244/R243 karar motorunu bozmadan Binance 429 tekrarlarını azaltmak.
+// - Signed balance/account GET sonuçları kısa TTL ile cache'lenir.
+// - Backoff aktifken taze/stale cache varsa endpoint dövülmez.
+// - /api/account v3 yeterliyse v2/v1 fallback'e inmez.
+// - Kline REST seed daha seyreklenir; WS cache ana kaynaktır.
+// ─────────────────────────────────────────────────────────────────────────────
+const r245SignedGetCache = new Map();
+const r245SignedGetInflight = new Map();
+function r245IsCacheableSignedGet(method, path='') {
+  const m = String(method||'GET').toUpperCase();
+  const p = String(path||'');
+  if (m !== 'GET') return false;
+  return /\/fapi\/v[123]\/(balance|account)$/.test(p);
+}
+function r245SignedTtl(path='') {
+  const p = String(path||'');
+  if (p.includes('/balance')) return 90_000;
+  if (p.includes('/account')) return 75_000;
+  return 0;
+}
+function r245SignedStaleTtl(path='') {
+  const p = String(path||'');
+  if (p.includes('/balance')) return 5 * 60_000;
+  if (p.includes('/account')) return 3 * 60_000;
+  return 0;
+}
+function r245SignedKey(apiKey, path='', params={}) {
+  const safeKey = crypto.createHash('sha1').update(String(apiKey||'').trim()).digest('hex').slice(0, 12);
+  const clean = Object.entries(params||{}).filter(([k,v]) => !['timestamp','recvWindow','signature','__emergency'].includes(k) && v !== undefined && v !== null && v !== '').sort(([a],[b])=>a.localeCompare(b));
+  return `r245_signed_${safeKey}_${String(path||'')}_${JSON.stringify(clean)}`;
+}
+function r245GetSignedCache(key, maxAgeMs=0) {
+  const ent = r245SignedGetCache.get(key);
+  if (!ent) return null;
+  const age = Date.now() - Number(ent.ts||0);
+  return age <= Number(maxAgeMs||0) ? ent : null;
+}
+function r245SetSignedCache(key, val) {
+  try { r245SignedGetCache.set(key, {val, ts:Date.now()}); } catch(_) {}
+}
+async function r245BalanceRowsForPrecheck(apiKey, apiSecret) {
+  // Emir öncesi bakiye kontrolü güvenlik amaçlıdır; 429 üretirse emir motorunu kilitlememeli.
+  // Önce v3, sadece USDT satırı yoksa v2 fallback.
+  let rows = null;
+  try { rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance', {}); } catch(_) { rows = null; }
+  if (Array.isArray(rows) && rows.find(x=>String(x.asset||'').toUpperCase()==='USDT')) return rows;
+  try { return await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance', {}); } catch(_) { return rows || []; }
+}
+
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R243_ROUTE_REGEX_PRIORITY_BRAIN_FIX';
+const LAZARUS_BUILD = 'R246_STRICT_MANUAL_MARGIN_LEVERAGE';
+const R246_AUDIT = 'R246 strict manual margin/leverage: optional panel override; default off. Only Binance hard leverage limit and lot/tick/minNotional rounding may change panel margin/leverage.';
+function r246StrictManualOn(cfg={}) {
+  const v = cfg?.strictManualMode;
+  return v === true || v === 1 || v === '1' || String(v||'').toLowerCase() === 'true' || String(v||'').toLowerCase() === 'on';
+}
+function r246StrictRiskObject(cfg={}, sl=0, tp=0, trailing=0, be=0) {
+  return {
+    mode:'STRICT_MANUAL', riskBand:'STRICT', balance:null,
+    margin:Number(cfg?.usdtAmount||0), ratio:null, leverage:Number(cfg?.leverage||0),
+    tp:Number(tp||cfg?.tpPct||0), sl:Number(sl||cfg?.slPct||0), trailing:Number(trailing||cfg?.trailingPct||0), be:Number(be||cfg?.breakEvenPct||0),
+    note:`🔒 STRICT MANUAL: panel ${Number(cfg?.usdtAmount||0)} USDT / ${Number(cfg?.leverage||0)}x aynen uygulanır; R137 Binance limit ve emir lot/tick yuvarlama hariç.`
+  };
+}
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -615,7 +680,7 @@ async function r233PublicRestPace(path='') {
   const isKline = p.includes('/klines');
   const isMarketData = p.includes('/futures/data/') || p.includes('/openInterest') || p.includes('/depth');
   // Kline fırtınası 429'un ana sebebi. WS/cached veri analizde ana kaynak; REST sadece tazeleme.
-  const minGap = isKline ? 220 : isMarketData ? 140 : 90;
+  const minGap = isKline ? 750 : isMarketData ? 220 : 140;
   const key = isKline ? 'lastKline' : isMarketData ? 'lastMarketData' : 'lastAny';
   const now = Date.now();
   const wait = Math.max(0, Number(publicRestPacer[key]||0) + minGap - now);
@@ -624,7 +689,7 @@ async function r233PublicRestPace(path='') {
   publicRestPacer.lastAny = Date.now();
   if (typeof _resetGovWindowIfNeeded === 'function') _resetGovWindowIfNeeded();
   // Gerçek limitlere yaklaşmadan scan'i yavaşlat; 429 gelirse 30sn tüm motor duruyor.
-  if (Number(binanceGov?.usedWeight||0) > 420) {
+  if (Number(binanceGov?.usedWeight||0) > 340) {
     const w = 60000 - (Date.now() - Number(binanceGov.minuteStart||Date.now())) + 250;
     if (w > 0 && w < 65000) await sleep(w);
   }
@@ -634,7 +699,7 @@ async function bPub(path, qs='') {
   if(now-reqWindow>60000){reqCount=0;reqWindow=now;}
   reqCount++;
   if(reqCount>450){const w=60000-(now-reqWindow);await sleep(w+1000);reqCount=0;reqWindow=Date.now();}
-  await binanceThrottle('PUBLIC_REST', path.includes('/ticker/24hr') ? 5 : 1, 0);
+  await binanceThrottle('PUBLIC_REST', path.includes('/klines') ? 3 : path.includes('/ticker/24hr') ? 5 : 1, 0);
   await r233PublicRestPace(path);
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
@@ -692,6 +757,20 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   const cleanParams = { ...(params || {}) };
   const emergencyBypass = !!cleanParams.__emergency;
   delete cleanParams.__emergency;
+  const r245Cacheable = r245IsCacheableSignedGet(m0, path) && !emergencyBypass;
+  const r245CacheKey = r245Cacheable ? r245SignedKey(apiKey, path, cleanParams) : '';
+  const r245Ttl = r245Cacheable ? r245SignedTtl(path) : 0;
+  const r245StaleTtl = r245Cacheable ? r245SignedStaleTtl(path) : 0;
+  if (r245Cacheable) {
+    const fresh = r245GetSignedCache(r245CacheKey, r245Ttl);
+    if (fresh) return fresh.val;
+    const stale = r245GetSignedCache(r245CacheKey, r245StaleTtl);
+    if (isBinanceBackoffActive() && stale) return stale.val;
+    if (r245SignedGetInflight.has(r245CacheKey)) {
+      try { return await r245SignedGetInflight.get(r245CacheKey); }
+      catch(e) { if (stale) return stale.val; throw e; }
+    }
+  }
   const orderWeight = (m0 === 'POST' || m0 === 'DELETE') ? 1 : 0;
   const w = path.includes('/positionRisk') ? 5 : path.includes('/openOrders') ? 3 : path.includes('/userTrades') ? 5 : 1;
   await binanceThrottle(`${emergencyBypass ? 'EMERGENCY' : 'SIGNED'}:${path}`, w, orderWeight);
@@ -719,6 +798,11 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   if (!isGet) options.body = fullQs;
   const res = await fetch(finalUrl, options);
   if (res.status === 429 || res.status === 418) {
+    const stale = r245Cacheable ? r245GetSignedCache(r245CacheKey, r245StaleTtl) : null;
+    if (stale) {
+      registerBinanceBackoff(`HTTP ${res.status} ${path}`, Number(res.status) === 418 ? 60 : 30);
+      return stale.val;
+    }
     registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
   }
   const text = await res.text();
@@ -730,9 +814,14 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
     }
-    if (Number(data.code) === -1003) registerBinanceBackoff(`Binance -1003 ${path}`, 60);
+    if (Number(data.code) === -1003) {
+      const stale = r245Cacheable ? r245GetSignedCache(r245CacheKey, r245StaleTtl) : null;
+      registerBinanceBackoff(`Binance -1003 ${path}`, 60);
+      if (stale) return stale.val;
+    }
     throw new Error(formatBinanceError(path, data));
   }
+  if (r245Cacheable) r245SetSignedCache(r245CacheKey, data);
   return data;
 }
 
@@ -1013,6 +1102,9 @@ function getLiqData(symbol) {
 // tek beyin edge formülüne canlı olarak taşısın. Yeni REST yükü bindirmez.
 const r125BookHistory = new Map();       // symbol → [{ts, imb, spread, bid, ask}]
 const r125PriorityWake = new Map();      // symbol → {ts, reason, score}
+// R244: R241 kanal worker REST açmadan canlı flow okuyabilsin diye son R125/R126 bağlamı.
+// Bu cache sadece mevcut analiz sırasında üretilen R125 verisini taşır; yeni Binance çağrısı yapmaz.
+const r244LatestR125Flow = new Map();    // symbol → {ts, flow}
 let r125FastWakeTimer = null;
 
 
@@ -1346,7 +1438,14 @@ function r125BuildOrderflowContext(symbol, lastPrice, depth, tickData, liqData) 
   const flowState = flowWarmup ? 'ISINIYOR' : (tickFresh ? 'CANLI_TICK' : 'CVD_FALLBACK');
   const r130sum = (typeof r130CombinedSummary === 'function') ? r130CombinedSummary() : '';
   const summary = `${flowState} · ${r130sum} · book:${book.side} imb:${book.nearImb}% v:${book.velocity} · deep:${book.deepSide10||'NEUTRAL'} ${book.deepImb10||0}% · micro:${book.microSide||'NEUTRAL'} ${book.vampBiasPct||0}% p:${book.microPersistSide||'NEUTRAL'} · delta:${liveSide} ${deltaPct.toFixed(1)}% src:${liveSource} tr:${trades} · edge L${longEdge}/S${shortEdge} · ${clusters.summary} · ${r126Extra.summary}`;
-  return { ok:true, liveReady, tickFresh, cvdValid, flowWarmup, liveSource, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
+  const ctx = { ok:true, liveReady, tickFresh, cvdValid, flowWarmup, liveSource, book, clusters, liveSide, delta:+delta.toFixed(0), deltaPct:+deltaPct.toFixed(1), aggression, trades, longEdge:+longEdge.toFixed(1), shortEdge:+shortEdge.toFixed(1), bestSide, tpLong, tpShort, r126:r126Extra, summary };
+  try {
+    const full = r125NormSymbol(symbol);
+    r244LatestR125Flow.set(full, { ts: Date.now(), flow: ctx });
+    // Cache şişmesin; TOP24 dışına çıkan eski semboller temizlensin.
+    for (const [k,v] of r244LatestR125Flow.entries()) if (Date.now() - Number(v?.ts||0) > 10*60*1000) r244LatestR125Flow.delete(k);
+  } catch(_) {}
+  return ctx;
 }
 function r125FlowForSide(ctx, side='LONG') {
   if (!ctx || !ctx.ok) return { edge:0, against:0, ok:false, strong:false, liveReady:false, summary:'' };
@@ -13079,14 +13178,28 @@ app.post('/api/account', async (req, res) => {
     const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
     if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
 
-    const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
-    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+    // R245: v3 balance/account yeterliyse v2/v1 fallback endpointlerine inme; API sekmesi 429 üretmesin.
+    // Eğer v3 boş/parse edilemezse eski kurtarma sırası aynen çalışır.
+    if (!balanceSources.length || (!positionSources.length && !positions.length)) {
+      const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
+      if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+    } else {
+      debug.push({label:'R245 fallback skip', ok:true, reason:'v3 balance/account yeterli; v2/account atlandı'});
+    }
 
-    const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
-    if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
+    if (!balanceSources.length) {
+      const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
+      if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
+    } else {
+      debug.push({label:'R245 fallback skip', ok:true, reason:'balance bulundu; v2/balance atlandı'});
+    }
 
-    const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
-    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
+    if (!balanceSources.length || (!positionSources.length && !positions.length)) {
+      const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
+      if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
+    } else {
+      debug.push({label:'R245 fallback skip', ok:true, reason:'v3/v2 yeterli; v1/account atlandı'});
+    }
 
     // R18: /api/account içinde de positionRisk cache kullanılır; API sekmesi açıkken
     // aynı endpoint'i tekrar tekrar dövüp -1003 üretmez. Balance/account okuma sırası R14 gibi kalır.
@@ -13671,8 +13784,40 @@ let r241ChannelScanCount = 0;
 function r241Clamp(n,a=0,b=100){ n=Number(n); return Number.isFinite(n)?Math.max(a,Math.min(b,n)):a; }
 function r241CandlePos(row){ const r=Math.max(1e-12,Number(row?.h||0)-Number(row?.l||0)); return (Number(row?.c||0)-Number(row?.l||0))/r; }
 function r241LineAt(line, i){ return line ? r238LineValue(line, i) : 0; }
+function r244R241FlowContext(symbol=''){
+  try{
+    const full = r125NormSymbol(symbol);
+    const hit = r244LatestR125Flow.get(full);
+    const ageMs = hit ? (Date.now() - Number(hit.ts||0)) : Infinity;
+    // 45 sn: r234/positionRisk cache ritmiyle uyumlu; stale flow puanı vermez.
+    if(hit?.flow && ageMs <= 45000) {
+      const f = hit.flow;
+      return {
+        r125Flow: f,
+        r125BestSide: f.bestSide,
+        r125LiveDeltaPct: f.deltaPct,
+        r125OrderflowSummary: f.summary || '',
+        r126FlowSummary: f.r126?.summary || '',
+        r244FlowAgeMs: ageMs,
+        r244FlowFresh: true
+      };
+    }
+    return { r244FlowFresh:false, r244FlowAgeMs: Number.isFinite(ageMs)?ageMs:null };
+  }catch(e){ return { r244FlowFresh:false, r244FlowAgeMs:null }; }
+}
+function r244R241MergeFlowD(symbol='', d={}){
+  const live = r244R241FlowContext(symbol);
+  return Object.assign({}, live, d || {}, {
+    r125Flow: (d && d.r125Flow) || live.r125Flow,
+    r125BestSide: (d && d.r125BestSide) || live.r125BestSide,
+    r125LiveDeltaPct: Number.isFinite(Number(d?.r125LiveDeltaPct)) && Number(d?.r125LiveDeltaPct)!==0 ? Number(d.r125LiveDeltaPct) : live.r125LiveDeltaPct,
+    r125OrderflowSummary: (d && d.r125OrderflowSummary) || live.r125OrderflowSummary,
+    r126FlowSummary: (d && d.r126FlowSummary) || live.r126FlowSummary
+  });
+}
 function r241ChannelPriorityEngine(k5m=[], k3m=[], k1m=[], side='LONG', symbol='', d={}){
   try{
+    d = r244R241MergeFlowD(symbol, d || {});
     const isL=String(side).toUpperCase()!=='SHORT';
     const dir=isL?'LONG':'SHORT';
     const rows=r238Rows(k5m,90);
@@ -13702,8 +13847,11 @@ function r241ChannelPriorityEngine(k5m=[], k3m=[], k1m=[], side='LONG', symbol='
     const f=r235Forecast(d,dir);
     const rvol = r235Rvol(d) || volRatio;
     const flowEdge = isL ? r235Num(d?.r125Flow?.longEdge ?? d?.r125Flow?.edge ?? 0,0) : r235Num(d?.r125Flow?.shortEdge ?? d?.r125Flow?.edge ?? 0,0);
+    const flowAgainst = isL ? r235Num(d?.r125Flow?.shortEdge ?? 0,0) : r235Num(d?.r125Flow?.longEdge ?? 0,0);
     const bestSide=String(d?.r125BestSide || d?.r125Flow?.bestSide || '').toUpperCase();
-    const liveDelta=Number(d?.r125LiveDeltaPct ?? d?.r125Flow?.liveDeltaPct ?? 0) || 0;
+    const liveDelta=Number(d?.r125LiveDeltaPct ?? d?.r125Flow?.deltaPct ?? d?.r125Flow?.liveDeltaPct ?? 0) || 0;
+    const flowFresh = !!(d?.r244FlowFresh || d?.r125Flow?.liveReady || d?.r125Flow?.tickFresh || d?.r125Flow?.cvdValid);
+    const flowAgeSec = Number.isFinite(Number(d?.r244FlowAgeMs)) ? Math.round(Number(d.r244FlowAgeMs)/1000) : null;
 
     const breakUp = validChannel && upperNow>0 && last.c > upperNow*(1+tol/100) && prev.c <= upperPrev*(1+tol*1.25/100);
     const breakDown = validChannel && lowerNow>0 && last.c < lowerNow*(1-tol/100) && prev.c >= lowerPrev*(1-tol*1.25/100);
@@ -13742,10 +13890,18 @@ function r241ChannelPriorityEngine(k5m=[], k3m=[], k1m=[], side='LONG', symbol='
     if(micro.strong){ microPts+=16; why.push('1m+3m güçlü uyum +16'); }
     else if(micro.ok){ microPts+=9; why.push('1m/3m yeterli uyum +9'); }
     else { penalty+=4; why.push('1m/3m tam dönmedi -4'); }
-    if(flowEdge>=18){ flowPts+=14; why.push(`R125 edge ${flowEdge} +14`); }
-    else if(flowEdge>=8){ flowPts+=9; why.push(`R125 edge ${flowEdge} +9`); }
-    if(bestSide===dir){ flowPts+=4; why.push('R125 yön aynı +4'); }
-    if(isL ? liveDelta>=18 : liveDelta<=-18){ flowPts+=4; why.push('canlı delta aynı +4'); }
+    if(flowFresh){
+      if(flowEdge>=18){ flowPts+=14; why.push(`R125 edge ${flowEdge} +14`); }
+      else if(flowEdge>=8){ flowPts+=9; why.push(`R125 edge ${flowEdge} +9`); }
+      else if(flowEdge>=5 && flowEdge>=flowAgainst+2){ flowPts+=6; why.push(`R125 erken edge ${flowEdge} +6`); }
+      if(bestSide===dir){ flowPts+=4; why.push('R125 yön aynı +4'); }
+      else if(bestSide && bestSide!=='NEUTRAL' && bestSide!==dir && flowAgainst>=8){ penalty+=6; why.push(`R125 ters ${bestSide} -6`); }
+      if(isL ? liveDelta>=18 : liveDelta<=-18){ flowPts+=4; why.push('canlı delta aynı +4'); }
+      else if(isL ? liveDelta<=-22 : liveDelta>=22){ penalty+=5; why.push('canlı delta ters -5'); }
+    } else {
+      // Flow yoksa kanal motoru öldürülmez; sadece R241 puan tablosu bunu açık gösterir.
+      if(structure>=52 && microPts>=16) { why.push('R125 akış taze değil — yapı/mikro ile izlenir'); }
+    }
     if(rvol>=1.05){ quality+=5; why.push(`RVOL ${rvol.toFixed(2)} +5`); }
     else if(rvol>=0.55){ quality+=3; why.push(`RVOL ${rvol.toFixed(2)} +3`); }
     else if(rvol>0){ penalty+=4; why.push(`RVOL düşük ${rvol.toFixed(2)} -4`); }
@@ -13766,12 +13922,12 @@ function r241ChannelPriorityEngine(k5m=[], k3m=[], k1m=[], side='LONG', symbol='
     const table=[
       {k:'5m yapı',v:structure,max:60,n:validChannel?`${mode} pos:${Math.round(pos*100)}% width:${widthPct.toFixed(2)}%`:'kanal yok'},
       {k:'1m/3m',v:microPts,max:20,n:micro.label},
-      {k:'Akış/R125',v:flowPts,max:22,n:`edge:${flowEdge} side:${bestSide||'-'} delta:${liveDelta.toFixed(1)}%`},
+      {k:'Akış/R125',v:flowPts,max:22,n:flowFresh ? `edge:${flowEdge}/${flowAgainst} side:${bestSide||'-'} delta:${liveDelta.toFixed(1)}% age:${flowAgeSec??0}s` : 'akış cache yok / taze değil'},
       {k:'Kalite',v:quality,max:20,n:`RVOL:${rvol.toFixed(2)} forecast:${f.side||'NEUTRAL'} c${f.conf||0} deviso:${deviso?.ratio||'-'}`},
       {k:'Ceza',v:-penalty,max:0,n:why.filter(x=>x.includes('-')).slice(0,3).join(', ')||'yok'}
     ];
     const reason=`R241 kanal ${entryOk?'TRADE':'İZLE'} ${dir}: ${mode} · puan ${score}/100 · yapı ${structure}/60, mikro ${microPts}/20, akış ${flowPts}/22, kalite ${quality}/20, ceza ${penalty} · ${why.slice(0,7).join(' · ')}`;
-    return {ok:entryOk, entryOk, route:entryOk, side:dir, mode, score, priority:entryOk?Math.max(72,score+18):score, structure, microPts, flowPts, quality, penalty, table, reason, validChannel, descending, ascending, ranging, pos:+pos.toFixed(2), widthPct:+widthPct.toFixed(2), upperNow:+upperNow.toFixed(8), lowerNow:+lowerNow.toFixed(8), bodyPct:+bodyPct.toFixed(2), volRatio:+volRatio.toFixed(2), rvol:+rvol.toFixed(2), flowEdge, bestSide, liveDelta:+liveDelta.toFixed(1), forecast:f, micro, deviso, breakUp, breakDown, retestLong, retestShort, holdLong, holdShort, lowerBounce, upperReject, fakeout:isL?fakeoutLong:fakeoutShort};
+    return {ok:entryOk, entryOk, route:entryOk, side:dir, mode, score, priority:entryOk?Math.max(72,score+18):score, structure, microPts, flowPts, quality, penalty, table, reason, validChannel, descending, ascending, ranging, pos:+pos.toFixed(2), widthPct:+widthPct.toFixed(2), upperNow:+upperNow.toFixed(8), lowerNow:+lowerNow.toFixed(8), bodyPct:+bodyPct.toFixed(2), volRatio:+volRatio.toFixed(2), rvol:+rvol.toFixed(2), flowEdge, flowAgainst, flowFresh, flowAgeSec, bestSide, liveDelta:+liveDelta.toFixed(1), forecast:f, micro, deviso, breakUp, breakDown, retestLong, retestShort, holdLong, holdShort, lowerBounce, upperReject, fakeout:isL?fakeoutLong:fakeoutShort};
   }catch(e){ return {ok:false, entryOk:false, side:String(side).toUpperCase(), score:0, priority:0, reason:`R241 kanal hata: ${String(e?.message||e).slice(0,90)}`, table:[]}; }
 }
 function r241ChannelWorkerTick(){
@@ -13781,8 +13937,9 @@ function r241ChannelWorkerTick(){
     for(const full of syms){
       const k5=r238CachedKlines(full,'5m',100), k3=r238CachedKlines(full,'3m',32), k1=r238CachedKlines(full,'1m',45);
       if(k5.length<38) continue;
-      const long=r241ChannelPriorityEngine(k5,k3,k1,'LONG',full,{});
-      const short=r241ChannelPriorityEngine(k5,k3,k1,'SHORT',full,{});
+      const flowD = r244R241FlowContext(full);
+      const long=r241ChannelPriorityEngine(k5,k3,k1,'LONG',full,flowD);
+      const short=r241ChannelPriorityEngine(k5,k3,k1,'SHORT',full,flowD);
       const best=(Number(long.priority||0)>=Number(short.priority||0))?long:short;
       r241ChannelState.set(full,{ts:Date.now(),symbol:full,long,short,best});
     }
@@ -13971,7 +14128,7 @@ app.post('/api/order', async (req, res) => {
     // R150: küçük bakiye / panel marj uyuşmazlığı emir hatasına dönüşmesin.
     // Sadece emirden hemen önce tek kez bakiye kontrolü yapılır; tarama sayısını azaltmaz.
     try {
-      const balRows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance');
+      const balRows = await r245BalanceRowsForPrecheck(apiKey, apiSecret);
       const usdtRow = Array.isArray(balRows) ? balRows.find(x => String(x.asset||'').toUpperCase()==='USDT') : null;
       const av = Number(usdtRow?.availableBalance ?? usdtRow?.balance ?? 0);
       const need = Number(usdtAmount||0) * 1.02;
@@ -16016,7 +16173,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R239 Deviso RSI-fiyat motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 ratio zinciri trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
@@ -16073,7 +16230,7 @@ app.get('/api/health', (_req, res) => {
           lastError: r241ChannelLastErr || null
         },
         routePerformance: {
-          summary: 'R243 rota performansı son12s: regex fix; hard-block yok; edge/risk küçük kalibrasyon',
+          summary: 'R245 rest+flow: balance/kline 429 guard + R244 flow bind; hard-block yok',
           rows: r242RouteStatsSummary(10)
         },
         armedWatcher: {
@@ -16092,6 +16249,7 @@ app.get('/api/health', (_req, res) => {
 app.post('/api/auto/config', (req, res) => {
   autoConfig = { ...(req.body||{}) };
   autoConfig.maxPositions = normalizeUserMaxPositions(autoConfig.maxPositions, 3);
+  autoConfig.strictManualMode = r246StrictManualOn(autoConfig);
   if (autoConfig.enabled) {
     startAutoTrader();
     res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:autoConfig });
@@ -16103,7 +16261,7 @@ app.post('/api/auto/config', (req, res) => {
 
 app.get('/api/auto/status', async (req, res) => {
   const r211EffectiveRisk = await r211StatusRiskPreview();
-  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R243 rota performansı son12s: regex fix; hard-block yok; edge/risk küçük kalibrasyon', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
+  const r241ScanState = {...autoScanState, channelWorker:{summary:r241ChannelSummary(), active:!!r241ChannelTimer, stateCount:r241ChannelState.size, lastTickSec:r241ChannelLastTickTs?Math.round((Date.now()-r241ChannelLastTickTs)/1000):null, scanCount:r241ChannelScanCount, hot:r241ChannelHotList(8), lastError:r241ChannelLastErr||null}, routePerformance:{summary:'R245 rest+flow: balance/kline 429 guard + R244 flow bind; hard-block yok', rows:r242RouteStatsSummary(10)}, devisoWorker:{summary:r239DevisoSummary(), active:!!r239DevisoTimer}, trendlineWorker:{summary:r238TrendlineSummary(), active:!!r238TrendlineTimer}};
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
     config:autoConfig, effectiveRisk:r211EffectiveRisk, scanState:r241ScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(),
@@ -16197,7 +16355,7 @@ async function runAutoScan(prioritySymbol=null) {
     const maxPositions = normalizeUserMaxPositions(rawMaxPositions, 3);
     const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'FAST6');
     const r54ScanLimit = r54ScanLimitForMode(r54ScanMode, scanLimit || 6);
-    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:Number(vurKacMaxLev||50)};
+    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:Number(vurKacMaxLev||50), strictManualMode: r246StrictManualOn(cfg)};
     autoScanState.scanMode = r54ScanMode;
     autoScanState.maxPositions = Number(maxPositions||0);
     autoScanState.phase = 'POZİSYON_KONTROL';
@@ -16983,9 +17141,18 @@ async function runAutoScan(prioritySymbol=null) {
         // Binance izinli maksimum okunur; piyasa güvenliği bozuksa zaten işlem kovalanmaz.
         let executeLeverage = normalizeRequestedLeverage(leverage, 1);
         let executeUsdtAmount = Number(usdtAmount || 0) || 0;
-        let leverageNote = `panel kaldıracı ${executeLeverage}x`;
+        const strictManualMode = r246StrictManualOn(cfg);
+        decisionChain.r246StrictManualMode = strictManualMode;
+        let leverageNote = strictManualMode
+          ? `🔒 STRICT MANUAL: panel ${executeUsdtAmount} USDT / ${executeLeverage}x aynen uygulanacak`
+          : `panel kaldıracı ${executeLeverage}x`;
         let r209RiskNote = '';
-        try {
+        if (strictManualMode) {
+          const sr246 = r246StrictRiskObject(cfg, userSLPct, userTPPct, trailingPct, breakEvenPct);
+          decisionChain.r211EffectiveRisk = sr246;
+          cfg._r211LastEffectiveRisk = sr246;
+          logAuto(`🔒 ${coin.symbol} ${sr246.note} — R209/R211 auto-balance, R236/R240 risk küçültme, R116/R157/R150/R151/R191 kaldıraç valileri atlanacak.`);
+        } else try {
           const bal209 = await r209ReadAvailableUSDT(apiKey, apiSecret);
           const wr209 = r209RecentWR(20);
           const km209 = r209KellyMargin(bal209 || Number(executeUsdtAmount||0)*4, wr209, userTPPct, userSLPct);
@@ -17004,7 +17171,7 @@ async function runAutoScan(prioritySymbol=null) {
         // Flash/spike gibi timing blokları yukarıdaki R235 gate ile bekletilir; burada sadece marjin/SL küçültülür.
         try {
           const route236 = !!(decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || /R241|R239|R238|R225|R226|R227|R230/.test(String(decisionChain?.entryPermissionReason||decisionChain?.reason||'')));
-          if (route236) {
+          if (!strictManualMode && route236) {
             const rs236 = r236QualityRiskScale(recommendation, decisionChain || {}, coin.fullSymbol || coin.symbol);
             decisionChain.r236QualityRiskScale = rs236;
             if (rs236.marginMult < 1) {
@@ -17022,6 +17189,9 @@ async function runAutoScan(prioritySymbol=null) {
         // R240: R236 çalışsa bile düşük skorlu R227/R230 edge-şişmesi tam marjine dönemeyecek.
         // İşlem iptal edilmez; sadece son emir büyüklüğü ve SL mesafesi güvenli üst sınıra çekilir.
         try {
+          if (strictManualMode) {
+            decisionChain.r240FinalRiskCap = {active:false, strictSkipped:true, label:'R240 STRICT atlandı'};
+          } else {
           const cap240 = r240FinalRiskCap(recommendation, decisionChain || {}, coin.fullSymbol || coin.symbol, score, Number(usdtAmount||0), Number(executeUsdtAmount||0), Number(userSLPct||0));
           decisionChain.r240FinalRiskCap = cap240;
           if (cap240?.active) {
@@ -17033,14 +17203,17 @@ async function runAutoScan(prioritySymbol=null) {
             decisionChain.reason = String(decisionChain.reason||'') + ` · ${cap240.label}`;
             logAuto(`🧯 ${coin.symbol} ${cap240.label} · marj ${oldM240}→${executeUsdtAmount} USDT · SL% ${oldSL240}→${userSLPct}`);
           }
+          }
         } catch(_r240cap) { logAuto(`⚠️ ${coin.symbol} R240 final risk cap hatası: ${String(_r240cap?.message||_r240cap).slice(0,80)}`); }
 
         const r137BaseMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(executeUsdtAmount||usdtAmount||0) * executeLeverage).catch(()=>null);
         if (r137BaseMaxLev && executeLeverage > r137BaseMaxLev) {
-          leverageNote = `panel ${executeLeverage}x → Binance izinli ${r137BaseMaxLev}x`;
+          leverageNote = strictManualMode
+            ? `🔒 STRICT MANUAL: panel ${executeUsdtAmount} USDT / ${executeLeverage}x → Binance izinli ${r137BaseMaxLev}x`
+            : `panel ${executeLeverage}x → Binance izinli ${r137BaseMaxLev}x`;
           executeLeverage = r137BaseMaxLev;
         }
-        if (cfg.vurKacEnabled && cfg.vurKacAutoLev && decisionChain?.r88VurKacOk) {
+        if (!strictManualMode && cfg.vurKacEnabled && cfg.vurKacAutoLev && decisionChain?.r88VurKacOk) {
           const structuralAutoLevOk = !!(
             (!decisionChain?.r116HtfGuardBlock || decisionChain?.r117HtfReverseOk) &&
             (decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r117HtfReverseOk ||
@@ -17066,7 +17239,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R157: SL×Kaldıraç guard — SL yüzdesi × kaldıraç > %25 ise kaldıracı düşür.
         // FOLKS 50x × %2 SL = %100 risk. Max kabul: %25 marjın riski.
-        try {
+        if (!strictManualMode) try {
           const r157SlPct = Number(userSLPct || cfg.slPct || 2);
           const r157MaxRisk = 40; // R163: panel 15x/SL%2 korunur; sadece aşırı kaldıraçlı risk düşürülür
           if (r157SlPct * executeLeverage > r157MaxRisk) {
@@ -17080,7 +17253,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R150: mikro-cap + ATR yüksek coinlerde işlem sayısını kesmeden ROI hasarını eşitle.
         // 4USDT gibi 0.01 altı/çevresi coinlerde %1-2 fiyat oynama 20x ile -20/-40 ROI yapar.
         // Gerçek HTF reversal/squeeze varsa işlem korunur; sadece hızlı-edge/momentum scalp riskinde kaldıraç düşürülür.
-        try {
+        if (!strictManualMode) try {
           const r150MicroCap = Number(entryRef) > 0 && Number(entryRef) < 0.03;
           const r150AtrHot = Number(coinAtrPct||0) >= Math.max(4.5, Number(userSLPct||1.5) * 2.2);
           const r150RealStructure = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r117HtfReverseOk || decisionChain?.r117BodyReclaimOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r111SiksmaOk || String(decisionChain?.entryPermissionReason||'').includes('R115_HTF'));
@@ -17097,7 +17270,7 @@ async function runAutoScan(prioritySymbol=null) {
         // r142 hafıza sıfırdan başlar ve edge 100 verir → işlem doğru açılır ama kaldıraç agresif olabilir.
         // < 3 geçmiş trade olan coin'de kaldıraç panelin %60'ı ile cap'lenir (işlem asla iptal edilmez).
         // 3+ trade varsa veya gerçek HTF yapı varsa bu koruma devre dışı kalır.
-        try {
+        if (!strictManualMode) try {
           const r151Mem = r142MemoryStats(recommendation, analysis, decisionChain?.brainMode||'NO_EDGE');
           const r151NewCoin = Number(r151Mem?.same?.n || 0) < 3;
           const r151HasStructure = !!(decisionChain?.r219StructureTargetScalp || decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r111SiksmaOk);
@@ -17115,7 +17288,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R191: WR toparlama kaldıraç valisi. İşlem sayısını kesmez; sadece
         // son performans kötü veya kanıt zayıf/fast scalp ise tek işlem ROI hasarını küçültür.
         // R189 performansında 23x ve -30% ROI hasarları WR'yi değil hesabı bozuyordu.
-        try {
+        if (!strictManualMode) try {
           const _p191 = r179AccountPerf()?.recent || {};
           const r191PerfBad = Number(_p191.closed||0) >= 8 && (Number(_p191.wr||0) < 0.45 || Number(_p191.pf||0) < 0.80 || Number(_p191.net||0) < 0);
           const r191FastOrWeak = !!(decisionChain?.r159MomentumPass || decisionChain?.r133FastScalpOverride || decisionChain?.r191ForecastOnlyProof || String(decisionChain?.brainMode||'').includes('COUNTER_TRAP') || Number(score||0) < Number(effectiveMinScore||minScore||70));
@@ -17181,7 +17354,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R167: R166 adaptif SL/TP önce loga yazıyor ama targetPrice/stopPrice daha eski hesapla kalabiliyordu.
         // Emirden hemen önce SL/TP ve SL×kaldıraç guard tekrar hesaplanır.
         try {
-          if (userSLPct * executeLeverage > 40) {
+          if (!strictManualMode && userSLPct * executeLeverage > 40) {
             const oldLev2 = executeLeverage;
             executeLeverage = Math.max(1, Math.floor(40 / Math.max(0.1, userSLPct)));
             if (executeLeverage < oldLev2) leverageNote += ` · R167 adaptif SL risk guard ${oldLev2}x→${executeLeverage}x`;
@@ -17217,7 +17390,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R218: Grafik+mikro+flow aynı taraftaysa ve Binance limiti izin veriyorsa
         // panel kaldıraç korunur. Temiz setup'ı 5x/8x'e indirip spot işlem gibi açma.
-        try {
+        if (!strictManualMode) try {
           const panelLev218 = normalizeRequestedLeverage(leverage, 1);
           const binanceLev218 = Number(r137BaseMaxLev || panelLev218);
           const cleanR218Lev = !!((decisionChain?.r219StructureTargetScalp || decisionChain?.r221TrendIgnitionScalp || decisionChain?.r241ChannelPriorityScalp || decisionChain?.r239DevisoTrendlineMotorScalp || decisionChain?.r238TrendlineBreakoutScalp || decisionChain?.r225FastLivePulseScalp || decisionChain?.r226HybridFrequencyScalp || decisionChain?.r227ExecutionCoreScalp || decisionChain?.r230TrueDeathRelayScalp || decisionChain?.r218ChartTruthScalp) && panelLev218 <= binanceLev218 && (Number(userSLPct||1.7) * panelLev218) <= 34);
@@ -17232,7 +17405,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R207: 5m kaldıraçlı scalp'te eğer kurulum panel kaldıraç oranını taşıyamıyorsa
         // düşük kaldıraçla zorla işlem açma; bu oran/orantı hatasıydı. Bekle.
         // Binance sembol limiti hariç; strateji/risk guard düşürdüyse setup yeterince temiz değildir.
-        try {
+        if (!strictManualMode) try {
           const panelLev207 = normalizeRequestedLeverage(leverage, 1);
           const binanceLevLimit207 = Number(r137BaseMaxLev || panelLev207);
           const userWantedHighLev207 = panelLev207 >= 12;
@@ -17362,7 +17535,7 @@ async function runAutoScan(prioritySymbol=null) {
             if (wantedSL199 > oldSL199 + 0.04 && wantedSL199 <= 2.60) {
               userSLPct = +wantedSL199.toFixed(2);
               const oldLev199 = executeLeverage;
-              if (userSLPct * executeLeverage > 24) executeLeverage = Math.max(1, Math.floor(24 / Math.max(0.1, userSLPct)));
+              if (!strictManualMode && userSLPct * executeLeverage > 24) executeLeverage = Math.max(1, Math.floor(24 / Math.max(0.1, userSLPct)));
               r199BreathNote = ` · R199 yapı nefesi SL %${oldSL199}→%${userSLPct}${executeLeverage<oldLev199?` lev ${oldLev199}x→${executeLeverage}x`:''}`;
               logAuto(`🫁 ${coin.symbol}${r199BreathNote} — güçlü erken yakıt; swing/retest nefesi verildi`);
             }
@@ -17371,7 +17544,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         try {
           userRR = userTPPct / Math.max(0.05, userSLPct);
-          if (userSLPct * executeLeverage > 40) {
+          if (!strictManualMode && userSLPct * executeLeverage > 40) {
             const oldLev188 = executeLeverage;
             executeLeverage = Math.max(1, Math.floor(40 / Math.max(0.1, userSLPct)));
             if (executeLeverage < oldLev188) leverageNote += ` · R188 final SL risk guard ${oldLev188}x→${executeLeverage}x`;
@@ -17379,6 +17552,14 @@ async function runAutoScan(prioritySymbol=null) {
           targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
           stopPrice   = isLong ? +(entryRef * (1 - userSLPct/100)).toFixed(8) : +(entryRef * (1 + userSLPct/100)).toFixed(8);
         } catch(_e188risk) { logAuto(`⚠️ ${coin.symbol} R188 final risk normalize hatası: ${String(_e188risk?.message||_e188risk).slice(0,80)}`); }
+        if (strictManualMode) {
+          executeUsdtAmount = Number(usdtAmount || 0) || executeUsdtAmount;
+          const panelLev246 = normalizeRequestedLeverage(leverage, 1);
+          const binanceLimit246 = Number(r137BaseMaxLev || panelLev246);
+          executeLeverage = Math.min(panelLev246, binanceLimit246);
+          leverageNote = `🔒 STRICT MANUAL: panel ${executeUsdtAmount} USDT / ${panelLev246}x${panelLev246>binanceLimit246?` → Binance izinli ${binanceLimit246}x`:''} aynen uygulandı`;
+          decisionChain.reason = String(decisionChain.reason||'') + ` · ${leverageNote}`;
+        }
         if (userRR < minRR) {
           logAuto(`${coin.symbol} final R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
           markAutoSkip(coin.symbol, `Final RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
