@@ -156,7 +156,7 @@ async function r245BalanceRowsForPrecheck(apiKey, apiSecret) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R269_WAVE_ARBITER_AUDITED_FINAL_GATE';
+const LAZARUS_BUILD = 'R270_SCALPER_STRUCTURE_ARBITER_BALANCED';
 const R246_AUDIT = 'R264/R246 strict manual margin/leverage: default ON; panel USDT/kaldirac aynen uygulanir, sadece Binance hard leverage limit ve lot/tick/minNotional yuvarlama degistirebilir.';
 function r246StrictManualOn(cfg={}) {
   const v = cfg?.strictManualMode;
@@ -1651,6 +1651,7 @@ function r242RouteStats(lookbackMs = 12*60*60*1000, minN = 6) {
   }).sort((a,b)=>(Number(b.reliable)-Number(a.reliable)) || (b.pf-a.pf) || (b.net-a.net));
 }
 function r242RouteCandidateKey(d={}) {
+  if (d?.r270ScalperStructureScalp || d?.r270FinalGateOk) return 'R270';
   if (d?.r268FinalGateOk || d?.r268Arbiter?.allow || d?.r268WaveArbiter?.allow) return 'R268';
   if (d?.r267HtfInverseSmartMoneyScalp) return 'R267';
   if (d?.r266SmartMoneyOnlyScalp) return 'R266';
@@ -1724,7 +1725,13 @@ function r142CalibrateEdge(side='LONG', d={}, mode='NO_EDGE', rawEdge=0, score=0
   if (liveWith && !late) { adj += 5; notes.push('live-align:+5'); }
   const r242Key = r242RouteCandidateKey(d);
   const r242Sig = r242RoutePerformanceSignal(r242Key, 12*60*60*1000, 6);
-  if (r242Sig.active) { adj += r242Sig.adj; notes.push(`${r242Sig.route} PF${r242Sig.stats?.pf} ${r242Sig.adj>0?'+':''}${r242Sig.adj}`); }
+  // R270: Eski rejimin OTHER kovası yeni smart/scalper yapıyı boğmasın.
+  // R269 dump'ında OTHER PF kötü geçmişi her yeni adaya -6 basıyordu; gerçek rota
+  // henüz R270/R268 olarak ledger'a yazılmadan bu ceza fail-close gibi çalışıyordu.
+  if (r242Sig.active && !(r242Sig.route === 'OTHER' && Number(r242Sig.adj || 0) < 0)) {
+    adj += r242Sig.adj;
+    notes.push(`${r242Sig.route} PF${r242Sig.stats?.pf} ${r242Sig.adj>0?'+':''}${r242Sig.adj}`);
+  }
   // Trade frequency protection: do not turn soft calibration into a new hard gate.
   // Raw edge remains visible and may still pass if data is fresh; calibration mainly ranks side and weakens repeated losers.
   const calibrated = r142Clamp(Math.round(Number(rawEdge||0) + adj), 0, 100);
@@ -8404,6 +8411,52 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? `R267 HTF ${r267InverseBias?'TERS-BIAS':'SMART-MONEY'} ENTRY: zone:${r267ZoneLabel} DevisSo:${r266DevisoOk?'OK':'-'} FVG:${r266FvgOk?'OK':'-'} Fibo:${r266FiboOk?'OK':'-'} SMC:${r266SmcOk?'OK':'-'} Flow:${r266FlowOk?'OK':'-'} confirm:${r266ConfirmCount}/5 inverse:${r267InverseBias?'EVET':'hayır'} loc15:${Number.isFinite(r266Loc15Pct)?r266Loc15Pct.toFixed(0):'?'} loc1h:${Number.isFinite(r266Loc1hPct)?r266Loc1hPct.toFixed(0):'?'} loc4h:${Number.isFinite(r266Loc4hPct)?r266Loc4hPct.toFixed(0):'?'} · eski emir katmanları kapalı`
     : `R267 HTF WAIT: zone:${r267ZoneLabel} DevisSo:${r266DevisoOk?'OK':'-'} FVG:${r266FvgOk?'OK':'-'} Fibo:${r266FiboOk?'OK':'-'} SMC:${r266SmcOk?'OK':'-'} Flow:${r266FlowOk?'OK':'-'} confirm:${r266ConfirmCount}/5 chaseBlock:${r266TopBottomChaseBlock?'EVET':'hayır'} inverse:${r267InverseBias?'EVET':'hayır'} forbiddenTopLong:${r267ForbiddenTopLong?'EVET':'hayır'} forbiddenBottomShort:${r267ForbiddenBottomShort?'EVET':'hayır'} loc15:${Number.isFinite(r266Loc15Pct)?r266Loc15Pct.toFixed(0):'?'} loc1h:${Number.isFinite(r266Loc1hPct)?r266Loc1hPct.toFixed(0):'?'} loc4h:${Number.isFinite(r266Loc4hPct)?r266Loc4hPct.toFixed(0):'?'} clean:${r266Clean?'OK':'blok'}`;
 
+  // R270: SCALPER STRUCTURE ARBITER / BALANCED ENTRY
+  // R266/R267 eski katmanları tek başına kapatınca DevisSo/FVG/Fibo/SMC gecikmeli kaldı;
+  // channel/trendline worker'ın erken kırılım sinyali emir yolundan çıkınca bot 1.5 saatte 1 işlemde kaldı.
+  // R270 bu katmanları tekrar "eski frekans kapısı" olarak değil, ham 5m dalga hakeminden geçen
+  // erken yapı kanıtı olarak kullanır. HTF tepede LONG ve dipte SHORT yasağı korunur.
+  const r270Ch = r241ChannelPriority || {};
+  const r270Tr = r238Trendline || {};
+  const r270Dv = r239DevisoMotor || {};
+  const r270ChScore = Number(r270Ch.score || 0);
+  const r270TrScore = Number(r270Tr.score || 0);
+  const r270DvScore = Number(r270Dv.score || 0);
+  const r270Txt = String([r270Ch.mode, r270Ch.reason, r270Tr.mode, r270Tr.reason, r270Dv.reason].filter(Boolean).join(' ')).toUpperCase();
+  const r270HasBreakText = /BREAK|KIRIL|KIRIM|LOWER_BREAK|UPPER_BREAK|RETEST|RED|REJECT|BOS|MSS|CHOCH|SHIFT|G[OÖ]VDE|GOVDE|KABUL|ACCEPT|ALT Ç[Iİ]ZG[Iİ]|UST Ç[Iİ]ZG[Iİ]|ÜST Ç[Iİ]ZG[Iİ]/i.test(r270Txt);
+  const r270ChStrong = r120Bool(r270Ch?.entryOk && r270ChScore >= 68 && (r270HasBreakText || Number(r270Ch?.microPts || 0) >= 14 || Number(r270Ch?.flowPts || 0) >= 14));
+  const r270TrStrong = r120Bool((r270Tr?.ok || r238TrendlineScalp) && r270TrScore >= 62 && (r270HasBreakText || r270ChStrong));
+  const r270DvRisk = r120Bool(r270Dv?.exitRisk || r270Dv?.fvgRisk || r270Dv?.engulfInvalid || r270Dv?.strongTrendAgainst || r270Dv?.fibOppRisk || r270Dv?.smcOppRisk || /doyum|exit|risk|ters/i.test(String(r270Dv?.reason||'')));
+  const r270DvConfirm = r120Bool(r270Dv?.entryOk && r270DvScore >= 50 && !r270DvRisk);
+  const r270FlowConfirm = r120Bool(
+    r266FlowOk || r262ChFlowAligned || r249FlowAligned || r134FlowAligned || r193StrongLiveFuel ||
+    Number(r125SideFlow?.edge || 0) >= Math.max(6, Number(r125SideFlow?.against || 0) + 2) ||
+    (side === 'LONG' ? Number(d.r125LiveDeltaPct || 0) >= 18 : Number(d.r125LiveDeltaPct || 0) <= -18)
+  );
+  const r270MicroConfirm = r120Bool(r262MicroOk || r216Has5mProof || r202BoostActive || d.r190Edge?.earlyContinuation || d.r190Edge?.r192FuelOk || d.r190Edge?.squeeze || Number(r270Ch?.microPts || 0) >= 12);
+  const r270ForecastConfirm = r120Bool(r249ForecastAligned || r225ForecastAligned || r262ChForecastAligned || r134ForecastAligned || Number(r270Ch?.quality || 0) >= 12);
+  const r270CandleConfirm = r120Bool(r257CandleProof || Number(d?.r118Candle?.score || 0) >= 5 || /RECLAIM|ENGULF|IMPULSE|HAMMER|BODY|MSS|CHOCH|G[OÖ]VDE/i.test(String(d?.mumOzet || d?.htfTani || r270Txt)));
+  const r270StructureBreakOk = r120Bool((r270ChStrong || r270TrStrong) && r270HasBreakText);
+  const r270ConfirmScore = [r270StructureBreakOk, r270FlowConfirm, r270MicroConfirm, r270ForecastConfirm, r270CandleConfirm, r270DvConfirm].filter(Boolean).length;
+  const r270NoDeath = r120Bool(
+    dataMinimum && r266Clean && !r266TopBottomChaseBlock && !fatalDanger && !r191SpreadBad && !d.poorLiquidity &&
+    !d.atrExtremeBlock && !d.signalDecayAutoBlock && !r191TakerOrVpinAgainst && !r217TakerAgainst &&
+    !r229TakerToxic && !r229OpposingToxic && !r193WeakZeroCandleDirtyFuel && !r193OiAnomalyNoFuel &&
+    !(side === 'LONG' ? d.r41FallingKnifeBlock : d.r41RisingKnifeBlock) &&
+    (!r148WrongSideBlock || (r270StructureBreakOk && r270FlowConfirm && r270MicroConfirm))
+  );
+  const r270EarlyStructureCoreOk = r120Bool(
+    r270NoDeath && r270StructureBreakOk && r270FlowConfirm && r270MicroConfirm &&
+    (r270ConfirmScore >= 4 || (r270ChScore >= 78 && r270FlowConfirm) || (r270TrScore >= 72 && r270DvConfirm))
+  );
+  const r270ScalperStructureScalp = r120Bool(
+    r270EarlyStructureCoreOk ||
+    (r266Clean && !r266TopBottomChaseBlock && r267SmartMoneyCoreOk && r270StructureBreakOk && (r270FlowConfirm || r270MicroConfirm))
+  );
+  const r270Reason = r270ScalperStructureScalp
+    ? `R270 SCALPER STRUCTURE ARBITER: ch${r270ChScore}/tr${r270TrScore}/dv${r270DvScore} break:${r270StructureBreakOk?'OK':'-'} flow:${r270FlowConfirm?'OK':'-'} micro:${r270MicroConfirm?'OK':'-'} forecast:${r270ForecastConfirm?'OK':'-'} candle:${r270CandleConfirm?'OK':'-'} confirm:${r270ConfirmScore}/6 zone:${r267ZoneLabel} · HTF chase yasağı korundu`
+    : `R270 yapı bekle: ch${r270ChScore}/tr${r270TrScore}/dv${r270DvScore} break:${r270StructureBreakOk?'OK':'-'} flow:${r270FlowConfirm?'OK':'-'} micro:${r270MicroConfirm?'OK':'-'} confirm:${r270ConfirmScore}/6 noDeath:${r270NoDeath?'OK':'blok'} chase:${r266TopBottomChaseBlock?'EVET':'hayır'}`;
+
   // R266: Eski emir katmanlarını emir yolundan çıkar. Worker/veri/log olarak kalırlar, ama TRADE sebebi olamazlar.
   r225FastLivePulseScalp = false;
   r226HybridFrequencyScalp = false;
@@ -8537,12 +8590,20 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   // R219.3: R220 structure hard-block direnç/supply long veya destek/demand short
   // uyarısı verdiyse eski hızlı yollar (R217/R218/R215/R216) bunu bypass edemez.
   const r219AllowsLegacyRoutes = false; // R266: legacy emir kapısı kapalı
-  // R268: tüm onaylardan SONRA çalışan, bypass edilemeyen ham-5m dalga hakemi (fail-closed).
-  const r268Arbiter = r268WaveArbiter(d?._r206k5m || d?.k5mArr || [], side);
+  // R268/R270: tüm onaylardan SONRA çalışan, bypass edilemeyen ham-5m dalga hakemi (fail-closed).
+  const r268BaseArbiter = r268WaveArbiter(d?._r206k5m || d?.k5mArr || [], side);
+  const r270CounterTrendStructureOverride = r120Bool(
+    r270ScalperStructureScalp && r270StructureBreakOk && r270FlowConfirm && r270MicroConfirm &&
+    r268BaseArbiter?.code === 'KARSI_TREND'
+  );
+  const r268Arbiter = r270CounterTrendStructureOverride
+    ? { ...r268BaseArbiter, allow:true, code:'R270_STRUCTURE_KARSI_TREND_OK', reason:`R270 yapı kırılımı EMA karşı-trend blokunu aştı: ${r270Reason} · eski:${r268BaseArbiter.reason}` }
+    : r268BaseArbiter;
   d.r268Arbiter = r268Arbiter;
   d.r268WaveArbiter = r268Arbiter;
-  d.r268FinalGateOk = r120Bool(r266SmartMoneyOnlyScalp && r268Arbiter.allow);
-  const ok = r120Bool(d.r268FinalGateOk);
+  d.r270FinalGateOk = r120Bool((r266SmartMoneyOnlyScalp || r270ScalperStructureScalp) && r268Arbiter.allow);
+  d.r268FinalGateOk = d.r270FinalGateOk;
+  const ok = r120Bool(d.r270FinalGateOk);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -8567,9 +8628,11 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
   const r160Label = r160TraderDecision ? `R160 trader karar (${r160TrueCount}/4: ${[r160Q1Structure?'yapı':'',r160Q2Flow?'akış':'',r160Q3Momentum?'ivme':'',r160Q4Proof?'kanıt':''].filter(Boolean).join('+')})` : '';
-  const r249CoreLabel = r266SmartMoneyOnlyScalp
-    ? `R269/R268 WAVE ARBITER FINAL GATE + R267 HTF TERS-BIAS SMART-MONEY ENTRY`
-    : '';
+  const r249CoreLabel = r270ScalperStructureScalp
+    ? `R270 SCALPER STRUCTURE ARBITER + R268 WAVE FINAL GATE`
+    : (r266SmartMoneyOnlyScalp
+      ? `R269/R268 WAVE ARBITER FINAL GATE + R267 HTF TERS-BIAS SMART-MONEY ENTRY`
+      : '');
   const core = ok
     ? `🧠 5m Fırsat Beyni ${side}: ${r249CoreLabel || (r266SmartMoneyOnlyScalp ? 'R267 HTF TERS-BIAS SMART-MONEY ENTRY' : r264FvgEntryBridge ? 'R265 FVG+ÇOKLU ONAY ERKEN GİRİŞ' : r262ControlledMarketPass ? 'R262 KONTROLLÜ GRAFİK GEÇİŞ' : r219StructureTargetScalp ? 'R220 STRUCTURE ACCELERATOR SFP+HL+hedef' : r221TrendIgnitionScalp ? 'R221 ERKEN TREND IGNITION' : r241ChannelPriorityScalp ? 'R241 KANAL ÖNCELİK PUAN WORKER' : r239DevisoTrendlineMotorScalp ? 'R239 DEVISO+TRENDLINE MOTOR WORKER' : r238TrendlineScalp ? 'R238 TRENDLINE KIRILIM/RETEST WORKER' : r225FastLivePulseScalp ? 'R225 LIVE PULSE FREKANS SCALP' : r230TrueDeathRelayScalp ? 'R230 TRUE-DEATH EMİR RELAY' : r227ExecutionCoreScalp ? 'R227 FREKANS EMİR ÇEKİRDEĞİ' : r226HybridFrequencyScalp ? 'R226 R165/R197 HİBRİT FREKANS' : r218ChartTruthScalp ? 'R218 GRAFİK GERÇEĞİ 1m/3m+5m scalp' : r217FastPulseScalp ? 'R217 FAST PULSE 5m vur-kaç' : r215APlusScalp ? 'R215 A+ hızlı grafik/flow vur-kaç' : r216BalancedScalp ? 'R216 R165 frekanslı hızlı scalp' : r160TraderDecision ? r160Label : r159MomentumPass ? r159Label : r156FastTop10Bypass ? r156Label : r133FastScalpOverride ? 'R144 hızlı edge mikro-scalp' : modeLabel)} · ${r249PrimaryReason} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${r133FastScalpWhy ? ` · ${r133FastScalpWhy}` : ''} · ${sensorSummary}`
     : `🧠 5m Fırsat Beyni İZLE: ${side} kalite/edge yetersiz · olası oyun:${modeLabel} · edge ${edge}/100 · ${r142Txt} · skor ${score}/${minScore}${hardDanger?' · sert risk aktif':''}${modeQualityBlock?' · kalite duvarı aktif':''}${htfCounterWait?' · HTF karşı duvar/CHOCH bekleniyor':''}${r144WatchExtra}${sensorSummary?' · '+sensorSummary:''} · R160:${r160TrueCount}/4(${[r160Q1Structure?'Y':'',r160Q2Flow?'A':'',r160Q3Momentum?'I':'',r160Q4Proof?'K':''].join('')})`;
@@ -8627,6 +8690,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r266OldLayerLock = r266OldLayerLock;
   d.r266Reason = r266Reason;
   d.r267Reason = r266Reason;
+  d.r270ScalperStructureScalp = r270ScalperStructureScalp;
+  d.r270Reason = r270Reason;
+  d.r270Graph = { enabled:true, pass:r270ScalperStructureScalp, chScore:r270ChScore, trScore:r270TrScore, dvScore:r270DvScore, structureBreak:r270StructureBreakOk, flow:r270FlowConfirm, micro:r270MicroConfirm, forecast:r270ForecastConfirm, candle:r270CandleConfirm, deviso:r270DvConfirm, confirm:r270ConfirmScore, noDeath:r270NoDeath, overrideCounterTrend:r270CounterTrendStructureOverride, reason:r270Reason };
   d.r266TopBottomChaseBlock = r266TopBottomChaseBlock;
   d.r267TopBottomChaseBlock = r266TopBottomChaseBlock;
   d.r267HtfInverseBias = r267InverseBias;
@@ -8636,7 +8702,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r268Graph = { enabled:true, finalGateOk:d.r268FinalGateOk, allow:!!r268Arbiter.allow, code:r268Arbiter.code, reason:r268Arbiter.reason, pos:r268Arbiter.pos, run12:r268Arbiter.run12, imp3:r268Arbiter.imp3, atrPct:r268Arbiter.atrPct, failClosed:!r268Arbiter.allow };
   d.r262Graph = { pass:r262ControlledMarketPass, atrBridge:r262AtrBridgeOk, graphCount:r262GraphCount, channelStrong:r262ChannelStrong, trendStrong:r262TrendStrong, devisoStrong:r262DevisoStrong, chScore:r262ChScore, trScore:r262TrScore, dvScore:r262DvScore, liveContinue:r262LiveContinue, flowAligned:r262ChFlowAligned, noDeath:r262NoDeath, scoreFloor:r262ScoreFloorOk, r257Safe:r262R257Safe, reason:r262Reason };
   d.r249GraphPrimary = {
-    primary:false, assist:false, fastAssist:false, r262:false, r264:false, r266:r266SmartMoneyOnlyScalp, r267:r267HtfInverseSmartMoneyScalp, r268:d.r268FinalGateOk, r268Code:r268Arbiter.code, r267Inverse:r267InverseBias,
+    primary:false, assist:false, fastAssist:false, r262:false, r264:false, r266:r266SmartMoneyOnlyScalp, r267:r267HtfInverseSmartMoneyScalp, r270:r270ScalperStructureScalp, r268:d.r268FinalGateOk, r268Code:r268Arbiter.code, r267Inverse:r267InverseBias,
     channelScore:r249ChannelScore, trendScore:r249TrendScore, devisoScore:r249DevisoScore,
     flowEdge:r249FlowEdge, flowAgainst:r249FlowAgainst, flowAligned:r249FlowAligned, forecastAligned:r249ForecastAligned,
     r230Allowed:r249R230Allowed, auxAllowed:r249AuxFastAllowed, blocked:r249BlockedFastRoutes,
@@ -17600,7 +17666,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R269/R268; WAVE ARBITER FINAL GATE aktif: ham 5m mumdan fail-closed son kapı çalışır; veri/ATR yoksa izin yok, tepe-chase LONG, dip-chase SHORT, düşen/yükselen bıçak ve EMA karşı-trend kanıtı yoksa bloklanır; route ledger artık R268 olarak görünür. R267; HTF TERS-BIAS SMART-MONEY aktif: 15m/1H/4H tepe görülürse LONG chase yasaklanır ve şartlar olumluysa SHORT düşünülür; 15m/1H/4H dip görülürse SHORT chase yasaklanır ve şartlar olumluysa LONG düşünülür. Emir için yine DevisSo + FVG entry zone + MasterFibo + SMC/OB/BOS + flow çoklu onayı gerekir; eski emir katmanları kapalıdır. R266; SMART-MONEY ONLY ENTRY LOCK korunur. R265; MULTI-STRATEGY FVG ENTRY ARBITER pasif/yedek: 5m bullish/bearish FVG oluştuğunda fiyat zone içinde veya çok dar hold/retest bandındaysa, EN AZ 2 bağımsız onay (R241 kanal/R238 trendline/R239 DevisSo/SMC-mum/flow/forecast) varsa market girişe izin verir; FVG tek başına emir sebebi değildir, diğer stratejiler FVG olmadan da çalışır; fiyat FVG'den uzaklaştıysa chase yapmaz. HMSTR tipi geç giriş yerine FVG içi/mitigation entry hedeflenir. R263; FVG runner survival aktif: aktif 5m FVG/impulse tutuyorsa R165/R149/R97/karTasima legacy dar stopları bekletilir, runner stopu entry üstünde daha nefesli tutulur; HMSTR tipi geç ama devam eden longlarda +8 ROI stop avı azaltılır. R262; KONTROLLÜ GİRİŞ KÖPRÜSÜ aktif: R241 kanal / R238 trendline / R239 DevisSo aynı yönde 60+ grafik omurgası ve canlı devam kanıtı verirse, POOR likidite-spread-fatal danger-signal decay-knife-toksik taker/VPIN korunarak minScore 70'e kör takılmadan B+ kontrollü market izni verir; normal ATR yüksekliğinde R262 ATR bridge devreye girer, aşırı ATR ve kötü likidite yine bloktur; panel marj/kaldıraç doğrulama logu eklendi. R261; RUNNER IQ aktif: panel marj/kaldıraç default STRICT uygulanır; açık pozisyonda R260 grafik + DevisSo/FVG/Engulf/Trend/MasterFibo/SMC + CVD/tick + peak-giveback birlikte TUT/BOŞALT/KİLİT modu seçer; iyi runner'da +8 ROI civarı dar kâr taşıma/trailing bekletilir, TP erken genişletilir, stop dinamik ve daha esnek kilitlenir; grafik/akış bozulursa R259/R260/R97 hasar korumaları aynen çalışır. R260; CHART RISK GUARDIAN aktif: giriş motoruna dokunmadan açık pozisyonda 5m FVG/engulf/trend/MasterFibo/SMC tekrar okur; ROI -4 üzeri sert grafik flip, ROI -7 grafik risk ve peak>=6 kâr geri verme durumunda erken kapatır; yeni REST yok, r260ChartGuardEnabled=false ile kapanır. R259; PROFIT GUARDIAN aktif: canli WS fiyatiyla 2sn bagimsiz koruma dongusu; ROI tabani (default -13), erken ters-akis kesimi (6dk/-9), olu islem kesimi (12dk/-6/peak<4) ve kar mandali (peak>=12 geri verme 8 / peak>=25 %60 koru) — giris sikligi ve R14/R41/R42/trailing/BE ayni kalir; tum esikler autoConfig r259* alanlarindan ayarlanir, r259Enabled=false ile kapatilir. Ayrica MasterFibo RSI=0 falsy fix + pushCritical stack izi eklendi. R258; Master Fibonacci 20-bar breakout + RSI/MACD/EMA trend ve SMC OB/FVG/BOS/HVB/PPDD/OB+FVG stack context DevisSo puanına eklendi; yeni REST yok. R257; critical Assignment-to-constant fix + R249 route PF/RR kalite freni aktif. R256; DevisSo içine FVG fill/hold, engulf sonrası teyit ve hassas trend bağlamı eklendi; LONG/SHORT için FVG boşluk doldurma + ters FVG risk + engulf invalid + trend yönü DevisSo puanına işlenir; yeni REST yok. R255; ArmedWatcher R220 bypass listesi ana grafik omurgasıyla hizalandı: R249/R241/R239/R238/R221/R219 adayları artık watcher hızlı-yolda eski R220 yapı hard-block WAIT'e takılmaz; normal final risk kapıları korunur. R254 final gate whitelist fix korunur. R253 DevisSo effort-ratio yön düzeltmesi korunur: gerçek transcript Ratio=|ΔRSI|/|ΔFiyat%|; ratio düşerse kolaylaşma/lehte, 1 bölgesine yaklaşırsa doyum/çıkış riski, ratio artarsa lehte bonus verilmez. R250; short/long parite + kesin tekrar freni aktif: R249 ana grafik router long ve short'u simetrik değerlendirir; aynı sembol/aynı yön kâr/zarar kapanışından sonra ledger tabanlı tekrar giriş freni çalışır; son işlemler tek yöne yığılırsa aynı yöne yeni giriş için güçlü ana grafik/flow şartı aranır. R249; ana grafik router aktif: R241 kanal, R238 trendline kırılım/retest ve R239 Deviso kararın ana omurgasıdır; R225/R226/R227/R230 artık tek başına ana sebep değil, yapı onayı varsa yardımcı ateşleme olur. Formasyon/mum/R125/R126/R140/R190 yardımcı puan/timing verisidir; STRICT marj modu karar kapısını bypass etmez. R248; route ledger key fix aktif: açılan işlemin R227/R230/R241 gibi gerçek route kodu tradeLedger'a açık/kapanış boyunca yazılır; R242 rota performansı OTHER'a gömülmez. R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R253/R239 DevisSo effort-ratio transcript motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 anchor zinciri yalnız effortPerMove ratio yönüyle trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R270; SCALPER STRUCTURE ARBITER aktif: R241 kanal/R238 trendline erken kırılım sinyali artık eski frekans kapısı değil, ham 5m dalga hakeminden geçen scalper yapı kanıtı olarak emir yoluna girebilir; OTHER PF kötü geçmiş cezası yeni rejimi boğmaz; R268 KARSI_TREND EMA bloku sadece güçlü yapı kırılımı+flow+micro ile aşılır, TEPE_CHASE/DIP_CHASE/BIÇAK blokları korunur. R269/R268; WAVE ARBITER FINAL GATE aktif: ham 5m mumdan fail-closed son kapı çalışır; veri/ATR yoksa izin yok, tepe-chase LONG, dip-chase SHORT, düşen/yükselen bıçak ve EMA karşı-trend kanıtı yoksa bloklanır; route ledger artık R268 olarak görünür. R267; HTF TERS-BIAS SMART-MONEY aktif: 15m/1H/4H tepe görülürse LONG chase yasaklanır ve şartlar olumluysa SHORT düşünülür; 15m/1H/4H dip görülürse SHORT chase yasaklanır ve şartlar olumluysa LONG düşünülür. Emir için yine DevisSo + FVG entry zone + MasterFibo + SMC/OB/BOS + flow çoklu onayı gerekir; eski emir katmanları kapalıdır. R266; SMART-MONEY ONLY ENTRY LOCK korunur. R265; MULTI-STRATEGY FVG ENTRY ARBITER pasif/yedek: 5m bullish/bearish FVG oluştuğunda fiyat zone içinde veya çok dar hold/retest bandındaysa, EN AZ 2 bağımsız onay (R241 kanal/R238 trendline/R239 DevisSo/SMC-mum/flow/forecast) varsa market girişe izin verir; FVG tek başına emir sebebi değildir, diğer stratejiler FVG olmadan da çalışır; fiyat FVG'den uzaklaştıysa chase yapmaz. HMSTR tipi geç giriş yerine FVG içi/mitigation entry hedeflenir. R263; FVG runner survival aktif: aktif 5m FVG/impulse tutuyorsa R165/R149/R97/karTasima legacy dar stopları bekletilir, runner stopu entry üstünde daha nefesli tutulur; HMSTR tipi geç ama devam eden longlarda +8 ROI stop avı azaltılır. R262; KONTROLLÜ GİRİŞ KÖPRÜSÜ aktif: R241 kanal / R238 trendline / R239 DevisSo aynı yönde 60+ grafik omurgası ve canlı devam kanıtı verirse, POOR likidite-spread-fatal danger-signal decay-knife-toksik taker/VPIN korunarak minScore 70'e kör takılmadan B+ kontrollü market izni verir; normal ATR yüksekliğinde R262 ATR bridge devreye girer, aşırı ATR ve kötü likidite yine bloktur; panel marj/kaldıraç doğrulama logu eklendi. R261; RUNNER IQ aktif: panel marj/kaldıraç default STRICT uygulanır; açık pozisyonda R260 grafik + DevisSo/FVG/Engulf/Trend/MasterFibo/SMC + CVD/tick + peak-giveback birlikte TUT/BOŞALT/KİLİT modu seçer; iyi runner'da +8 ROI civarı dar kâr taşıma/trailing bekletilir, TP erken genişletilir, stop dinamik ve daha esnek kilitlenir; grafik/akış bozulursa R259/R260/R97 hasar korumaları aynen çalışır. R260; CHART RISK GUARDIAN aktif: giriş motoruna dokunmadan açık pozisyonda 5m FVG/engulf/trend/MasterFibo/SMC tekrar okur; ROI -4 üzeri sert grafik flip, ROI -7 grafik risk ve peak>=6 kâr geri verme durumunda erken kapatır; yeni REST yok, r260ChartGuardEnabled=false ile kapanır. R259; PROFIT GUARDIAN aktif: canli WS fiyatiyla 2sn bagimsiz koruma dongusu; ROI tabani (default -13), erken ters-akis kesimi (6dk/-9), olu islem kesimi (12dk/-6/peak<4) ve kar mandali (peak>=12 geri verme 8 / peak>=25 %60 koru) — giris sikligi ve R14/R41/R42/trailing/BE ayni kalir; tum esikler autoConfig r259* alanlarindan ayarlanir, r259Enabled=false ile kapatilir. Ayrica MasterFibo RSI=0 falsy fix + pushCritical stack izi eklendi. R258; Master Fibonacci 20-bar breakout + RSI/MACD/EMA trend ve SMC OB/FVG/BOS/HVB/PPDD/OB+FVG stack context DevisSo puanına eklendi; yeni REST yok. R257; critical Assignment-to-constant fix + R249 route PF/RR kalite freni aktif. R256; DevisSo içine FVG fill/hold, engulf sonrası teyit ve hassas trend bağlamı eklendi; LONG/SHORT için FVG boşluk doldurma + ters FVG risk + engulf invalid + trend yönü DevisSo puanına işlenir; yeni REST yok. R255; ArmedWatcher R220 bypass listesi ana grafik omurgasıyla hizalandı: R249/R241/R239/R238/R221/R219 adayları artık watcher hızlı-yolda eski R220 yapı hard-block WAIT'e takılmaz; normal final risk kapıları korunur. R254 final gate whitelist fix korunur. R253 DevisSo effort-ratio yön düzeltmesi korunur: gerçek transcript Ratio=|ΔRSI|/|ΔFiyat%|; ratio düşerse kolaylaşma/lehte, 1 bölgesine yaklaşırsa doyum/çıkış riski, ratio artarsa lehte bonus verilmez. R250; short/long parite + kesin tekrar freni aktif: R249 ana grafik router long ve short'u simetrik değerlendirir; aynı sembol/aynı yön kâr/zarar kapanışından sonra ledger tabanlı tekrar giriş freni çalışır; son işlemler tek yöne yığılırsa aynı yöne yeni giriş için güçlü ana grafik/flow şartı aranır. R249; ana grafik router aktif: R241 kanal, R238 trendline kırılım/retest ve R239 Deviso kararın ana omurgasıdır; R225/R226/R227/R230 artık tek başına ana sebep değil, yapı onayı varsa yardımcı ateşleme olur. Formasyon/mum/R125/R126/R140/R190 yardımcı puan/timing verisidir; STRICT marj modu karar kapısını bypass etmez. R248; route ledger key fix aktif: açılan işlemin R227/R230/R241 gibi gerçek route kodu tradeLedger'a açık/kapanış boyunca yazılır; R242 rota performansı OTHER'a gömülmez. R247; Telegram soft-fail guard aktif: TELEGRAM_SEND_FAIL / AbortError / The user aborted a request artık critical uyarı geçmişine yazılmaz, işlem motorunu durdurmaz; Telegram yardımcı kanal olarak health.telegram altında izlenir. R246; STRICT MANUAL MARJ/KALDIRAÇ modu eklendi (default kapalı): açıkken panel marjı ve kaldıraç R137 Binance limiti/lot-tick harici değiştirilmez; R209/R211/R236/R240/R116/R157/R150/R151/R191/R167/R188 kaldıraç küçültme bypass olur. R245; REST budget/balance+kline guard aktif: v3 yeterliyse v2/v1 balance/account fallback atlanır, signed balance/account kısa cache kullanır, kline REST seed seyreklenir; R244 R241/R125 flow bind korunur. R243; R242 rota regex fix aktif: R230_TRUE/R241_CHANNEL gibi alt çizgili rota adları artık OTHER'a düşmez; R242 rota performans beyni gerçek rota satırlarıyla çalışır. R241/R240/R239/R238/R237/R236/R235/R234/R233/R232/R231/R230/R229/R228/R227/R226/R225/R224 korunur. R242 rota performans beyni + R241 kanal/trendline önem sıralı puan worker aktif: 5m düşen/yükselen kanal, kanal içi salınım, kırılım, gövde kabulü, retest/hold, 1m/3m, flow/R125, RVOL, MumTahmin ve Deviso puan tablosu dashboardda görünür. R253/R239 DevisSo effort-ratio transcript motoru + R238 5m trendline kırılım/retest worker aktif; aynı tür Cross10/Cross20/M1/M2 anchor zinciri yalnız effortPerMove ratio yönüyle trend başlangıcı/bitimi için izlenir; düşen trend kırılımı LONG, yükselen trend kırılımı SHORT yüksek öncelikli izlenir. R236 kalite risk ölçekleme aktifken R166 ATR-adaptive SL genişletmesi artık SL sıkılaştırmasını ezmez. Frekans korunur; zayıf kalite marjin/SL ile küçülür. Loss-control forecast/ledger fix + 1m/3m/5m kline WS live-cache aktif: REST sadece tarihçe seed/fallback; BOS/impulse son mum canlı. REST bütçe/cache governor + 3m BOS displacement trap. True-death-only frekans çekirdeği: r202/r134/r148 eski yorumları yalnızca toksikse hard veto. Final gereksiz çift fren temizliği: R208/R116/R114 yeni frekans route'larını tekrar öldürmez. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
