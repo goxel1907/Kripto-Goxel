@@ -83,6 +83,8 @@ async function cached(key, ttl, fn, opts={}) {
   const now = Date.now();
   const ent = cacheEntry(key);
   if (ent && now < Number(ent.exp||0)) return ent.val;
+  // R271: Binance backoff aktifken süresi geçmiş cache bile REST'e tekrar vurmasın.
+  if (ent && opts.staleOnError !== false && typeof isBinanceBackoffActive === 'function' && isBinanceBackoffActive()) return ent.val;
   if (cacheInflight.has(key)) {
     try { return await cacheInflight.get(key); }
     catch(e) { if (ent && opts.staleOnError !== false) return ent.val; throw e; }
@@ -156,7 +158,7 @@ async function r245BalanceRowsForPrecheck(apiKey, apiSecret) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R270_SCALPER_STRUCTURE_ARBITER_BALANCED';
+const LAZARUS_BUILD = 'R271_REST_WS_BUDGET_GOVERNOR';
 const R246_AUDIT = 'R264/R246 strict manual margin/leverage: default ON; panel USDT/kaldirac aynen uygulanir, sadece Binance hard leverage limit ve lot/tick/minNotional yuvarlama degistirebilir.';
 function r246StrictManualOn(cfg={}) {
   const v = cfg?.strictManualMode;
@@ -193,6 +195,12 @@ const binanceGov = {
   backoffUntil: 0,
   last429At: 0,
 };
+const r271BackoffWarnTs = new Map();
+let r271ScanWindowCursor = 0;
+const R271_SCAN_WINDOW_TOP24 = 8;
+const R271_SCAN_WINDOW_TOP10 = 8;
+const R271_PUBLIC_WEIGHT_SOFT_CAP = 300;
+const R271_PUBLIC_WEIGHT_HARD_SLEEP = 360;
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms)||0)));
 function _resetGovWindowIfNeeded() {
   const now = Date.now();
@@ -209,7 +217,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     if (binanceGov.backoffUntil > now && !String(scope).includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
     // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
-    if (binanceGov.usedWeight + weight > 520 || binanceGov.usedOrders + orderWeight > 70) {
+    if (binanceGov.usedWeight + weight > R271_PUBLIC_WEIGHT_HARD_SLEEP || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
       await sleep(wait);
       _resetGovWindowIfNeeded();
@@ -217,7 +225,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
     // Çok sık istek atma: public daha seyrek, emir/pozisyon daha kontrollü.
-    const baseDelay = orderWeight ? 140 : (String(scope).includes('PUBLIC') ? 130 : 90);
+    const baseDelay = orderWeight ? 160 : (String(scope).includes('PUBLIC') ? 230 : 120);
     await sleep(baseDelay);
   };
   const prev = binanceGov.q.catch(()=>{});
@@ -228,7 +236,17 @@ function registerBinanceBackoff(reason='rate-limit', seconds=45) {
   const sec = Math.max(5, Math.min(180, Number(seconds)||45));
   binanceGov.backoffUntil = Math.max(binanceGov.backoffUntil || 0, Date.now() + sec*1000);
   binanceGov.last429At = Date.now();
-  try { pushCritical('BINANCE_BACKOFF', `${reason}: ${sec}sn istek bekleme`, {seconds:sec, reason}, 'WARNING'); } catch(_) {}
+  // R271: 429/418 aynı scope'ta peş peşe gelince uyarı kutusunu aynı mesajla doldurma.
+  // Fren yine çalışır; sadece log spam 90sn içinde tek satıra düşer.
+  try {
+    const k = String(reason||'rate-limit').slice(0,120);
+    const now = Date.now();
+    const last = Number(r271BackoffWarnTs.get(k)||0);
+    if (now - last > 90_000) {
+      r271BackoffWarnTs.set(k, now);
+      pushCritical('BINANCE_BACKOFF', `${reason}: ${sec}sn istek bekleme`, {seconds:sec, reason, r271:true}, 'WARNING');
+    }
+  } catch(_) {}
 }
 // R95: Binance 418/429 geldiğinde istek bekleyip taramayı kilitleme; merkezi frenle güvenli dur.
 function isBinanceBackoffActive() {
@@ -683,8 +701,9 @@ async function r233PublicRestPace(path='') {
   const p = String(path||'');
   const isKline = p.includes('/klines');
   const isMarketData = p.includes('/futures/data/') || p.includes('/openInterest') || p.includes('/depth');
-  // Kline fırtınası 429'un ana sebebi. WS/cached veri analizde ana kaynak; REST sadece tazeleme.
-  const minGap = isKline ? 750 : isMarketData ? 220 : 140;
+  const isTicker = p.includes('/ticker/24hr');
+  // R271: Kline/ticker fırtınası 429'un ana sebebi. WS/cache ana kaynak; REST sadece seed/tazeleme.
+  const minGap = isKline ? 1350 : isTicker ? 1800 : isMarketData ? 550 : 240;
   const key = isKline ? 'lastKline' : isMarketData ? 'lastMarketData' : 'lastAny';
   const now = Date.now();
   const wait = Math.max(0, Number(publicRestPacer[key]||0) + minGap - now);
@@ -693,7 +712,7 @@ async function r233PublicRestPace(path='') {
   publicRestPacer.lastAny = Date.now();
   if (typeof _resetGovWindowIfNeeded === 'function') _resetGovWindowIfNeeded();
   // Gerçek limitlere yaklaşmadan scan'i yavaşlat; 429 gelirse 30sn tüm motor duruyor.
-  if (Number(binanceGov?.usedWeight||0) > 340) {
+  if (Number(binanceGov?.usedWeight||0) > R271_PUBLIC_WEIGHT_SOFT_CAP) {
     const w = 60000 - (Date.now() - Number(binanceGov.minuteStart||Date.now())) + 250;
     if (w > 0 && w < 65000) await sleep(w);
   }
@@ -703,7 +722,7 @@ async function bPub(path, qs='') {
   if(now-reqWindow>60000){reqCount=0;reqWindow=now;}
   reqCount++;
   if(reqCount>450){const w=60000-(now-reqWindow);await sleep(w+1000);reqCount=0;reqWindow=Date.now();}
-  await binanceThrottle('PUBLIC_REST', path.includes('/klines') ? 3 : path.includes('/ticker/24hr') ? 5 : 1, 0);
+  await binanceThrottle('PUBLIC_REST', path.includes('/klines') ? 5 : path.includes('/ticker/24hr') ? 10 : 2, 0);
   await r233PublicRestPace(path);
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
@@ -919,9 +938,18 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
     throw new Error('positionRisk rate-limit cooldown');
   }
 
-  // Symbol-specific sorgular doğrudan git (cache bypass)
+  // R271: Symbol-specific sorgular artık önce toplu cache'i filtreler.
+  // Eski davranış her sembolde /positionRisk'e doğrudan gidip -1003/429 zinciri üretiyordu.
   if (params && params.symbol) {
-    return getPositionRisk(apiKey, apiSecret, params);
+    const age = now - Number(posRiskCache.ts || 0);
+    const ttlSym = POS_RISK_TTL_ACTIVE;
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp && age < ttlSym) {
+      return filterPositionRiskRows(posRiskCache.data, params);
+    }
+    if ((isBinanceBackoffActive() || now < posRiskCache.rateLimitUntil) && posRiskCache.data && posRiskCache.lastApiKey === apiFp) {
+      return filterPositionRiskRows(posRiskCache.data, params);
+    }
+    // Cache yoksa tek toplu çağrı yap; sembol için ayrı REST endpoint dövme.
   }
 
   const hasOpen = posRiskCache.data && Array.isArray(posRiskCache.data) &&
@@ -930,17 +958,17 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
 
   if (posRiskCache.data && now - posRiskCache.ts < ttl &&
       posRiskCache.lastApiKey === apiFp) {
-    return posRiskCache.data;
+    return filterPositionRiskRows(posRiskCache.data, params);
   }
 
   // Single-flight: başka istek uçaktaysa aynı promise'i bekle.
   if (posRiskCache.fetching && posRiskCache.inflight) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
     try {
       const rows = await posRiskCache.inflight;
-      return Array.isArray(rows) ? rows : [];
+      return filterPositionRiskRows(Array.isArray(rows) ? rows : [], params);
     } catch(_e) {
-      return posRiskCache.data || [];
+      return filterPositionRiskRows(posRiskCache.data || [], params);
     }
   }
 
@@ -963,7 +991,7 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
         pushCritical('POSITION_RISK_RATELIMIT', e, {cooldownMs:extraMs}, 'WARNING');
         console.log(`⛔ positionRisk / Binance istek freni: ${Math.ceil(extraMs/1000)}sn bekleniyor`);
       }
-      if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
+      if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
       throw e;
     } finally {
       posRiskCache.fetching = false;
@@ -972,7 +1000,8 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
     }
   })();
 
-  return posRiskCache.inflight;
+  const outRows = await posRiskCache.inflight;
+  return filterPositionRiskRows(outRows, params);
 }
 
 function invalidatePosRiskCache(reason='manual') {
@@ -5524,7 +5553,7 @@ function recentLossPatternGuard(symbolOrSide, sideMaybe, decisionChain={}, lookb
 // R33: Binance Top Gainers kilidi — bot artık sadece özel interest sırasına değil,
 // Binance Futures 24h değişim listesindeki ilk hareketli coinlere de zorunlu bakar.
 // Ek endpoint yok: zaten kullanılan /fapi/v1/ticker/24hr verisinden hesaplanır.
-const FUTURES_TICKERS_CACHE_MS = 45 * 1000; // R190: TOP24/5m erken yakalama için ticker cache 75sn→45sn; tek endpoint yükü düşük
+const FUTURES_TICKERS_CACHE_MS = 120 * 1000; // R271: TOP24 429 azaltma; ticker WS/cache ana, 24hr REST 2dk cache
 const R33_TOP_GAINER_LOCK_COUNT = 10;
 const R33_TOP_GAINER_MIN_QUOTE_VOL = 1_000_000;
 const R54_SCAN_MODES = new Set(['FAST6','TOP10','TOP24']);
@@ -17872,10 +17901,10 @@ async function runAutoScan(prioritySymbol=null) {
 
     // R234: 1m/3m/5m artık WS live-cache olduğu için public REST bütçe eşiği daha geniş.
     // Sadece gerçek REST baskısı çok yükselirse 1 pencere bekletilir.
-    if (Number(binanceGov?.usedWeight||0) > 650) {
+    if (Number(binanceGov?.usedWeight||0) > R271_PUBLIC_WEIGHT_HARD_SLEEP) {
       autoScanState.phase = 'VERİ_İSTEĞİ_DİNLENİYOR';
-      autoScanState.lastAction = 'R234 REST bütçe koruması — WS kline aktif, yalnız yüksek REST yükünde kısa bekleme';
-      logAuto('⏳ R234 REST bütçe koruması: WS kline aktif, yeni TOP24 tarama kısa bekletildi');
+      autoScanState.lastAction = 'R271 REST bütçe koruması — WS kline aktif, yeni tarama kısa bekletildi';
+      logAuto('⏳ R271 REST bütçe koruması: WS/kline aktif, Binance 429 yememek için yeni TOP24 tarama kısa bekletildi');
       return;
     }
 
@@ -17969,6 +17998,21 @@ async function runAutoScan(prioritySymbol=null) {
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
+    }
+    // R271: TOP24'ü her 30sn'de 24 REST-heavy analizle dövmek 429 üretir.
+    // Liste korunur, ama analiz penceresi döner: 30sn x 3 turda 24 coin taranır.
+    // Priority wake varsa ilgili sembol yine ilk sıraya alınır.
+    const r271FullScanList = Array.isArray(scanList) ? scanList.slice() : [];
+    if (!prioritySymbol && r54ScanMode === 'TOP24' && r271FullScanList.length > R271_SCAN_WINDOW_TOP24) {
+      const start = r271ScanWindowCursor % r271FullScanList.length;
+      const window = [];
+      for (let i=0; i<R271_SCAN_WINDOW_TOP24; i++) window.push(r271FullScanList[(start+i)%r271FullScanList.length]);
+      r271ScanWindowCursor = (start + R271_SCAN_WINDOW_TOP24) % r271FullScanList.length;
+      scanList = window;
+      logAuto(`🧭 R271 TOP24 döner pencere: ${start+1}-${Math.min(start+R271_SCAN_WINDOW_TOP24, r271FullScanList.length)}/${r271FullScanList.length}; Binance 429 için aynı anda 8 analiz`);
+    } else if (!prioritySymbol && r54ScanMode === 'TOP10' && r271FullScanList.length > R271_SCAN_WINDOW_TOP10) {
+      scanList = r271FullScanList.slice(0, R271_SCAN_WINDOW_TOP10);
+      logAuto(`🧭 R271 TOP10 güvenli pencere: ${scanList.length}/${r271FullScanList.length}`);
     }
     if (!scanList?.length) return;
     logAuto(`🔥 5m Fırsat Beyni ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
