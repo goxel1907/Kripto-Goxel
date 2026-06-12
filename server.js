@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R274_R197_C20_L20_RSI_RATIO_FVG_ENTRY';
+const LAZARUS_BUILD = 'R275_SNIPER_RUNNER_PROFILE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -12110,6 +12110,22 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── R94 AKTİF VUR-KAÇ ÇIKIŞ — TP beklemeden ama net kâr güvenli bölgeye gelince çıkış ────────
   const r91VurKacAktif = cfg.vurKacEnabled !== false; // panelde kapatılırsa sadece klasik SL/TP+BE kalır
   const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade });
+
+  // ── R275 SNIPER RUNNER PROFİLİ ─────────────────────────────────────────────
+  // Sorun: kazanan +9 ROI'ye değdiği an R165 tablosu / R91 ilk kilit / R149 kasası /
+  // karTasima merdiveni SL'i girişin dibine yapıştırıyor; +50 ROI runner yapısal olarak imkânsız.
+  // Çözüm: A-tier (veya yakıt kanıtlı B+) girişlerde, GRAFİK DEVAM GÜCÜ SÜRDÜĞÜ SÜRECE
+  // tüm kilit eşikleri ×1.8 ertelenir. Devam gücü düşerse (r91 exitScore>=3 ve devamGucu yok)
+  // r275T çarpanı ANINDA 1'e döner ve eski sıkı koruma aynı döngüde geri gelir.
+  // peakPnl>=55 ROI sonrası da normal kilitleme döner (büyük kâr bankaya).
+  // r165WinnerNeverLoser ve R149 giveback çıkışları BİLEREK esnetilmedi — runner'ın tabanı onlar.
+  const r275Eligible = !!(String(state.tier||'')==='A' || (String(state.tier||'')==='B+' && state.r190Edge?.r192FuelOk && Number(state.score||0)>=60));
+  const r275RunnerActive = !!(r275Eligible && (r91Brain.devamGucu || Number(r91Brain.exitScore||0) < 3) && Number(state.peakPnl||0) < 55);
+  const r275T = (v) => r275RunnerActive ? v * 1.8 : v;
+  if (r275RunnerActive && !state.r275Logged) {
+    state.r275Logged = true; trailingState.set(sym, state);
+    logAuto(`🏃 ${sym} R275 RUNNER profili: tier ${state.tier||'?'} skor ${state.score||0} · kilit eşikleri ertelendi (devam gücü sürdükçe), hedef büyük ROI`);
+  }
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
 
@@ -12141,8 +12157,8 @@ async function managePosition(apiKey, apiSecret, pos) {
     { min: 16, lockReal: 0.45, level: 2 },
     { min: 9,  lockReal: 0.24, level: 1 },
   ];
-  if (!action && inProfit && r165PeakRoi >= 9) {
-    const lock = r165LockTable.find(x => r165PeakRoi >= x.min);
+  if (!action && inProfit && r165PeakRoi >= r275T(9)) {
+    const lock = r165LockTable.find(x => r165PeakRoi >= r275T(x.min));
     if (lock) {
       // Geri verme arttıysa kilidi biraz daha yukarı al; ama mevcut fiyatı geçip
       // stop emrini geçersiz yapmasın diye updateStopLossWithProofJS ayrıca mark'a göre clamp eder.
@@ -12184,7 +12200,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r149GivebackRoi = Math.max(0, r149PeakRoi - Number(pnlPct || 0));
   const r149EntryTxt = [state.openReason, state.brainMode, state.entryPermissionReason, state.entryReason?.reason].filter(Boolean).join(' ').toLowerCase();
   const r149ScalpLike = /mikro|scalp|vur-kaç|vurkac|flow|momentum|tuzak dönüşü|counter_trap|hızlı edge|fast edge/.test(r149EntryTxt);
-  const r149ShouldLock = !!(!action && r149PeakRoi >= 8 && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= 16));
+  const r149ShouldLock = !!(!action && r149PeakRoi >= r275T(8) && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= r275T(16)));
   if (r149ShouldLock) {
     let keepRealPct = r149PeakReal * (r149ScalpLike ? 0.58 : 0.48);
     if (r149PeakRoi >= 20) keepRealPct = Math.max(keepRealPct, r149PeakReal * 0.64);
@@ -12219,11 +12235,11 @@ async function managePosition(apiKey, apiSecret, pos) {
     // +0.06$ küçük kâra boğabiliyor. Akış hâlâ pozisyon yönündeyse ilk kilidi
     // birkaç döngü nefeslendir; ters teyit gelirse eski emniyet yine çalışır.
     const r136RunnerBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 2.5 && realProfitPct < 1.45);
-    if (!action && pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
+    if (!action && pnlPct >= r275T(9) && realProfitPct >= r275T(0.45) && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
       state.r136FirstLockBreath = Number(state.r136FirstLockBreath||0) + 1;
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 kâr nefesi: erken ilk kâr kilidi bekletildi [${state.r136FirstLockBreath}/4] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
-    } else if (pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock) {
+    } else if (pnlPct >= r275T(9) && realProfitPct >= r275T(0.45) && !state.r91FirstLock) {
       const lockPct = Math.max(0.22, Math.min(0.55, realProfitPct * 0.45));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -12237,11 +12253,11 @@ async function managePosition(apiKey, apiSecret, pos) {
     // 2) Kâr büyüdüyse SL kâr bölgesine daha agresif taşınır.
     // R136: ikinci kilit de trend/flow sağlıklıysa %1.15 altında acele sıkışmasın.
     const r136SecondBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 3.0 && realProfitPct < 1.15);
-    if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
+    if (!action && pnlPct >= r275T(14) && realProfitPct >= r275T(0.70) && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
       state.r136SecondLockBreath = Number(state.r136SecondLockBreath||0) + 1;
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 ikinci kâr kilidi nefesi [${state.r136SecondLockBreath}/3] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
-    } else if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock) {
+    } else if (!action && pnlPct >= r275T(14) && realProfitPct >= r275T(0.70) && !state.r91SecondLock) {
       const lockPct = Math.max(0.35, Math.min(0.85, realProfitPct * 0.55));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -12254,10 +12270,10 @@ async function managePosition(apiKey, apiSecret, pos) {
 
     // 3) Gerçek vur-kaç: kâr var + hareket bozulduysa TP beklenmez, reduce-only market çıkar.
     const r91ExitNow =
-      (pnlPct >= 25 && r91Brain.exitScore >= 2.5) ||
-      (pnlPct >= 18 && r91Brain.exitScore >= 3.0) ||
-      (pnlPct >= 12 && r91Brain.exitScore >= 4.0) ||
-      (pnlPct >= 10 && r91Brain.givebackRoi >= 7 && r91Brain.exitScore >= 3.0) ||
+      (pnlPct >= r275T(25) && r91Brain.exitScore >= 2.5) ||
+      (pnlPct >= r275T(18) && r91Brain.exitScore >= 3.0) ||
+      (pnlPct >= r275T(12) && r91Brain.exitScore >= 4.0) ||
+      (pnlPct >= r275T(10) && r91Brain.givebackRoi >= 7 && r91Brain.exitScore >= 3.0) ||
       (pnlPct >= 8  && realProfitPct >= 0.55 && r91Brain.givebackRoi >= 9 && r91Brain.exitScore >= 4.0);
     if (!action && r91ExitNow) {
       action = {
@@ -12354,15 +12370,15 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 4b. KÂR TAŞIMA ADIMLARI ─────────────────────────────────────────────────
   if (!action && state.breakEvenSet) {
     let stepSL = null, stepReason = null, stepUpdate = null;
-    if (realProfitPct >= karTasima3 && !state.step3Set) {
+    if (realProfitPct >= r275T(karTasima3) && !state.step3Set) {
       stepSL = isLong ? +(entryPrice*(1+0.015)).toFixed(8) : +(entryPrice*(1-0.015)).toFixed(8);
       stepReason = `Kâr taşıma 3: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
       stepUpdate = { step3Set:true };
-    } else if (realProfitPct >= karTasima2 && !state.step2Set) {
+    } else if (realProfitPct >= r275T(karTasima2) && !state.step2Set) {
       stepSL = isLong ? +(entryPrice*(1+0.008)).toFixed(8) : +(entryPrice*(1-0.008)).toFixed(8);
       stepReason = `Kâr taşıma 2: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
       stepUpdate = { step2Set:true };
-    } else if (realProfitPct >= karTasima1 && !state.step1Set) {
+    } else if (realProfitPct >= r275T(karTasima1) && !state.step1Set) {
       // R136: Kâr taşıma 1, erken çıkış gibi davranmasın.
       // Akış hâlâ pozisyon yönündeyse ve ters çıkış puanı düşükse ilk taşıma için
       // %1.60'a kadar veya en fazla 6 yönetim döngüsü nefes ver. BE emniyeti zaten aktif.
@@ -12866,7 +12882,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R275; SNIPER RUNNER profili aktif: A-tier (veya yakıt kanıtlı B+) girişlerde grafik devam gücü sürdüğü sürece R165/R91/R149/karTasima kilit eşikleri ×1.8 ertelenir, +30-50 ROI runner mümkün olur; devam gücü düşerse veya zirve ROI 55'i geçerse normal sıkı koruma anında döner; winner-never-loser ve giveback çıkışları aynen korunur (runner tabanı). R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
