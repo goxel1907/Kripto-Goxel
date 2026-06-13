@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R276_MM_HUNT_LOCATION_GATE';
+const LAZARUS_BUILD = 'R276_MM_HUNT_LOCATION_GATE_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -9194,10 +9194,6 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r37Side: r37Timing?.ok ? (isL ? r37Timing.long : r37Timing.short) : null
         });
         const r274Signal = r274C20L20RsiRatioFvgEntry(k5m, side, lastPrice, atrPct);
-        // R276: ham 5m veriyi karar zincirine taşı (MM-avı konum kapısı bunları kullanır).
-        decisionChain._r276k5m = k5m;
-        decisionChain._r276LastPrice = lastPrice;
-        decisionChain._r276AtrPct = atrPct;
 
         // Giriş sinyali: otomatik için en az bir gerçek entry izi isteriz.
         const hasEntry=
@@ -10735,7 +10731,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterTf, r116CounterDist, r116NearCounterHTF, r116AcceptedCounterBreak, r116CounterSweepTaken,
           r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapTf, r117TrapDist, r117NearTrapHTF, r117TrapSweepTaken, r117AcceptedAgainst, r117BodyReclaimOk, r117BodyShiftOk, r117MssOk, r117FlowOk, r117TrapEvidenceOk, r117TrapEvidenceRawOk, r117PrecisionCandleOk, r118CandleOk, r118CandleStrong, r118CandleOzet, r118Candle,
           r125Flow, r125OrderflowSummary:r125Flow?.summary||'', r126FlowSummary:r125Flow?.r126?.summary||'', r125BookImb:r125Flow?.book?.nearImb, r125BookVelocity:r125Flow?.book?.velocity, r125LiveDelta:r125Flow?.delta, r125LiveDeltaPct:r125Flow?.deltaPct, r125Aggression:r125Flow?.aggression, r125BestSide:r125Flow?.bestSide,
-          r190Edge, r274Signal,
+          r190Edge, r274Signal, _r276k5m:k5m, _r276LastPrice:lastPrice, _r276AtrPct:atrPct,
           r140Phase, r140EqHL, r140OiVel, r140BtcDiv, r140Rvol,
           r114Shift, r114OppositeShift, r114ReclaimOk, r114ExtremeZone, r114SweepTrapFamily, r114ContinuationProof, r114TrapBlock, r114TrapReason,
           wickTrapFlip: {
