@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R278_LIQUIDITY_HUNTER';
+const LAZARUS_BUILD = 'R279_REJECTION_GUARD_R280_429FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -705,7 +705,7 @@ const posRiskCache = {
   lastError: null,
 };
 const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
-const POS_RISK_TTL_ACTIVE = 10000;   // R154: 10sn (eskiden 4sn → dakikada 12 istek → 418 ban). fastManager da 10sn ile sync.
+const POS_RISK_TTL_ACTIVE = 15000;   // R280: 10sn→15sn (dakikada 6 istek; 429/418 baskısını azaltır). fastManager sync.
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
 
@@ -780,8 +780,16 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
     throw new Error('positionRisk rate-limit cooldown');
   }
 
-  // Symbol-specific sorgular doğrudan git (cache bypass)
+  // Symbol-specific sorgular: R280 — önce taze cache'e bak (bypass yalnızca cache bayatsa).
+  // Eskiden her symbol-specific çağrı doğrudan Binance'e gidiyordu → pozisyon yönetimi (BE/trailing)
+  // açık pozisyonu sık sorunca 429 tetikliyordu. Artık ACTIVE TTL içindeki taze cache kullanılır.
   if (params && params.symbol) {
+    const hasOpenSym = posRiskCache.data && Array.isArray(posRiskCache.data) &&
+      posRiskCache.data.some(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+    const ttlSym = hasOpenSym ? POS_RISK_TTL_ACTIVE : POS_RISK_TTL_NORMAL;
+    if (posRiskCache.data && (now - posRiskCache.ts < ttlSym) && posRiskCache.lastApiKey === apiFp) {
+      return filterPositionRiskRows(posRiskCache.data, params);
+    }
     return getPositionRisk(apiKey, apiSecret, params);
   }
 
@@ -3008,6 +3016,28 @@ function r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice) {
     bullishFVG, bearishFVG,
     inBullishFVG, inBearishFVG,
     approachingSSL, approachingBSL,
+    // R279: HTF direnç/destek REDDİ — fitil atılıp kırılamama (MM güç toplama sinyali).
+    // BSL reddi: fiyat üst likiditeye fitil attı ama kapanış altında kaldı → yukarı kırılamadı,
+    //   MM aşağı SSL'e inip güç toplayabilir. SSL reddi: simetrik (aşağı fitil, kapanış üstte).
+    bslRejection: (function(){
+      try {
+        const m = last5; if (!m || !nearBSL) return false;
+        const rng = Math.max(m.h - m.l, 1e-12);
+        const upperWick = (m.h - Math.max(m.o, m.c)) / rng;
+        // fiyat BSL bölgesine değdi ama gövde kapanışı altında + üst fitil belirgin
+        const touchedBSL = m.h >= (nearBSL.zoneLow || nearBSL.price) * 0.999;
+        return !!(touchedBSL && upperWick >= 0.35 && m.c < (nearBSL.zoneLow || nearBSL.price) && nearBSLDist <= 0.6);
+      } catch(_) { return false; }
+    })(),
+    sslRejection: (function(){
+      try {
+        const m = last5; if (!m || !nearSSL) return false;
+        const rng = Math.max(m.h - m.l, 1e-12);
+        const lowerWick = (Math.min(m.o, m.c) - m.l) / rng;
+        const touchedSSL = m.l <= (nearSSL.zoneHigh || nearSSL.price) * 1.001;
+        return !!(touchedSSL && lowerWick >= 0.35 && m.c > (nearSSL.zoneHigh || nearSSL.price) && nearSSLDist <= 0.6);
+      } catch(_) { return false; }
+    })(),
     dashboardText: dashParts.join(' · '),
     liquidityMapText: mapParts.join(' | '),
     allSSL: allSSL.slice(0, 3),
@@ -6546,6 +6576,34 @@ function r278LiquidityHunter(d, side){
       return { allow:false, edge:-12,
         reason:`R278 chase TUZAK BLOK: ${isL?'alt SSL':'ust BSL'} %${counterDist.toFixed(2)} yakin, momentum oraya kosacak (av)`,
         tag:'CHASE_TUZAK' };
+    }
+
+    // ── R279 DİRENÇ REDDİ — MM İLE BERABER GÜÇ TOPLA, SONRA BERABER DÖN ────────
+    // Kullanici tespiti (iki asamali):
+    //   1) Diren\u00e7 reddi g\u00f6r\u00fcld\u00fcyse MM g\u00fc\u00e7 toplamaya TERS y\u00f6ne gidecek → o harekete BIN (asama 1).
+    //   2) G\u00fc\u00e7 topladigi likiditede sweep+reclaim olunca AS\u0130L y\u00f6ne D\u00d6N (asama 2 = KURAL 2 AV B\u0130ND\u0130).
+    //   Yani: ust diren\u00e7 reddi → simdi SHORT (MM ile asagi), dipte sweep+reclaim → LONG (MM ile yukari).
+    const bslReject = r120Bool(ict.bslRejection);  // ust diren\u00e7 reddi (yukari kirilamadi)
+    const sslReject = r120Bool(ict.sslRejection);  // alt destek reddi (asagi kirilamadi)
+    if (!sweepReclaimOk && !r160FullProof) {
+      // LONG isterken ust diren\u00e7 reddedildi:
+      //   - Bu LONG erken (MM once asagi gidecek) → LONG bekle.
+      //   - AMA ayni anda gelen bir SHORT sinyali MM ile UYUMLU → engelleme, hatta tesvik et.
+      if (isL && bslReject) {
+        return { allow:false, edge:-15,
+          reason:`R279 DİRENÇ REDDİ: ust BSL kirilamadi — MM asagi g\u00fc\u00e7 toplayacak; LONG erken (asagi sweep+reclaim sonrasi gir). Su an MM ile SHORT uyumlu.`,
+          tag:'REDDI_LONG_BEKLE', flipHint:'SHORT' };
+      }
+      if (!isL && sslReject) {
+        return { allow:false, edge:-15,
+          reason:`R279 DESTEK REDDİ: alt SSL kirilamadi — MM yukari g\u00fc\u00e7 toplayacak; SHORT erken (yukari sweep+reclaim sonrasi gir). Su an MM ile LONG uyumlu.`,
+          tag:'REDDI_SHORT_BEKLE', flipHint:'LONG' };
+      }
+      // ── ASAMA 1 BONUS: MM ile beraber g\u00fc\u00e7 toplama hareketine binmek ──
+      // SHORT isterken ust diren\u00e7 reddedildi → MM zaten asagi gidiyor, biz onunla beraberiz → bonus.
+      if (!isL && bslReject) { edge += 8; tags.push('R279 MM-ile-asagi (diren\u00e7 reddi, g\u00fc\u00e7 toplama yon\u00fc)'); }
+      // LONG isterken alt destek reddedildi → MM zaten yukari gidiyor, onunla beraber → bonus.
+      if (isL && sslReject)  { edge += 8; tags.push('R279 MM-ile-yukari (destek reddi, g\u00fc\u00e7 toplama yon\u00fc)'); }
     }
 
     // KURAL 2: SUPURME+RECLAIM TAMAM — r110 motoru onayladi → MM avlandi, yonune bin (KAT deseni)
@@ -13075,7 +13133,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
