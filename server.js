@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R277_BE_SL_TICK_CLAMP_FIX';
+const LAZARUS_BUILD = 'R278_LIQUIDITY_HUNTER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6108,7 +6108,17 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     : '';
   const r276Gate = r276MmHuntGate(d, side);
   d.r276Gate = r276Gate;
-  const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock && r276Gate.allow);
+  // R278 koruma valfi için r160 alt bayraklarını kapıdan ÖNCE d'ye yaz (sıra düzeltmesi).
+  d.r160Q1Structure = r160Q1Structure; d.r160Q2Flow = r160Q2Flow;
+  d.r160Q3Momentum = r160Q3Momentum; d.r160Q4Proof = r160Q4Proof;
+  const r278Hunt = r278LiquidityHunter(d, side);
+  d.r278Hunt = r278Hunt;
+  // R278 av bonusu: süpürme+reclaim (KAT deseni) edge'i yükseltir → A-tier + R275 runner tetikler.
+  // Sadece pozitif bonus eklenir (blok zaten ok kapısında); negatif bonus edge'i bozmaz.
+  if (r278Hunt.allow && Number(r278Hunt.edge) > 0) {
+    edge = Math.min(100, edge + Number(r278Hunt.edge));
+  }
+  const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock && r276Gate.allow && r278Hunt.allow);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -6129,8 +6139,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? `R188 R159 kanıt freni: momentum ${r159Points}p ama 5m mum/sweep/body-reclaim/forecast kanıtı yetersiz`
     : '';
   const r274ReasonTxt = r274Signal.reason ? `R274 ${r274EntryOk?'ENTRY':'WATCH'}: ${r274Signal.reason}` : '';
+  const r278BlockReason = (!r278Hunt.allow) ? r278Hunt.reason : '';
   const r276BlockReason = (!r276Gate.allow) ? r276Gate.reason : '';
-  const r144WatchExtraRaw = r276BlockReason || r191UnifiedBlockReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r274ReasonTxt || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
+  const r144WatchExtraRaw = r278BlockReason || r276BlockReason || r191UnifiedBlockReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r274ReasonTxt || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
   const r144WatchExtra = r144WatchExtraRaw ? ` · ${r144WatchExtraRaw}` : '';
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
@@ -6150,6 +6161,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r160Q2Flow = r160Q2Flow;
   d.r160Q3Momentum = r160Q3Momentum;
   d.r160Q4Proof = r160Q4Proof;
+  // R278: sweep+reclaim/FVG lehte bonusu edge'e işlenir → KAT tipi post-sweep girişler
+  // A-tier'a yükselebilir, R275 runner profilini tetikler. Tuzak bloğu zaten ok=false yaptı.
+  if (r278Hunt.allow && r278Hunt.bonus > 0) { edge = Math.min(100, edge + r278Hunt.bonus); }
   d.brainConfidence = edge;
   d.brainRawEdge = rawEdge;
   d.r142CalibratedEdge = edge;
@@ -6447,6 +6461,112 @@ function r276MmHuntGate(d, side){
     }
   } catch(e){
     return { allow:true, reason:'R276 hata, gecir (fail-soft): '+String(e&&e.message||e).slice(0,50), regime:'HATA' };
+  }
+}
+
+// ── R278 LİKİDİTE AVCISI — MM tuzak/hedef bölge karar beyni ──────────────────
+// Kullanıcı teşhisi (kanıtlı): zarar eden işlemlerin HEPSİ 15m/1h/4h likidite
+// seviyesine (SSL/BSL) %0.5'ten yakın açılmış — MM tam oraya çeker, likiditeyi
+// alır, ters döner. ENA SHORT -10.8 (yukarı trendde, BSL'e yakın), HMSTR SHORT -10.8,
+// VELVET -2.71 hep aynı imza. Kazanan KAT +25 ise likidite ALINDIKTAN sonra (sweep)
+// girmişti. Bu beyin MM'in mantığını tersine çevirir:
+//
+//   PRENSİP: Likidite bir MIKNATIS'tır. Fiyat ona yakınken o yöne girme — MM oraya
+//   çekip avlar. Likidite ALINDIKTAN (sweep) ve fiyat reclaim ettikten SONRA, MM'in
+//   yakıtı bitmiştir → ters yöne güçlü hareket gelir. İşte KAT'ın +25 yaptığı yer.
+//
+//   KURAL 1 (TUZAK BLOĞU): Karşı likiditeye çok yakın (<%0.35) ve henüz SWEEP yokken
+//     o yöne giriş YASAK. LONG isen üstte BSL <%0.35 → MM yukarı çekip satacak: blok.
+//     SHORT isen altta SSL <%0.35 → MM aşağı çekip alacak: blok.
+//   KURAL 2 (HEDEF/SWEEP ONAYI): Karşı likidite ALINDI (swept) + reclaim/ChoCH varsa
+//     o yön LEHTE — MM avını yaptı, şimdi gerçek hareket. (KAT tipi.) Bonus puan.
+//   KURAL 3 (FVG HEDEF): Fiyat aynı yönde bir FVG içinde/kenarındaysa mitigation
+//     girişi — MM'in boşluğu doldurma hedefi bizimle aynı: lehte.
+//   KURAL 4 (MIKNATIS YAKINLIĞI): Karşı likidite %0.35-0.8 arası (yakın ama değil) →
+//     giriş serbest ama "dikkat" notu; momentum-chase ise daha sert bak.
+//
+// Ham veri r110ICT'den geliyor (d.r278* alanları). Yeni hesap yok, sadece karar mantığı.
+// Fail-soft: veri yoksa bloklamaz (frekansı öldürmez), sadece açık tuzakta durur.
+
+// ── R278 MM TOKATI — LIKIDITE AVCISI ─────────────────────────────────────────
+// Kullanicinin cekirdek tespiti: zararlar 15m/1h/4h likidite bolgelerinde (SSL/BSL)
+// aciliyor — MM fiyati oraya cekip likiditeyi supuruyor, sonra ters donuyor.
+// KAT +25 ise SUPURME SONRASI girdi (MM avlandiktan sonra). Bu kapi onu mekaniklestirir:
+//
+//   KURAL 1 — TUZAK BOLGESI (giris YASAK): Fiyat bir karsi-likidite bolgesine
+//     %0.35'ten yakin VE henuz supurulmemis ise → MM oraya cekecek, girme.
+//       LONG dusunurken ustte BSL <%0.35 ve swept degil → YASAK (MM yukari cekip avlar)
+//       SHORT dusunurken altta SSL <%0.35 ve swept degil → YASAK (MM asagi cekip avlar)
+//   KURAL 2 — SUPURME+RECLAIM (giris SERBEST + bonus): Hedef likidite SUPURULDU
+//     ve ChoCH/MSS reclaim oldu → MM avlandi, biz yonune biniyoruz (KAT deseni). +edge.
+//   KURAL 3 — FVG MITIGASYON: Supurme sonrasi fiyat FVG icindeyse (geri test) → ideal giris.
+//   KURAL 4 — TEMIZ KOSU: Karsi-likidite uzaktaysa (>%0.8) → onunde engel yok, serbest.
+//
+// r110ICT motoru tum veriyi zaten uretiyor (nearSSL/nearBSL/swept/ChoCH/FVG); bu kapi
+// sadece bunlari ZORUNLU karar gucune cevirir. Momentum-chase'i ozellikle hedefler.
+// Veri yoksa fail-soft (yapi girislerini bogmaz).
+function r278LiquidityHunter(d, side){
+  d = d || {};
+  try {
+    const ict = d._r278ICT;
+    if (!ict || !ict.ok) return { allow:true, edge:0, reason:'R278 ICT veri yok, fail-soft', tag:'VERI' };
+    const isL = String(side||'').toUpperCase() !== 'SHORT';
+    const isChase = r120Bool(d.r159MomentumPass || d.r156FastTop10Bypass || /momentum ge\u00e7i\u015f|momentum scalp|trend devam|h\u0131zl\u0131 edge|mikro-scalp/i.test(String(d.reason||'')));
+    // KORUMA VALFİ: tam yapı+akış+ivme+kanıt (R160 4/4) girişleri ve r110 onaylı sweep girişleri
+    // TUZAK bloğundan MUAFtır — bunlar zaten yüksek kanıtlı, frekansı bunlarla korunur.
+    // Tuzak bloğu yalnızca momentum-chase (kanıtsız ivme kovalama) girişlerine uygulanır.
+    const r160FullProof = r120Bool(d.r160Q1Structure && d.r160Q2Flow && d.r160Q3Momentum && d.r160Q4Proof);
+
+    // ── SUPURME+RECLAIM sinyali: r110 motorunun KENDI ICT karari (en guvenilir) ──
+    // r110: longOk = SSL supuruldu+bullishChoCH+FVG/govde; shortOk = BSL supuruldu+bearishChoCH+...
+    // Bu, KAT +25'in yakaladigi tam desen. Tek sweep'in iki rolunu karistirmamak icin
+    // dogrudan motorun kararini kullaniyoruz.
+    const sweepReclaimOk = isL ? r120Bool(ict.longOk) : r120Bool(ict.shortOk);
+    const sweepQ = isL ? (ict.sslSweepQuality||0) : (ict.bslSweepQuality||0);
+    const inFvg  = isL ? r120Bool(ict.inBullishFVG) : r120Bool(ict.inBearishFVG);
+
+    // ── TUZAK haritasi: MM bizi hangi supurulmemis likiditeye ceker? ──
+    // LONG'da risk: alt SSL henuz supurulmemisse MM asagi cekip stop avlar.
+    // SHORT'ta risk: ust BSL henuz supurulmemisse MM yukari cekip stop avlar.
+    const counterLiq   = isL ? ict.nearSSL : ict.nearBSL;
+    const counterSwept = isL ? r120Bool(ict.sslSwept) : r120Bool(ict.bslSwept);
+    const counterDist  = counterLiq ? Number(counterLiq.dist) : 999;
+
+    let edge = 0; const tags = [];
+
+    // KURAL 1: TUZAK BOLGESI — av likiditesi cok yakin + supurulmemis + henuz reclaim yok → YASAK
+    // KORUMA VALFİ: R160 4/4 tam kanıtlı girişler bu bloktan muaf (yüksek güven, frekans korunur).
+    // (Eger sweep+reclaim zaten olmussa, MM avlanmis demektir; tuzak gecerli degil, KURAL 2'ye duser.)
+    if (!sweepReclaimOk && !r160FullProof && counterLiq && counterDist <= 0.35 && !counterSwept) {
+      return { allow:false, edge:-20,
+        reason:`R278 TUZAK BLOK: ${isL?'alt SSL':'ust BSL'} %${counterDist.toFixed(2)} (${counterLiq.label}) supurulmemis — MM oraya cekip avlar`,
+        tag:'TUZAK' };
+    }
+    if (!sweepReclaimOk && isChase && counterLiq && counterDist <= 0.6 && !counterSwept) {
+      return { allow:false, edge:-12,
+        reason:`R278 chase TUZAK BLOK: ${isL?'alt SSL':'ust BSL'} %${counterDist.toFixed(2)} yakin, momentum oraya kosacak (av)`,
+        tag:'CHASE_TUZAK' };
+    }
+
+    // KURAL 2: SUPURME+RECLAIM TAMAM — r110 motoru onayladi → MM avlandi, yonune bin (KAT deseni)
+    if (sweepReclaimOk) {
+      edge += 14; tags.push(`SUPURME+RECLAIM q${sweepQ} (KAT deseni)`);
+      if (inFvg) { edge += 6; tags.push('FVG mitigasyon'); }
+      return { allow:true, edge, reason:`R278 AV TAMAM: ${isL?'SSL':'BSL'} supuruldu+reclaim, MM avlandi — ${tags.join(' · ')}`, tag:'AV_BINDI' };
+    }
+    // Kismi: hedef tarafta sweep oldu ama tam reclaim/ChoCH yok → kucuk bonus
+    const targetSwept = isL ? r120Bool(ict.sslSwept) : r120Bool(ict.bslSwept);
+    if (targetSwept && sweepQ >= 2) { edge += 7; tags.push(`hedef supuruldu q${sweepQ}`); }
+
+    // KURAL 3: FVG icinde (geri-test girisi)
+    if (inFvg) { edge += 6; tags.push('FVG ici (mitigasyon)'); }
+
+    // KURAL 4: TEMIZ KOSU — av likiditesi uzakta, onunde engel yok
+    if (counterDist >= 0.8) { edge += 4; tags.push(`temiz kosu (karsi %${counterDist.toFixed(2)})`); }
+
+    return { allow:true, edge, reason: tags.length ? `R278 serbest: ${tags.join(' · ')}` : 'R278 notr serbest', tag:'SERBEST' };
+  } catch(e){
+    return { allow:true, edge:0, reason:'R278 hata fail-soft: '+String(e&&e.message||e).slice(0,40), tag:'HATA' };
   }
 }
 
@@ -10731,7 +10851,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterTf, r116CounterDist, r116NearCounterHTF, r116AcceptedCounterBreak, r116CounterSweepTaken,
           r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapTf, r117TrapDist, r117NearTrapHTF, r117TrapSweepTaken, r117AcceptedAgainst, r117BodyReclaimOk, r117BodyShiftOk, r117MssOk, r117FlowOk, r117TrapEvidenceOk, r117TrapEvidenceRawOk, r117PrecisionCandleOk, r118CandleOk, r118CandleStrong, r118CandleOzet, r118Candle,
           r125Flow, r125OrderflowSummary:r125Flow?.summary||'', r126FlowSummary:r125Flow?.r126?.summary||'', r125BookImb:r125Flow?.book?.nearImb, r125BookVelocity:r125Flow?.book?.velocity, r125LiveDelta:r125Flow?.delta, r125LiveDeltaPct:r125Flow?.deltaPct, r125Aggression:r125Flow?.aggression, r125BestSide:r125Flow?.bestSide,
-          r190Edge, r274Signal, _r276k5m:k5m, _r276LastPrice:lastPrice, _r276AtrPct:atrPct,
+          r190Edge, r274Signal, _r276k5m:k5m, _r276LastPrice:lastPrice, _r276AtrPct:atrPct, _r278ICT:r110ICT,
           r140Phase, r140EqHL, r140OiVel, r140BtcDiv, r140Rvol,
           r114Shift, r114OppositeShift, r114ReclaimOk, r114ExtremeZone, r114SweepTrapFamily, r114ContinuationProof, r114TrapBlock, r114TrapReason,
           wickTrapFlip: {
@@ -10744,7 +10864,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           },
           r88VurKac: {
             aktif: r88VurKacEnabled, ok: r88VurKacOk, aday: r92VurKacAdayOk, islemTipi: r92IslemTipi, riskDurumu: r92RiskDurumu, terazi: r92Terazi, defterSaglam: r92DefterSaglam, emirZeminiOk: r93EmirZeminiOk, guclu: r92GucluVurKacOk, normal: r92NormalVurKacOk, sadeceIzle: r92SadeceIzleOk, canliKopma: r90CanliKopmaOk, superMikro: r89SuperMikroYapiOk, mikroSkor: r88MikroSkor, teyitSayisi: r88AkisTeyidiSayisi, puanTabani: r89ScoreFloor,
-            canliHamleIzi: r88CanliHamleIzi, zeminKurtarma: r94CanliTrendZeminKurtarmaOk, dalgaliBaglanti: r96DalgaliZeminVurKacOk, r109SweepReclaimKoprusuOk, r109ReclaimOk, r109ReclaimSkor, r110IctKoprusuOk, r110Phase, r110SSLAlindi, r110BSLAlindi, r110ChoCH, r110YonUyumlu, r110NearSSL, r110NearBSL, r110FVG, r110EntryOk, ictDashboard: r110ICT?.dashboardText||'', r111KoprusuOk, r111SiksmaBreakout, r111SqueezeSkor, r111SiksmaAdet, r111ShortSqueeze, r111LongSqueeze, r111OiChgPct, r111ObBaskisi, r111DemandOB, r111SupplyOB, siksmaOzet: r111Siksma?.ozet||'', r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterDist, r116AcceptedCounterBreak, r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapDist, r117AcceptedAgainst, r117PrecisionCandleOk, r118CandleOk, r118CandleOzet, r118Candle, piyasaBozuk: r88PiyasaBozuk, piyasaEtiketi: r93PiyasaEtiketi, piyasaTehlikeli: r93PiyasaTehlikeli, piyasaDalgali: r93PiyasaDalgali, dalgaliAmaIslemYapilabilir: r93DalgaliAmaIslemYapilabilir, makasGenis: r88SpreadWide, defterInce: r88DefterInce, oynaklikAsiri: r88OynaklikAsiri,
+            canliHamleIzi: r88CanliHamleIzi, zeminKurtarma: r94CanliTrendZeminKurtarmaOk, dalgaliBaglanti: r96DalgaliZeminVurKacOk, r109SweepReclaimKoprusuOk, r109ReclaimOk, r109ReclaimSkor, r110IctKoprusuOk, r110Phase, r110SSLAlindi, r110BSLAlindi, r110ChoCH, r110YonUyumlu, r110NearSSL, r110NearBSL, r110FVG, r110EntryOk, r278SslSwept: !!r110ICT?.sslSwept, r278BslSwept: !!r110ICT?.bslSwept, r278SslSweepQ: Number(r110ICT?.sslSweepQuality||0), r278BslSweepQ: Number(r110ICT?.bslSweepQuality||0), r278NearSslDist: r110ICT?.nearSSL ? Number(r110ICT.nearSSL.dist) : null, r278NearBslDist: r110ICT?.nearBSL ? Number(r110ICT.nearBSL.dist) : null, r278InBullFvg: !!r110ICT?.inBullishFVG, r278InBearFvg: !!r110ICT?.inBearishFVG, r278ApproachingSsl: !!r110ICT?.approachingSSL, r278ApproachingBsl: !!r110ICT?.approachingBSL, r278BullChoCH: !!r110ICT?.bullishChoCH, r278BearChoCH: !!r110ICT?.bearishChoCH, ictDashboard: r110ICT?.dashboardText||'', r111KoprusuOk, r111SiksmaBreakout, r111SqueezeSkor, r111SiksmaAdet, r111ShortSqueeze, r111LongSqueeze, r111OiChgPct, r111ObBaskisi, r111DemandOB, r111SupplyOB, siksmaOzet: r111Siksma?.ozet||'', r116HtfGuardBlock, r116HtfGuardReason, r116CounterLevel, r116CounterDist, r116AcceptedCounterBreak, r117HtfReverseOk, r117HtfReverseReason, r117TrapLevel, r117TrapDist, r117AcceptedAgainst, r117PrecisionCandleOk, r118CandleOk, r118CandleOzet, r118Candle, piyasaBozuk: r88PiyasaBozuk, piyasaEtiketi: r93PiyasaEtiketi, piyasaTehlikeli: r93PiyasaTehlikeli, piyasaDalgali: r93PiyasaDalgali, dalgaliAmaIslemYapilabilir: r93DalgaliAmaIslemYapilabilir, makasGenis: r88SpreadWide, defterInce: r88DefterInce, oynaklikAsiri: r88OynaklikAsiri,
             merdivenDevam: r93MerdivenDevamOk, donusRadari: r93DonusRadariOk, donusSkor: r93DonusSkor, merdivenSkor: r93MerdivenSkor, sonMumKoru: r93SonMumKoru,
             not: r93PiyasaTehlikeli ? 'Piyasa zemini tehlikeli; işlem yok.' : (r93DalgaliAmaIslemYapilabilir ? 'Piyasa dalgalı ama canlı trend/dönüş kanıtı işlem yapılabilir düzeyde.' : (r88VurKacOk ? 'Vur-kaç motoru veriyle desteklenen 5m hamle gördü.' : 'Vur-kaç için canlı hamle veya teyit yetersiz.'))
           },
@@ -12955,7 +13075,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
