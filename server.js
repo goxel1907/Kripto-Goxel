@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R275_SNIPER_RUNNER_PROFILE';
+const LAZARUS_BUILD = 'R276_MM_HUNT_LOCATION_GATE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6106,7 +6106,9 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):''
       ].filter(Boolean).join(' + ')}`
     : '';
-  const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock);
+  const r276Gate = r276MmHuntGate(d, side);
+  d.r276Gate = r276Gate;
+  const ok = r120Bool(r191RawOk && !r191UnifiedEntryBlock && r276Gate.allow);
 
   const sensorSummary = r120BrainSensorSummary(d);
   const modeLabel = r120BrainModeLabel(primaryMode);
@@ -6127,7 +6129,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     ? `R188 R159 kanıt freni: momentum ${r159Points}p ama 5m mum/sweep/body-reclaim/forecast kanıtı yetersiz`
     : '';
   const r274ReasonTxt = r274Signal.reason ? `R274 ${r274EntryOk?'ENTRY':'WATCH'}: ${r274Signal.reason}` : '';
-  const r144WatchExtraRaw = r191UnifiedBlockReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r274ReasonTxt || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
+  const r276BlockReason = (!r276Gate.allow) ? r276Gate.reason : '';
+  const r144WatchExtraRaw = r276BlockReason || r191UnifiedBlockReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r274ReasonTxt || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
   const r144WatchExtra = r144WatchExtraRaw ? ` · ${r144WatchExtraRaw}` : '';
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
@@ -6378,6 +6381,73 @@ function r274C20L20RsiRatioFvgEntry(k5m=[], side='LONG', lastPrice=0, atrPct=1){
       reason:`R274 ${dir}: ${[...plus,...minus].join(' · ')||'bekle'} · ${ratioLabel} · RSI ${rsiNow.toFixed(1)}${fvg?` · FVG ${fvg.low.toFixed(8)}-${fvg.high.toFixed(8)} age:${fvg.age}`:' · FVG yok'}`
     };
   } catch(e){ return {ok:false, entryOk:false, watchOk:false, side:String(side).toUpperCase(), score:0, reason:`R274 hata:${String(e?.message||e).slice(0,80)}`}; }
+}
+
+// ── R276 MM-AVI KONUM KAPISI ─────────────────────────────────────────────────
+// 13.06 teşhisi (105$->62$): zararlarin tamami "bandin yanlis ucu" imzasi tasiyor —
+// AIO -24 (dip bolgesinde LONG), ORCA -29 (tepe bolgesinde LONG), HMSTR -15 (taban SHORT).
+// Kazananlar (EDGE +8.7, ORCA alt-band +2.8) ise ya trend hamlesi ya da dogru uctan donus.
+// Bu kapi kullanicinin "burasi MM avi mi?" sezgisini mekaniklestirir:
+//   1) Range rejiminde (son 48x5m bant <= %3.2 ve net egim yok):
+//        - PREMIUM (konum >= %68) momentum-chase LONG YASAK — MM burada avlar.
+//        - DISCOUNT (konum <= %32) momentum-chase SHORT YASAK.
+//        - Band ucundan DONUS (alt-band LONG / ust-band SHORT) -> SERBEST.
+//   2) Trend rejiminde kapi acik (EDGE tipi momentum korunur); sadece asiri uc gec-chase eler.
+//   3) Ham 5m mumdan bagimsiz; veri yoksa SADECE momentum-chase'i bloklar (fail-soft).
+function r276Rows(k5m, limit){
+  limit = limit || 60;
+  return (Array.isArray(k5m)?k5m:[]).slice(-limit).map(function(k){
+    return { o:+(k&&k[1]), h:+(k&&k[2]), l:+(k&&k[3]), c:+(k&&k[4]), v:+(k&&k[5]) };
+  }).filter(function(x){ return x.o>0&&x.h>0&&x.l>0&&x.c>0&&x.h>=x.l; });
+}
+function r276MmHuntGate(d, side){
+  d = d || {};
+  try {
+    var isL = String(side||'').toUpperCase() !== 'SHORT';
+    var rows = r276Rows(d._r276k5m||[], 60);
+    var isChase = r120Bool(d.r159MomentumPass || d.r156FastTop10Bypass || /momentum ge\u00e7i\u015f|momentum scalp|trend devam/i.test(String(d.reason||'')));
+    if (rows.length < 40) {
+      return { allow: !isChase, reason: isChase ? 'R276 veri<40: momentum-chase kapal\u0131 (fail-soft)' : 'R276 veri yok, chase de\u011fil -> ge\u00e7ir', regime:'VERI' };
+    }
+    var win = rows.slice(-48);
+    var his=win.map(function(x){return x.h;}), los=win.map(function(x){return x.l;});
+    var hi=Math.max.apply(null,his), lo=Math.min.apply(null,los);
+    var lp = +(d._r276LastPrice) || rows[rows.length-1].c;
+    var pos = hi>lo ? (lp-lo)/(hi-lo)*100 : 50;
+    var bandPct = lo>0 ? (hi-lo)/lo*100 : 99;
+    var atr=0; for(var i=rows.length-14;i<rows.length;i++){var c=rows[i],p=rows[i-1];atr+=Math.max(c.h-c.l,Math.abs(c.h-p.c),Math.abs(c.l-p.c));} atr/=14;
+    var slopeAtr = atr>0 ? (rows[rows.length-1].c - rows[rows.length-13].c)/atr : 0;
+    var isRange = bandPct <= 3.2 && Math.abs(slopeAtr) < 2.0;
+    var last=rows[rows.length-1], prev=rows[rows.length-2];
+    var midPrev=(prev.o+prev.c)/2;
+    var reclaimUp = last.c>last.o && last.c>midPrev;
+    var rejectDn  = last.c<last.o && last.c<midPrev;
+    var base = { regime:isRange?'RANGE':'TREND', pos:+pos.toFixed(0), bandPct:+bandPct.toFixed(2), slopeAtr:+slopeAtr.toFixed(2) };
+    function R(allow,reason){ return Object.assign({allow:allow,reason:reason}, base); }
+
+    if (!isRange) {
+      // Trend rejimi. KARŞI yönde momentum-chase = düşen bıçak / yükselen bıçak → blok (AIO -24 tipi).
+      if (isChase && isL && slopeAtr <= -2.2) return R(false, 'R276 trend AŞAĞI iken LONG-chase blok: düşen bıçak (slope '+slopeAtr.toFixed(1)+' ATR)');
+      if (isChase && !isL && slopeAtr >= 2.2) return R(false, 'R276 trend YUKARI iken SHORT-chase blok: yükselen bıçak (slope +'+slopeAtr.toFixed(1)+' ATR)');
+      // Yön ile UYUMLU ama tam uçta (parabolik tepe/dip) geç-chase → blok (sadece çok aşırı).
+      if (isChase && isL && pos>=96 && slopeAtr>=4.0) return R(false, 'R276 trend parabolik tepe %'+pos.toFixed(0)+' LONG geç-chase blok');
+      if (isChase && !isL && pos<=4 && slopeAtr<=-4.0) return R(false, 'R276 trend parabolik dip %'+pos.toFixed(0)+' SHORT geç-chase blok');
+      return R(true, 'R276 trend rejimi: yön-uyumlu giriş serbest (pos %'+pos.toFixed(0)+', slope '+slopeAtr.toFixed(1)+')');
+    }
+    if (isL) {
+      if (pos >= 80) return R(false, 'R276 RANGE tepe %'+pos.toFixed(0)+' LONG blok: dip degil tavan');
+      if (pos >= 68 && isChase) return R(false, 'R276 RANGE premium %'+pos.toFixed(0)+' LONG-chase blok: MM burada short-avi yapar');
+      if (pos <= 40) return R(true, 'R276 RANGE discount %'+pos.toFixed(0)+' LONG: dogru uc'+(reclaimUp?' (reclaim)':''));
+      return R(!isChase || reclaimUp, 'R276 RANGE orta %'+pos.toFixed(0)+' LONG: '+((!isChase||reclaimUp)?'gecir':'chase+reclaim yok, blok'));
+    } else {
+      if (pos <= 20) return R(false, 'R276 RANGE dip %'+pos.toFixed(0)+' SHORT blok: tavan degil taban');
+      if (pos <= 32 && isChase) return R(false, 'R276 RANGE discount %'+pos.toFixed(0)+' SHORT-chase blok: MM burada long-avi yapar');
+      if (pos >= 60) return R(true, 'R276 RANGE premium %'+pos.toFixed(0)+' SHORT: dogru uc'+(rejectDn?' (reject)':''));
+      return R(!isChase || rejectDn, 'R276 RANGE orta %'+pos.toFixed(0)+' SHORT: '+((!isChase||rejectDn)?'gecir':'chase+reject yok, blok'));
+    }
+  } catch(e){
+    return { allow:true, reason:'R276 hata, gecir (fail-soft): '+String(e&&e.message||e).slice(0,50), regime:'HATA' };
+  }
 }
 
 
@@ -9124,6 +9194,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r37Side: r37Timing?.ok ? (isL ? r37Timing.long : r37Timing.short) : null
         });
         const r274Signal = r274C20L20RsiRatioFvgEntry(k5m, side, lastPrice, atrPct);
+        // R276: ham 5m veriyi karar zincirine taşı (MM-avı konum kapısı bunları kullanır).
+        decisionChain._r276k5m = k5m;
+        decisionChain._r276LastPrice = lastPrice;
+        decisionChain._r276AtrPct = atrPct;
 
         // Giriş sinyali: otomatik için en az bir gerçek entry izi isteriz.
         const hasEntry=
@@ -12110,22 +12184,6 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── R94 AKTİF VUR-KAÇ ÇIKIŞ — TP beklemeden ama net kâr güvenli bölgeye gelince çıkış ────────
   const r91VurKacAktif = cfg.vurKacEnabled !== false; // panelde kapatılırsa sadece klasik SL/TP+BE kalır
   const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade });
-
-  // ── R275 SNIPER RUNNER PROFİLİ ─────────────────────────────────────────────
-  // Sorun: kazanan +9 ROI'ye değdiği an R165 tablosu / R91 ilk kilit / R149 kasası /
-  // karTasima merdiveni SL'i girişin dibine yapıştırıyor; +50 ROI runner yapısal olarak imkânsız.
-  // Çözüm: A-tier (veya yakıt kanıtlı B+) girişlerde, GRAFİK DEVAM GÜCÜ SÜRDÜĞÜ SÜRECE
-  // tüm kilit eşikleri ×1.8 ertelenir. Devam gücü düşerse (r91 exitScore>=3 ve devamGucu yok)
-  // r275T çarpanı ANINDA 1'e döner ve eski sıkı koruma aynı döngüde geri gelir.
-  // peakPnl>=55 ROI sonrası da normal kilitleme döner (büyük kâr bankaya).
-  // r165WinnerNeverLoser ve R149 giveback çıkışları BİLEREK esnetilmedi — runner'ın tabanı onlar.
-  const r275Eligible = !!(String(state.tier||'')==='A' || (String(state.tier||'')==='B+' && state.r190Edge?.r192FuelOk && Number(state.score||0)>=60));
-  const r275RunnerActive = !!(r275Eligible && (r91Brain.devamGucu || Number(r91Brain.exitScore||0) < 3) && Number(state.peakPnl||0) < 55);
-  const r275T = (v) => r275RunnerActive ? v * 1.8 : v;
-  if (r275RunnerActive && !state.r275Logged) {
-    state.r275Logged = true; trailingState.set(sym, state);
-    logAuto(`🏃 ${sym} R275 RUNNER profili: tier ${state.tier||'?'} skor ${state.score||0} · kilit eşikleri ertelendi (devam gücü sürdükçe), hedef büyük ROI`);
-  }
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
 
@@ -12157,8 +12215,8 @@ async function managePosition(apiKey, apiSecret, pos) {
     { min: 16, lockReal: 0.45, level: 2 },
     { min: 9,  lockReal: 0.24, level: 1 },
   ];
-  if (!action && inProfit && r165PeakRoi >= r275T(9)) {
-    const lock = r165LockTable.find(x => r165PeakRoi >= r275T(x.min));
+  if (!action && inProfit && r165PeakRoi >= 9) {
+    const lock = r165LockTable.find(x => r165PeakRoi >= x.min);
     if (lock) {
       // Geri verme arttıysa kilidi biraz daha yukarı al; ama mevcut fiyatı geçip
       // stop emrini geçersiz yapmasın diye updateStopLossWithProofJS ayrıca mark'a göre clamp eder.
@@ -12200,7 +12258,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r149GivebackRoi = Math.max(0, r149PeakRoi - Number(pnlPct || 0));
   const r149EntryTxt = [state.openReason, state.brainMode, state.entryPermissionReason, state.entryReason?.reason].filter(Boolean).join(' ').toLowerCase();
   const r149ScalpLike = /mikro|scalp|vur-kaç|vurkac|flow|momentum|tuzak dönüşü|counter_trap|hızlı edge|fast edge/.test(r149EntryTxt);
-  const r149ShouldLock = !!(!action && r149PeakRoi >= r275T(8) && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= r275T(16)));
+  const r149ShouldLock = !!(!action && r149PeakRoi >= 8 && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= 16));
   if (r149ShouldLock) {
     let keepRealPct = r149PeakReal * (r149ScalpLike ? 0.58 : 0.48);
     if (r149PeakRoi >= 20) keepRealPct = Math.max(keepRealPct, r149PeakReal * 0.64);
@@ -12235,11 +12293,11 @@ async function managePosition(apiKey, apiSecret, pos) {
     // +0.06$ küçük kâra boğabiliyor. Akış hâlâ pozisyon yönündeyse ilk kilidi
     // birkaç döngü nefeslendir; ters teyit gelirse eski emniyet yine çalışır.
     const r136RunnerBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 2.5 && realProfitPct < 1.45);
-    if (!action && pnlPct >= r275T(9) && realProfitPct >= r275T(0.45) && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
+    if (!action && pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
       state.r136FirstLockBreath = Number(state.r136FirstLockBreath||0) + 1;
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 kâr nefesi: erken ilk kâr kilidi bekletildi [${state.r136FirstLockBreath}/4] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
-    } else if (pnlPct >= r275T(9) && realProfitPct >= r275T(0.45) && !state.r91FirstLock) {
+    } else if (pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock) {
       const lockPct = Math.max(0.22, Math.min(0.55, realProfitPct * 0.45));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -12253,11 +12311,11 @@ async function managePosition(apiKey, apiSecret, pos) {
     // 2) Kâr büyüdüyse SL kâr bölgesine daha agresif taşınır.
     // R136: ikinci kilit de trend/flow sağlıklıysa %1.15 altında acele sıkışmasın.
     const r136SecondBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 3.0 && realProfitPct < 1.15);
-    if (!action && pnlPct >= r275T(14) && realProfitPct >= r275T(0.70) && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
+    if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
       state.r136SecondLockBreath = Number(state.r136SecondLockBreath||0) + 1;
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 ikinci kâr kilidi nefesi [${state.r136SecondLockBreath}/3] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
-    } else if (!action && pnlPct >= r275T(14) && realProfitPct >= r275T(0.70) && !state.r91SecondLock) {
+    } else if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock) {
       const lockPct = Math.max(0.35, Math.min(0.85, realProfitPct * 0.55));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -12270,10 +12328,10 @@ async function managePosition(apiKey, apiSecret, pos) {
 
     // 3) Gerçek vur-kaç: kâr var + hareket bozulduysa TP beklenmez, reduce-only market çıkar.
     const r91ExitNow =
-      (pnlPct >= r275T(25) && r91Brain.exitScore >= 2.5) ||
-      (pnlPct >= r275T(18) && r91Brain.exitScore >= 3.0) ||
-      (pnlPct >= r275T(12) && r91Brain.exitScore >= 4.0) ||
-      (pnlPct >= r275T(10) && r91Brain.givebackRoi >= 7 && r91Brain.exitScore >= 3.0) ||
+      (pnlPct >= 25 && r91Brain.exitScore >= 2.5) ||
+      (pnlPct >= 18 && r91Brain.exitScore >= 3.0) ||
+      (pnlPct >= 12 && r91Brain.exitScore >= 4.0) ||
+      (pnlPct >= 10 && r91Brain.givebackRoi >= 7 && r91Brain.exitScore >= 3.0) ||
       (pnlPct >= 8  && realProfitPct >= 0.55 && r91Brain.givebackRoi >= 9 && r91Brain.exitScore >= 4.0);
     if (!action && r91ExitNow) {
       action = {
@@ -12370,15 +12428,15 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 4b. KÂR TAŞIMA ADIMLARI ─────────────────────────────────────────────────
   if (!action && state.breakEvenSet) {
     let stepSL = null, stepReason = null, stepUpdate = null;
-    if (realProfitPct >= r275T(karTasima3) && !state.step3Set) {
+    if (realProfitPct >= karTasima3 && !state.step3Set) {
       stepSL = isLong ? +(entryPrice*(1+0.015)).toFixed(8) : +(entryPrice*(1-0.015)).toFixed(8);
       stepReason = `Kâr taşıma 3: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
       stepUpdate = { step3Set:true };
-    } else if (realProfitPct >= r275T(karTasima2) && !state.step2Set) {
+    } else if (realProfitPct >= karTasima2 && !state.step2Set) {
       stepSL = isLong ? +(entryPrice*(1+0.008)).toFixed(8) : +(entryPrice*(1-0.008)).toFixed(8);
       stepReason = `Kâr taşıma 2: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
       stepUpdate = { step2Set:true };
-    } else if (realProfitPct >= r275T(karTasima1) && !state.step1Set) {
+    } else if (realProfitPct >= karTasima1 && !state.step1Set) {
       // R136: Kâr taşıma 1, erken çıkış gibi davranmasın.
       // Akış hâlâ pozisyon yönündeyse ve ters çıkış puanı düşükse ilk taşıma için
       // %1.60'a kadar veya en fazla 6 yönetim döngüsü nefes ver. BE emniyeti zaten aktif.
@@ -12882,7 +12940,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R275; SNIPER RUNNER profili aktif: A-tier (veya yakıt kanıtlı B+) girişlerde grafik devam gücü sürdüğü sürece R165/R91/R149/karTasima kilit eşikleri ×1.8 ertelenir, +30-50 ROI runner mümkün olur; devam gücü düşerse veya zirve ROI 55'i geçerse normal sıkı koruma anında döner; winner-never-loser ve giveback çıkışları aynen korunur (runner tabanı). R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
