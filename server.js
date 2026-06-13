@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R276_MM_HUNT_LOCATION_GATE_FIX';
+const LAZARUS_BUILD = 'R277_BE_SL_TICK_CLAMP_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -11796,9 +11796,16 @@ async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) 
   const state = trailingState.get(sym) || {};
   const mark = parseFloat(pos.markPrice || pos.entryPrice || 0);
   const entry = parseFloat(pos.entryPrice || mark || 0);
+  // R277: tick-tabanlı güvenli SL. Mikro-fiyatlı coinlerde (HMSTR tickSize 1e-7) yüzdesel
+  // clamp (0.9997) yeterli tick uzaklığı vermiyordu → SL mark'a 0-1 tick yapışıp Binance
+  // "Order would immediately trigger (-2021)" reddediyordu. Min 3 tick VEYA %0.04 mesafe,
+  // hangisi büyükse onu uygula; SL'i her zaman mark'ın DOĞRU tarafına it.
+  let r277Tick = 0;
+  try { const f = await getSymbolFilters(sym); r277Tick = Number(f?.tickSize) || 0; } catch (_) {}
+  const r277MinGap = Math.max((r277Tick > 0 ? r277Tick * 3 : 0), mark * 0.0004);
   const safeSL = isLong
-    ? Math.min(parseFloat(newSL), mark * 0.9997)
-    : Math.max(parseFloat(newSL), mark * 1.0003);
+    ? Math.min(parseFloat(newSL), mark - r277MinGap)
+    : Math.max(parseFloat(newSL), mark + r277MinGap);
   let tpPrice = await currentBracketTP(apiKey, apiSecret, sym, isLong, entry, cfg.tpPct, state);
   // TP mark'a yanlış tarafta kalmışsa emri anında tetikletmemek için panel TP'sinden yeniden hesapla.
   if (isLong && tpPrice <= mark) tpPrice = calcFallbackTP(entry, true, cfg.tpPct);
@@ -11806,7 +11813,15 @@ async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) 
 
   const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, safeSL, tpPrice, sym);
   if (!proof.ok) {
-    logAuto(`❌ ${sym} ${reason} SL/TP çifti doğrulanamadı; yerel BE/trailing aktif sayılmadı`);
+    // R277: Proof başarısız olduğunda ÖNCE mevcut korumayı kontrol et, panik kapatma SON çare.
+    // Binance'te hâlâ geçerli bir SL/TP varsa pozisyonu açık tut (kazananı erken öldürme).
+    const existingSL = Number(state.currentSL || 0);
+    const slStillValid = existingSL > 0 && (isLong ? existingSL < mark : existingSL > mark);
+    if (slStillValid) {
+      logAuto(`🛡️ ${sym} ${reason} yeni SL reddedildi ama mevcut SL ${existingSL} hâlâ geçerli (${isLong?'<':'>'} mark ${mark}); pozisyon AÇIK tutuldu, BE atlandı`);
+      return { ok:false, proof, safeSL, tpPrice, keptExisting:true };
+    }
+    logAuto(`❌ ${sym} ${reason} SL/TP çifti doğrulanamadı ve mevcut geçerli SL yok; failsafe kontrol`);
     const failsafe = await emergencyCloseIfBracketMissing(apiKey, apiSecret, pos, `${reason}_SLTP_PROOF_FAIL`);
     if (failsafe.closed) logAuto(`🛡️ ${sym} korumasız kalmasın diye acil reduce-only kapatıldı`);
     else if (failsafe.protected) logAuto(`🛡️ ${sym} proof eşleşmedi ama Binance'te SL+TP mevcut; pozisyon açık bırakıldı`);
@@ -11830,7 +11845,11 @@ async function updateBracketWithProofJS(apiKey, apiSecret, pos, newSL, newTP, re
   const isLong = pos.side === 'LONG';
   const closeSide = isLong ? 'SELL' : 'BUY';
   const mark = parseFloat(pos.markPrice || pos.entryPrice || 0);
-  const safeSL = isLong ? Math.min(parseFloat(newSL), mark * 0.9997) : Math.max(parseFloat(newSL), mark * 1.0003);
+  // R277: tick-tabanlı min mesafe (mikro-fiyat -2021 fix), updateStopLossWithProofJS ile aynı mantık.
+  let r277Tick2 = 0;
+  try { const f2 = await getSymbolFilters(sym); r277Tick2 = Number(f2?.tickSize) || 0; } catch (_) {}
+  const r277Gap2 = Math.max((r277Tick2 > 0 ? r277Tick2 * 3 : 0), mark * 0.0004);
+  const safeSL = isLong ? Math.min(parseFloat(newSL), mark - r277Gap2) : Math.max(parseFloat(newSL), mark + r277Gap2);
   const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, safeSL, newTP, sym);
   if (!proof.ok) {
     logAuto(`❌ ${sym} ${reason} bracket proof başarısız; failsafe kontrol`);
