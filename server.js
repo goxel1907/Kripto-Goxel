@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R279_REJECTION_GUARD_R280_429FIX';
+const LAZARUS_BUILD = 'R282_TEPE_DIP_GEC_GIRIS_GARDI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6848,10 +6848,15 @@ function r39FiveMinuteSR(k5m, k1h, lastPrice, atrPct=1, vpvr1h=null, liq1h=null)
   const shortNearSupport = !!(ns && ns.distPct <= band && !breakSup);
   const longTargetTooNear = !!(nr && nr.distPct <= Math.max(0.22, band*0.75) && !breakRes);
   const shortTargetTooNear = !!(ns && ns.distPct <= Math.max(0.22, band*0.75) && !breakSup);
+  // R282: SERT yakınlık — hedef %0.30 altı + kırılım YOK ise, erken-impuls bypass'ı bile geçersiz.
+  // ICP -3.70 dersi: swing-high'a %0.46 yakınken "erken impuls" diye long açıldı, tam tepeye girildi.
+  // Bu seviyede giriş = MM'in satacağı/alacağı yere girmek; kırılım teyidi olmadan beklenir.
+  const longTargetTooNearHard = !!(nr && nr.distPct <= 0.30 && !breakRes && nr.type && /SWING_HIGH|PDH|PIVOT_R|VAH|BEAR_OB|BUY_POOL/.test(String(nr.type)));
+  const shortTargetTooNearHard = !!(ns && ns.distPct <= 0.30 && !breakSup && ns.type && /SWING_LOW|PDL|PIVOT_S|VAL|BULL_OB|SELL_POOL/.test(String(ns.type)));
   out.ok=true; out.supports=supports.slice(0,6); out.resistances=resistances.slice(0,6); out.nearestSupport=ns; out.nearestResistance=nr;
-  out.long={ supportConfluence:longSupportConfluence, nearResistance:longNearResistance, targetTooNear:longTargetTooNear, breakConfirmed:breakRes, nearestSupport:ns, nearestResistance:nr,
+  out.long={ supportConfluence:longSupportConfluence, nearResistance:longNearResistance, targetTooNear:longTargetTooNear, targetTooNearHard:longTargetTooNearHard, breakConfirmed:breakRes, nearestSupport:ns, nearestResistance:nr,
     reason:nr?`üst hedef ${nr.type} ${nr.distPct}%`:ns?`destek ${ns.type} ${ns.distPct}%`:'seviye yok' };
-  out.short={ resistanceConfluence:shortResistanceConfluence, nearSupport:shortNearSupport, targetTooNear:shortTargetTooNear, breakConfirmed:breakSup, nearestSupport:ns, nearestResistance:nr,
+  out.short={ resistanceConfluence:shortResistanceConfluence, nearSupport:shortNearSupport, targetTooNear:shortTargetTooNear, targetTooNearHard:shortTargetTooNearHard, breakConfirmed:breakSup, nearestSupport:ns, nearestResistance:nr,
     reason:ns?`alt hedef ${ns.type} ${ns.distPct}%`:nr?`direnç ${nr.type} ${nr.distPct}%`:'seviye yok' };
   return out;
 }
@@ -9586,6 +9591,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const r37EarlyOk = !!(r37Side?.earlyImpulse || r37Side?.retestOk || Number(r37Side?.earlyScore||0) >= 4);
         const r39Side = r39SR?.ok ? (isL ? r39SR.long : r39SR.short) : null;
         const r39TargetNearBlock = !!(r39Side?.targetTooNear && !r39Side?.breakConfirmed && !r37Side?.earlyImpulse && !r37Side?.retestOk);
+        // R282: SERT hedef-yakın — kırılım teyidi YOKSA erken-impuls/retest bypass'ı bile geçemez.
+        // R160 4/4 tam kanıt olsa dahi, fiyat swing-high/low'a %0.30'dan yakın ve kırılmamışsa beklet.
+        const r39TargetNearHardBlock = !!(r39Side?.targetTooNearHard && !r39Side?.breakConfirmed);
         const r39AgainstZone = !!(isL ? r39Side?.nearResistance : r39Side?.nearSupport);
         const r39Confluence = !!(isL ? r39Side?.supportConfluence : r39Side?.resistanceConfluence);
 
@@ -9863,8 +9871,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // R155b: r75LateChaseHard hardVeto'dan çıkarıldı.
         // TOP10 5m pump momentumunda "geç giriş" çok sık tetikleniyor ve hardVeto → fatalDanger → rawEdge-55 zincirini başlatıyordu.
         // Kalibrasyon cezası (-8), r37LateChaseBlock ve r147 kontrolleri yeterli koruma sağlar.
-        const hardVeto = !!(poorLiquidity || atrBlocking || r39TargetNearBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock || r196RangeBlock);
+        const hardVeto = !!(poorLiquidity || atrBlocking || r39TargetNearBlock || r39TargetNearHardBlock || r41TrapBlock || r41FallingKnifeBlock || r41RisingKnifeBlock || !fundOk || !rsiOk || !mmOk || r29CtxBlock || r196RangeBlock);
         const hardVetoReasons=[];
+        if(r39TargetNearHardBlock) hardVetoReasons.push(`R282 hedef ÇOK yakın (kırılım yok): ${r39Side?.reason||''} — tepeye/dibe giriş, beklet`);
         if(poorLiquidity) hardVetoReasons.push(`Likidite kötü ${liqQual?.quality||''} spread:${liqQual?.spread??'?'}`);
         if(atrBlocking) hardVetoReasons.push(`ATR gate %${atrPct.toFixed(2)}`);
         if(r75LateChaseHard) hardVetoReasons.push(`R75 geç chase (retest yok): ${r37Side?.reason||''}`);
@@ -13133,7 +13142,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R282; TEPE/DIP GEÇ-GİRİŞ GARDI: fiyat 5m swing-high/PDH/pivot-R/VAH gibi bir dirence %0.30 altı yakın ve kırılım teyidi YOKsa LONG beklenir (R160 4/4 tam kanıt olsa bile); swing-low/PDL/pivot-S/VAL desteğe yakın+kırılmamışsa SHORT beklenir. ICP -3.70 dersi: tepeye %0.46 yakın long açıldı, MM sattı. Kırılım onayı gelince serbest. R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
