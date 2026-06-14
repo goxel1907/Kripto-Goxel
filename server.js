@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R284_PRO_TRADER_WAIT_UPGRADE';
+const LAZARUS_BUILD = 'R287_REVERSE_THESIS_TRADER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3298,18 +3298,18 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   const flowAligned = (flowSide === side) || (isL ? delta >= 14 : delta <= -14);
   const flowAgainst = (flowSide && flowSide !== 'NEUTRAL' && flowSide !== side) || (isL ? delta <= -22 : delta >= 22) || !!e.liveOpposite;
   const real5mTrigger = !!(
-    d.r283RealChartStructure || d.r160Q4Proof || d.r117TrapSweepTaken || d.r117BodyReclaimOk || d.r117MssOk ||
+    d.r285TraderSetupOk || d.r283RealChartStructure || d.r160Q4Proof || d.r117TrapSweepTaken || d.r117BodyReclaimOk || d.r117MssOk ||
     d.r118CandleOk || d.r118CandleStrong || e?.r194SwingBreak?.strong ||
     (e?.r194SwingBreak?.ok && e?.r192FuelOk) ||
     (isL ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong) ||
     /body-reclaim|MSS|ChoCH|sweep\+|SSL_ALINDI|BSL_ALINDI|EngulfingConfirmed|DarkCloudConfirmed|PiercingConfirmed/i.test(txt)
   );
   const fvgOteOk = !!(
-    (isL ? ict.inBullishFVG : ict.inBearishFVG) ||
+    d.r285FvgOteOk || (isL ? ict.inBullishFVG : ict.inBearishFVG) ||
     (ict.oteZone?.inOte && String(ict.oteZone?.side||'').toUpperCase() === side) ||
     /FVG.*(içi|yakın|mitigasyon|entry)|OTE/i.test(String(map.summary||'') + ' ' + txt)
   );
-  const continuationFuel = !!(e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.vpinAligned || e.r192FuelScore >= 6);
+  const continuationFuel = !!(d.r285ContinuationFuel || e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.vpinAligned || e.r192FuelScore >= 6);
   const chartFuel = !!(real5mTrigger || fvgOteOk || continuationFuel || map.runner);
   const weakCandle = !!(!d.mumOnay && !d.mumGuclu && /formasyon yok|teyidi zayıf|puan 0\/12|mum onay yok/i.test(txt));
   const r160NeutralStructureTrap = !!(d.r160TraderDecision && d.r160TrueCount >= 4 && !d.r283RealChartStructure && !d.r160Q4Proof && !fvgOteOk && !continuationFuel);
@@ -3411,6 +3411,200 @@ function r284ProTraderWaitUpgrade(side='LONG', d={}, opt={}) {
   if(weakNoChart) notes.push('grafik tetik yok');
   if(htfWallAgainst) notes.push('yakın HTF duvarı');
   return { ok, mode, side, score, edge, priorityScore:pri, chartSetup, sweptReclaim, wickReject, fvgOte, mssReclaim, flowAligned, flowAgainst, hardNo, notes:notes.slice(0,8), summary:`R284 ${ok?'WAIT→TRADE':'WAIT'} ${side} ${mode} · ${notes.slice(0,5).join(' · ')}` };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R285: TECRÜBELİ 5M TRADER COOK — analiz motorunun içinde LONG/SHORT tarafı seçer
+// R284 geç kalıyordu: otomatik tarama döngüsüne yalnızca seçilmiş WATCH tarafı çıkıyordu.
+// R285 bu yüzden /api/analyze içinde, longDecision/shortDecision tam malzemesi hâlâ eldeyken çalışır.
+// Kural: Her bekleyen coin emir olmaz. Normal trader gibi yalnızca 3 yemek pişirilir:
+// 1) Likidite alınmış + reclaim/MSS/mum kanıtı, 2) FVG/OTE retest, 3) erken continuation yakıtı.
+// Tepe kovalamaca, FVG invalid, OI çözülüyor + mum yok, canlı akış ters ise WAIT kalır.
+// ─────────────────────────────────────────────────────────────────────────────
+function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
+  side = String(side || 'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const n = (v,def=0)=>Number.isFinite(Number(v))?Number(v):def;
+  const txt = [d.reason, d.brainSummary, d.htfTani, d.mumOzet, d.ictDashboard, d.r125OrderflowSummary, d.r126FlowSummary, d.r116HtfGuardReason, d.r117HtfReverseReason].filter(Boolean).join(' ');
+  const e = d.r190Edge || {};
+  const ict = d._r278ICT || d.r110ICT || {};
+  const map = d.r281ProMap || {};
+  const score = n(opt.score ?? d.score, 0);
+  const minScore = n(opt.minScore ?? 70, 70);
+  const edge = n(d.brainConfidence ?? d.r142CalibratedEdge, 0);
+  const pri = n(d.priorityScore, 0);
+  const delta = n(d.r125LiveDeltaPct ?? d.r125Flow?.deltaPct, 0);
+  const flowSide = String(d.r125BestSide || d.r125Flow?.bestSide || '').toUpperCase();
+  const flowAligned = !!(
+    flowSide === side ||
+    (isL ? delta >= 18 : delta <= -18) ||
+    (isL ? /R125\s*(YÜKSELİŞ|LONG).*L\d+\/S0/i.test(txt) : /R125\s*(DÜŞÜŞ|SHORT).*L0\/S\d+/i.test(txt)) ||
+    (isL ? e.r192Footprint?.aligned && !e.r192Footprint?.against : e.r192Footprint?.aligned && !e.r192Footprint?.against)
+  );
+  const flowToxicAgainst = !!(
+    (flowSide && flowSide !== 'NEUTRAL' && flowSide !== side) ||
+    (isL ? delta <= -28 : delta >= 28) ||
+    e.r192LiveAgainst || e.r192Footprint?.against || e.r192DeepOfi?.against || e.takerDivergence || e.vpinAgainst
+  );
+
+  const sslSwept = !!(ict.sslSwept || d.r278SslSwept || /SSL_ALINDI|SSL wick\+body|SSL.*body[- ]?(geri|reclaim)|HTF_SSL_SEVIYESINDE/i.test(txt));
+  const bslSwept = !!(ict.bslSwept || d.r278BslSwept || /BSL_ALINDI|BSL wick\+body|BSL.*body[- ]?(geri|reclaim)|HTF_BSL_SEVIYESINDE/i.test(txt));
+  const directionSweep = isL ? sslSwept : bslSwept;
+  const wrongSweep = isL ? bslSwept : sslSwept;
+  const bodyReclaim = !!(d.r117BodyReclaimOk || d.r117MssOk || d.r117PrecisionCandleOk || /body[- ]?(geri|reclaim)|MSS|ChoCH|geri kazanım|wick\+body/i.test(txt));
+  const candleScore = n(d.r86FormasyonPuan ?? d.r118Candle?.score ?? 0, 0);
+  const candleOk = !!(d.r118CandleOk || d.r118CandleStrong || candleScore >= 6 || /Hammer|Dragonfly|EngulfingConfirmed|PiercingConfirmed|DarkCloudConfirmed|Shooting|Doji/i.test(txt));
+  const wickReject = !!(isL ? /Hammer|Dragonfly|alt iğne|lower wick|dip|SSL wick/i.test(txt) : /Shooting|üst iğne|upper wick|tepe|BSL wick|DarkCloud/i.test(txt));
+
+  const inDirFvg = !!(isL ? (ict.inBullishFVG || d.r278InBullFvg || /FVG_(boğa|bull)|bullish.*FVG/i.test(txt)) : (ict.inBearishFVG || d.r278InBearFvg || /FVG_(ayı|bear)|bearish.*FVG/i.test(txt)));
+  const invalidFvg = /FVG invalid/i.test(txt) && !inDirFvg;
+  const oteOk = !!(ict.oteZone?.inOte && String(ict.oteZone?.side||'').toUpperCase() === side);
+  const fvgOteOk = !!((inDirFvg || oteOk) && !invalidFvg);
+
+  const rangePos = n(e.rangePos, 0.5);
+  const seq = n(e.seq, 0);
+  const p3 = n(e.price3, 0);
+  const atExtreme = isL ? (rangePos >= 0.86 || /pos:0\.(9|8[8-9])|pos:1\.00/i.test(txt)) : (rangePos <= 0.14 || /pos:0\.(0|1[0-2])/i.test(txt));
+  const lateChase = !!((e.lateTrapRisk || e.tooLate || /geç giriş|late-chase/i.test(txt) || seq >= 5 || (isL ? p3 > 2.2 : p3 < -2.2)) && !e.squeeze && !e.r192FuelOk);
+  const continuationFuel = !!(e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.r194SwingBreak?.strong || (e.r192FuelScore >= 6 && !lateChase));
+  const continuationClean = !!(continuationFuel && flowAligned && !flowToxicAgainst && !lateChase && !atExtreme && score >= minScore - 14 && edge >= 45);
+
+  const sweepReclaimSetup = !!(directionSweep && bodyReclaim && (candleOk || wickReject || flowAligned) && !flowToxicAgainst);
+  const fvgRetestSetup = !!(fvgOteOk && flowAligned && !flowToxicAgainst && !lateChase && !atExtreme && (score >= minScore - 20 || edge >= 55));
+  const reverseTrapSetup = !!(d.r117HtfReverseOk && directionSweep && bodyReclaim && !flowToxicAgainst);
+
+  const fakeOi = !!(/sahte-pump|SAHTE_PUMP|OI:çözülüyor|OI[- ]?çözülüyor/i.test(txt) || d.r140OiVel?.fakePump || d.r140OiVel?.fakeDump);
+  const weakNoTrigger = !!(/formasyon yok|puan 0\/12|teyidi zayıf/i.test(txt) && !bodyReclaim && !fvgOteOk && !continuationClean && !sweepReclaimSetup);
+  const htfWallAgainst = !!(isL
+    ? (/karşı .*BSL.*u:%0\.[0-7]|karşı .*direnç yakın|SUPPLY_OB/i.test(txt) && !directionSweep)
+    : (/karşı .*SSL.*u:%0\.[0-7]|karşı .*destek yakın|DEMAND_OB/i.test(txt) && !directionSweep));
+  const hardNo = !!(
+    e.spreadBlock || map.hardNo || flowToxicAgainst ||
+    (lateChase && !directionSweep && !continuationClean) ||
+    (atExtreme && !directionSweep && !continuationClean) ||
+    (fakeOi && !directionSweep && !fvgOteOk && !continuationClean) ||
+    (invalidFvg && !directionSweep && !continuationClean) ||
+    (weakNoTrigger && score < minScore - 4) ||
+    (htfWallAgainst && !reverseTrapSetup)
+  );
+
+  let setup = 'NONE';
+  if (reverseTrapSetup) setup = 'REVERSAL_TRAP';
+  else if (sweepReclaimSetup) setup = 'LIQUIDITY_RECLAIM';
+  else if (fvgRetestSetup) setup = 'FVG_OTE_RETEST';
+  else if (continuationClean) setup = 'EARLY_CONTINUATION';
+
+  const setupBonus = setup === 'REVERSAL_TRAP' ? 34 : setup === 'LIQUIDITY_RECLAIM' ? 30 : setup === 'FVG_OTE_RETEST' ? 26 : setup === 'EARLY_CONTINUATION' ? 24 : 0;
+  const quality = Math.max(0, Math.min(100,
+    setupBonus + score*0.22 + edge*0.24 + pri*0.08 + (flowAligned?10:0) + (candleOk?7:0) + (fvgOteOk?8:0) + (continuationFuel?8:0)
+    - (lateChase?20:0) - (atExtreme?12:0) - (fakeOi?10:0) - (invalidFvg?10:0) - (htfWallAgainst?10:0)
+  ));
+  const minQuality = setup === 'REVERSAL_TRAP' ? 58 : setup === 'LIQUIDITY_RECLAIM' ? 60 : setup === 'FVG_OTE_RETEST' ? 64 : setup === 'EARLY_CONTINUATION' ? 68 : 999;
+  const ok = !!(!hardNo && setup !== 'NONE' && quality >= minQuality && (score >= minScore - 24 || edge >= 50 || setup === 'REVERSAL_TRAP'));
+
+  const notes = [];
+  notes.push(`setup:${setup}`);
+  if(directionSweep) notes.push(isL?'SSL alınmış/reclaim':'BSL alınmış/reclaim');
+  if(bodyReclaim) notes.push('body/MSS reclaim');
+  if(fvgOteOk) notes.push('FVG/OTE retest');
+  if(continuationClean) notes.push('erken continuation temiz');
+  if(flowAligned) notes.push('akış aynı yön');
+  if(flowToxicAgainst) notes.push('akış toksik ters');
+  if(lateChase) notes.push('geç-chase');
+  if(atExtreme) notes.push('range ucu');
+  if(fakeOi) notes.push('OI/fake risk');
+  if(invalidFvg) notes.push('FVG invalid');
+  if(htfWallAgainst) notes.push('HTF duvar');
+  if(weakNoTrigger) notes.push('mum/tetik yok');
+
+  return { ok, side, setup, mode: ok ? (setup === 'EARLY_CONTINUATION' ? 'RUNNER' : setup === 'FVG_OTE_RETEST' ? 'NORMAL' : 'TACTICAL') : 'WAIT', quality:+quality.toFixed(1), score, edge, priorityScore:pri,
+    traderSetupOk: ok, fvgOteOk, continuationFuel: continuationClean, sweepReclaimSetup, reverseTrapSetup, flowAligned, flowToxicAgainst, lateChase, atExtreme, fakeOi, invalidFvg, hardNo, notes:notes.slice(0,10),
+    summary:`R285 ${ok?'TRADE':'WAIT'} ${side} ${setup} q:${quality.toFixed(1)} · ${notes.slice(0,6).join(' · ')}` };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R287: REVERSE THESIS TRADER — yanlış yöne kabul yoksa karşı yönü RADAR/TRADE yap
+// EDEN örneği: LONG, üst hedef/BEAR_OB %0.44 yakın + range pos 0.92 + p3/seq koşmuş + mum yok.
+// Normal 5m trader burada "LONG yasak" dedikten sonra işi bitirmez; "SHORT tezi var mı?"
+// diye bakar. Ancak canlı akış hâlâ sert LONG ise kör SHORT basmaz; SHORT'u silaha alır,
+// mikro akış/rejection/body kabul gelince emir yoluna yükseltir.
+// ─────────────────────────────────────────────────────────────────────────────
+function r287ReverseThesisTrader(blockedSide='LONG', blockedD={}, oppD={}, opt={}) {
+  const bSide = String(blockedSide||'LONG').toUpperCase();
+  const side = bSide === 'LONG' ? 'SHORT' : 'LONG';
+  const isShort = side === 'SHORT';
+  const n = (v,def=0)=>Number.isFinite(Number(v))?Number(v):def;
+  const bTxt = [blockedD?.reason, blockedD?.brainSummary, blockedD?.htfTani, blockedD?.mumOzet, blockedD?.ictDashboard, blockedD?.r125OrderflowSummary, blockedD?.r126FlowSummary, blockedD?.r191UnifiedBlockReason].filter(Boolean).join(' ');
+  const oTxt = [oppD?.reason, oppD?.brainSummary, oppD?.htfTani, oppD?.mumOzet, oppD?.ictDashboard, oppD?.r125OrderflowSummary, oppD?.r126FlowSummary, oppD?.r116HtfGuardReason, oppD?.r117HtfReverseReason].filter(Boolean).join(' ');
+  const txt = `${bTxt} ${oTxt}`;
+  const eB = blockedD?.r190Edge || {};
+  const eO = oppD?.r190Edge || {};
+  const score = n(opt.score ?? oppD?.score, 0);
+  const minScore = n(opt.minScore ?? 70, 70);
+  const edge = n(oppD?.brainConfidence ?? oppD?.r142CalibratedEdge, 0);
+  const pri = n(oppD?.priorityScore, 0);
+  const rangePos = n(blockedD?.r286RangePos ?? eB.rangePos, 0.5);
+  const p3 = n(blockedD?.r286P3 ?? eB.price3, 0);
+  const seq = n(blockedD?.r286Seq ?? eB.seq, 0);
+  const blockedChart = !!(blockedD?.r286ChartAcceptanceBlock || /R286 5m kabul yok|hedef\/iğne yakın|hedef yakın|üst hedef yakın|alt hedef yakın/i.test(bTxt));
+  const topRejectionZone = !!(
+    bSide === 'LONG' && blockedChart &&
+    (rangePos >= 0.82 || /pos:0\.(8[2-9]|9)|pos:1\.00|range 0\.(8[2-9]|9)/i.test(txt)) &&
+    (/üst hedef yakın|5M_BEAR_OB|BEAR_OB|SUPPLY_OB|karşı .*BSL|direnç yakın|üst iğne|BSL/i.test(txt) || blockedD?.r39TargetNearBlock || blockedD?.r39SR?.nearResistance)
+  );
+  const bottomRejectionZone = !!(
+    bSide === 'SHORT' && blockedChart &&
+    (rangePos <= 0.18 || /pos:0\.(0|1[0-8])|range 0\.(0|1[0-8])/i.test(txt)) &&
+    (/alt hedef yakın|5M_BULL_OB|BULL_OB|DEMAND_OB|karşı .*SSL|destek yakın|alt iğne|SSL/i.test(txt) || blockedD?.r39TargetNearBlock || blockedD?.r39SR?.nearSupport)
+  );
+  const levelReason = topRejectionZone || bottomRejectionZone;
+
+  // Karşı yön için gerçek tetik: fitil reddi, body reclaim/MSS, mum kanıtı, FVG/OTE veya canlı akış flip.
+  const oppDelta = n(oppD?.r125LiveDeltaPct ?? oppD?.r125Flow?.deltaPct, 0);
+  const oppFlowSide = String(oppD?.r125BestSide || oppD?.r125Flow?.bestSide || '').toUpperCase();
+  const flowFlip = !!(
+    oppFlowSide === side ||
+    (isShort ? oppDelta <= -12 : oppDelta >= 12) ||
+    (isShort ? /R125\s*(DÜŞÜŞ|SHORT).*L0\/S\d+/i.test(oTxt) : /R125\s*(YÜKSELİŞ|LONG).*L\d+\/S0/i.test(oTxt))
+  );
+  const flowStillAgainst = !!(
+    (oppFlowSide && oppFlowSide !== 'NEUTRAL' && oppFlowSide !== side) ||
+    (isShort ? oppDelta >= 28 : oppDelta <= -28) ||
+    eO?.r192LiveAgainst || eO?.r192Footprint?.against || eO?.r192DeepOfi?.against || eO?.takerDivergence || eO?.vpinAgainst
+  );
+  const rejectionCandle = !!(
+    oppD?.r118CandleOk || oppD?.r118CandleStrong || oppD?.r117BodyReclaimOk || oppD?.r117MssOk ||
+    (isShort ? /Shooting|DarkCloud|Bearish|ayı|üst iğne|BSL.*reclaim|BSL wick\+body/i.test(txt) : /Hammer|Dragonfly|Piercing|Bullish|boğa|alt iğne|SSL.*reclaim|SSL wick\+body/i.test(txt))
+  );
+  const fvgOteOpp = !!(
+    (isShort ? (oppD?._r278ICT?.inBearishFVG || oppD?.r110ICT?.inBearishFVG || /FVG_(ayı|bear)|bearish.*FVG/i.test(oTxt)) : (oppD?._r278ICT?.inBullishFVG || oppD?.r110ICT?.inBullishFVG || /FVG_(boğa|bull)|bullish.*FVG/i.test(oTxt))) ||
+    ((oppD?._r278ICT?.oteZone?.inOte || oppD?.r110ICT?.oteZone?.inOte) && String(oppD?._r278ICT?.oteZone?.side || oppD?.r110ICT?.oteZone?.side || '').toUpperCase() === side)
+  );
+  const oiTrap = !!(/OI:çözülüyor|sahte-pump|SAHTE_PUMP|OI spike|ACCEL/i.test(txt) || Math.abs(n(eB?.oi?.oiChg15, n(blockedD?.r140OiVel?.velocity, 0))) >= 180);
+  const extendedIntoLevel = !!(seq >= 4 || (bSide === 'LONG' ? p3 >= 1.8 : p3 <= -1.8) || /geç giriş|late-chase/i.test(bTxt));
+  const trigger = !!(rejectionCandle || fvgOteOpp || flowFlip);
+  const armed = !!(levelReason && (extendedIntoLevel || oiTrap || blockedChart));
+  const hardNo = !!(oppD?.poorLiquidity || oppD?.atrExtremeBlock || oppD?.hardVeto || eO?.spreadBlock || flowStillAgainst || !armed);
+  const quality = Math.max(0, Math.min(100,
+    38 + score*0.18 + edge*0.18 + pri*0.06 + (levelReason?16:0) + (extendedIntoLevel?10:0) + (oiTrap?8:0) + (rejectionCandle?13:0) + (fvgOteOpp?10:0) + (flowFlip?12:0)
+    - (flowStillAgainst?30:0) - (!trigger?22:0)
+  ));
+  // Çok sert flow yoksa ve seviye netse, mikro flip/rejection ile B+ deneme yap; yoksa sadece ARMED izle.
+  const ok = !!(!hardNo && trigger && quality >= 62 && (score >= minScore - 30 || edge >= 35 || rejectionCandle || fvgOteOpp));
+  const mode = ok ? (fvgOteOpp ? 'FVG_REVERSE' : rejectionCandle ? 'REJECTION_SCALP' : 'FLOW_FLIP_SCALP') : (armed ? 'ARMED_WAIT' : 'WAIT');
+  const notes=[];
+  if(levelReason) notes.push(bSide==='LONG'?'üst hedef/fitil alanı':'alt hedef/fitil alanı');
+  if(blockedChart) notes.push(`${bSide} kabul yok`);
+  if(extendedIntoLevel) notes.push(`hareket koşmuş p3:${p3.toFixed(2)} seq:${seq}`);
+  if(oiTrap) notes.push('OI/MM av riski');
+  if(rejectionCandle) notes.push('karşı mum/reclaim tetik');
+  if(fvgOteOpp) notes.push('karşı FVG/OTE');
+  if(flowFlip) notes.push('canlı akış flip');
+  if(flowStillAgainst) notes.push('akış hâlâ ters — kör reverse yok');
+  if(!trigger) notes.push('reverse tetik bekle');
+  return { ok, armed, side, fromBlockedSide:bSide, mode, quality:+quality.toFixed(1), score, edge, priorityScore:pri, levelReason, extendedIntoLevel, oiTrap, rejectionCandle, fvgOteOpp, flowFlip, flowStillAgainst, hardNo, notes:notes.slice(0,10), summary:`R287 ${ok?'REVERSE TRADE':'REVERSE RADAR'} ${side} ${mode} q:${quality.toFixed(1)} · ${notes.slice(0,7).join(' · ')}` };
 }
 
 
@@ -6462,6 +6656,63 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     !r193StrongLiveFuel
   );
 
+  // R286: 5m tecrübeli trader kabulü — HTF sweep + canlı delta, tek başına LONG/SHORT basma sebebi değildir.
+  // EDEN örneği: 15m/1h üst hedef %0.44 yakın, 5m mum formasyon yok, range pos 0.92,
+  // p3 +2.75%, seq 4; buna rağmen R144/R160 market LONG açtı. Normal trader burada ya
+  // üst hedef kırılım-kabul/retest bekler ya da FVG/OTE pullback bekler. Bu blok frekansı öldürmez;
+  // sadece hedefe/chase'e doğru, 5m kabul olmadan basılan emirleri keser.
+  const r286EdgeObj = d.r190Edge || {};
+  const r286RangePos = r120BrainNum(r286EdgeObj.rangePos, 0.5);
+  const r286Seq = r120BrainNum(r286EdgeObj.seq, 0);
+  const r286P3 = r120BrainNum(r286EdgeObj.price3, 0);
+  const r286Rvol = r120BrainNum(r286EdgeObj.rvol, r120BrainNum(d.r140Rvol?.ratio, 0));
+  const r286Oi15Abs = Math.abs(r120BrainNum(r286EdgeObj.oi?.oiChg15, r120BrainNum(d.r140OiVel?.velocity, 0)));
+  const r286AtRangeEdge = r120Bool(side === 'LONG' ? r286RangePos >= 0.86 : r286RangePos <= 0.14);
+  const r286ExtendedMove = r120Bool(
+    r286Seq >= 4 ||
+    (side === 'LONG' ? r286P3 >= Math.max(1.65, r120BrainNum(d.atrPct, 1) * 0.75) : r286P3 <= -Math.max(1.65, r120BrainNum(d.atrPct, 1) * 0.75))
+  );
+  const r286TargetNear = r120Bool(
+    d.r39TargetNearBlock ||
+    (d.r39SR?.targetTooNear && !d.r39SR?.breakConfirmed) ||
+    (side === 'LONG' ? (r144CounterVeryNear || htfCounterWait || d.r39SR?.nearResistance) : (r144CounterVeryNear || htfCounterWait || d.r39SR?.nearSupport))
+  );
+  const r286Real5mAcceptance = r120Bool(
+    d.r39SR?.breakConfirmed ||
+    d.r37EarlyOk ||
+    d.r37Timing?.retestOk ||
+    d.r117BodyReclaimOk ||
+    d.r117MssOk ||
+    d.r118CandleOk ||
+    d.r118CandleStrong ||
+    d.r190Edge?.r194SwingBreak?.strong ||
+    (d.r190Edge?.r194SwingBreak?.ok && d.r190Edge?.r192FuelOk && r120BrainNum(d.r190Edge?.score,0) >= 30) ||
+    (side === 'LONG' ? (d.r110ICT?.inBullishFVG || d.r278InBullFvg) : (d.r110ICT?.inBearishFVG || d.r278InBearFvg)) ||
+    (d.r110ICT?.oteZone?.inOte && String(d.r110ICT?.oteZone?.side||'').toUpperCase() === side)
+  );
+  const r286PullbackRetestOk = r120Bool(
+    r286Real5mAcceptance &&
+    (side === 'LONG' ? r286RangePos <= 0.78 : r286RangePos >= 0.22) &&
+    !r188WeakCandle
+  );
+  const r286HtfOnlyChaseIntoNeedle = r120Bool(
+    r286TargetNear &&
+    (r188WeakCandle || r146No5mPattern) &&
+    (r286AtRangeEdge || r286ExtendedMove || d.r37LateChaseBlock) &&
+    !r286Real5mAcceptance &&
+    !r286PullbackRetestOk &&
+    !d.r190Edge?.squeeze
+  );
+  const r286OiSpikeNoAcceptance = r120Bool(
+    r286TargetNear &&
+    r286Oi15Abs >= 250 &&
+    r286Rvol < 0.85 &&
+    (r188WeakCandle || r146No5mPattern) &&
+    !r286Real5mAcceptance &&
+    !d.r190Edge?.squeeze
+  );
+  const r286ChartAcceptanceBlock = r120Bool(r286HtfOnlyChaseIntoNeedle || r286OiSpikeNoAcceptance);
+
   const r191LowScoreNoFuel = r120Bool(score < Math.max(52, minScore - 18) && !r191EarlyFuel && !r191Hard5mProof);
   const r191ForecastOnlyChase = r120Bool(r191ForecastOnlyProof && !r191EarlyFuel && score < Math.max(58, minScore - 12));
   const r191CounterTrapWeak = r120Bool(primaryMode === 'COUNTER_TRAP' && !r191Hard5mProof && !r191EarlyFuel && (r188WeakCandle || r188HtfCounterPressure || r191TakerOrVpinAgainst));
@@ -6500,6 +6751,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r195LowScoreLowEdgeNoFuel ||
     r195WeakSwingLowQuality ||
     r195R160LowEdgeFalse4of4 ||
+    r286ChartAcceptanceBlock ||
     r196RangeLocationBlock
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
@@ -6518,6 +6770,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r195LowScoreLowEdgeNoFuel?`düşük skor ${score}/${minScore} + düşük edge ${edge} + güçlü yakıt yok`:'',
         r195WeakSwingLowQuality?'R194 swing zayıf; TP/yakıt/edge kalite yok':'',
         r195R160LowEdgeFalse4of4?'R160 4/4 görünüyor ama edge düşük; gerçek kaliteli 5m yakıt yok':'',
+        r286HtfOnlyChaseIntoNeedle?`R286 5m kabul yok: hedef/iğne yakın + mum yok + range ${r286RangePos.toFixed(2)} + p3 ${r286P3.toFixed(2)}% seq ${r286Seq}; kırılım-kabul/retest veya FVG/OTE bekle`:'',
+        r286OiSpikeNoAcceptance?`R286 OI spike (${r286Oi15Abs.toFixed(0)}%) ama RVOL ${r286Rvol.toFixed(2)} ve 5m kabul yok; MM likidite iğnesi riski`:'',
         r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):''
       ].filter(Boolean).join(' + ')}`
     : '';
@@ -6574,6 +6828,15 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r160TrueCount = r160TrueCount;
   d.r160Q1Structure = r160Q1Structure;
   d.r283RealChartStructure = r283RealChartStructure;
+  d.r286ChartAcceptanceBlock = r286ChartAcceptanceBlock;
+  d.r286Real5mAcceptance = r286Real5mAcceptance;
+  d.r286RangePos = r286RangePos;
+  d.r286Seq = r286Seq;
+  d.r286P3 = r286P3;
+  d.r286TargetNear = r286TargetNear;
+  d.r286HtfOnlyChaseIntoNeedle = r286HtfOnlyChaseIntoNeedle;
+  d.r286OiSpikeNoAcceptance = r286OiSpikeNoAcceptance;
+  d.r286ChartAcceptanceReason = r286ChartAcceptanceBlock ? (r286HtfOnlyChaseIntoNeedle ? 'HTF_ONLY_CHASE_INTO_NEEDLE' : 'OI_SPIKE_NO_ACCEPTANCE') : '';
   d.r160Q2Flow = r160Q2Flow;
   d.r160Q3Momentum = r160Q3Momentum;
   d.r160Q4Proof = r160Q4Proof;
@@ -11423,6 +11686,83 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         decisionChain.sideDecisionSummary = r128SideDecisionSummary(longDecision, shortDecision);
       }
       if (!decisionChain?.pass) recommendation='WAIT';
+
+      // R285: WAIT kararını dış tarama döngüsünde değil, burada LONG/SHORT tam malzemesi eldeyken tekrar pişir.
+      // Böylece seçilmemiş ama temiz olan taraf R121_SINGLE_BRAIN_WATCH içinde kaybolmaz.
+      try {
+        if (recommendation === 'WAIT') {
+          const r285Long = r285Pro5mTraderCook('LONG', longDecision, {score:longScore, minScore:minAutoScore});
+          const r285Short = r285Pro5mTraderCook('SHORT', shortDecision, {score:shortScore, minScore:minAutoScore});
+          const r285Pick = [r285Long, r285Short]
+            .filter(x => x && x.ok)
+            .sort((a,b) => ((b.quality||0)+(b.score||0)*0.12+(b.edge||0)*0.12) - ((a.quality||0)+(a.score||0)*0.12+(a.edge||0)*0.12))[0];
+          const r285BestWait = [r285Long, r285Short].sort((a,b)=>(b.quality||0)-(a.quality||0))[0];
+          if (r285Pick) {
+            recommendation = r285Pick.side;
+            decisionChain = recommendation === 'LONG' ? longDecision : shortDecision;
+            decisionChain.pass = true;
+            decisionChain.tier = r285Pick.mode === 'RUNNER' ? 'A' : 'B+';
+            decisionChain.autoOk = true;
+            decisionChain.entryPermissionOk = true;
+            decisionChain.brainAction = 'TRADE';
+            decisionChain.brainMode = 'R285_TECRUBELI_5M_TRADER_COOK';
+            decisionChain.entryPermissionReason = 'R285_TECRUBELI_5M_TRADER_COOK';
+            decisionChain.r285TraderCook = r285Pick;
+            decisionChain.r285TraderSetupOk = true;
+            decisionChain.r285FvgOteOk = !!r285Pick.fvgOteOk;
+            decisionChain.r285ContinuationFuel = !!r285Pick.continuationFuel;
+            decisionChain.reason = `${decisionChain.brainSummary || decisionChain.reason || ''} · ${r285Pick.summary}`;
+            decisionChain.brainSummary = `${decisionChain.brainSummary || decisionChain.reason || ''} · ${r285Pick.summary}`;
+          } else if (decisionChain && r285BestWait) {
+            decisionChain.r285TraderCook = r285BestWait;
+            const add = ` · ${r285BestWait.summary}`;
+            decisionChain.reason = String(decisionChain.brainSummary || decisionChain.reason || '').includes('R285 ')
+              ? (decisionChain.brainSummary || decisionChain.reason)
+              : `${decisionChain.brainSummary || decisionChain.reason || ''}${add}`;
+            decisionChain.brainSummary = decisionChain.reason;
+          }
+        }
+      } catch(_r285e) { try { console.warn('R285 trader cook error', _r285e?.message || _r285e); } catch(_){} }
+
+
+
+      // R287: Eğer bir taraf R286 ile "hedef/iğne yakın + 5m kabul yok" diye reddedildiyse,
+      // tecrübeli trader gibi karşı yön senaryosunu dene. Canlı akış hâlâ sert tersse kör reverse yapma;
+      // sadece RADAR notu bas, akış/rejection gelince TRADE'e yükselt.
+      try {
+        if (recommendation === 'WAIT') {
+          const r287Short = r287ReverseThesisTrader('LONG', longDecision, shortDecision, {score:shortScore, minScore:minAutoScore});
+          const r287Long  = r287ReverseThesisTrader('SHORT', shortDecision, longDecision, {score:longScore, minScore:minAutoScore});
+          const r287Pick = [r287Short, r287Long]
+            .filter(x => x && x.ok)
+            .sort((a,b)=>(b.quality||0)-(a.quality||0))[0];
+          const r287Radar = [r287Short, r287Long]
+            .filter(x => x && x.armed)
+            .sort((a,b)=>(b.quality||0)-(a.quality||0))[0];
+          if (r287Pick) {
+            recommendation = r287Pick.side;
+            decisionChain = recommendation === 'LONG' ? longDecision : shortDecision;
+            decisionChain.pass = true;
+            decisionChain.tier = r287Pick.mode === 'FVG_REVERSE' ? 'A' : 'B+';
+            decisionChain.autoOk = true;
+            decisionChain.entryPermissionOk = true;
+            decisionChain.brainAction = 'TRADE';
+            decisionChain.brainMode = 'R287_REVERSE_THESIS_TRADER';
+            decisionChain.entryPermissionReason = 'R287_REVERSE_THESIS_TRADER';
+            decisionChain.r287ReverseThesis = r287Pick;
+            decisionChain.reason = `${decisionChain.brainSummary || decisionChain.reason || ''} · ${r287Pick.summary}`;
+            decisionChain.brainSummary = decisionChain.reason;
+          } else if (decisionChain && r287Radar) {
+            decisionChain.r287ReverseThesis = r287Radar;
+            const add = ` · ${r287Radar.summary}`;
+            decisionChain.reason = String(decisionChain.brainSummary || decisionChain.reason || '').includes('R287 ')
+              ? (decisionChain.brainSummary || decisionChain.reason)
+              : `${decisionChain.brainSummary || decisionChain.reason || ''}${add}`;
+            decisionChain.brainSummary = decisionChain.reason;
+          }
+        }
+      } catch(_r287e) { try { console.warn('R287 reverse thesis error', _r287e?.message || _r287e); } catch(_){} }
+
     const score=recommendation==='LONG'?longScore:recommendation==='SHORT'?shortScore:Math.max(longScore,shortScore);
 
     let suggestedLev=3;
