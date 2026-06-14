@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R283_TECRUBELI_TRADER_RECIPE';
+const LAZARUS_BUILD = 'R284_PRO_TRADER_WAIT_UPGRADE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3338,6 +3338,79 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   if(r160NeutralStructureTrap) notes.push('R160 4/4 nötr-yapı yanılgısı');
   if(map.summary) notes.push(String(map.summary).slice(0,130));
   return { ok:true, tradeOk, mode, runner, quality:+quality.toFixed(1), hardNo, chartFuel, real5mTrigger, fvgOteOk, continuationFuel, flowAligned, flowAgainst, weakCandle, htfAgainst, r160NeutralStructureTrap, mapFav, mapRisk, mapNet, notes:notes.slice(0,8), summary:`R283 ${mode} q:${quality.toFixed(1)} ${tradeOk?'ONAY':'BEKLE'} · ${notes.slice(0,5).join(' · ')}` };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R284: PRO TRADER WAIT-UPGRADE — final mutfağa hiç gelmeyen temiz 5m setup'ı yakala
+// R283 doğru yemeği finalde kontrol ediyordu ama WAIT kararları o aşamaya ulaşmıyordu.
+// Bu fonksiyon WAIT içindeki gerçek trader setup'ını inceler:
+// - 5m/15m likidite alınmış + body reclaim / wick rejection varsa,
+// - FVG/OTE veya destek/direnç retesti varsa,
+// - canlı akış toksik ters değilse,
+// - özel uyarılar "erken / destek reddi / sahte pump" ise upgrade yapmaz.
+// Amaç: botu kör açtırmak değil; normal traderın alacağı destek/direnç-reclaim işlemini
+// R121_SINGLE_BRAIN_WATCH çöpüne atmamaktır.
+// ─────────────────────────────────────────────────────────────────────────────
+function r284ProTraderWaitUpgrade(side='LONG', d={}, opt={}) {
+  side = String(side || 'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const n = (v,def=0)=>Number.isFinite(Number(v))?Number(v):def;
+  const txt = [d.reason, d.brainSummary, d.htfTani, d.mumOzet, d.ictDashboard, d.r125OrderflowSummary, d.r126FlowSummary].filter(Boolean).join(' ');
+  const lowTxt = txt.toLowerCase();
+  const score = n(opt.score ?? d.score, 0);
+  const minScore = n(opt.minScore ?? opt.effectiveMinScore, 70);
+  const edge = n(d.brainConfidence ?? d.r142CalibratedEdge, 0);
+  const pri = n(d.priorityScore, 0);
+  const flowSide = String(d.r125BestSide || d.r125Flow?.bestSide || '').toUpperCase();
+  const delta = n(d.r125LiveDeltaPct ?? d.r125Flow?.deltaPct, 0);
+  const flowAligned = (flowSide === side) || (isL ? delta >= 18 : delta <= -18) || (isL ? /R125\s*YÜKSELİŞ|R125\s*LONG/i.test(txt) : /R125\s*DÜŞÜŞ|R125\s*SHORT/i.test(txt));
+  const flowAgainst = (flowSide && flowSide !== 'NEUTRAL' && flowSide !== side) || (isL ? delta <= -30 : delta >= 30);
+
+  const sweptReclaim = isL
+    ? /SSL_ALINDI|SSL wick\+body|HTF_SSL_SEVIYESINDE|SSL.*body[- ]?geri|SSL.*reclaim/i.test(txt)
+    : /BSL_ALINDI|BSL wick\+body|HTF_BSL_SEVIYESINDE|BSL.*body[- ]?geri|BSL.*reclaim/i.test(txt);
+  const wickReject = isL
+    ? /Hammer|alt iğne|lower wick|dip|destek reddi|SSL wick/i.test(txt)
+    : /Shooting|DarkCloud|üst iğne|upper wick|tepe|direnç reddi|BSL wick/i.test(txt);
+  const fvgOte = isL
+    ? /FVG_boğa|FVG_bull|bullish.*FVG|OTE|FVG.*boğa/i.test(txt)
+    : /FVG_ayı|FVG_bear|bearish.*FVG|OTE|FVG.*ayı/i.test(txt);
+  const mssReclaim = /MSS|ChoCH|body-geri|body reclaim|geri kazanım|EngulfingConfirmed|PiercingConfirmed|DarkCloudConfirmed/i.test(txt);
+  const liveTrigger = /mumTahmin:(YÜKSELİŞ|LONG).*c[6-9]|mumTahmin:(DÜŞÜŞ|SHORT).*c[6-9]|delta imprint|CANLI_TICK/i.test(txt);
+
+  // Kullanıcının özellikle şikayet ettiği çaylak hataları: bunlar upgrade edilmez.
+  const explicitEarlyWrong = !!(
+    /DESTEK REDDİ.*DÜŞÜŞ erken|DİRENÇ REDDİ.*YÜKSELİŞ erken|geç giriş kovalamaca riski|late-chase:-?\d+/i.test(txt) &&
+    !(sweptReclaim && mssReclaim && flowAligned)
+  );
+  const fakePumpAgainst = !!(/sahte-pump|fakePump|OI:çözülüyor|OI[- ]?çözülüyor/i.test(txt) && !sweptReclaim && !fvgOte);
+  const weakNoChart = !!(/formasyon yok|puan 0\/12|teyidi zayıf/i.test(txt) && !sweptReclaim && !fvgOte && !mssReclaim);
+  const htfWallAgainst = !!(isL
+    ? /karşı .*BSL.*u:%0\.[0-7]|karşı .*direnç yakın|SUPPLY_OB/i.test(txt)
+    : /karşı .*SSL.*u:%0\.[0-7]|karşı .*destek yakın|DEMAND_OB/i.test(txt));
+
+  const chartSetup = !!(
+    (sweptReclaim && (mssReclaim || wickReject || fvgOte)) ||
+    (fvgOte && flowAligned && (score >= minScore - 18 || edge >= 55)) ||
+    (wickReject && mssReclaim && flowAligned && score >= minScore - 16)
+  );
+  const scoreOk = score >= minScore - 18 || edge >= 58 || (score >= minScore - 24 && sweptReclaim && flowAligned);
+  const hardNo = !!(flowAgainst || explicitEarlyWrong || fakePumpAgainst || weakNoChart || (htfWallAgainst && !sweptReclaim));
+  const ok = !!(chartSetup && scoreOk && !hardNo);
+  const mode = ok ? ((sweptReclaim && fvgOte && flowAligned && score >= minScore - 12) ? 'TACTICAL' : 'SCALP') : 'WAIT';
+  const notes = [];
+  if(sweptReclaim) notes.push('likidite alınmış/reclaim');
+  if(wickReject) notes.push('fitil reddi');
+  if(fvgOte) notes.push('FVG/OTE yolu');
+  if(mssReclaim) notes.push('MSS/ChoCH/body reclaim');
+  if(flowAligned) notes.push('canlı akış destekli');
+  if(flowAgainst) notes.push('canlı akış ters');
+  if(explicitEarlyWrong) notes.push('erken/yanlış yön uyarısı');
+  if(fakePumpAgainst) notes.push('sahte-pump/OI çözülüyor');
+  if(weakNoChart) notes.push('grafik tetik yok');
+  if(htfWallAgainst) notes.push('yakın HTF duvarı');
+  return { ok, mode, side, score, edge, priorityScore:pri, chartSetup, sweptReclaim, wickReject, fvgOte, mssReclaim, flowAligned, flowAgainst, hardNo, notes:notes.slice(0,8), summary:`R284 ${ok?'WAIT→TRADE':'WAIT'} ${side} ${mode} · ${notes.slice(0,5).join(' · ')}` };
 }
 
 
@@ -13925,6 +13998,40 @@ async function runAutoScan(prioritySymbol=null) {
           logAuto(`🧠 ${coin.symbol} R163 WAIT→${recommendation} düzeltmesi: beyin TRADE kararını legacy WAIT gölgesinden çıkardı`);
         }
 
+
+        // R284: WAIT içinde kalan ama normal 5m traderın alacağı temiz setup'ı emir yoluna yükselt.
+        // Önceki sürümlerde bütün sensörler raporda görünüyordu ama recommendation=WAIT ise final trader mutfağına hiç gelmiyordu.
+        if (recommendation === 'WAIT') {
+          try {
+            const r284Long = r284ProTraderWaitUpgrade('LONG', decisionChain, {score:Number(longScore||0), minScore:effectiveMinScore, effectiveMinScore});
+            const r284Short = r284ProTraderWaitUpgrade('SHORT', decisionChain, {score:Number(shortScore||0), minScore:effectiveMinScore, effectiveMinScore});
+            const r284Pick = [r284Long, r284Short]
+              .filter(x => x && x.ok)
+              .sort((a,b) => ((b.score||0)+(b.edge||0)*0.35+(b.sweptReclaim?8:0)+(b.fvgOte?5:0)) - ((a.score||0)+(a.edge||0)*0.35+(a.sweptReclaim?8:0)+(a.fvgOte?5:0)))[0];
+            if (r284Pick) {
+              recommendation = r284Pick.side;
+              score = recommendation === 'LONG' ? longScore : shortScore;
+              isLong = recommendation === 'LONG';
+              isShort = recommendation === 'SHORT';
+              decisionChain = {
+                ...decisionChain,
+                side: recommendation,
+                tier: 'B+',
+                autoOk: true,
+                entryPermissionOk: true,
+                brainAction: 'TRADE',
+                brainMode: 'R284_PRO_TRADER_WAIT_UPGRADE',
+                entryPermissionReason: 'R284_PRO_TRADER_WAIT_UPGRADE',
+                r284WaitUpgradeOk: true,
+                r284WaitUpgrade: r284Pick,
+                reason: `${decisionChain?.reason || ''} · ${r284Pick.summary}`,
+                brainSummary: `${decisionChain?.brainSummary || decisionChain?.reason || ''} · ${r284Pick.summary}`
+              };
+              logAuto(`🧠 ${coin.symbol} ${r284Pick.summary} — WAIT çöpe atılmadı, temiz grafik setup emir yoluna yükseldi`);
+            }
+          } catch(_r284wuE) { logAuto(`⚠️ ${coin.symbol} R284 WAIT-upgrade hata: ${String(_r284wuE?.message||_r284wuE).slice(0,80)}`); }
+        }
+
         pushAutoCandidate({
           symbol:coin.symbol, rec:recommendation, tier:decisionChain?.tier||'WAIT', score, longScore, shortScore,
           priorityScore:decisionChain?.priorityScore, reason:decisionChain?.reason,
@@ -13989,7 +14096,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // R45: UI'daki Sweep/Likidite teyidi checkbox'ı artık gerçek emir kapısıdır.
-        if (decisionChain && decisionChain.entryPermissionOk === false && !r162BrainBypassActive) {
+        if (decisionChain && decisionChain.entryPermissionOk === false && !r162BrainBypassActive && !decisionChain?.r284WaitUpgradeOk) {
           const r47Dbg = decisionChain?.sweepRequired ? '' : ` / R47 ${decisionChain?.r47Readiness||0}/${decisionChain?.r47Needed||0} T${decisionChain?.r47TimingPts||0}/F${decisionChain?.r47FlowPts||0}/C${decisionChain?.r47ContextPts||0}/S${decisionChain?.r47StructurePts||0}/V${decisionChain?.r47RvolPts||0}`;
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
@@ -14003,7 +14110,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R162/R163 FIX: R160/R159/R156 trader kararı brainAction=TRADE set ediyor ama autoOk eski tier sistemine bağlı.
         // R163'te bypass değişkenleri yukarı taşındı; burada yalnızca tier kapısı uygulanır.
         // R162 FIX: tierOk bloğu bypass aktifse atlanır
-        if (!tierOk && !r162BrainBypassActive) {
+        if (!tierOk && !r162BrainBypassActive && !decisionChain?.r284WaitUpgradeOk) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
@@ -14118,19 +14225,19 @@ async function runAutoScan(prioritySymbol=null) {
           (decisionChain?.r88VurKacOk || decisionChain?.r75RetestBridgeOk || decisionChain?.r74Top10ProScalperOk || decisionChain?.r68UnifiedScalperCoreOk || decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk || decisionChain?.r50AutoPermissionOk)
         );
         // R85: düşük skor floor ile geçecekse önce giriş disiplini raporlanır.
-        if (!r121BrainTradeOk && score < effectiveMinScore && ['A','B+'].includes(String(decisionChain?.tier || '')) && Number(score || 0) >= r80BPlusScoreFloor && !r85BartiDisiplinOk) {
+        if (!r121BrainTradeOk && !decisionChain?.r284WaitUpgradeOk && score < effectiveMinScore && ['A','B+'].includes(String(decisionChain?.tier || '')) && Number(score || 0) >= r80BPlusScoreFloor && !r85BartiDisiplinOk) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: B+ görünüm var ama canlı giriş izi/akış yeterli değil — giriş:${r85CanliGirisIziOk?'VAR':'YOK'} güven:${decisionChain?.brainConfidence||0}/100`);
           logAuto(`⏳ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r85CanliGirisIziOk, r85Terazi, r85R47, r85TimingPts, r85FlowPts, r85SadeceFundingDestek, r85BartiDisiplinOk});
           continue;
         }
 
-        if (!r121BrainTradeOk && score < effectiveMinScore && !r80ControlledBPlusScoreOk && !r78BridgeScoreBypassOk && !r78PermissionScoreBypassOk) {
+        if (!r121BrainTradeOk && !decisionChain?.r284WaitUpgradeOk && score < effectiveMinScore && !r80ControlledBPlusScoreOk && !r78BridgeScoreBypassOk && !r78PermissionScoreBypassOk) {
           logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore} — atlandı`);
           markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, ...r119BuildAutoDiag(decisionChain), r80BPlusScoreFloor, r80ControlledBPlusScoreOk, r78BridgeScoreFloor, r78BridgeScoreBypassOk, r78PermissionScoreBypassOk});
           continue;
         }
-        if (score < effectiveMinScore && (r80ControlledBPlusScoreOk || r121BrainTradeOk)) {
+        if (score < effectiveMinScore && (r80ControlledBPlusScoreOk || r121BrainTradeOk || decisionChain?.r284WaitUpgradeOk)) {
           logAuto(`🟢 ${coin.symbol} 5m Fırsat Beyni kontrollü aday: skor ${score}/${effectiveMinScore}, güven ${decisionChain?.brainConfidence||0}/100, mod ${r120BrainModeLabel(decisionChain?.brainMode)}`);
         }
 
