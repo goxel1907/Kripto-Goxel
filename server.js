@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R279h_GEC_GIRIS';
+const LAZARUS_BUILD = 'R279_REJECTION_GUARD_R280_429FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -531,38 +531,6 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
   const normalized = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
   slPrice = normalized.sl;
   tpPrice = normalized.tp;
-
-  // ── R279c -2021 FIX: İLK açılışta da mark-bazlı güvenlik mesafesi clamp'i ──────
-  // CHIP -2021 "Order would immediately trigger" dersi: R277 clamp'i sadece SL/TP
-  // GÜNCELLEMESİNDE vardı, ilk açılışta YOKtu. Mikro-fiyatlı/oynak coinde ilk SL veya TP
-  // mark'a çok yakın hesaplanınca Binance reddediyor → bot panik kapatıyor → küçük kâr/erken çıkış.
-  // Burada SADECE emir trigger fiyatını mark'tan min mesafede tutuyoruz; karar/skor/OTE'ye dokunmaz.
-  try {
-    // Mark fiyatı: freshStart'tan gelen pozisyon objesinde zaten var (yeni Binance isteği YOK).
-    // freshStart.pos.markPrice yoksa, ticker/price ile çek (fallback).
-    let _mark = Number(freshStart && freshStart.pos && freshStart.pos.markPrice) || 0;
-    if (!(_mark > 0)) {
-      try { const _pr = await bPub('/fapi/v1/ticker/price', 'symbol=' + symbol); _mark = Number(_pr && _pr.price) || 0; } catch(_) {}
-    }
-    if (_mark > 0) {
-      const _tick = Number((normalized && normalized.tickSize) || 0) || 0;
-      const _minGap = Math.max(_tick > 0 ? _tick * 3 : 0, _mark * 0.0004); // R277 ile aynı: max(3 tick, %0.04)
-      const _isLong = String(closeSide).toUpperCase() === 'SELL'; // long pozisyonun kapanış emri SELL
-      const _sl = Number(slPrice), _tp = Number(tpPrice);
-      if (_isLong) {
-        // LONG: SL mark'ın ALTINDA, TP mark'ın ÜSTÜNDE olmalı, min mesafe korunur
-        if (_sl > 0 && _sl > _mark - _minGap) slPrice = (_mark - _minGap);
-        if (_tp > 0 && _tp < _mark + _minGap) tpPrice = (_mark + _minGap);
-      } else {
-        // SHORT: SL mark'ın ÜSTÜNDE, TP mark'ın ALTINDA olmalı
-        if (_sl > 0 && _sl < _mark + _minGap) slPrice = (_mark + _minGap);
-        if (_tp > 0 && _tp > _mark - _minGap) tpPrice = (_mark - _minGap);
-      }
-      // clamp sonrası tekrar tick'e yuvarla (Binance tam tick ister)
-      const _renorm = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
-      slPrice = _renorm.sl; tpPrice = _renorm.tp;
-    }
-  } catch(_) { /* mark çekilemezse normalize edilmiş değerlerle devam (fail-safe) */ }
 
   let lastErr = null;
   let lastProof = null;
@@ -1496,86 +1464,6 @@ function r142CalibrateEdge(side='LONG', d={}, mode='NO_EDGE', rawEdge=0, score=0
   if (liveAgainst) { adj -= 10; notes.push('live-opposite:-10'); }
   const liveWith = (side==='LONG' && deltaPct >= 18) || (side==='SHORT' && deltaPct <= -18) || (forecastSide === side && forecastConf >= 70);
   if (liveWith && !late) { adj += 5; notes.push('live-align:+5'); }
-
-  // R279f KARTAL GÖZÜ — çoklu çelişki tespiti (kullanıcının "avcı iken av olmasın" isteği).
-  // Sorun: liveAgainst tek çelişkiye -10 veriyordu; STG -4.02 dersi: mumTahmin:SHORT + karşı
-  // bearish mum baskın + HTF karşı + mum 0/12 = 4 çelişki AMA edge 100 → -10 → 90, baraj 70 geçti.
-  // Bir trader "ben LONG diyorum ama fiyatın her parçası SHORT bağırıyor, MM beni avlayacak" der.
-  // Burası TÜM yolların (R159/R160/Trend) skor aldığı tek motor — doğru müdahale noktası.
-  // Edge cezası (sert blok değil); çoklu çelişki barajı geçemez, tek-yön güçlü işleme dokunmaz.
-  try {
-    const _txt = String(d.mumOzet || d.reason || d.brainSummary || '');
-    let conf = 0; const confWhy = [];
-    // 1) Mum tahmini (forecast) giriş yönüne KARŞI — bot kendi içinde ters diyor
-    if (forecastSide && forecastSide !== side && forecastSide !== 'NEUTRAL' && forecastConf >= 50) { conf++; confWhy.push(`mumTahmin:${forecastSide}`); }
-    // 2) Karşı-yön mum baskın (fiyat hareketi ters)
-    if ((side==='LONG' && /karşı bearish mum baskın/i.test(_txt)) || (side==='SHORT' && /karşı bullish mum baskın/i.test(_txt))) { conf++; confWhy.push('karşı mum baskın'); }
-    // 3) Mum teyidi tamamen yok
-    if (/puan 0\/12|net formasyon yok|teyidi zay[ıi]f/i.test(_txt)) { conf++; confWhy.push('mum teyidi yok'); }
-    // 4) HTF güçlü karşı (slope ters momentum)
-    const _sm = _txt.match(/slope:(-?\d+\.?\d*)%/);
-    if (_sm) { const sv = parseFloat(_sm[1]); if ((side==='LONG' && sv <= -0.10) || (side==='SHORT' && sv >= 0.10)) { conf++; confWhy.push(`momentum ters ${sv}%`); } }
-    // Çoklu çelişki = MM avı riski. 2 çelişki -14, 3 çelişki -24, 4 çelişki -36 (artan ağırlık).
-    if (conf >= 2) {
-      const eaglePenalty = conf === 2 ? 14 : conf === 3 ? 24 : 36;
-      adj -= eaglePenalty;
-      notes.push(`R279f kartal:-${eaglePenalty} (${conf} çelişki: ${confWhy.join('+')})`);
-
-      // R279g TERS-YÖN FARKINDALIĞI (kullanıcı: "çelişki varsa neden ters yönü denemiyor?").
-      // Araştırma (SFP/Fakey): başarısız bir yön, ters yön için fırsattır — AMA körce flip değil,
-      // ters yön kendi kanıtını sağlamalı. Bot zaten longEdge/shortEdge ikisini hesaplıyor
-      // (d.r125Flow.bestSide). Eğer çelişki VAR + akışın asıl yönü bu girişin TERSİ + ters yön
-      // belirgin güçlü ise: bu yönü EKSTRA cezalandır. Böylece bot tarama akışında ters yönü
-      // (gerçekten güçlüyse) kendi doğal skoruyla bulur — biz zorla flip yapmayız, yolu açarız.
-      try {
-        const flowBest = String(d.r125Flow?.bestSide || '').toUpperCase();
-        const lE = Number(d.r125Flow?.longEdge || 0);
-        const sE = Number(d.r125Flow?.shortEdge || 0);
-        const oppSide = side === 'LONG' ? 'SHORT' : 'LONG';
-        const oppEdge = side === 'LONG' ? sE : lE;
-        const myEdge  = side === 'LONG' ? lE : sE;
-        // Akış asıl yönü benim tersim + ters yön edge'i benimkinden belirgin güçlü (>=5 fark)
-        if (flowBest === oppSide && oppEdge >= myEdge + 5 && conf >= 3) {
-          adj -= 12; // bu yönü daha da zayıflat → ters yön taramada öne çıksın
-          notes.push(`R279g ters-yön sinyali: akış ${oppSide} (${oppSide==='SHORT'?'S':'L'}${oppEdge.toFixed(0)} vs ${side==='LONG'?'L':'S'}${myEdge.toFixed(0)}) — bu giriş büyük olasılıkla yanlış yön, ${oppSide} fırsatı`);
-        }
-      } catch(_) {}
-    }
-  } catch(_) {}
-  // R279h GEÇ-GİRİŞ OKUMASI (kullanıcı: "5m'de yükselişten 6 mum sonra giriyor, MM terse
-  // çevirince stop olur"). Araştırma (XS, TradeZella): 5+ ardışık mumdan sonra pullback'siz
-  // girmek dönüş riskini artırır; geç kırılım kovalamak düşük WR sebebi. Profesyonel hareketin
-  // %30-50 geri çekilmesini bekler (= OTE). STG dersi: seq:6 + p3:4.12% + pos:0.86 (tepede) ama
-  // edge 100 → tepeden alındı. Ham seq/price3 verisi vardı ama geç-giriş cezasına çevrilmiyordu.
-  // Bu OTE'nin tamamlayıcısı: OTE "geri çekilmeye gir" der (pozitif), bu "koşmuşu kovalama" der
-  // (negatif). Edge cezası — sert blok değil; erken/geri-çekilme girişlerine dokunmaz.
-  try {
-    const _lt = String(d.mumOzet || d.reason || d.brainSummary || '');
-    const _seqM = _lt.match(/seq:(\d+)/);
-    const _p3M = _lt.match(/p3:(-?\d+\.?\d*)%/);
-    const _posM = _lt.match(/pos:(\d+\.?\d*)/);
-    const seqV = _seqM ? parseInt(_seqM[1]) : 0;
-    const p3V = _p3M ? Math.abs(parseFloat(_p3M[1])) : 0;
-    const posV = _posM ? parseFloat(_posM[1]) : 0.5;
-    // Hareket yönü giriş yönüyle aynıysa VE çok koşmuşsa = geç kovalama
-    const p3Signed = _p3M ? parseFloat(_p3M[1]) : 0;
-    const moveWithSide = (side === 'LONG' && p3Signed > 0) || (side === 'SHORT' && p3Signed < 0);
-    // OTE bonusu varsa (geri çekilmede) bu ceza UYGULANMAZ — çelişmesin
-    const inOteZone = /OTE.*geri-cekilme|geri-cekilme.*OTE/i.test(_lt);
-    if (!inOteZone && moveWithSide) {
-      let lateScore = 0; const lateWhy = [];
-      if (seqV >= 5) { lateScore++; lateWhy.push(`${seqV} ardışık mum`); }
-      if (p3V >= 3.0) { lateScore++; lateWhy.push(`son 3 mum %${p3V.toFixed(1)} koşmuş`); }
-      // mum range tepesinde (LONG) / dibinde (SHORT) = girişe geç
-      if ((side === 'LONG' && posV >= 0.80) || (side === 'SHORT' && posV <= 0.20)) { lateScore++; lateWhy.push(`mum ${side==='LONG'?'tepesinde':'dibinde'} (pos ${posV})`); }
-      if (lateScore >= 2) {
-        const latePenalty = lateScore >= 3 ? 22 : 12;
-        adj -= latePenalty;
-        notes.push(`R279h geç-giriş:-${latePenalty} (${lateWhy.join(', ')}) — hareket olmuş, geri çekilme bekle (MM dağıtım riski)`);
-      }
-    }
-  } catch(_) {}
-
   // Trade frequency protection: do not turn soft calibration into a new hard gate.
   // Raw edge remains visible and may still pass if data is fresh; calibration mainly ranks side and weakens repeated losers.
   const calibrated = r142Clamp(Math.round(Number(rawEdge||0) + adj), 0, 100);
@@ -3149,41 +3037,6 @@ function r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice) {
         const touchedSSL = m.l <= (nearSSL.zoneHigh || nearSSL.price) * 1.001;
         return !!(touchedSSL && lowerWick >= 0.35 && m.c > (nearSSL.zoneHigh || nearSSL.price) && nearSSLDist <= 0.6);
       } catch(_) { return false; }
-    })(),
-    // R279c: OTE (Optimal Trade Entry) — ICT'nin en yüksek olasılıklı giriş zonu.
-    // Son belirgin impuls bacağının %62-79 Fibonacci geri-çekilmesinde fiyat varsa, bu
-    // "doğru yer"dir (tepeye/dibe değil, geri-çekilmeye gir). SADECE OKUMA + pozitif bonus;
-    // hiçbir yeri bloklamaz. Araştırma: ICT OTE, daily/4h bias yönünde 62-79% retracement.
-    oteZone: (function(){
-      try {
-        if (!Array.isArray(r5) || r5.length < 12) return { inOte:false, side:null, depth:0 };
-        const seg = r5.slice(-24);                       // son 24x5m = 2 saat
-        let hi = -Infinity, lo = Infinity, hiIdx = -1, loIdx = -1;
-        for (let i = 0; i < seg.length; i++) {
-          if (seg[i].h > hi) { hi = seg[i].h; hiIdx = i; }
-          if (seg[i].l < lo) { lo = seg[i].l; loIdx = i; }
-        }
-        const legRange = hi - lo;
-        if (legRange <= 0) return { inOte:false, side:null, depth:0 };
-        // Bacak yönü: dip önce geldiyse yukarı impuls (LONG OTE), tepe önce ise aşağı (SHORT OTE)
-        const upLeg = loIdx < hiIdx;
-        // OTE zonu: impulsun %62-79 geri çekilmesi
-        if (upLeg) {
-          // yukarı bacak: low→high. Geri çekilme high'tan aşağı. OTE = high - (range*0.62..0.79)
-          const oteHigh = hi - legRange * 0.62;   // sığ kenar
-          const oteLow  = hi - legRange * 0.79;   // derin kenar
-          const inOte = lp <= oteHigh && lp >= oteLow;
-          const depth = inOte ? (hi - lp) / legRange : 0;  // ne kadar geri çekildi
-          return { inOte, side:'LONG', depth:+depth.toFixed(3), oteLow:R(oteLow), oteHigh:R(oteHigh) };
-        } else {
-          // aşağı bacak: high→low. Geri çekilme low'dan yukarı. OTE = low + (range*0.62..0.79)
-          const oteLow  = lo + legRange * 0.62;
-          const oteHigh = lo + legRange * 0.79;
-          const inOte = lp >= oteLow && lp <= oteHigh;
-          const depth = inOte ? (lp - lo) / legRange : 0;
-          return { inOte, side:'SHORT', depth:+depth.toFixed(3), oteLow:R(oteLow), oteHigh:R(oteHigh) };
-        }
-      } catch(_) { return { inOte:false, side:null, depth:0 }; }
     })(),
     dashboardText: dashParts.join(' · '),
     liquidityMapText: mapParts.join(' | '),
@@ -6769,39 +6622,6 @@ function r278LiquidityHunter(d, side){
     // KURAL 4: TEMIZ KOSU — av likiditesi uzakta, onunde engel yok
     if (counterDist >= 0.8) { edge += 4; tags.push(`temiz kosu (karsi %${counterDist.toFixed(2)})`); }
 
-    // R279c KURAL 5: OTE (Optimal Trade Entry) — ICT'nin en yuksek olasilikli giris zonu.
-    // Fiyat son impuls bacaginin %62-79 geri-cekilmesinde VE OTE yonu giris yonuyle uyumluysa
-    // bu "dogru yer"dir (tepeye/dibe degil, geri-cekilmeye gir). SADECE POZITIF BONUS, engellemez.
-    // ICP -3.70 (tepeye giris) ve VELVET (dusen bicak) tipini OTE bonusu olmadigi icin zayif birakir,
-    // ama hicbir zaman bloklamaz — sadece OTE'li girisleri one cikarir (daha iyi runner adayi).
-    try {
-      const ote = ict.oteZone;
-      if (ote && ote.inOte && ote.side === side) {
-        const oteBonus = ote.depth >= 0.705 ? 10 : 7;  // daha derin geri-cekilme (%70+) = daha iyi
-        edge += oteBonus;
-        tags.push(`OTE ${(ote.depth*100).toFixed(0)}% geri-cekilme (ICT optimal giris)`);
-      }
-    } catch(_) {}
-
-    // R279d KURAL 6: HACIM-TEYIT OKUMASI — "Efor (hacim) = Sonuc (fiyat)" ICT/Wyckoff prensibi.
-    // Arastirma (TradingShastra, TradingSim): hacim teyidi olmayan mum formasyonlari guvenilmez —
-    // guzel sekil + dusuk hacim = TUZAK. XPL -3.01 dersi: mum puani 9/12 (Engulfing+ShootingStar)
-    // AMA "vol:yok impuls:yok" → -8.6%. NOT -2.48 de ayni: puan 6/12 ama hacimsiz.
-    // SADECE POZITIF BONUS: gercek hacimli/impulsli mum +bonus alir; hacimsiz guzel sekil bonus ALMAZ
-    // (dogal zayif kalir) ama ASLA bloklanmaz. WLD/sweep gibi gercek hacimli girisler one cikar.
-    try {
-      const mumTxt = String(d.mumOzet || '');
-      const hacimVar = /vol:VAR/i.test(mumTxt);
-      const impulsVar = /impuls:VAR/i.test(mumTxt);
-      const formasyonVar = /mum teyidi:/i.test(mumTxt) && !/teyidi zay[ıi]f/i.test(mumTxt);
-      if (formasyonVar && (hacimVar || impulsVar)) {
-        // gercek efor-teyitli mum: hem hacim hem impuls varsa daha guclu
-        const volBonus = (hacimVar && impulsVar) ? 8 : 5;
-        edge += volBonus;
-        tags.push(`hacim-teyitli mum (${hacimVar?'vol':''}${hacimVar&&impulsVar?'+':''}${impulsVar?'impuls':''} VAR — efor=sonuc)`);
-      }
-    } catch(_) {}
-
     return { allow:true, edge, reason: tags.length ? `R278 serbest: ${tags.join(' · ')}` : 'R278 notr serbest', tag:'SERBEST' };
   } catch(e){
     return { allow:true, edge:0, reason:'R278 hata fail-soft: '+String(e&&e.message||e).slice(0,40), tag:'HATA' };
@@ -9753,7 +9573,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // Önceki R34 bunu hard-veto yaptığı için 5m fırsatlarını öldürüyordu.
         // Artık sadece aşırı uç volatilite hard block; normal yüksek ATR priority cezası/uyarıdır.
         const atrWarnForAuto = !!(atrGateBlock || atrPct > _slPctEval * 2.5);
-        const atrExtremeBlock = atrPct > Math.max(11, _slPctEval * 6.0); // R279b: 14→11 (VELVET %13.3 düşen-bıçak güvenlik ayarı — yeni filtre değil, var olan eşiğin doğru kalibrasyonu)
+        const atrExtremeBlock = atrPct > Math.max(14, _slPctEval * 7.0);
         const atrBlocking = !!atrExtremeBlock;
         // R190b FIX: Spread Hard Block — BEAT(0.001$) spread%0.3 → kârsız
         const r190bSpreadPct = Number(liqQual?.spread || 0);
@@ -13313,7 +13133,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R279h; GEÇ-GİRİŞ OKUMASI (kullanıcı: "5m yükselişten 6 mum sonra giriyor, MM terse çevirince stop olur"): bot artık hareketin NERESİNDE olduğunu tartar. Araştırma: 5+ ardışık mum sonrası pullbacksiz giriş dönüş riski; profesyonel %30-50 geri çekilme bekler (=OTE). STG dersi: seq:6+p3:4.12%+pos:0.86 (tepede) ama edge 100 → tepeden alındı. Artık aynı-yön koşmuşsa: 5+ mum / son3 %3+ koşmuş / mum tepe-dibinde işaretleri sayılır, 2 işaret -12, 3 işaret -22 edge. OTE geri-çekilmedeyse ceza UYGULANMAZ (OTE pozitif/geç-giriş negatif, birbirini tamamlar). Erken girişe dokunmaz. R279g; TERS-YÖN FARKINDALIĞI (kullanıcı: "çelişki varsa neden ters yönü denemiyor?"): kartal gözü artık çelişki görünce ters yönü de tartar. Araştırma (SFP/Fakey): başarısız yön = ters yön fırsatı, AMA körce flip değil — ters yön kendi kanıtını sağlamalı. Bot zaten longEdge/shortEdge ikisini hesaplıyor (r125Flow.bestSide). Eğer 3+ çelişki VAR + akışın asıl yönü girişin TERSİ + ters edge benimkinden >=5 güçlü ise: bu yön -12 ekstra cezalanır → ters yön taramada doğal öne çıkar. Zorla ters çevirme YOK (tehlikeli), sadece doğru yönün önündeki engel kalkar. STG: LONG 4 çelişki+akış SHORT → edge 100→52 elenir, SHORT fırsatı işaretlenir. R279f; KARTAL GÖZÜ (doğru yere taşındı — r142 skor motoru, tüm yolları etkiler): önceki çelişki cezası r278'deydi ama R159/R160 yolları oradan geçmiyordu (STG -4.02 R159'dan geçip kaçtı). Artık çelişki tespiti r142CalibrateEdge'de — TÜM girişlerin skor aldığı tek motor. mumTahmin ters + karşı mum baskın + mum teyidi yok + momentum ters sayılır: 2 çelişki -14, 3 çelişki -24, 4 çelişki -36 edge. STG dersi: mumTahmin SHORT+karşı bearish+0/12+ters momentum = 4 çelişki → edge 100→54 → baraj 70 altı ELENİR. "Avcı iken av olma": bot LONG derken fiyatın her parçası SHORT bağırıyorsa MM avı riski. Edge cezası (sert blok değil), tek-yön güçlü işleme (WLD runner) dokunmaz. Bot tüm Binance verilerine (CVD/OI/funding/taker/RVOL/VPIN/depth/footprint/4 HTF) zaten bakıyor; bu onları çelişki için tartar. ÇELİŞKİ OKUMASI (yön doğrulama, sert blok değil edge cezası): bot artık girişten önce hem LEHTE hem ALEYHTE sinyalleri tartar. Araştırma: sinyaller çeliştiğinde fiyat hareketi kazanır, çelişki=düşük olasılık. HMSTR LONG dersi: akış long ama mum 0/12+karşı bearish baskın+4h karşı+momentum ters → 4 çelişki -24 edge → barajı geçemez, elenir. 2+ çelişkide her biri -6 edge. Tek-yön güçlü işlemlere (WLD runner) dokunmaz. Bu seçim mekanizmasını da düzeltir: çelişkili coin düşük edge alıp 24 içinden seçilemez. R279d; HACIM-TEYIT OKUMASI (filtre değil, pozitif bonus): mum formasyonunun ardında gerçek hacim/impuls var mı okunur. Araştırma (efor=sonuç prensibi): hacim teyidi olmayan güzel mum şekli TUZAKtır (XPL puan 9/12 ama vol:yok → -8.6%; NOT puan 6/12 hacimsiz → -2.48). Artık hacimli/impulsli mum +5-8 edge bonus alır, hacimsiz güzel şekil bonus ALMAZ (doğal zayıf kalır) ama ASLA bloklanmaz. WLD/sweep gibi gerçek hacimli girişler öne çıkar. R279c; OTE OKUMA (filtre değil, pozitif bonus): r110 motoru artık son impuls bacağının %62-79 Fibonacci geri-çekilme zonunu (ICT Optimal Trade Entry) hesaplıyor. Fiyat OTE zonunda + yön uyumlu ise edge +7 (derin %70+ ise +10). ICT'nin en yüksek olasılıklı girişi — tepeye/dibe değil geri-çekilmeye gir. ICP -3.70 (tepe) ve VELVET (düşen bıçak) tipi OTE bonusu ALMAZ, doğal zayıf kalır ama ASLA bloklanmaz. ATR aşırı eşiği %14→%11 (VELVET düşen-bıçak güvenlik ayarı). R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
