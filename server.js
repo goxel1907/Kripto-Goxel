@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R279c_OTE_SLTP2021FIX';
+const LAZARUS_BUILD = 'R279e_CELISKI_OKUMA';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6703,6 +6703,53 @@ function r278LiquidityHunter(d, side){
       }
     } catch(_) {}
 
+    // R279d KURAL 6: HACIM-TEYIT OKUMASI — "Efor (hacim) = Sonuc (fiyat)" ICT/Wyckoff prensibi.
+    // Arastirma (TradingShastra, TradingSim): hacim teyidi olmayan mum formasyonlari guvenilmez —
+    // guzel sekil + dusuk hacim = TUZAK. XPL -3.01 dersi: mum puani 9/12 (Engulfing+ShootingStar)
+    // AMA "vol:yok impuls:yok" → -8.6%. NOT -2.48 de ayni: puan 6/12 ama hacimsiz.
+    // SADECE POZITIF BONUS: gercek hacimli/impulsli mum +bonus alir; hacimsiz guzel sekil bonus ALMAZ
+    // (dogal zayif kalir) ama ASLA bloklanmaz. WLD/sweep gibi gercek hacimli girisler one cikar.
+    try {
+      const mumTxt = String(d.mumOzet || '');
+      const hacimVar = /vol:VAR/i.test(mumTxt);
+      const impulsVar = /impuls:VAR/i.test(mumTxt);
+      const formasyonVar = /mum teyidi:/i.test(mumTxt) && !/teyidi zay[ıi]f/i.test(mumTxt);
+      if (formasyonVar && (hacimVar || impulsVar)) {
+        // gercek efor-teyitli mum: hem hacim hem impuls varsa daha guclu
+        const volBonus = (hacimVar && impulsVar) ? 8 : 5;
+        edge += volBonus;
+        tags.push(`hacim-teyitli mum (${hacimVar?'vol':''}${hacimVar&&impulsVar?'+':''}${impulsVar?'impuls':''} VAR — efor=sonuc)`);
+      }
+    } catch(_) {}
+
+    // R279e KURAL 7: ÇELİŞKİ OKUMASI (yön doğrulama) — kullanıcının istediği "IQ'su yüksek beyin".
+    // Araştırma (SMC/XBrat/AbleWay): sinyaller çeliştiğinde fiyat hareketi kazanır; çelişki =
+    // confluence yok = düşük olasılık. Bot "edge 100" derken sadece LEHTE sinyalleri topluyordu,
+    // ALEYHTE olanları tartmıyordu. HMSTR LONG dersi: akış long (Delta Flip, R125 L16, Bull OB)
+    // AMA fiyat short bağırıyordu (mum 0/12, karşı bearish baskın, 4h karşı, momentum -%1.09).
+    // Bir trader "çelişki var, girme ya da ters bak" derdi. Bu CEZA (edge düşürür) ama SERT BLOK
+    // DEĞİL — çelişkili işlem skor barajını geçemezse doğal elenir; güçlü tek-yön işlemlere dokunmaz.
+    try {
+      const mumTxt2 = String(d.mumOzet || '');
+      let conflict = 0; const conflictTags = [];
+      // 1) Karşı-yön mum baskın (fiyat hareketi giriş yönüne KARŞI)
+      if (/karşı bearish mum baskın/i.test(mumTxt2) && side === 'LONG') { conflict++; conflictTags.push('mumlar bearish'); }
+      if (/karşı bullish mum baskın/i.test(mumTxt2) && side === 'SHORT') { conflict++; conflictTags.push('mumlar bullish'); }
+      // 2) Mum teyidi tamamen yok (puan 0/12 veya net formasyon yok)
+      if (/puan 0\/12|net formasyon yok/i.test(mumTxt2)) { conflict++; conflictTags.push('mum teyidi yok'); }
+      // 3) HTF karşı yönde güçlü (d.htfCounterStrong veya reason'da yüksek karşı %)
+      if (r120Bool(d.htfCounterWait) || r120Bool(d.r116HtfGuardBlock)) { conflict++; conflictTags.push('HTF karşı'); }
+      // 4) Momentum/forecast giriş yönüne karşı (slope ters)
+      const slopeM = String(mumTxt2).match(/slope:(-?\d+\.?\d*)%/);
+      if (slopeM) { const sl = parseFloat(slopeM[1]); if ((side==='LONG' && sl < -0.05) || (side==='SHORT' && sl > 0.05)) { conflict++; conflictTags.push(`momentum ters (slope ${sl}%)`); } }
+      // Çelişki cezası: her çelişki -6 edge; 3+ çelişki = ciddi (girişi büyük olasılıkla eler)
+      if (conflict >= 2) {
+        const penalty = conflict * 6;
+        edge -= penalty;
+        tags.push(`ÇELİŞKİ -${penalty} (${conflictTags.join(', ')}) — fiyat hareketi ters bağırıyor`);
+      }
+    } catch(_) {}
+
     return { allow:true, edge, reason: tags.length ? `R278 serbest: ${tags.join(' · ')}` : 'R278 notr serbest', tag:'SERBEST' };
   } catch(e){
     return { allow:true, edge:0, reason:'R278 hata fail-soft: '+String(e&&e.message||e).slice(0,40), tag:'HATA' };
@@ -13214,7 +13261,7 @@ app.get('/api/health', (_req, res) => {
         expectedAutoLog: sweepOnly
           ? '5m Fırsat Beyni: Sweep AÇIK / net likidite olayı gerekli'
           : 'R153 5m Fırsat Beyni: paralel analiz + coinglass prefetch + btc5m paralel + cal/fg paralel',
-        note: `R279c; OTE OKUMA (filtre değil, pozitif bonus): r110 motoru artık son impuls bacağının %62-79 Fibonacci geri-çekilme zonunu (ICT Optimal Trade Entry) hesaplıyor. Fiyat OTE zonunda + yön uyumlu ise edge +7 (derin %70+ ise +10). ICT'nin en yüksek olasılıklı girişi — tepeye/dibe değil geri-çekilmeye gir. ICP -3.70 (tepe) ve VELVET (düşen bıçak) tipi OTE bonusu ALMAZ, doğal zayıf kalır ama ASLA bloklanmaz. ATR aşırı eşiği %14→%11 (VELVET düşen-bıçak güvenlik ayarı). R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
+        note: `R279e; ÇELİŞKİ OKUMASI (yön doğrulama, sert blok değil edge cezası): bot artık girişten önce hem LEHTE hem ALEYHTE sinyalleri tartar. Araştırma: sinyaller çeliştiğinde fiyat hareketi kazanır, çelişki=düşük olasılık. HMSTR LONG dersi: akış long ama mum 0/12+karşı bearish baskın+4h karşı+momentum ters → 4 çelişki -24 edge → barajı geçemez, elenir. 2+ çelişkide her biri -6 edge. Tek-yön güçlü işlemlere (WLD runner) dokunmaz. Bu seçim mekanizmasını da düzeltir: çelişkili coin düşük edge alıp 24 içinden seçilemez. R279d; HACIM-TEYIT OKUMASI (filtre değil, pozitif bonus): mum formasyonunun ardında gerçek hacim/impuls var mı okunur. Araştırma (efor=sonuç prensibi): hacim teyidi olmayan güzel mum şekli TUZAKtır (XPL puan 9/12 ama vol:yok → -8.6%; NOT puan 6/12 hacimsiz → -2.48). Artık hacimli/impulsli mum +5-8 edge bonus alır, hacimsiz güzel şekil bonus ALMAZ (doğal zayıf kalır) ama ASLA bloklanmaz. WLD/sweep gibi gerçek hacimli girişler öne çıkar. R279c; OTE OKUMA (filtre değil, pozitif bonus): r110 motoru artık son impuls bacağının %62-79 Fibonacci geri-çekilme zonunu (ICT Optimal Trade Entry) hesaplıyor. Fiyat OTE zonunda + yön uyumlu ise edge +7 (derin %70+ ise +10). ICT'nin en yüksek olasılıklı girişi — tepeye/dibe değil geri-çekilmeye gir. ICP -3.70 (tepe) ve VELVET (düşen bıçak) tipi OTE bonusu ALMAZ, doğal zayıf kalır ama ASLA bloklanmaz. ATR aşırı eşiği %14→%11 (VELVET düşen-bıçak güvenlik ayarı). R279; DİRENÇ REDDİ GARDI (MM güç toplama tespiti): 15m/1h/4h üst BSL direncine fitil atılıp KIRILAMAZSA (üst fitil>=35%, kapanış altta) LONG bekletilir + SHORT gardı (MM aşağı likiditeye inip güç toplayacak); alt SSL desteği reddedilirse SHORT bekletilir + LONG gardı. R160 4/4 tam kanıt ve sweep+reclaim sonrası girişler muaf (frekans korunur). Kullanıcı tespiti: MM direnci kıramayınca ters yöne sweep/FVG bölgesine çekip güç toplar. R278; LİKİDİTE AVCISI (MM tokadı): HTF likidite (15m/1h/4h SSL/BSL) bir mıknatıstır. KURAL1 TUZAK BLOK: karşı likiditeye <%0.35 yakın ve henüz sweep yokken o yöne giriş YASAK (ENA -10.8 tipi: MM oraya çekip avlar); momentum-chase karşı likiditeye <%0.6 koşuyorsa da blok. KURAL2 SWEEP ONAYI: hedef likidite alındı+ChoCH reclaim → +14 edge bonus (KAT +25 tipi: MM avını yaptı, ters hareket lehte), sadece sweep → +7. KURAL3 FVG mitigation → +6. KURAL4 karşı likidite >%0.8 uzak → +4 (koşacak alan). Bonus edge'e işlenir → post-sweep girişler A-tier+R275 runner. Fail-soft: veri yoksa bloklamaz. R276; MM-AVI KONUM KAPISI aktif: ham 5m mumdan rejim (range/trend) ve bant konumu hesaplanir. RANGE rejiminde premium bolgede (>=%68) LONG-chase ve discount bolgede (<=%32) SHORT-chase BLOK (MM avi); band ucundan donus (alt-band LONG/ust-band SHORT) ve yapi/donus girisleri SERBEST. TREND rejiminde yon-uyumlu giris serbest, karsi-yon chase (dusen/yukselen bicak) ve parabolik uc gec-chase BLOK. Momentum-chase disindaki yapi girisleri boğulmaz; veri yoksa sadece chase kapali (fail-soft). Frekansi oldurmez, sadece 13.06 -75$ yazdiran bant-yanlis-uc girislerini keser. R274; R197 temiz tabanına C20/L20 + RSI-ratio + FVG entry hassas montaj eklendi. FVG tek başına emir değil; C20/L20, ratio kolaylaşma ve canlı risk kapılarıyla R197 beynine timing/entry desteği verir. R155; R154b/R154/R153/R152/R151 korunur. ① rvolVeryLow hard-block kaldırıldı (sadece ceza). ② late-chase -12→-8. ③ adaptiveFloor gevşetildi (COUNTER_TRAP floor -20). ④ positionRisk 418 fix. ⑤ Kar koruma erken: BE %0.3, kâr kilidi %0.6/%1.2/%2.0. ⑥ 5m scalp frekans + güvenli kar hedefi: ROI %3-%20 mümkün.`
       },
       lastScan: {
         source: scan.scanSource || null,
