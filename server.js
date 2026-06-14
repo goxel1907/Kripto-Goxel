@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R279c_OTE_OKUMA';
+const LAZARUS_BUILD = 'R279c_OTE_SLTP2021FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -531,6 +531,38 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
   const normalized = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
   slPrice = normalized.sl;
   tpPrice = normalized.tp;
+
+  // ── R279c -2021 FIX: İLK açılışta da mark-bazlı güvenlik mesafesi clamp'i ──────
+  // CHIP -2021 "Order would immediately trigger" dersi: R277 clamp'i sadece SL/TP
+  // GÜNCELLEMESİNDE vardı, ilk açılışta YOKtu. Mikro-fiyatlı/oynak coinde ilk SL veya TP
+  // mark'a çok yakın hesaplanınca Binance reddediyor → bot panik kapatıyor → küçük kâr/erken çıkış.
+  // Burada SADECE emir trigger fiyatını mark'tan min mesafede tutuyoruz; karar/skor/OTE'ye dokunmaz.
+  try {
+    // Mark fiyatı: freshStart'tan gelen pozisyon objesinde zaten var (yeni Binance isteği YOK).
+    // freshStart.pos.markPrice yoksa, ticker/price ile çek (fallback).
+    let _mark = Number(freshStart && freshStart.pos && freshStart.pos.markPrice) || 0;
+    if (!(_mark > 0)) {
+      try { const _pr = await bPub('/fapi/v1/ticker/price', 'symbol=' + symbol); _mark = Number(_pr && _pr.price) || 0; } catch(_) {}
+    }
+    if (_mark > 0) {
+      const _tick = Number((normalized && normalized.tickSize) || 0) || 0;
+      const _minGap = Math.max(_tick > 0 ? _tick * 3 : 0, _mark * 0.0004); // R277 ile aynı: max(3 tick, %0.04)
+      const _isLong = String(closeSide).toUpperCase() === 'SELL'; // long pozisyonun kapanış emri SELL
+      const _sl = Number(slPrice), _tp = Number(tpPrice);
+      if (_isLong) {
+        // LONG: SL mark'ın ALTINDA, TP mark'ın ÜSTÜNDE olmalı, min mesafe korunur
+        if (_sl > 0 && _sl > _mark - _minGap) slPrice = (_mark - _minGap);
+        if (_tp > 0 && _tp < _mark + _minGap) tpPrice = (_mark + _minGap);
+      } else {
+        // SHORT: SL mark'ın ÜSTÜNDE, TP mark'ın ALTINDA olmalı
+        if (_sl > 0 && _sl < _mark + _minGap) slPrice = (_mark + _minGap);
+        if (_tp > 0 && _tp > _mark - _minGap) tpPrice = (_mark - _minGap);
+      }
+      // clamp sonrası tekrar tick'e yuvarla (Binance tam tick ister)
+      const _renorm = await normalizeSLTPToTick(symbol, slPrice, tpPrice);
+      slPrice = _renorm.sl; tpPrice = _renorm.tp;
+    }
+  } catch(_) { /* mark çekilemezse normalize edilmiş değerlerle devam (fail-safe) */ }
 
   let lastErr = null;
   let lastProof = null;
