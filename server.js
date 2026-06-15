@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R287_REVERSE_THESIS_TRADER';
+const LAZARUS_BUILD = 'R291_SMC_LIQUIDITY_CONFLUENCE_GOVERNOR';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3290,6 +3290,9 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   const map = d.r281ProMap || {};
   const ict = d.r110ICT || d._r278ICT || {};
   const e = d.r190Edge || {};
+  const r289 = d.r289Playbook || {};
+  const r290 = d.r290Smc5m || {};
+  const r291 = d.r291Confluence || {};
   const edge = n(d.brainConfidence ?? d.r142CalibratedEdge ?? opt.edge, 0);
   const score = n(d.score ?? opt.score, 0);
   const minScore = n(opt.minScore ?? opt.effectiveMinScore, 70);
@@ -3298,24 +3301,35 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   const flowAligned = (flowSide === side) || (isL ? delta >= 14 : delta <= -14);
   const flowAgainst = (flowSide && flowSide !== 'NEUTRAL' && flowSide !== side) || (isL ? delta <= -22 : delta >= 22) || !!e.liveOpposite;
   const real5mTrigger = !!(
-    d.r285TraderSetupOk || d.r283RealChartStructure || d.r160Q4Proof || d.r117TrapSweepTaken || d.r117BodyReclaimOk || d.r117MssOk ||
+    d.r285TraderSetupOk || d.r291TraderSetupOk || r291.tradeOk || d.r289TraderSetupOk || r289.tradeOk || d.r283RealChartStructure || d.r160Q4Proof || d.r117TrapSweepTaken || d.r117BodyReclaimOk || d.r117MssOk ||
     d.r118CandleOk || d.r118CandleStrong || e?.r194SwingBreak?.strong ||
     (e?.r194SwingBreak?.ok && e?.r192FuelOk) ||
     (isL ? d.r29?.r197?.long?.strong : d.r29?.r197?.short?.strong) ||
     /body-reclaim|MSS|ChoCH|sweep\+|SSL_ALINDI|BSL_ALINDI|EngulfingConfirmed|DarkCloudConfirmed|PiercingConfirmed/i.test(txt)
   );
   const fvgOteOk = !!(
-    d.r285FvgOteOk || (isL ? ict.inBullishFVG : ict.inBearishFVG) ||
+    d.r285FvgOteOk || d.r291FvgOteOk || r291.fvgRetest || r291.oteOk || d.r289FvgOteOk || r289.fvgRetest || (isL ? ict.inBullishFVG : ict.inBearishFVG) ||
     (ict.oteZone?.inOte && String(ict.oteZone?.side||'').toUpperCase() === side) ||
     /FVG.*(içi|yakın|mitigasyon|entry)|OTE/i.test(String(map.summary||'') + ' ' + txt)
   );
-  const continuationFuel = !!(d.r285ContinuationFuel || e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.vpinAligned || e.r192FuelScore >= 6);
+  const continuationFuel = !!(d.r285ContinuationFuel || d.r291LiquidityFuel || d.r289ContinuationFuel || r289.continuation || e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.vpinAligned || e.r192FuelScore >= 6);
   const chartFuel = !!(real5mTrigger || fvgOteOk || continuationFuel || map.runner);
   const weakCandle = !!(!d.mumOnay && !d.mumGuclu && /formasyon yok|teyidi zayıf|puan 0\/12|mum onay yok/i.test(txt));
+  // R288: R156 TOP10 hızlı bypass gerçekten grafik okumuyordu. Edge/raw/OI çok yüksek olsa bile
+  // score minScore altında + mum yok + yakıt/RVOL zayıfsa bu trader setup'ı değil, FOMO/chase'tir.
+  const r288P3 = n(e.price3, 0);
+  const r288Rvol = n(e.rvol ?? d.r140Rvol?.ratio, 0);
+  const r288FuelScore = n(e.r192FuelScore ?? e.score, 0);
+  const r288Oi15Abs = Math.abs(n(e.oi?.oiChg15 ?? d.r140OiVel?.velocity, 0));
+  const r288FastBypassNoRecipe = !!(
+    /R156 TOP10 hızlı bypass|hızlı bypass|ek katmanlı kapı yok/i.test(txt) &&
+    score < minScore && weakCandle && !d.r118CandleStrong && !e.squeeze &&
+    (r288FuelScore < 8 || r288Rvol < 0.80 || Math.abs(r288P3) >= 1.80 || r288Oi15Abs >= 500)
+  );
   const r160NeutralStructureTrap = !!(d.r160TraderDecision && d.r160TrueCount >= 4 && !d.r283RealChartStructure && !d.r160Q4Proof && !fvgOteOk && !continuationFuel);
   const htfAgainst = !!(d.htfBlok || d.r116HtfGuardBlock || /HTF.*karşı|karşı .*BSL|karşı .*SSL|karşı FVG|üst iğne|alt iğne/i.test(txt + ' ' + String(map.summary||'')));
   const mapRisk = n(map.risk,0), mapFav = n(map.favorable,0), mapNet = n(map.net, mapFav-mapRisk);
-  const hardNo = !!(map.hardNo || (r160NeutralStructureTrap && weakCandle) || (!chartFuel && weakCandle && (htfAgainst || flowAgainst || mapRisk >= 8)) || (flowAgainst && weakCandle && !real5mTrigger && !continuationFuel));
+  const hardNo = !!(map.hardNo || r291.hardNo || r289.hardNo || r288FastBypassNoRecipe || (r160NeutralStructureTrap && weakCandle) || (!chartFuel && weakCandle && (htfAgainst || flowAgainst || mapRisk >= 8)) || (flowAgainst && weakCandle && !real5mTrigger && !continuationFuel));
   const runner = !!(!hardNo && (map.runner || (continuationFuel && flowAligned && edge >= 55 && mapRisk <= mapFav + 5) || (real5mTrigger && fvgOteOk && flowAligned && mapNet >= 3)));
   const quality = Math.max(0, Math.min(100,
     (edge*0.32) + (score*0.18) + (real5mTrigger?18:0) + (fvgOteOk?12:0) + (continuationFuel?12:0) + (flowAligned?10:0) + (runner?10:0)
@@ -3324,6 +3338,7 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   let tradeOk = !hardNo;
   // Tecrübeli trader: işlem için en az bir gerçek setup gerekir. Yalnızca çok güçlü devam yakıtı istisna.
   if (!chartFuel && quality < 62) tradeOk = false;
+  if (r288FastBypassNoRecipe) tradeOk = false;
   if (r160NeutralStructureTrap && quality < 70) tradeOk = false;
   if (weakCandle && flowAgainst && !runner) tradeOk = false;
   const mode = !tradeOk ? 'WAIT_RECIPE' : runner ? 'RUNNER' : (map.protect || weakCandle || htfAgainst || quality < 64) ? 'TACTICAL' : 'NORMAL';
@@ -3336,8 +3351,10 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   if(weakCandle) notes.push('mum kanıtı zayıf');
   if(htfAgainst) notes.push('HTF/likidite baskısı var');
   if(r160NeutralStructureTrap) notes.push('R160 4/4 nötr-yapı yanılgısı');
+  if(r289.summary) notes.push(String(r289.summary).slice(0,130));
+  if(r288FastBypassNoRecipe) notes.push(`R288 R156 bypass: skor ${score}/${minScore}, mum yok, fuel ${r288FuelScore}, rvol ${r288Rvol.toFixed(2)}, p3 ${r288P3.toFixed(2)}%, OI15 ${r288Oi15Abs.toFixed(0)}%`);
   if(map.summary) notes.push(String(map.summary).slice(0,130));
-  return { ok:true, tradeOk, mode, runner, quality:+quality.toFixed(1), hardNo, chartFuel, real5mTrigger, fvgOteOk, continuationFuel, flowAligned, flowAgainst, weakCandle, htfAgainst, r160NeutralStructureTrap, mapFav, mapRisk, mapNet, notes:notes.slice(0,8), summary:`R283 ${mode} q:${quality.toFixed(1)} ${tradeOk?'ONAY':'BEKLE'} · ${notes.slice(0,5).join(' · ')}` };
+  return { ok:true, tradeOk, mode, runner, quality:+quality.toFixed(1), hardNo, chartFuel, real5mTrigger, fvgOteOk, continuationFuel, flowAligned, flowAgainst, weakCandle, htfAgainst, r160NeutralStructureTrap, r288FastBypassNoRecipe, mapFav, mapRisk, mapNet, notes:notes.slice(0,8), summary:`R283 ${mode} q:${quality.toFixed(1)} ${tradeOk?'ONAY':'BEKLE'} · ${notes.slice(0,5).join(' · ')}` };
 }
 
 
@@ -3430,6 +3447,9 @@ function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
   const e = d.r190Edge || {};
   const ict = d._r278ICT || d.r110ICT || {};
   const map = d.r281ProMap || {};
+  const r289 = d.r289Playbook || {};
+  const r290 = d.r290Smc5m || {};
+  const r291 = d.r291Confluence || {};
   const score = n(opt.score ?? d.score, 0);
   const minScore = n(opt.minScore ?? 70, 70);
   const edge = n(d.brainConfidence ?? d.r142CalibratedEdge, 0);
@@ -3460,14 +3480,14 @@ function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
   const inDirFvg = !!(isL ? (ict.inBullishFVG || d.r278InBullFvg || /FVG_(boğa|bull)|bullish.*FVG/i.test(txt)) : (ict.inBearishFVG || d.r278InBearFvg || /FVG_(ayı|bear)|bearish.*FVG/i.test(txt)));
   const invalidFvg = /FVG invalid/i.test(txt) && !inDirFvg;
   const oteOk = !!(ict.oteZone?.inOte && String(ict.oteZone?.side||'').toUpperCase() === side);
-  const fvgOteOk = !!((inDirFvg || oteOk) && !invalidFvg);
+  const fvgOteOk = !!(r290.fvgRetest || r290.oteOk || r289.fvgRetest || d.r289FvgOteOk || ((inDirFvg || oteOk) && !invalidFvg));
 
   const rangePos = n(e.rangePos, 0.5);
   const seq = n(e.seq, 0);
   const p3 = n(e.price3, 0);
   const atExtreme = isL ? (rangePos >= 0.86 || /pos:0\.(9|8[8-9])|pos:1\.00/i.test(txt)) : (rangePos <= 0.14 || /pos:0\.(0|1[0-2])/i.test(txt));
   const lateChase = !!((e.lateTrapRisk || e.tooLate || /geç giriş|late-chase/i.test(txt) || seq >= 5 || (isL ? p3 > 2.2 : p3 < -2.2)) && !e.squeeze && !e.r192FuelOk);
-  const continuationFuel = !!(e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.r194SwingBreak?.strong || (e.r192FuelScore >= 6 && !lateChase));
+  const continuationFuel = !!(r289.continuation || d.r289ContinuationFuel || e.earlyContinuation || e.squeeze || e.r192FuelOk || e.r192SqzImminent || e.r194SwingBreak?.strong || (e.r192FuelScore >= 6 && !lateChase));
   const continuationClean = !!(continuationFuel && flowAligned && !flowToxicAgainst && !lateChase && !atExtreme && score >= minScore - 14 && edge >= 45);
 
   const sweepReclaimSetup = !!(directionSweep && bodyReclaim && (candleOk || wickReject || flowAligned) && !flowToxicAgainst);
@@ -3480,7 +3500,7 @@ function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
     ? (/karşı .*BSL.*u:%0\.[0-7]|karşı .*direnç yakın|SUPPLY_OB/i.test(txt) && !directionSweep)
     : (/karşı .*SSL.*u:%0\.[0-7]|karşı .*destek yakın|DEMAND_OB/i.test(txt) && !directionSweep));
   const hardNo = !!(
-    e.spreadBlock || map.hardNo || flowToxicAgainst ||
+    e.spreadBlock || map.hardNo || r289.hardNo || r290.hardNo || flowToxicAgainst ||
     (lateChase && !directionSweep && !continuationClean) ||
     (atExtreme && !directionSweep && !continuationClean) ||
     (fakeOi && !directionSweep && !fvgOteOk && !continuationClean) ||
@@ -3490,14 +3510,17 @@ function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
   );
 
   let setup = 'NONE';
-  if (reverseTrapSetup) setup = 'REVERSAL_TRAP';
+  if (r291.tradeOk && r291.setup && r291.setup !== 'NONE') setup = String(r291.setup);
+  else if (r290.tradeOk && r290.setup && r290.setup !== 'NONE') setup = String(r290.setup);
+  else if (r289.tradeOk && r289.setup && r289.setup !== 'NONE') setup = String(r289.setup);
+  else if (reverseTrapSetup) setup = 'REVERSAL_TRAP';
   else if (sweepReclaimSetup) setup = 'LIQUIDITY_RECLAIM';
   else if (fvgRetestSetup) setup = 'FVG_OTE_RETEST';
   else if (continuationClean) setup = 'EARLY_CONTINUATION';
 
   const setupBonus = setup === 'REVERSAL_TRAP' ? 34 : setup === 'LIQUIDITY_RECLAIM' ? 30 : setup === 'FVG_OTE_RETEST' ? 26 : setup === 'EARLY_CONTINUATION' ? 24 : 0;
   const quality = Math.max(0, Math.min(100,
-    setupBonus + score*0.22 + edge*0.24 + pri*0.08 + (flowAligned?10:0) + (candleOk?7:0) + (fvgOteOk?8:0) + (continuationFuel?8:0)
+    setupBonus + score*0.22 + edge*0.24 + pri*0.08 + (flowAligned?10:0) + (candleOk?7:0) + (fvgOteOk?8:0) + (continuationFuel?8:0) + (r290.tradeOk?18:0) + (Number(r290.capacity||0)>=78?10:0) + (r291.tradeOk?20:0) + (Number(r291.capacity||0)>=78?10:0)
     - (lateChase?20:0) - (atExtreme?12:0) - (fakeOi?10:0) - (invalidFvg?10:0) - (htfWallAgainst?10:0)
   ));
   const minQuality = setup === 'REVERSAL_TRAP' ? 58 : setup === 'LIQUIDITY_RECLAIM' ? 60 : setup === 'FVG_OTE_RETEST' ? 64 : setup === 'EARLY_CONTINUATION' ? 68 : 999;
@@ -3508,6 +3531,8 @@ function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
   if(directionSweep) notes.push(isL?'SSL alınmış/reclaim':'BSL alınmış/reclaim');
   if(bodyReclaim) notes.push('body/MSS reclaim');
   if(fvgOteOk) notes.push('FVG/OTE retest');
+  if(r291.tradeOk) notes.push(`R291 kapasite ${Number(r291.capacity||0).toFixed(0)}`);
+  if(r290.tradeOk) notes.push(`R290 kapasite ${Number(r290.capacity||0).toFixed(0)}`);
   if(continuationClean) notes.push('erken continuation temiz');
   if(flowAligned) notes.push('akış aynı yön');
   if(flowToxicAgainst) notes.push('akış toksik ters');
@@ -3607,6 +3632,379 @@ function r287ReverseThesisTrader(blockedSide='LONG', blockedD={}, oppD={}, opt={
   return { ok, armed, side, fromBlockedSide:bSide, mode, quality:+quality.toFixed(1), score, edge, priorityScore:pri, levelReason, extendedIntoLevel, oiTrap, rejectionCandle, fvgOteOpp, flowFlip, flowStillAgainst, hardNo, notes:notes.slice(0,10), summary:`R287 ${ok?'REVERSE TRADE':'REVERSE RADAR'} ${side} ${mode} q:${quality.toFixed(1)} · ${notes.slice(0,7).join(' · ')}` };
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R289: EVA-TİPİ 5M PLAYBOOK STATE — grafiğin anlattığı hikâyeyi saf mumdan oku
+// Amaç: TOP10 5m'de sadece edge/OI/orderflow değil, gerçek trader'ın baktığı şeyi yakalamak:
+// 1) trend bacağı HH/HL mi, LH/LL mi, 2) FVG/OTE retest var mı, 3) likidite iğnesi/reclaim var mı,
+// 4) direnç/destek/fvg-supply alanına geç-chase mi, 5) trend kırıldıysa karşı yön radarı mı?
+// Ek REST yok; analyze içinde zaten çekilmiş k5m/k15m/k1h/k4h kullanılır.
+// ─────────────────────────────────────────────────────────────────────────────
+const r289ChartState = new Map(); // symbol -> son 5m playbook fazı/radar
+function r289Rows(kl, limit=120) {
+  return (Array.isArray(kl)?kl:[]).slice(-limit).map(k=>({
+    t:Number(k[0]||0), o:Number(k[1]), h:Number(k[2]), l:Number(k[3]), c:Number(k[4]), v:Number(k[5]||0)
+  })).filter(x=>Number.isFinite(x.o)&&Number.isFinite(x.h)&&Number.isFinite(x.l)&&Number.isFinite(x.c)&&x.h>0&&x.l>0&&x.h>=x.l);
+}
+function r289Pct(a,b){ a=Number(a); b=Number(b); return b?((a-b)/b)*100:0; }
+function r289Clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function r289Pivots(rows, left=2, right=2) {
+  const highs=[], lows=[];
+  for(let i=left;i<rows.length-right;i++){
+    const r=rows[i]; let hi=true, lo=true;
+    for(let j=i-left;j<=i+right;j++){ if(j===i) continue; if(rows[j].h>=r.h) hi=false; if(rows[j].l<=r.l) lo=false; }
+    if(hi) highs.push({i, t:r.t, price:r.h});
+    if(lo) lows.push({i, t:r.t, price:r.l});
+  }
+  return { highs, lows };
+}
+function r289LastSwing(rows) {
+  const p=r289Pivots(rows,2,2);
+  const hs=p.highs.slice(-3), ls=p.lows.slice(-3);
+  const lastH=hs.at(-1), prevH=hs.at(-2), lastL=ls.at(-1), prevL=ls.at(-2);
+  return {
+    lastHigh:lastH, prevHigh:prevH, lastLow:lastL, prevLow:prevL,
+    hhhl:!!(lastH&&prevH&&lastL&&prevL&&lastH.price>prevH.price&&lastL.price>prevL.price),
+    lhll:!!(lastH&&prevH&&lastL&&prevL&&lastH.price<prevH.price&&lastL.price<prevL.price),
+    highs:hs, lows:ls
+  };
+}
+function r289Fvgs(rows, lookback=70) {
+  const out=[]; const st=Math.max(2, rows.length-lookback);
+  for(let i=st;i<rows.length;i++){
+    const a=rows[i-2], b=rows[i]; if(!a||!b) continue;
+    if(b.l>a.h) out.push({side:'LONG', low:a.h, high:b.l, mid:(a.h+b.l)/2, age:rows.length-1-i, i});
+    if(b.h<a.l) out.push({side:'SHORT', low:b.h, high:a.l, mid:(b.h+a.l)/2, age:rows.length-1-i, i});
+  }
+  return out;
+}
+function r289NearestFvg(rows, side, lastPrice) {
+  const list=r289Fvgs(rows,70).filter(f=>f.side===side).sort((a,b)=>a.age-b.age);
+  let best=null;
+  for(const f of list){
+    const inZone=lastPrice>=f.low*0.997 && lastPrice<=f.high*1.003;
+    const dist = inZone ? 0 : Math.min(Math.abs(r289Pct(lastPrice,f.low)), Math.abs(r289Pct(lastPrice,f.high)));
+    const mitigated = rows.slice(f.i+1).some(r => side==='LONG' ? r.l <= f.high && r.c >= f.low : r.h >= f.low && r.c <= f.high);
+    const cand={...f,inZone,dist,near:dist<=1.15,mitigated};
+    if(!best || (cand.inZone&&!best.inZone) || cand.dist<best.dist) best=cand;
+  }
+  return best;
+}
+function r289TfMap(rows, lastPrice) {
+  const swing=r289LastSwing(rows);
+  const p=r289Pivots(rows,2,2);
+  const hs=p.highs.slice(-8).map(x=>x.price).filter(x=>x>lastPrice).sort((a,b)=>a-b);
+  const ls=p.lows.slice(-8).map(x=>x.price).filter(x=>x<lastPrice).sort((a,b)=>b-a);
+  const up=hs[0]||null, down=ls[0]||null;
+  const bull=r289NearestFvg(rows,'LONG',lastPrice), bear=r289NearestFvg(rows,'SHORT',lastPrice);
+  return { swing, up, down, upDist:up?r289Pct(up,lastPrice):999, downDist:down?Math.abs(r289Pct(down,lastPrice)):999, bullFvg:bull, bearFvg:bear };
+}
+function r289FiveMinutePlaybook(symbol, k5m=[], k15m=[], k1h=[], k4h=[], lastPrice=0) {
+  const k5=r289Rows(k5m,100), k15=r289Rows(k15m,80), k1=r289Rows(k1h,80), k4=r289Rows(k4h,80);
+  const emptySide=(side)=>({side, tradeOk:false, hardNo:false, radar:false, setup:'NONE', quality:0, notes:['veri yok'], summary:`R289 ${side} veri yok`});
+  if(k5.length<20 || !Number.isFinite(Number(lastPrice)) || Number(lastPrice)<=0) return { ok:false, long:emptySide('LONG'), short:emptySide('SHORT'), summary:'R289 veri yok' };
+  const lp=Number(lastPrice), last=k5.at(-1), prev=k5.at(-2), prev2=k5.at(-3), prev3=k5.at(-4);
+  const hi48=Math.max(...k5.slice(-48).map(x=>x.h)), lo48=Math.min(...k5.slice(-48).map(x=>x.l));
+  const rangePos=(hi48>lo48)?(lp-lo48)/(hi48-lo48):0.5;
+  let upSeq=0, dnSeq=0; for(let i=k5.length-1;i>=0;i--){ const r=k5[i]; if(r.c>r.o){ if(dnSeq) break; upSeq++; } else if(r.c<r.o){ if(upSeq) break; dnSeq++; } else break; }
+  const p3=prev3 ? r289Pct(last.c, prev3.c) : 0;
+  const body=Math.abs(last.c-last.o), rng=Math.max(1e-12,last.h-last.l);
+  const upperW=(last.h-Math.max(last.c,last.o))/rng, lowerW=(Math.min(last.c,last.o)-last.l)/rng;
+  const bullCandle=last.c>last.o && body/rng>=0.35, bearCandle=last.c<last.o && body/rng>=0.35;
+  const upperReject=upperW>=0.38 && last.c < last.h - rng*0.45;
+  const lowerReject=lowerW>=0.38 && last.c > last.l + rng*0.45;
+  const swing5=r289LastSwing(k5);
+  const brokeUp=!!(swing5.lastHigh && last.c > swing5.lastHigh.price*1.002 && prev.c <= swing5.lastHigh.price*1.002);
+  const brokeDn=!!(swing5.lastLow && last.c < swing5.lastLow.price*0.998 && prev.c >= swing5.lastLow.price*0.998);
+  const reclaimedUp=!!(lowerReject && last.c>prev.h*0.998);
+  const reclaimedDn=!!(upperReject && last.c<prev.l*1.002);
+  const bullFvg5=r289NearestFvg(k5,'LONG',lp), bearFvg5=r289NearestFvg(k5,'SHORT',lp);
+  const m15=r289TfMap(k15,lp), m1=r289TfMap(k1,lp), m4=r289TfMap(k4,lp);
+  const nearUp = Math.min(m15.upDist, m1.upDist, m4.upDist, bearFvg5?.dist??999, m15.bearFvg?.dist??999);
+  const nearDn = Math.min(m15.downDist, m1.downDist, m4.downDist, bullFvg5?.dist??999, m15.bullFvg?.dist??999);
+  const htfBull = (m15.swing.hhhl?1:0)+(m1.swing.hhhl?1:0)+(m4.swing.hhhl?1:0);
+  const htfBear = (m15.swing.lhll?1:0)+(m1.swing.lhll?1:0)+(m4.swing.lhll?1:0);
+  const trendLong = swing5.hhhl || htfBull>=2;
+  const trendShort = swing5.lhll || htfBear>=2;
+  const longChase = (rangePos>=0.82 && p3>=1.6) || upSeq>=5;
+  const shortChase = (rangePos<=0.18 && p3<=-1.6) || dnSeq>=5;
+  const longLevelTooClose = nearUp<=0.75 && !brokeUp;
+  const shortLevelTooClose = nearDn<=0.75 && !brokeDn;
+  const longFvgRetest = !!((bullFvg5&&(bullFvg5.inZone||bullFvg5.near)) || (m15.bullFvg&&(m15.bullFvg.inZone||m15.bullFvg.near)));
+  const shortFvgRetest = !!((bearFvg5&&(bearFvg5.inZone||bearFvg5.near)) || (m15.bearFvg&&(m15.bearFvg.inZone||m15.bearFvg.near)));
+  const longContinuation = !!(trendLong && brokeUp && !longChase && !longLevelTooClose && p3<2.8);
+  const shortContinuation = !!(trendShort && brokeDn && !shortChase && !shortLevelTooClose && p3>-2.8);
+  const longReclaim = !!(reclaimedUp || (lowerReject && (longFvgRetest || rangePos<=0.45)));
+  const shortReclaim = !!(reclaimedDn || (upperReject && (shortFvgRetest || rangePos>=0.55)));
+  const topShortRadar = !!((rangePos>=0.82 || nearUp<=0.75 || upperReject) && (p3>=1.4 || upSeq>=3 || trendLong));
+  const bottomLongRadar = !!((rangePos<=0.18 || nearDn<=0.75 || lowerReject) && (p3<=-1.4 || dnSeq>=3 || trendShort));
+  const state=r289ChartState.get(symbol)||{};
+  const now=Date.now();
+  const longSetup = longReclaim ? 'LIQUIDITY_RECLAIM' : longFvgRetest && (bullCandle||brokeUp||trendLong) ? 'FVG_OTE_RETEST' : longContinuation ? 'EARLY_CONTINUATION' : (state.longRadarUntil>now && lowerReject ? 'RADAR_TRIGGER' : 'NONE');
+  const shortSetup = shortReclaim ? 'LIQUIDITY_RECLAIM' : shortFvgRetest && (bearCandle||brokeDn||trendShort) ? 'FVG_OTE_RETEST' : shortContinuation ? 'EARLY_CONTINUATION' : (state.shortRadarUntil>now && upperReject ? 'RADAR_TRIGGER' : 'NONE');
+  const longHardNo = !!((longChase && !longReclaim && !longFvgRetest && !brokeUp) || (longLevelTooClose && !brokeUp && !longFvgRetest) || (rangePos>=0.90 && !brokeUp));
+  const shortHardNo= !!((shortChase && !shortReclaim && !shortFvgRetest && !brokeDn) || (shortLevelTooClose && !brokeDn && !shortFvgRetest) || (rangePos<=0.10 && !brokeDn));
+  if(topShortRadar) state.shortRadarUntil=now+9*60*1000;
+  if(bottomLongRadar) state.longRadarUntil=now+9*60*1000;
+  state.last={rangePos,p3,upSeq,dnSeq,nearUp,nearDn,topShortRadar,bottomLongRadar}; state.ts=now; r289ChartState.set(symbol,state);
+  function sideOut(side, setup, hardNo, radar, qualityBase, notesExtra){
+    const tradeOk=!!(setup!=='NONE' && !hardNo && qualityBase>=58);
+    const notes=[];
+    notes.push(`5m:${setup}`); notes.push(`range:${rangePos.toFixed(2)}`); notes.push(`p3:${p3.toFixed(2)}%`); notes.push(`seq:${side==='LONG'?upSeq:dnSeq}`);
+    if(side==='LONG' ? longFvgRetest : shortFvgRetest) notes.push('FVG/OTE retest yolu');
+    if(side==='LONG' ? brokeUp : brokeDn) notes.push('kırılım-kabul');
+    if(side==='LONG' ? longReclaim : shortReclaim) notes.push('iğne/reclaim');
+    if(side==='LONG' ? longLevelTooClose : shortLevelTooClose) notes.push('hedef/likidite yakın');
+    if(hardNo) notes.push('grafik hard-no');
+    if(radar) notes.push('ters yön radar');
+    notes.push(...(notesExtra||[]));
+    return { side, tradeOk, hardNo, radar, setup, quality:+qualityBase.toFixed(1), rangePos:+rangePos.toFixed(2), p3:+p3.toFixed(2), seq:side==='LONG'?upSeq:dnSeq, nearUp:+nearUp.toFixed(2), nearDn:+nearDn.toFixed(2), fvgRetest: side==='LONG'?longFvgRetest:shortFvgRetest, continuation: side==='LONG'?longContinuation:shortContinuation, reclaim: side==='LONG'?longReclaim:shortReclaim, broke: side==='LONG'?brokeUp:brokeDn, notes:notes.slice(0,10), summary:`R289 ${tradeOk?'TRADE':'WAIT'} ${side} ${setup} q:${qualityBase.toFixed(1)} · ${notes.slice(0,7).join(' · ')}` };
+  }
+  const qLong=42 + (longReclaim?25:0)+(longFvgRetest?20:0)+(longContinuation?24:0)+(trendLong?8:0)+(bullCandle?6:0)+(brokeUp?10:0)-(longHardNo?35:0)-(longChase?12:0);
+  const qShort=42 + (shortReclaim?25:0)+(shortFvgRetest?20:0)+(shortContinuation?24:0)+(trendShort?8:0)+(bearCandle?6:0)+(brokeDn?10:0)-(shortHardNo?35:0)-(shortChase?12:0);
+  const long=sideOut('LONG', longSetup, longHardNo, bottomLongRadar, r289Clamp(qLong,0,100), [`15m:${m15.swing.hhhl?'HHHL':m15.swing.lhll?'LHLL':'RANGE'}`, `1h:${m1.swing.hhhl?'HHHL':m1.swing.lhll?'LHLL':'RANGE'}`, `4h:${m4.swing.hhhl?'HHHL':m4.swing.lhll?'LHLL':'RANGE'}`]);
+  const short=sideOut('SHORT', shortSetup, shortHardNo, topShortRadar, r289Clamp(qShort,0,100), [`15m:${m15.swing.hhhl?'HHHL':m15.swing.lhll?'LHLL':'RANGE'}`, `1h:${m1.swing.hhhl?'HHHL':m1.swing.lhll?'LHLL':'RANGE'}`, `4h:${m4.swing.hhhl?'HHHL':m4.swing.lhll?'LHLL':'RANGE'}`]);
+  return { ok:true, long, short, summary:`R289 5m playbook: L ${long.setup}/${long.quality} S ${short.setup}/${short.quality} · range ${rangePos.toFixed(2)} p3 ${p3.toFixed(2)} nearUp ${nearUp.toFixed(2)} nearDn ${nearDn.toFixed(2)}` };
+}
+
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R290: OPEN-SOURCE SMC 5M CALIBRATOR
+// Web/open-source tarama özeti:
+// - smartmoneyconcepts açık kaynak yaklaşımı: FVG, swing high/low, BOS/CHoCH, liquidity cluster.
+// - 5m intraday yaklaşımı: tek indikatör değil, likidite + teknik yapı kombinasyonu.
+// Buradaki amaç "edge 100/OI spike" varsayımını grafiğe bağlamak:
+// 5m FVG/OTE + liquidity sweep/reclaim + BOS/CHoCH + 15m/1h/4h oda/duvar birlikte okunur.
+// Ek REST yok; mevcut kline/orderflow verisini kalibre eder.
+// ─────────────────────────────────────────────────────────────────────────────
+function r290Median(arr){ const a=(arr||[]).map(Number).filter(Number.isFinite).sort((x,y)=>x-y); if(!a.length) return 0; const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2; }
+function r290Avg(arr){ const a=(arr||[]).map(Number).filter(Number.isFinite); return a.length?a.reduce((x,y)=>x+y,0)/a.length:0; }
+function r290AtrPct(rows, n=14){
+  rows = Array.isArray(rows)?rows:[]; if(rows.length<3) return 0;
+  const trs=[]; for(let i=Math.max(1, rows.length-n); i<rows.length; i++){ const r=rows[i], p=rows[i-1]; trs.push(Math.max(r.h-r.l, Math.abs(r.h-p.c), Math.abs(r.l-p.c))); }
+  const atr=r290Avg(trs); const c=rows.at(-1)?.c||0; return c?atr/c*100:0;
+}
+function r290Clusters(points=[], pct=0.004) {
+  const levels=(points||[]).map(x=>({price:Number(x.price), i:Number(x.i||0)})).filter(x=>Number.isFinite(x.price)).sort((a,b)=>a.price-b.price);
+  const clusters=[];
+  for(const pt of levels){
+    let hit=null;
+    for(const c of clusters){ if(Math.abs(pt.price-c.level)/Math.max(pt.price,c.level,1e-12) <= pct){ hit=c; break; } }
+    if(!hit) clusters.push({level:pt.price, count:1, first:pt.i, last:pt.i, prices:[pt.price]});
+    else { hit.prices.push(pt.price); hit.count++; hit.last=Math.max(hit.last,pt.i); hit.level=r290Avg(hit.prices); }
+  }
+  return clusters.filter(c=>c.count>=2).sort((a,b)=>b.count-a.count);
+}
+function r290LiquidityMap(rows=[], lastPrice=0) {
+  rows=r289Rows(rows,120); const lp=Number(lastPrice||rows.at(-1)?.c||0); if(rows.length<20||!lp) return {up:null,down:null,upDist:999,downDist:999,sweptUp:false,sweptDown:false};
+  const p=r289Pivots(rows,2,2); const range=Math.max(...rows.slice(-72).map(x=>x.h))-Math.min(...rows.slice(-72).map(x=>x.l));
+  const tol=Math.max(0.0025, Math.min(0.008, range/Math.max(lp,1e-12)*0.10));
+  const hi=r290Clusters(p.highs.slice(-12), tol), lo=r290Clusters(p.lows.slice(-12), tol);
+  const ups=hi.filter(c=>c.level>lp).sort((a,b)=>a.level-b.level); const dns=lo.filter(c=>c.level<lp).sort((a,b)=>b.level-a.level);
+  const up=ups[0]||null, down=dns[0]||null; const last=rows.at(-1);
+  const nearHi=hi.sort((a,b)=>Math.abs(a.level-lp)-Math.abs(b.level-lp))[0]||null;
+  const nearLo=lo.sort((a,b)=>Math.abs(a.level-lp)-Math.abs(b.level-lp))[0]||null;
+  const sweptUp=!!(nearHi && last.h>nearHi.level*(1+tol*0.35) && last.c<nearHi.level);
+  const sweptDown=!!(nearLo && last.l<nearLo.level*(1-tol*0.35) && last.c>nearLo.level);
+  return { up, down, upDist:up?Math.abs(r289Pct(up.level,lp)):999, downDist:down?Math.abs(r289Pct(down.level,lp)):999, sweptUp, sweptDown, tolPct:tol*100 };
+}
+function r290BosChoch(rows=[]){
+  rows=r289Rows(rows,120); if(rows.length<20) return {bosUp:false,bosDn:false,chochUp:false,chochDn:false};
+  const sw=r289LastSwing(rows), last=rows.at(-1), prev=rows.at(-2);
+  const bosUp=!!(sw.lastHigh && last.c>sw.lastHigh.price*1.0015 && prev.c<=sw.lastHigh.price*1.0015);
+  const bosDn=!!(sw.lastLow && last.c<sw.lastLow.price*0.9985 && prev.c>=sw.lastLow.price*0.9985);
+  return { bosUp, bosDn, chochUp:bosUp && sw.lhll, chochDn:bosDn && sw.hhhl, sw };
+}
+function r290OteZone(rows=[], side='LONG', lastPrice=0){
+  rows=r289Rows(rows,90); const lp=Number(lastPrice||rows.at(-1)?.c||0); if(rows.length<18||!lp) return {ok:false,near:false,inZone:false};
+  side=String(side||'LONG').toUpperCase();
+  const piv=r289Pivots(rows,2,2); const pts=[...piv.highs.map(x=>({...x,type:'H'})), ...piv.lows.map(x=>({...x,type:'L'}))].sort((a,b)=>a.i-b.i).slice(-10);
+  let low=null, high=null;
+  if(side==='LONG'){
+    // son yükseliş impulsu: önce swing low, sonra swing high
+    for(let i=pts.length-1;i>=0;i--){ if(pts[i].type==='H'){ high=pts[i]; break; } }
+    if(high){ for(let i=pts.findIndex(x=>x===high)-1;i>=0;i--){ if(pts[i].type==='L'){ low=pts[i]; break; } } }
+    if(!low||!high||high.price<=low.price) return {ok:false,near:false,inZone:false};
+    const zTop=high.price-(high.price-low.price)*0.62, zBot=high.price-(high.price-low.price)*0.79;
+    const inZone=lp>=zBot*0.996 && lp<=zTop*1.004; const near=Math.min(Math.abs(r289Pct(lp,zBot)),Math.abs(r289Pct(lp,zTop)))<=0.75;
+    return {ok:true,side,low:zBot,high:zTop,inZone,near,legLow:low.price,legHigh:high.price};
+  } else {
+    for(let i=pts.length-1;i>=0;i--){ if(pts[i].type==='L'){ low=pts[i]; break; } }
+    if(low){ for(let i=pts.findIndex(x=>x===low)-1;i>=0;i--){ if(pts[i].type==='H'){ high=pts[i]; break; } } }
+    if(!low||!high||high.price<=low.price) return {ok:false,near:false,inZone:false};
+    const zBot=low.price+(high.price-low.price)*0.62, zTop=low.price+(high.price-low.price)*0.79;
+    const inZone=lp>=zBot*0.996 && lp<=zTop*1.004; const near=Math.min(Math.abs(r289Pct(lp,zBot)),Math.abs(r289Pct(lp,zTop)))<=0.75;
+    return {ok:true,side,low:zBot,high:zTop,inZone,near,legLow:low.price,legHigh:high.price};
+  }
+}
+function r290CandleState(rows=[]){
+  rows=r289Rows(rows,20); const last=rows.at(-1), prev=rows.at(-2), prev2=rows.at(-3); if(!last||!prev) return {};
+  const rng=Math.max(1e-12,last.h-last.l), body=Math.abs(last.c-last.o);
+  const upper=(last.h-Math.max(last.c,last.o))/rng, lower=(Math.min(last.c,last.o)-last.l)/rng;
+  const bull=last.c>last.o, bear=last.c<last.o;
+  const bullEngulf=!!(bull && prev.c<prev.o && last.c>prev.o && last.o<prev.c);
+  const bearEngulf=!!(bear && prev.c>prev.o && last.c<prev.o && last.o>prev.c);
+  let upSeq=0,dnSeq=0; for(let i=rows.length-1;i>=0;i--){ const r=rows[i]; if(r.c>r.o){ if(dnSeq) break; upSeq++; } else if(r.c<r.o){ if(upSeq) break; dnSeq++; } else break; }
+  const p3=prev2?r289Pct(last.c,prev2.c):0;
+  return { bull,bear,bullEngulf,bearEngulf,upperReject:upper>=0.38&&last.c<last.h-rng*0.45,lowerReject:lower>=0.38&&last.c>last.l+rng*0.45,bodyRatio:body/rng,upper,lower,upSeq,dnSeq,p3 };
+}
+function r290OpenSourceSmc5mCalibrator(symbol, k5m=[], k15m=[], k1h=[], k4h=[], lastPrice=0, longD={}, shortD={}){
+  const k5=r289Rows(k5m,120), k15=r289Rows(k15m,90), k1=r289Rows(k1h,90), k4=r289Rows(k4h,90);
+  const lp=Number(lastPrice||k5.at(-1)?.c||0); const empty=(side)=>({side,tradeOk:false,hardNo:false,capacity:0,setup:'NONE',notes:['veri yok'],summary:`R290 ${side} veri yok`});
+  if(k5.length<28||!lp) return {ok:false,long:empty('LONG'),short:empty('SHORT'),summary:'R290 veri yok'};
+  const liq5=r290LiquidityMap(k5,lp), bos5=r290BosChoch(k5), c5=r290CandleState(k5), atr=r290AtrPct(k5,14);
+  const m15=r289TfMap(k15,lp), m1=r289TfMap(k1,lp), m4=r289TfMap(k4,lp);
+  const hi48=Math.max(...k5.slice(-48).map(x=>x.h)), lo48=Math.min(...k5.slice(-48).map(x=>x.l)); const rangePos=(hi48>lo48)?(lp-lo48)/(hi48-lo48):0.5;
+  const fvgL=r289NearestFvg(k5,'LONG',lp), fvgS=r289NearestFvg(k5,'SHORT',lp); const fvg15L=m15.bullFvg, fvg15S=m15.bearFvg;
+  const oteL=r290OteZone(k5,'LONG',lp), oteS=r290OteZone(k5,'SHORT',lp);
+  const tfBull=(m15.swing.hhhl?1:0)+(m1.swing.hhhl?1:0)+(m4.swing.hhhl?1:0), tfBear=(m15.swing.lhll?1:0)+(m1.swing.lhll?1:0)+(m4.swing.lhll?1:0);
+  function sideEval(side,d){
+    const isL=side==='LONG'; const txt=[d?.reason,d?.brainSummary,d?.r125OrderflowSummary,d?.r126FlowSummary,d?.htfTani,d?.ictDashboard].filter(Boolean).join(' ');
+    const delta=Number(d?.r125LiveDeltaPct ?? d?.r125Flow?.deltaPct ?? 0)||0; const flowSide=String(d?.r125BestSide||d?.r125Flow?.bestSide||'').toUpperCase();
+    const flowAligned=flowSide===side || (isL?delta>=18:delta<=-18) || (isL?/R125\s*(LONG|YÜKSELİŞ).*L\d+\/S0/i.test(txt):/R125\s*(SHORT|DÜŞÜŞ).*L0\/S\d+/i.test(txt));
+    const flowAgainst=(flowSide && flowSide!=='NEUTRAL' && flowSide!==side) || (isL?delta<=-28:delta>=28);
+    const fvgRetest=!!(isL?((fvgL&&(fvgL.inZone||fvgL.near))||(fvg15L&&(fvg15L.inZone||fvg15L.near))):(fvgS&&(fvgS.inZone||fvgS.near))||(fvg15S&&(fvg15S.inZone||fvg15S.near)));
+    const oteOk=!!(isL?(oteL.inZone||oteL.near):(oteS.inZone||oteS.near));
+    const sweepReclaim=!!(isL?(liq5.sweptDown||c5.lowerReject||/SSL_ALINDI|SSL wick\+body|body-reclaim|body-geri|ChoCH|MSS/i.test(txt)):(liq5.sweptUp||c5.upperReject||/BSL_ALINDI|BSL wick\+body|body-reclaim|body-geri|ChoCH|MSS/i.test(txt)));
+    const bos=!!(isL?(bos5.bosUp||bos5.chochUp):(bos5.bosDn||bos5.chochDn));
+    const candle=!!(isL?(c5.bull&&c5.bodyRatio>=0.35||c5.bullEngulf||c5.lowerReject):(c5.bear&&c5.bodyRatio>=0.35||c5.bearEngulf||c5.upperReject));
+    const tfAlign=isL?tfBull:tfBear; const room=isL?Math.min(liq5.upDist,m15.upDist,m1.upDist,m4.upDist):Math.min(liq5.downDist,m15.downDist,m1.downDist,m4.downDist);
+    const chase=!!(isL?(rangePos>=0.82 && c5.p3>=1.45 && !fvgRetest && !oteOk && !sweepReclaim):(rangePos<=0.18 && c5.p3<=-1.45 && !fvgRetest && !oteOk && !sweepReclaim));
+    const wall=room<=0.55 && !bos && !sweepReclaim; const oiExtreme=/OI15:\s*\d{3,}|OI\+|ACCEL|UP VPIN/i.test(txt) && !fvgRetest && !sweepReclaim && !bos;
+    let setup='NONE';
+    if(sweepReclaim && (candle||bos||flowAligned)) setup='LIQUIDITY_RECLAIM';
+    else if((fvgRetest||oteOk) && (candle||flowAligned||bos) && !chase) setup='FVG_OTE_RETEST';
+    else if(bos && flowAligned && !wall && !chase && atr<8) setup='BOS_CONTINUATION';
+    else if((isL?tfBull>=2:tfBear>=2) && flowAligned && !chase && room>0.8 && c5.bodyRatio>=0.25) setup='EARLY_CONTINUATION';
+    const capacity=r289Clamp(
+      32 + (setup!=='NONE'?24:0) + (sweepReclaim?18:0) + ((fvgRetest||oteOk)?16:0) + (bos?14:0) + (tfAlign*5) + (flowAligned?9:0) + (candle?7:0) + (room>1.2?6:0)
+      - (flowAgainst?28:0) - (chase?22:0) - (wall?18:0) - (oiExtreme?12:0) - (atr>9?12:0), 0, 92);
+    const hardNo=!!(flowAgainst || chase || wall || (oiExtreme&&setup==='NONE') || (atr>11&&!sweepReclaim));
+    const tradeOk=!!(!hardNo && setup!=='NONE' && capacity>=74);
+    const notes=[]; notes.push(`setup:${setup}`); if(sweepReclaim)notes.push('liq sweep/reclaim'); if(fvgRetest)notes.push('FVG retest'); if(oteOk)notes.push('OTE zone'); if(bos)notes.push('BOS/CHoCH close break'); if(tfAlign)notes.push(`MTF align ${tfAlign}/3`); if(flowAligned)notes.push('flow aynı yön'); if(candle)notes.push('mum tetik'); if(chase)notes.push('chase/range ucu'); if(wall)notes.push('yakın likidite duvarı'); if(oiExtreme)notes.push('OI tek başına'); if(flowAgainst)notes.push('flow ters');
+    return {side,tradeOk,hardNo,capacity:+capacity.toFixed(1),setup,rangePos:+rangePos.toFixed(2),p3:+c5.p3.toFixed(2),room:+room.toFixed(2),atr:+atr.toFixed(2),flowAligned,flowAgainst,fvgRetest,oteOk,sweepReclaim,bos,candle,chase,wall,notes:notes.slice(0,10),summary:`R290 ${tradeOk?'TRADE':'WAIT'} ${side} ${setup} kapasite:${capacity.toFixed(1)} · ${notes.slice(0,7).join(' · ')}`};
+  }
+  const long=sideEval('LONG',longD||{}), short=sideEval('SHORT',shortD||{});
+  return {ok:true,long,short,summary:`R290 SMC 5m: L ${long.setup}/${long.capacity} S ${short.setup}/${short.capacity} · range ${rangePos.toFixed(2)} ATR ${atr.toFixed(2)} liqUp ${liq5.upDist.toFixed(2)} liqDn ${liq5.downDist.toFixed(2)}`};
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R291: SMC + LIQUIDITY CONFLUENCE GOVERNOR
+// Kaynaklardan alınan doğru ders:
+// - Smart-Money-Concepts MT5: HH/HL-LH/LL, BOS/CHoCH, likidite sweep, OB, FVG ayrı ayrı okunur.
+// - crypto-liquidity-ai-trading-bot: order book gap, hidden wall, sweep event ve book imbalance fiyatı gecikmeden haber verir.
+// - Adamant tradebot: spread/liquidity/depth korunmadan market order çöp olur.
+// Bu fonksiyon yeni REST yükü bindirmez; Lazarus'un zaten ürettiği 5m/15m/1h/4h mum + R125 book/flow + R290 SMC verisini tek hükme bağlar.
+// Amaç: %72-78 bandı için R156/R144 edge/OI kaçışını kapatmak; temiz FVG/OTE-reclaim/continuation varsa da WAIT'te boğmamak.
+// ─────────────────────────────────────────────────────────────────────────────
+function r291NormSide(x='') {
+  x = String(x||'').toUpperCase();
+  if (/LONG|YÜKSEL|YUKSEL|BUY|BULL/.test(x)) return 'LONG';
+  if (/SHORT|DÜŞ|DUS|SELL|BEAR/.test(x)) return 'SHORT';
+  return 'NEUTRAL';
+}
+function r291ParseOrderBookText(txt='', side='LONG') {
+  side = String(side||'LONG').toUpperCase();
+  const isL = side === 'LONG';
+  const n = (v,d=0)=>Number.isFinite(Number(v))?Number(v):d;
+  const out = {bookSide:'NEUTRAL',deepSide:'NEUTRAL',microSide:'NEUTRAL',deltaSide:'NEUTRAL',bookImb:0,deepImb:0,microPct:0,deltaPct:0,upperWall:null,lowerWall:null,spreadRisk:false,thinBook:false,notes:[]};
+  const mBook = String(txt).match(/book:\s*([A-ZÇĞİÖŞÜYÜKSELDÜŞ]+)\s+imb:\s*([-\d.]+)%/i);
+  if (mBook) { out.bookSide = r291NormSide(mBook[1]); out.bookImb = n(mBook[2]); }
+  const mDeep = String(txt).match(/deep:\s*([A-ZÇĞİÖŞÜYÜKSELDÜŞ]+)\s+([-\d.]+)%/i);
+  if (mDeep) { out.deepSide = r291NormSide(mDeep[1]); out.deepImb = n(mDeep[2]); }
+  const mMicro = String(txt).match(/micro:\s*([A-ZÇĞİÖŞÜYÜKSELDÜŞ]+)\s+([-\d.]+)%/i);
+  if (mMicro) { out.microSide = r291NormSide(mMicro[1]); out.microPct = n(mMicro[2]); }
+  const mDelta = String(txt).match(/delta:\s*([A-ZÇĞİÖŞÜYÜKSELDÜŞ]+)\s+([-\d.]+)%/i);
+  if (mDelta) { out.deltaSide = r291NormSide(mDelta[1]); out.deltaPct = n(mDelta[2]); }
+  const wallObj = (m)=> m ? {price:n(m[1]), usd:n(m[2]), gap:n(m[3]), raw:m[0]} : null;
+  out.upperWall = wallObj(String(txt).match(/üst:\s*([\d.]+)\s+([\d.]+)\$\s*g(\d+)/i));
+  out.lowerWall = wallObj(String(txt).match(/alt:\s*([\d.]+)\s+([\d.]+)\$\s*g(\d+)/i));
+  out.spreadRisk = /spreadBlock|poorLiquidity|makas:(?!normal)|defter:(İNCE|INCE|zayıf|zayif)|TEHLİKELİ|tehlikeli/i.test(String(txt));
+  out.thinBook = /defter:(İNCE|INCE|zayıf|zayif)|thin book|book thin/i.test(String(txt));
+  const same = (x)=>r291NormSide(x)===side;
+  const opp  = (x)=>{ const y=r291NormSide(x); return y!==side && y!=='NEUTRAL'; };
+  let align = 0, against = 0;
+  if (same(out.bookSide) || (isL ? out.bookImb>=35 : out.bookImb<=-35)) align += 1.1; else if (opp(out.bookSide) || (isL ? out.bookImb<=-35 : out.bookImb>=35)) against += 1.1;
+  if (same(out.deepSide) || (isL ? out.deepImb>=18 : out.deepImb<=-18)) align += 1.0; else if (opp(out.deepSide) || (isL ? out.deepImb<=-18 : out.deepImb>=18)) against += 1.0;
+  if (same(out.microSide) || (isL ? out.microPct>=0.018 : out.microPct<=-0.018)) align += 0.8; else if (opp(out.microSide) || (isL ? out.microPct<=-0.018 : out.microPct>=0.018)) against += 0.8;
+  if (same(out.deltaSide) || (isL ? out.deltaPct>=25 : out.deltaPct<=-25)) align += 1.4; else if (opp(out.deltaSide) || (isL ? out.deltaPct<=-25 : out.deltaPct>=25)) against += 1.4;
+  const upperNear = !!(out.upperWall && out.upperWall.gap <= 30);
+  const lowerNear = !!(out.lowerWall && out.lowerWall.gap <= 30);
+  const upperBig = !!(out.upperWall && out.upperWall.usd >= 900);
+  const lowerBig = !!(out.lowerWall && out.lowerWall.usd >= 900);
+  const sameWall = isL ? (lowerNear && lowerBig) : (upperNear && upperBig);
+  const oppWall  = isL ? (upperNear && upperBig) : (lowerNear && lowerBig);
+  const bookVacuum = isL ? (!out.upperWall || out.upperWall.gap >= 44) : (!out.lowerWall || out.lowerWall.gap >= 44);
+  out.alignScore = +(align-against).toFixed(2);
+  out.flowAligned = align >= 2.1 && align > against;
+  out.flowAgainst = against >= 2.0 && against > align;
+  out.sameWall = sameWall;
+  out.oppWall = oppWall;
+  out.bookVacuum = bookVacuum;
+  if (out.flowAligned) out.notes.push('book/depth/delta aynı hikâye');
+  if (out.flowAgainst) out.notes.push('book/depth/delta ters hikâye');
+  if (sameWall) out.notes.push(isL?'alt hidden wall destek':'üst hidden wall direnç');
+  if (oppWall) out.notes.push(isL?'üst hidden wall risk':'alt hidden wall risk');
+  if (bookVacuum && out.flowAligned) out.notes.push('order book gap/vacuum lehte');
+  if (out.spreadRisk) out.notes.push('spread/depth risk');
+  return out;
+}
+function r291SmcLiquidityConfluence(symbol, k5m=[], k15m=[], k1h=[], k4h=[], lastPrice=0, longD={}, shortD={}) {
+  const k5=r289Rows(k5m,140), k15=r289Rows(k15m,100), k1=r289Rows(k1h,100), k4=r289Rows(k4h,90);
+  const lp=Number(lastPrice||k5.at(-1)?.c||0);
+  const empty=(side)=>({side,tradeOk:false,hardNo:false,capacity:0,setup:'NONE',notes:['veri yok'],summary:`R291 ${side} veri yok`});
+  if(k5.length<30||!lp) return {ok:false,long:empty('LONG'),short:empty('SHORT'),summary:'R291 veri yok'};
+  const c5=r290CandleState(k5), liq5=r290LiquidityMap(k5,lp), bos5=r290BosChoch(k5);
+  const fvg5L=r289NearestFvg(k5,'LONG',lp), fvg5S=r289NearestFvg(k5,'SHORT',lp);
+  const m15=r289TfMap(k15,lp), m1=r289TfMap(k1,lp), m4=r289TfMap(k4,lp);
+  const oteL=r290OteZone(k5,'LONG',lp), oteS=r290OteZone(k5,'SHORT',lp);
+  const hi=Math.max(...k5.slice(-60).map(x=>x.h)), lo=Math.min(...k5.slice(-60).map(x=>x.l));
+  const rangePos=(hi>lo)?(lp-lo)/(hi-lo):0.5;
+  const atr=r290AtrPct(k5,14);
+  const tfBull=(m15.swing.hhhl?1:0)+(m1.swing.hhhl?1:0)+(m4.swing.hhhl?1:0);
+  const tfBear=(m15.swing.lhll?1:0)+(m1.swing.lhll?1:0)+(m4.swing.lhll?1:0);
+  function evalSide(side,d){
+    const isL=side==='LONG'; const txt=[d?.reason,d?.brainSummary,d?.r125OrderflowSummary,d?.r126FlowSummary,d?.htfTani,d?.ictDashboard,d?.siksmaOzet,d?.r140Summary].filter(Boolean).join(' ');
+    const r290=d?.r290Smc5m||{}; const r289=d?.r289Playbook||{}; const book=r291ParseOrderBookText(txt,side);
+    const fvgRetest=!!(isL ? ((fvg5L&&(fvg5L.inZone||fvg5L.near)) || (m15.bullFvg&&(m15.bullFvg.inZone||m15.bullFvg.near)) || r290.fvgRetest || r289.fvgRetest) : ((fvg5S&&(fvg5S.inZone||fvg5S.near)) || (m15.bearFvg&&(m15.bearFvg.inZone||m15.bearFvg.near)) || r290.fvgRetest || r289.fvgRetest));
+    const oteOk=!!(isL ? (oteL.inZone||oteL.near||r290.oteOk) : (oteS.inZone||oteS.near||r290.oteOk));
+    const sweepReclaim=!!(isL ? (liq5.sweptDown || c5.lowerReject || /SSL_ALINDI|SSL.*body|alt iğne|Dragonfly|Hammer|body[- ]?(reclaim|geri)/i.test(txt) || r290.sweepReclaim || r289.reclaim) : (liq5.sweptUp || c5.upperReject || /BSL_ALINDI|BSL.*body|üst iğne|Shooting|DarkCloud|body[- ]?(reclaim|geri)/i.test(txt) || r290.sweepReclaim || r289.reclaim));
+    const bos=!!(isL ? (bos5.bosUp||bos5.chochUp||r290.bos||r289.broke) : (bos5.bosDn||bos5.chochDn||r290.bos||r289.broke));
+    const candle=!!(isL ? (c5.bullEngulf || c5.lowerReject || (c5.bull&&c5.bodyRatio>=0.38) || /Hammer|Dragonfly|Bull|YÜKSELİŞ mum teyidi/i.test(txt)) : (c5.bearEngulf || c5.upperReject || (c5.bear&&c5.bodyRatio>=0.38) || /Shooting|DarkCloud|Bear|DÜŞÜŞ mum teyidi/i.test(txt)));
+    const tfAlign=isL?tfBull:tfBear;
+    const room=isL?Math.min(liq5.upDist,m15.upDist,m1.upDist,m4.upDist):Math.min(liq5.downDist,m15.downDist,m1.downDist,m4.downDist);
+    const chase=!!(isL ? (rangePos>=0.84 && c5.p3>=1.35 && !fvgRetest && !oteOk && !sweepReclaim) : (rangePos<=0.16 && c5.p3<=-1.35 && !fvgRetest && !oteOk && !sweepReclaim));
+    const nearWall=!!(room<=0.55 && !bos && !sweepReclaim);
+    const oiExtreme=!!(/OI15:\s*\d{3,}|OI15m:\s*[89]\d|ACCEL|UP VPIN|SAHTE_PUMP|OI:çözülüyor/i.test(txt) && !sweepReclaim && !fvgRetest && !bos);
+    const weakNoGraph=!!(/formasyon yok|puan 0\/12|mum kanıtı zayıf|teyidi zayıf/i.test(txt) && !candle && !sweepReclaim && !fvgRetest && !oteOk && !bos);
+    const spreadRisk=!!(book.spreadRisk || d?.r190Edge?.spreadBlock || /TEHLİKELİ|poorLiquidity|makas:(?!normal)/i.test(txt));
+    let setup='NONE';
+    if(sweepReclaim && (candle||book.flowAligned||bos)) setup='LIQUIDITY_SWEEP_RECLAIM';
+    else if((fvgRetest||oteOk) && (book.flowAligned||candle||bos) && !chase) setup='FVG_OTE_RETEST';
+    else if(bos && book.flowAligned && room>0.65 && !chase) setup='BOS_CHOCH_CONTINUATION';
+    else if(tfAlign>=2 && book.flowAligned && room>0.9 && !chase && (candle||r290.capacity>=74)) setup='MTF_CONTINUATION';
+    const smcProofs=[sweepReclaim,fvgRetest||oteOk,bos,candle,tfAlign>=2].filter(Boolean).length;
+    const liqProofs=[book.flowAligned,book.sameWall,book.bookVacuum && book.flowAligned,room>1.0].filter(Boolean).length;
+    const riskCount=[book.flowAgainst,book.oppWall,spreadRisk,chase,nearWall,oiExtreme,weakNoGraph,atr>9].filter(Boolean).length;
+    let capacity = 18 + Number(r290.capacity||0)*0.38 + Number(r289.quality||0)*0.12 + smcProofs*8.5 + liqProofs*7.5 + (setup!=='NONE'?12:0) + (tfAlign*3.5) + (room>1.4?5:0) - riskCount*12;
+    if (book.flowAligned && (sweepReclaim||fvgRetest||oteOk||bos)) capacity += 8;
+    if (book.flowAgainst && !sweepReclaim) capacity -= 18;
+    if (weakNoGraph && /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt)) capacity -= 14;
+    capacity = r289Clamp(capacity,0,94);
+    const fastBypass=!!(d?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt));
+    const hardNo=!!(spreadRisk || book.flowAgainst || (chase && !sweepReclaim) || (nearWall && !bos) || (oiExtreme && smcProofs<2) || (weakNoGraph && fastBypass) || (atr>11 && !sweepReclaim));
+    const need = fastBypass ? 78 : 74;
+    const tradeOk=!!(!hardNo && setup!=='NONE' && capacity>=need && smcProofs>=2 && liqProofs>=1);
+    const radar=!!(!tradeOk && !hardNo && setup!=='NONE' && capacity>=66);
+    const notes=[]; notes.push(`setup:${setup}`); notes.push(`SMC:${smcProofs}/5 LIQ:${liqProofs}/4 risk:${riskCount}`); if(sweepReclaim)notes.push('sweep/reclaim'); if(fvgRetest)notes.push('FVG retest'); if(oteOk)notes.push('OTE'); if(bos)notes.push('BOS/CHoCH'); if(candle)notes.push('mum kabul'); if(tfAlign)notes.push(`MTF ${tfAlign}/3`); notes.push(...book.notes.slice(0,3)); if(chase)notes.push('chase/range ucu'); if(nearWall)notes.push('yakın likidite duvarı'); if(oiExtreme)notes.push('OI tek başına'); if(weakNoGraph)notes.push('grafik tetik zayıf');
+    return {side,tradeOk,radar,hardNo,capacity:+capacity.toFixed(1),setup,smcProofs,liqProofs,riskCount,rangePos:+rangePos.toFixed(2),p3:+c5.p3.toFixed(2),room:+room.toFixed(2),atr:+atr.toFixed(2),flowAligned:book.flowAligned,flowAgainst:book.flowAgainst,fvgRetest,oteOk,sweepReclaim,bos,candle,chase,nearWall,oiExtreme,weakNoGraph,notes:notes.slice(0,12),summary:`R291 ${tradeOk?'TRADE':radar?'RADAR':'WAIT'} ${side} ${setup} kapasite:${capacity.toFixed(1)} · ${notes.slice(0,8).join(' · ')}`};
+  }
+  const long=evalSide('LONG',longD||{}), short=evalSide('SHORT',shortD||{});
+  return {ok:true,long,short,summary:`R291 SMC+LIQ: L ${long.setup}/${long.capacity} S ${short.setup}/${short.capacity} · ${long.notes?.[1]||''} / ${short.notes?.[1]||''}`};
+}
 
 function r109CalcSweepReclaimScore(k5m, side) {
   const rows = Array.isArray(k5m) ? k5m.slice(-8).map(k => ({
@@ -6723,6 +7121,29 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r196SideCtxBrain = side === 'LONG' ? d.r29?.r196?.long : d.r29?.r196?.short;
   const r196RangeLocationBlock = r120Bool(r196SideCtxBrain?.block);
   const r196RangeLocationCaution = r120Bool(r196SideCtxBrain?.caution);
+
+  // R288: R156/TOP10 hızlı bypass son valiyi delmesin.
+  // CHIP örneği: score 52/70, mum formasyon yok, p3 +2.67%, RVOL 0.64, fuel 7,
+  // OI15 +2457% iken R156 "edge 100" diye LONG açtı. Normal 5m trader böyle grafikte
+  // ya FVG/OTE retest bekler ya da üstte reddedilirse ters radar kurar; market chase yapmaz.
+  const r288FuelScore = r120BrainNum(r286EdgeObj.r192FuelScore, r120BrainNum(r286EdgeObj.score, 0));
+  const r288FastBypassWeakChart = r120Bool(
+    r156FastTop10Bypass &&
+    score < minScore &&
+    (r188WeakCandle || r146No5mPattern) &&
+    !r120Bool(d.r118CandleStrong) && !r120Bool(d.r190Edge?.squeeze) &&
+    (
+      r288FuelScore < 8 ||
+      r286Rvol < 0.80 ||
+      r286Oi15Abs >= 500 ||
+      (side === 'LONG' ? r286P3 >= 1.80 : r286P3 <= -1.80) ||
+      r286TargetNear || r286AtRangeEdge
+    )
+  );
+  const r288FastBypassWeakReason = r288FastBypassWeakChart
+    ? `R288 R156 TOP10 bypass kapalı: skor ${score}/${minScore}, mum yok/zayıf, fuel ${r288FuelScore}, RVOL ${r286Rvol.toFixed(2)}, p3 ${r286P3.toFixed(2)}%, OI15 ${r286Oi15Abs.toFixed(0)}%; FVG/OTE retest veya gerçek 5m kabul bekle`
+    : '';
+
   const r274SafeEntryPass = r120Bool(
     r274EntryOk && !hardDanger && !modeQualityBlock && !r147NoProofCounterTrap && !r148WrongSideBlock &&
     dataMinimum && !r196RangeLocationBlock && !toxicFlow && score >= Math.max(48, minScore - 22) &&
@@ -6752,6 +7173,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     r195WeakSwingLowQuality ||
     r195R160LowEdgeFalse4of4 ||
     r286ChartAcceptanceBlock ||
+    r288FastBypassWeakChart ||
     r196RangeLocationBlock
   ));
   const r191UnifiedBlockReason = r191UnifiedEntryBlock
@@ -6772,6 +7194,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
         r195R160LowEdgeFalse4of4?'R160 4/4 görünüyor ama edge düşük; gerçek kaliteli 5m yakıt yok':'',
         r286HtfOnlyChaseIntoNeedle?`R286 5m kabul yok: hedef/iğne yakın + mum yok + range ${r286RangePos.toFixed(2)} + p3 ${r286P3.toFixed(2)}% seq ${r286Seq}; kırılım-kabul/retest veya FVG/OTE bekle`:'',
         r286OiSpikeNoAcceptance?`R286 OI spike (${r286Oi15Abs.toFixed(0)}%) ama RVOL ${r286Rvol.toFixed(2)} ve 5m kabul yok; MM likidite iğnesi riski`:'',
+        r288FastBypassWeakReason,
         r196RangeLocationBlock?(r196SideCtxBrain?.reason || 'R196 günlük range tepesi/dibi; işlem yok'):''
       ].filter(Boolean).join(' + ')}`
     : '';
@@ -6810,7 +7233,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   const r274ReasonTxt = r274Signal.reason ? `R274 ${r274EntryOk?'ENTRY':'WATCH'}: ${r274Signal.reason}` : '';
   const r278BlockReason = (!r278Hunt.allow) ? r278Hunt.reason : '';
   const r276BlockReason = (!r276Gate.allow) ? r276Gate.reason : '';
-  const r144WatchExtraRaw = r278BlockReason || r276BlockReason || r191UnifiedBlockReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r274ReasonTxt || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
+  const r144WatchExtraRaw = r278BlockReason || r276BlockReason || r191UnifiedBlockReason || r288FastBypassWeakReason || r188NoProofBlockReason || r188R159BlockReason || r187R160BlockReason || r187R159BlockReason || r274ReasonTxt || r148Note || r147TrapGuardReason || r144FastBlockReason || '';
   const r144WatchExtra = r144WatchExtraRaw ? ` · ${r144WatchExtraRaw}` : '';
   const r156Label = r156FastTop10Bypass ? 'R156 TOP10 hızlı bypass' : '';
   const r159Label = r159MomentumPass ? `R159 momentum geçiş (${r159Points}p)` : '';
@@ -6829,6 +7252,8 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
   d.r160Q1Structure = r160Q1Structure;
   d.r283RealChartStructure = r283RealChartStructure;
   d.r286ChartAcceptanceBlock = r286ChartAcceptanceBlock;
+  d.r288FastBypassWeakChart = r288FastBypassWeakChart;
+  d.r288FastBypassWeakReason = r288FastBypassWeakReason;
   d.r286Real5mAcceptance = r286Real5mAcceptance;
   d.r286RangePos = r286RangePos;
   d.r286Seq = r286Seq;
@@ -11636,6 +12061,96 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       const shortDecisionRaw = evalDecision('SHORT');
       const longDecision  = r120SingleBrainDecision('LONG', longDecisionRaw, longScore, minAutoScore);
       const shortDecision = r120SingleBrainDecision('SHORT', shortDecisionRaw, shortScore, minAutoScore);
+
+      // R289: EVA tipi 5m grafikte asıl hikâyeyi ham mumlardan oku ve LONG/SHORT kararlarına bağla.
+      // Burada k5m/k15m/k1h/k4h hâlâ elimizde; dış tarama döngüsü bu bilgiyi kaybediyor.
+      try {
+        const r289Map = r289FiveMinutePlaybook(full, k5m, k15m, k1h, k4h, lastPrice);
+        function r289Apply(side, d, sc) {
+          if(!d || !r289Map?.ok) return;
+          const p = side === 'LONG' ? r289Map.long : r289Map.short;
+          d.r289Playbook = p;
+          d.r289TraderSetupOk = !!p.tradeOk;
+          d.r289FvgOteOk = !!p.fvgRetest;
+          d.r289ContinuationFuel = !!p.continuation;
+          d.r289HardNo = !!p.hardNo;
+          d.r289Summary = p.summary;
+          const txt = String(d.brainSummary || d.reason || '');
+          const isFastBypass = !!(d.r156FastBypass || /R156 TOP10 hızlı bypass|hızlı bypass/i.test(txt));
+          // R156/R144 hızlı bypass ham grafik hard-no diyorsa bu taraf pass olamaz.
+          if ((isFastBypass || d.r159MomentumPass || d.r160TraderDecision) && p.hardNo && !p.tradeOk) {
+            d.pass = false; d.autoOk = false; d.entryPermissionOk = false; d.brainAction = 'WATCH';
+            d.entryPermissionReason = 'R289_GRAPH_PLAYBOOK_WAIT';
+            const add = ` · R289 grafik bekle: ${p.summary}`;
+            d.reason = txt.includes('R289 ') ? txt : `${txt}${add}`;
+            d.brainSummary = d.reason;
+          } else if (p.tradeOk) {
+            // WAIT'te kaybolmasın: gerçek reclaim/FVG/continuation setup'ı varsa R285/recipe bunu kullanacak.
+            const add = ` · ${p.summary}`;
+            d.reason = txt.includes('R289 ') ? txt : `${txt}${add}`;
+            d.brainSummary = d.reason;
+          }
+        }
+        r289Apply('LONG', longDecision, longScore);
+        r289Apply('SHORT', shortDecision, shortScore);
+      } catch(_r289e) { try { console.warn('R289 playbook error', _r289e?.message || _r289e); } catch(_){} }
+
+      // R290: açık kaynak SMC 5m kalibratörü — LONG/SHORT full malzemedeyken bağlanır.
+      try {
+        const r290Map = r290OpenSourceSmc5mCalibrator(full, k5m, k15m, k1h, k4h, lastPrice, longDecision, shortDecision);
+        function r290Apply(side, d) {
+          if(!d || !r290Map?.ok) return;
+          const p = side === 'LONG' ? r290Map.long : r290Map.short;
+          d.r290Smc5m = p;
+          d.r290Capacity = p.capacity;
+          d.r290TraderSetupOk = !!p.tradeOk;
+          const txt = String(d.brainSummary || d.reason || '');
+          const fastPath = !!(d.r156FastBypass || d.r159MomentumPass || d.r160TraderDecision || /R156 TOP10 hızlı bypass|R144 hızlı|hızlı bypass|edge mikro-scalp/i.test(txt));
+          if (fastPath && p.hardNo && !p.tradeOk) {
+            d.pass = false; d.autoOk = false; d.entryPermissionOk = false; d.brainAction = 'WATCH';
+            d.entryPermissionReason = 'R290_SMC_GRAPH_WAIT';
+            const add = ` · R290 grafik bekle: ${p.summary}`;
+            d.reason = txt.includes('R290 ') ? txt : `${txt}${add}`;
+            d.brainSummary = d.reason;
+          } else if (p.tradeOk) {
+            const add = ` · ${p.summary}`;
+            d.reason = txt.includes('R290 ') ? txt : `${txt}${add}`;
+            d.brainSummary = d.reason;
+          }
+        }
+        r290Apply('LONG', longDecision);
+        r290Apply('SHORT', shortDecision);
+      } catch(_r290e) { try { console.warn('R290 smc calibrator error', _r290e?.message || _r290e); } catch(_){} }
+
+      // R291: SMC + liquidity confluence — açık kaynak dersleri gerçek karar malzemesine bağla.
+      try {
+        const r291Map = r291SmcLiquidityConfluence(full, k5m, k15m, k1h, k4h, lastPrice, longDecision, shortDecision);
+        function r291Apply(side, d) {
+          if(!d || !r291Map?.ok) return;
+          const p = side === 'LONG' ? r291Map.long : r291Map.short;
+          d.r291Confluence = p;
+          d.r291Capacity = p.capacity;
+          d.r291TraderSetupOk = !!p.tradeOk;
+          d.r291FvgOteOk = !!(p.fvgRetest || p.oteOk);
+          d.r291LiquidityFuel = !!(p.flowAligned || p.sweepReclaim || p.bos);
+          const txt = String(d.brainSummary || d.reason || '');
+          const fastPath = !!(d.r156FastBypass || d.r159MomentumPass || d.r160TraderDecision || /R156 TOP10 hızlı bypass|R144 hızlı|hızlı bypass|edge mikro-scalp/i.test(txt));
+          if (fastPath && (p.hardNo || Number(p.capacity||0) < 72) && !p.tradeOk) {
+            d.pass = false; d.autoOk = false; d.entryPermissionOk = false; d.brainAction = 'WATCH';
+            d.entryPermissionReason = 'R291_SMC_LIQUIDITY_WAIT';
+            const add = ` · R291 grafik+likidite bekle: ${p.summary}`;
+            d.reason = txt.includes('R291 ') ? txt : `${txt}${add}`;
+            d.brainSummary = d.reason;
+          } else if (p.tradeOk || p.radar) {
+            const add = ` · ${p.summary}`;
+            d.reason = txt.includes('R291 ') ? txt : `${txt}${add}`;
+            d.brainSummary = d.reason;
+          }
+        }
+        r291Apply('LONG', longDecision);
+        r291Apply('SHORT', shortDecision);
+      } catch(_r291e) { try { console.warn('R291 confluence error', _r291e?.message || _r291e); } catch(_){} }
+
       function decisionRank(side, d) {
         if (!d || !d.pass) return -9999;
         const tierPts = d.tier === 'A' ? 300 : d.tier === 'B+' ? 210 : d.tier === 'B' ? 90 : 0;
@@ -11648,7 +12163,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const balancePts = Number(d.r148BalanceBonus || 0) * 3.0 - Number(d.r148WrongPenalty || 0) * 3.0 + (d.r148ReversalSideOk ? 38 : 0) - (d.r148WrongSideBlock ? 120 : 0);
         const r190Pts = (d.r190Edge?.earlyContinuation ? 34 : 0) + (d.r190Edge?.squeeze ? 24 : 0) + (d.r190Edge?.momentumWindow ? 10 : 0) - (d.r190Edge?.lateTrapRisk ? 55 : 0) - (d.r190Edge?.spreadBlock ? 75 : 0);
         const r281Pts = (d.r281ProMap?.runner ? 24 : 0) + (d.r281ProMap?.protect ? -10 : 0) + (d.r281ProMap?.hardNo ? -90 : 0) + Math.max(-18, Math.min(18, Number(d.r281ProMap?.net||0)));
-        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts + r190Pts + r281Pts - vetoPenalty - missingPenalty;
+        const r289Pts = (d.r289Playbook?.tradeOk ? 58 : 0) + (d.r289Playbook?.continuation ? 18 : 0) + (d.r289Playbook?.fvgRetest ? 16 : 0) + (d.r289Playbook?.reclaim ? 18 : 0) - (d.r289Playbook?.hardNo ? 180 : 0);
+        const r290Pts = (d.r290Smc5m?.tradeOk ? 70 : 0) + (d.r290Smc5m?.capacity >= 78 ? 22 : 0) + (d.r290Smc5m?.fvgRetest ? 14 : 0) + (d.r290Smc5m?.sweepReclaim ? 18 : 0) + (d.r290Smc5m?.bos ? 14 : 0) - (d.r290Smc5m?.hardNo ? 220 : 0);
+        const r291Pts = (d.r291Confluence?.tradeOk ? 88 : 0) + (d.r291Confluence?.capacity >= 78 ? 28 : 0) + (d.r291Confluence?.smcProofs >= 3 ? 18 : 0) + (d.r291Confluence?.liqProofs >= 2 ? 18 : 0) + (d.r291Confluence?.radar ? 8 : 0) - (d.r291Confluence?.hardNo ? 260 : 0);
+        return tierPts + scorePts + calibPts + psPts + r117Bonus + balancePts + r190Pts + r281Pts + r289Pts + r290Pts + r291Pts - vetoPenalty - missingPenalty;
       }
       const lRank = decisionRank('LONG', longDecision);
       const sRank = decisionRank('SHORT', shortDecision);
@@ -11660,7 +12178,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const modeBonus = String(d.brainMode||'NO_EDGE') === 'NO_EDGE' ? -25 : 0;
         const danger = d.brainModeQualityBlock || d.brainHtfCounterWait || d.hardVeto || d.r114TrapBlock || (d.r116HtfGuardBlock && !d.r117HtfReverseOk) ? -18 : 0;
         const balance = Number(d.r148BalanceBonus || 0) * 2.0 - Number(d.r148WrongPenalty || 0) * 2.0 + (d.r148ReversalSideOk ? 22 : 0) - (d.r148WrongSideBlock ? 60 : 0);
-        return conf*1.8 + sc*0.55 + flow + modeBonus + danger + balance;
+        const r289Watch = Number(d.r289Playbook?.quality || 0) * 0.9 + (d.r289Playbook?.tradeOk ? 35 : 0) - (d.r289Playbook?.hardNo ? 80 : 0);
+        const r291Watch = Number(d.r291Confluence?.capacity || 0) * 0.75 + (d.r291Confluence?.tradeOk ? 45 : 0) + (d.r291Confluence?.radar ? 16 : 0) - (d.r291Confluence?.hardNo ? 100 : 0);
+        return conf*1.8 + sc*0.55 + flow + modeBonus + danger + balance + r289Watch + r291Watch;
       }
       let recommendation='WAIT', decisionChain=null;
       if (lRank > -9999 || sRank > -9999) {
@@ -11724,6 +12244,34 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         }
       } catch(_r285e) { try { console.warn('R285 trader cook error', _r285e?.message || _r285e); } catch(_){} }
 
+
+      // R291: R285 hâlâ WAIT bıraktıysa ama SMC+liquidity aynı hikâyeyi söylüyorsa emir yoluna al.
+      try {
+        if (recommendation === 'WAIT') {
+          const cand291 = [longDecision, shortDecision]
+            .map((d,idx)=>({d, side:idx===0?'LONG':'SHORT', p:d?.r291Confluence}))
+            .filter(x => x.p?.tradeOk && !x.p?.hardNo)
+            .sort((a,b)=>(Number(b.p.capacity||0)+Number(b.d?.score||0)*0.10) - (Number(a.p.capacity||0)+Number(a.d?.score||0)*0.10))[0];
+          if (cand291) {
+            recommendation = cand291.side;
+            decisionChain = cand291.d;
+            decisionChain.pass = true;
+            decisionChain.tier = cand291.p.capacity >= 82 ? 'A' : 'B+';
+            decisionChain.autoOk = true;
+            decisionChain.entryPermissionOk = true;
+            decisionChain.brainAction = 'TRADE';
+            decisionChain.brainMode = 'R291_SMC_LIQUIDITY_CONFLUENCE';
+            decisionChain.entryPermissionReason = 'R291_SMC_LIQUIDITY_CONFLUENCE';
+            decisionChain.r291TraderSetupOk = true;
+            decisionChain.r285TraderSetupOk = true;
+            decisionChain.r285FvgOteOk = !!(cand291.p.fvgRetest || cand291.p.oteOk);
+            decisionChain.r285ContinuationFuel = !!(cand291.p.bos || cand291.p.flowAligned || cand291.p.sweepReclaim);
+            const add = ` · ${cand291.p.summary}`;
+            decisionChain.reason = String(decisionChain.brainSummary || decisionChain.reason || '').includes('R291 ') ? (decisionChain.brainSummary || decisionChain.reason) : `${decisionChain.brainSummary || decisionChain.reason || ''}${add}`;
+            decisionChain.brainSummary = decisionChain.reason;
+          }
+        }
+      } catch(_r291upE) { try { console.warn('R291 wait-upgrade error', _r291upE?.message || _r291upE); } catch(_){} }
 
 
       // R287: Eğer bir taraf R286 ile "hedef/iğne yakın + 5m kabul yok" diye reddedildiyse,
@@ -12703,20 +13251,24 @@ async function emergencyCloseIfBracketMissing(apiKey, apiSecret, pos, reason='SL
   const sym = pos.symbol;
   const snap = await bracketProtectionSnapshot(apiKey, apiSecret, sym);
   if (snap.hasSL && snap.hasTP) return { closed:false, protected:true, snap };
-  const qty = Math.abs(parseFloat(pos.positionAmt || 0));
-  if (!qty) return { closed:false, protected:false, snap, error:'qty yok' };
   try {
-    await cancelAlgoOrders(apiKey, apiSecret, sym);
-    const isLong = pos.side === 'LONG' || parseFloat(pos.positionAmt||0) > 0;
-    const r = await bReq(apiKey, apiSecret, 'POST', '/fapi/v1/order', {
-      symbol:sym, side:isLong?'SELL':'BUY', type:'MARKET', quantity:qty.toString(), reduceOnly:'true', positionSide:'BOTH'
-    });
-    trailingState.delete(sym);
-    setCooldown(sym, COOLDOWN_CLOSE_MS, `${reason} korumasız pozisyon acil kapatıldı`);
-    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE', `${sym}: ${reason}; SL/TP eksikti, market reduce-only kapatıldı`, snap, 'WARNING');
-    return { closed:true, protected:false, snap, order:r };
+    // R288: -2022 ReduceOnly reddinde kör panik yapma. Önce gerçek pozisyonu tazele,
+    // açık değilse kapandı kabul et; açıksa merkezi safeMarketClosePosition fallback'i kullan.
+    const close = await safeMarketClosePosition(apiKey, apiSecret, sym, { reason:`${reason}_BRACKET_MISSING` });
+    if (close.ok) {
+      trailingState.delete(sym);
+      if (close.alreadyClosed) {
+        pushCritical('SLTP_UPDATE_FAILSAFE_ALREADY_CLOSED', `${sym}: ${reason}; SL/TP proof yoktu ama pozisyon zaten kapanmış`, snap, 'WARNING');
+        return { closed:false, alreadyClosed:true, protected:false, snap, close };
+      }
+      setCooldown(sym, COOLDOWN_CLOSE_MS, `${reason} korumasız pozisyon acil kapatıldı`);
+      pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE', `${sym}: ${reason}; SL/TP eksikti, safe market close kapattı${close.fallback?' (reduceOnly fallback)':''}`, snap, 'WARNING');
+      return { closed:true, protected:false, snap, order:close.order, close };
+    }
+    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE_FAIL', `${sym}: ${reason}; safe close başarısız ${close.error||'bilinmeyen'}`, snap, 'CRITICAL');
+    return { closed:false, protected:false, snap, error:close.error || 'safe close failed', close };
   } catch(e) {
-    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE_FAIL', `${sym}: ${reason}; acil kapatma başarısız ${e.message}`, snap, 'CRITICAL');
+    pushCritical('SLTP_UPDATE_FAILSAFE_CLOSE_FAIL', `${sym}: ${reason}; acil safe close hata ${e.message}`, snap, 'CRITICAL');
     return { closed:false, protected:false, snap, error:e.message };
   }
 }
@@ -15111,6 +15663,54 @@ async function runAutoScan(prioritySymbol=null) {
           markAutoSkip(coin.symbol, `Final RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
           continue;
         }
+
+        // R288: FINAL GRAPH GOVERNOR — analizden kaçan R156/TOP10 bypass'ı emirden hemen önce tekrar kontrol et.
+        // Bu, frekans düşürmek için değil; mum/formasyon yokken edge 100/OI spike ile grafiğe bakmadan market kovalamayı durdurmak içindir.
+        try {
+          const e288 = decisionChain?.r190Edge || {};
+          const txt288 = [decisionChain?.reason, decisionChain?.brainSummary, decisionChain?.mumOzet, decisionChain?.htfTani, decisionChain?.ictDashboard].filter(Boolean).join(' ');
+          const fuel288 = Number(e288.r192FuelScore ?? e288.score ?? 0) || 0;
+          const rvol288 = Number(e288.rvol ?? decisionChain?.r140Rvol?.ratio ?? 0) || 0;
+          const p3_288 = Number(e288.price3 ?? 0) || 0;
+          const oi288 = Math.abs(Number(e288?.oi?.oiChg15 ?? decisionChain?.r140OiVel?.velocity ?? 0) || 0);
+          const weak288 = !!(!decisionChain?.mumOnay && !decisionChain?.mumGuclu && /formasyon yok|mum kanıtı zayıf|5m tetik zayıf|teyidi zayıf/i.test(txt288));
+          const fast288 = !!(decisionChain?.r156FastBypass || /R156 TOP10 hızlı bypass|hızlı bypass|ek katmanlı kapı yok/i.test(txt288));
+          const realAccept288 = !!(decisionChain?.r286Real5mAcceptance || decisionChain?.r117BodyReclaimOk || decisionChain?.r117MssOk || decisionChain?.r118CandleStrong || /MSS|ChoCH|body[- ]?(reclaim|geri)|kırılım kabul|break.+retest/i.test(txt288));
+          const chase288 = !!((recommendation === 'LONG' && p3_288 >= 1.80) || (recommendation === 'SHORT' && p3_288 <= -1.80));
+          const block288 = !!(fast288 && Number(score||0) < Number(effectiveMinScore||minScore||70) && weak288 && !realAccept288 && !e288.squeeze && (fuel288 < 8 || rvol288 < 0.80 || oi288 >= 500 || chase288));
+          if (block288) {
+            const why288 = `R288 final trader: R156/TOP10 bypass grafik kabulü yok — skor ${score}/${effectiveMinScore}, mum yok, fuel ${fuel288}, RVOL ${rvol288.toFixed(2)}, p3 ${p3_288.toFixed(2)}%, OI15 ${oi288.toFixed(0)}%; FVG/OTE retest veya gerçek 5m kabul bekle`;
+            logAuto(`⛔ ${coin.symbol} ${why288}`);
+            markAutoSkip(coin.symbol, why288, {rec:recommendation, score, r288:true, reason:why288, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
+            continue;
+          }
+        } catch(_r288gE) { logAuto(`⚠️ ${coin.symbol} R288 final grafik valisi hata: ${String(_r288gE?.message||_r288gE).slice(0,80)}`); }
+
+        // R290: FINAL SMC GOVERNOR — hızlı bypass/edge/OI kaçışını son kez grafiğe bağla.
+        try {
+          const r290f = decisionChain?.r290Smc5m;
+          const txt290 = [decisionChain?.reason, decisionChain?.brainSummary].filter(Boolean).join(' ');
+          const fast290 = !!(decisionChain?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt290));
+          if (r290f?.hardNo && !r290f?.tradeOk && (fast290 || Number(r290f.capacity||0) < 58)) {
+            const why290 = `R290 final SMC bekle — ${r290f.summary}`;
+            logAuto(`⛔ ${coin.symbol} ${why290}`);
+            markAutoSkip(coin.symbol, why290, {rec:recommendation, score, r290:r290f, reason:why290, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
+            continue;
+          }
+        } catch(_r290gE) { logAuto(`⚠️ ${coin.symbol} R290 final SMC hata: ${String(_r290gE?.message||_r290gE).slice(0,80)}`); }
+
+        // R291: FINAL SMC+LIQ GOVERNOR — son kaçış kapısı. Edge/OI değil, grafik+likidite+flow aynı hikâyeyi anlatmalı.
+        try {
+          const r291f = decisionChain?.r291Confluence;
+          const txt291 = [decisionChain?.reason, decisionChain?.brainSummary].filter(Boolean).join(' ');
+          const fast291 = !!(decisionChain?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt291));
+          if (r291f && ((r291f.hardNo) || (fast291 && Number(r291f.capacity||0) < 72) || (Number(r291f.capacity||0) < 58 && !r291f.tradeOk))) {
+            const why291 = `R291 final SMC+likidite bekle — ${r291f.summary}`;
+            logAuto(`⛔ ${coin.symbol} ${why291}`);
+            markAutoSkip(coin.symbol, why291, {rec:recommendation, score, r291:r291f, reason:why291, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
+            continue;
+          }
+        } catch(_r291gE) { logAuto(`⚠️ ${coin.symbol} R291 final confluence hata: ${String(_r291gE?.message||_r291gE).slice(0,80)}`); }
 
         // R283: Tecrübeli 5m trader RECIPE.
         // Erken BE/küçük kâr mantığı değil; önce doğru yemek: gerçek 5m tetik + FVG/OTE/likidite yolu + canlı yakıt.
