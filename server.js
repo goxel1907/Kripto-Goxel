@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R300_SADE_BEYIN_6_KURAL';
+const LAZARUS_BUILD = 'R301_SADE_BEYIN_NIHAI_KAPI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -12486,6 +12486,38 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           }
         }
       } catch(_r287e) { try { console.warn('R287 reverse thesis error', _r287e?.message || _r287e); } catch(_){} }
+
+    // ═══ R300 NİHAİ KAPI ═══════════════════════════════════════════════════
+    // R285/R291/R287 dâhil TÜM kurtarma yolları bittikten sonra son söz.
+    // decisionChain.autoOk=true olsa bile, R300'ün 6 kuralı geçmezse emir AÇILMAZ.
+    // Bu, "başka yoldan kaçma" sorununu bitirir — tek ve son karar burada.
+    try {
+      if (recommendation !== 'WAIT' && decisionChain && decisionChain.autoOk) {
+        const r300Final = r300SimpleBrain(recommendation, {
+          brainSummary: String(decisionChain.brainSummary || decisionChain.reason || ''),
+          r125OrderflowSummary: String(decisionChain.r125OrderflowSummary || ''),
+          score: Number(decisionChain.score || 0),
+          brainConfidence: Number(decisionChain.priorityScore || decisionChain.brainConfidence || 0),
+          r125LiveDeltaPct: Number(decisionChain.r125LiveDeltaPct || 0),
+          r117BodyReclaimOk: !!decisionChain.r117BodyReclaimOk,
+          r117MssOk: !!decisionChain.r117MssOk,
+          r117TrapSweepTaken: !!decisionChain.r117TrapSweepTaken,
+          r111: decisionChain.r111Sonuc || null,
+          _r276RangePos: Number.isFinite(decisionChain._r276RangePos) ? decisionChain._r276RangePos
+                       : (decisionChain.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5)
+        }, { minScore: 70 });
+        if (!r300Final.allow) {
+          decisionChain.autoOk = false;
+          decisionChain.brainAction = 'WATCH';
+          decisionChain.r300FinalBlock = r300Final.reason;
+          decisionChain.reason = `${decisionChain.reason || ''} · ⛔ ${r300Final.reason}`;
+          if (Array.isArray(decisionChain.blocks)) decisionChain.blocks.unshift(r300Final.reason);
+          try { logAuto(`⛔ ${full} R300 NİHAİ RED: ${r300Final.reason}`); } catch(_){}
+        } else {
+          decisionChain.r300FinalOk = r300Final.reason;
+        }
+      }
+    } catch(_r300e) { try { console.warn('R300 final gate error', _r300e?.message || _r300e); } catch(_){} }
 
     const score=recommendation==='LONG'?longScore:recommendation==='SHORT'?shortScore:Math.max(longScore,shortScore);
 
