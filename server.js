@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R296_ATR_FELC_FIX_DASHBOARD';
+const LAZARUS_BUILD = 'R300_SADE_BEYIN_6_KURAL';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3282,6 +3282,92 @@ function r281ProTraderMap(side='LONG', ctx={}) {
 // - Runner ise küçük kârla boğmaz; hedefe nefes verir.
 // - Kalite düşükse giriş sayısını öldürmeden sadece çaylak setup'ı bekletir.
 // ─────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// R300 SADE BEYİN — 6 net kural, çelişen 40 kapı yerine TEK son karar.
+// Var olan tüm motorlar (FVG, sweep, HTF, flow, RSI, squeeze) veriyi üretir;
+// bu fonksiyon o veriyi sade trade mantığıyla son evet/hayıra bağlar.
+// Altyapıya (emir, SLTP, dashboard) DOKUNMAZ — sadece autoOk'i nihai belirler.
+// Dönüş: { allow:bool, side:'LONG'|'SHORT', reason:string }
+// ═══════════════════════════════════════════════════════════════════════════
+function r300SimpleBrain(side, d, ctx={}) {
+  const isL = side === 'LONG';
+  const txt = String(d.brainSummary || d.reason || '') + ' ' + String(d.r125OrderflowSummary || '');
+  const n = (v,dv=0)=>Number.isFinite(Number(v))?Number(v):dv;
+
+  // ── Veri toplama (hepsi zaten hesaplanmış) ──
+  const rangePos = n(d.r276RangePos ?? d._r276RangePos ?? ctx.rangePos, 0.5);
+  const rsi = (()=>{ const m=txt.match(/RSI4?s?[:\s]+([0-9.]+)/i); return m?Number(m[1]):n(d.rsi,50); })();
+  const score = n(d.score, 0);
+  const minScore = n(ctx.minScore, 70);
+  const edge = n(d.brainConfidence ?? d.edge, 0);
+  // HTF karşı seviye uzaklığı (en yakın)
+  const htfDists = [...txt.matchAll(/karşı\s+(?:15m|1H|4H|1h|4h)[^u]*u:%\s*([0-9.]+)/gi)].map(m=>Number(m[1])).filter(Number.isFinite);
+  const htfCounterDist = htfDists.length ? Math.min(...htfDists) : 999;
+  // Gerçek kırılım/dönüş kanıtı
+  const realProof = !!(d.r117BodyReclaimOk || d.r117MssOk || d.r117TrapSweepTaken || /body[- ]?reclaim|MSS|ChoCH|SSL_ALINDI_CHOCH|BSL_ALINDI_CHOCH|wick\+body/i.test(txt));
+  // Anlık akış sinyalleri (Binance canlı)
+  const delta = n(d.r125LiveDeltaPct, 0);
+  const bm = txt.match(/book:\s*(YÜKSELİŞ|DÜŞÜŞ|LONG|SHORT|NEUTRAL)\s*imb:\s*(-?[0-9.]+)%/i);
+  const bookSide = bm ? (/YÜKSELİŞ|LONG/i.test(bm[1])?'LONG':/DÜŞÜŞ|SHORT/i.test(bm[1])?'SHORT':'NEUTRAL') : 'NEUTRAL';
+  const bookImb = bm ? Math.abs(Number(bm[2])||0) : 0;
+  const dmm = txt.match(/deep:\s*(YÜKSELİŞ|DÜŞÜŞ|LONG|SHORT|NEUTRAL)\s*(-?[0-9.]+)%/i);
+  const deepSide = dmm ? (/YÜKSELİŞ|LONG/i.test(dmm[1])?'LONG':/DÜŞÜŞ|SHORT/i.test(dmm[1])?'SHORT':'NEUTRAL') : 'NEUTRAL';
+  const deepPct = dmm ? Math.abs(Number(dmm[2])||0) : 0;
+  const dirOk = isL ? (s)=>s==='LONG' : (s)=>s==='SHORT';
+  let flowSignals = 0;
+  if (isL ? delta>=14 : delta<=-14) flowSignals++;
+  if (dirOk(bookSide) && bookImb>=30) flowSignals++;
+  if (dirOk(deepSide) && deepPct>=20) flowSignals++;
+  if (isL ? /taker:\s*1\.[2-9]|taker:\s*[2-9]/i.test(txt) : /taker:\s*0\.[0-7]/i.test(txt)) flowSignals++;
+  const flowAligned = flowSignals >= 2;
+  // Squeeze + funding
+  const shortSqueeze = !!(d.r111?.shortSqueeze || /shortSqueeze:EVET/i.test(txt));
+  const longSqueeze = !!(d.r111?.longSqueeze || /longSqueeze:EVET/i.test(txt));
+  const fundMatch = txt.match(/funding:\s*(-?[0-9.]+)%/i);
+  const funding = fundMatch ? Number(fundMatch[1]) : 0;
+  // "yetersiz" işareti
+  const watchWeak = /kalite\/edge yetersiz|İZLE:/i.test(txt) && score < minScore;
+  // Tepe/dip
+  const atTop = rangePos >= 0.84 || rsi >= 78;
+  const atBottom = rangePos <= 0.16 || rsi <= 22;
+
+  // ═══ 6 KURAL (sırayla, ilk RED kazanır) ═══
+
+  // KURAL 1: Yetersiz dediğini açma (skor barajın altında + kalite yetersiz)
+  if (watchWeak && !realProof && !flowAligned) {
+    return { allow:false, side, reason:`R300-1 RED: kalite yetersiz (skor ${score}<${minScore}), gerçek kanıt yok` };
+  }
+
+  // KURAL 2: Tepede LONG / dipte SHORT alma (trend-yönü chase) — sadece gerçek dönüş kanıtı deler
+  if (isL && atTop && !(realProof || flowAligned)) {
+    return { allow:false, side, reason:`R300-2 RED: tepede LONG (rangePos ${rangePos.toFixed(2)}, RSI ${rsi.toFixed(0)}), dönüş kanıtı yok` };
+  }
+  if (!isL && atBottom && !(realProof || flowAligned)) {
+    return { allow:false, side, reason:`R300-2 RED: dipte SHORT (rangePos ${rangePos.toFixed(2)}, RSI ${rsi.toFixed(0)}), dönüş kanıtı yok` };
+  }
+
+  // KURAL 3: HTF dirence/desteğe çok yakın (≤%0.6) + gerçek kırılım yok → girme
+  if (htfCounterDist <= 0.6 && !realProof) {
+    return { allow:false, side, reason:`R300-3 RED: HTF karşı seviye %${htfCounterDist.toFixed(2)} yakın, kırılım yok` };
+  }
+
+  // KURAL 4: Squeeze tuzağı — bu yönün tersine squeeze varsa girme (MM zıt yöne taşıyor)
+  if (isL && (longSqueeze || funding >= 0.05)) {
+    return { allow:false, side, reason:`R300-4 RED: LONG ama longSqueeze/funding+ (MM aşağı taşıyabilir)` };
+  }
+  if (!isL && (shortSqueeze || funding <= -0.05)) {
+    return { allow:false, side, reason:`R300-4 RED: SHORT ama shortSqueeze/funding- (MM yukarı taşıyabilir)` };
+  }
+
+  // KURAL 5: Akış teyidi şart — ya gerçek kırılım, ya 2+ anlık sinyal, ya güçlü skor
+  if (!realProof && !flowAligned && score < minScore) {
+    return { allow:false, side, reason:`R300-5 RED: akış teyidi yok (flow ${flowSignals}/2, skor ${score})` };
+  }
+
+  // KURAL 6: Buraya geldiyse — temiz giriş. Erken bin.
+  return { allow:true, side, reason:`R300 EVET: ${realProof?'kırılım kanıtı':''}${flowAligned?` akış ${flowSignals}/4`:''}${score>=minScore?` skor ${score}`:''} temiz` };
+}
+
 function r283TradeRecipe(side='LONG', d={}, opt={}) {
   side = String(side || 'LONG').toUpperCase();
   const isL = side === 'LONG';
@@ -12072,7 +12158,23 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if((tier==='B'||tier==='WAIT') && softEntry && !hasEntry && !nonSweepQualityOk) blocks.push('Yumuşak bağlam var ama canlı emir için gerçek giriş izi yok');
         if((isTierA||isTierBPlus) && !microConfirmR35) blocks.push('Mikro teyit eksik');
         const passCount=[entryPermissionOk,hasEntry||softEntry||nonSweepQualityOk,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
-        const autoOk=(isTierA||isTierBPlus) && entryPermissionOk && !r190Edge?.spreadBlock && !(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) && !(r281Map?.hardNo && !r281Map?.runner);
+        const autoOkLegacy=(isTierA||isTierBPlus) && entryPermissionOk && !r190Edge?.spreadBlock && !(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) && !(r281Map?.hardNo && !r281Map?.runner);
+        // R300 SADE BEYİN — son söz. Eski kapılar veriyi üretti; nihai evet/hayır 6 net kuralda.
+        // reasons dizisi + r274/ICT metinleri beynin okuyacağı özet; rangePos r276 motorundan (varsa).
+        const r300SummaryTxt = [].concat(reasons||[]).join(' · ') + ' ' + String((typeof r274Signal!=='undefined'&&r274Signal?.summary)||'') + ' ' + String((typeof r110ICT!=='undefined'&&r110ICT?.summary)||'');
+        const r300RangePos = (typeof r276Pos!=='undefined' && Number.isFinite(r276Pos)) ? r276Pos
+                           : (r281Map && Number.isFinite(r281Map.rangePos)) ? r281Map.rangePos : 0.5;
+        const r300Rsi = (typeof rsi5m!=='undefined' && Number.isFinite(rsi5m)) ? rsi5m
+                      : (typeof rsi4h!=='undefined' && Number.isFinite(rsi4h)) ? rsi4h : 50;
+        const r300 = r300SimpleBrain(side, {
+          brainSummary: r300SummaryTxt, r125OrderflowSummary: r125Flow?.summary||'',
+          score: sc, brainConfidence: priorityScore, r125LiveDeltaPct: r125Flow?.deltaPct,
+          r117BodyReclaimOk, r117MssOk, r117TrapSweepTaken,
+          r111: (typeof r111Sonuc!=='undefined'?r111Sonuc:null),
+          _r276RangePos: r300RangePos, rsi: r300Rsi
+        }, { minScore: 70, rangePos: r300RangePos });
+        const autoOk = autoOkLegacy && r300.allow;
+        if (!r300.allow && autoOkLegacy) blocks.push(r300.reason);
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
           priorityScore, priorityTags:priorityTags.slice(0,10), priorityFamily, hardVeto, hardVetoReasons,
