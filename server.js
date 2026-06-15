@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R291_SMC_LIQUIDITY_CONFLUENCE_GOVERNOR';
+const LAZARUS_BUILD = 'R293_SR_YORUM_KARARA_BAGLI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3882,7 +3882,7 @@ function r290OpenSourceSmc5mCalibrator(symbol, k5m=[], k15m=[], k1h=[], k4h=[], 
       32 + (setup!=='NONE'?24:0) + (sweepReclaim?18:0) + ((fvgRetest||oteOk)?16:0) + (bos?14:0) + (tfAlign*5) + (flowAligned?9:0) + (candle?7:0) + (room>1.2?6:0)
       - (flowAgainst?28:0) - (chase?22:0) - (wall?18:0) - (oiExtreme?12:0) - (atr>9?12:0), 0, 92);
     const hardNo=!!(flowAgainst || chase || wall || (oiExtreme&&setup==='NONE') || (atr>11&&!sweepReclaim));
-    const tradeOk=!!(!hardNo && setup!=='NONE' && capacity>=74);
+    const tradeOk=!!(!hardNo && setup!=='NONE' && capacity>=66);
     const notes=[]; notes.push(`setup:${setup}`); if(sweepReclaim)notes.push('liq sweep/reclaim'); if(fvgRetest)notes.push('FVG retest'); if(oteOk)notes.push('OTE zone'); if(bos)notes.push('BOS/CHoCH close break'); if(tfAlign)notes.push(`MTF align ${tfAlign}/3`); if(flowAligned)notes.push('flow aynı yön'); if(candle)notes.push('mum tetik'); if(chase)notes.push('chase/range ucu'); if(wall)notes.push('yakın likidite duvarı'); if(oiExtreme)notes.push('OI tek başına'); if(flowAgainst)notes.push('flow ters');
     return {side,tradeOk,hardNo,capacity:+capacity.toFixed(1),setup,rangePos:+rangePos.toFixed(2),p3:+c5.p3.toFixed(2),room:+room.toFixed(2),atr:+atr.toFixed(2),flowAligned,flowAgainst,fvgRetest,oteOk,sweepReclaim,bos,candle,chase,wall,notes:notes.slice(0,10),summary:`R290 ${tradeOk?'TRADE':'WAIT'} ${side} ${setup} kapasite:${capacity.toFixed(1)} · ${notes.slice(0,7).join(' · ')}`};
   }
@@ -3995,10 +3995,15 @@ function r291SmcLiquidityConfluence(symbol, k5m=[], k15m=[], k1h=[], k4h=[], las
     if (weakNoGraph && /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt)) capacity -= 14;
     capacity = r289Clamp(capacity,0,94);
     const fastBypass=!!(d?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt));
-    const hardNo=!!(spreadRisk || book.flowAgainst || (chase && !sweepReclaim) || (nearWall && !bos) || (oiExtreme && smcProofs<2) || (weakNoGraph && fastBypass) || (atr>11 && !sweepReclaim));
-    const need = fastBypass ? 78 : 74;
-    const tradeOk=!!(!hardNo && setup!=='NONE' && capacity>=need && smcProofs>=2 && liqProofs>=1);
-    const radar=!!(!tradeOk && !hardNo && setup!=='NONE' && capacity>=66);
+    // R292: hardNo daraltıldı — top gainer'lar zaten oynak (atr>11 tek başına çoğunu keser).
+    // Sadece GERÇEK tehlike: ters akış+chase, sweep'siz duvara dayanma, grafiksiz OI+fast bypass.
+    // atr koşulu %11→%16'ya çekildi (VELVET tipi aşırı uç hâlâ kesilir ama normal gainer geçer).
+    const hardNo=!!(spreadRisk || (book.flowAgainst && chase && !sweepReclaim) || (nearWall && !bos && !sweepReclaim) || (oiExtreme && smcProofs<1 && weakNoGraph) || (atr>16 && !sweepReclaim));
+    // R292: baraj 74→66 (smcProofs+liqProofs zaten grafik kalitesini garanti ediyor, çifte baraj boğuyordu).
+    const need = fastBypass ? 70 : 66;
+    // R292: liqProofs>=1 koşulu kaldırıldı (smcProofs>=2 zaten grafik teyidi; likidite ayrı şart değil, bonus).
+    const tradeOk=!!(!hardNo && setup!=='NONE' && capacity>=need && smcProofs>=2);
+    const radar=!!(!tradeOk && !hardNo && setup!=='NONE' && capacity>=58);
     const notes=[]; notes.push(`setup:${setup}`); notes.push(`SMC:${smcProofs}/5 LIQ:${liqProofs}/4 risk:${riskCount}`); if(sweepReclaim)notes.push('sweep/reclaim'); if(fvgRetest)notes.push('FVG retest'); if(oteOk)notes.push('OTE'); if(bos)notes.push('BOS/CHoCH'); if(candle)notes.push('mum kabul'); if(tfAlign)notes.push(`MTF ${tfAlign}/3`); notes.push(...book.notes.slice(0,3)); if(chase)notes.push('chase/range ucu'); if(nearWall)notes.push('yakın likidite duvarı'); if(oiExtreme)notes.push('OI tek başına'); if(weakNoGraph)notes.push('grafik tetik zayıf');
     return {side,tradeOk,radar,hardNo,capacity:+capacity.toFixed(1),setup,smcProofs,liqProofs,riskCount,rangePos:+rangePos.toFixed(2),p3:+c5.p3.toFixed(2),room:+room.toFixed(2),atr:+atr.toFixed(2),flowAligned:book.flowAligned,flowAgainst:book.flowAgainst,fvgRetest,oteOk,sweepReclaim,bos,candle,chase,nearWall,oiExtreme,weakNoGraph,notes:notes.slice(0,12),summary:`R291 ${tradeOk?'TRADE':radar?'RADAR':'WAIT'} ${side} ${setup} kapasite:${capacity.toFixed(1)} · ${notes.slice(0,8).join(' · ')}`};
   }
@@ -9348,8 +9353,19 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       if(S.resistanceConfluence){ shortScore=Math.min(shortScore+10,100); signals.short.push(`🧱 R39 5m direnç: ${S.nearestResistance?.type||''} (${S.nearestResistance?.distPct ?? '?'}%)`); }
       if(L.breakConfirmed){ longScore=Math.min(longScore+9,100); signals.long.push(`🚀 R39 direnç kırılımı: ${L.nearestResistance?.type||''}`); }
       if(S.breakConfirmed){ shortScore=Math.min(shortScore+9,100); signals.short.push(`🔻 R39 destek kırılımı: ${S.nearestSupport?.type||''}`); }
-      if(L.nearResistance && !L.breakConfirmed){ longScore=Math.round(longScore*0.88); signals.long.push(`⚠️ R39 üst hedef yakın: ${L.nearestResistance?.type||''} ${L.nearestResistance?.distPct ?? '?'}%`); }
-      if(S.nearSupport && !S.breakConfirmed){ shortScore=Math.round(shortScore*0.88); signals.short.push(`⚠️ R39 alt hedef yakın: ${S.nearestSupport?.type||''} ${S.nearestSupport?.distPct ?? '?'}%`); }
+      if(L.nearResistance && !L.breakConfirmed){
+        // Grafik mantığı: kırılamayan direnç, o yöne girmek için CAYDIRICIDIR (teşvik değil).
+        // Profesyonel "fiyat dirence değdi ama kıramadı → kırılımı bekle ya da reddi gör" der.
+        // Çok yakın (targetTooNear, FIGHT %0.02 gibi tam tepede) = ağır caydır; sadece yakın = orta.
+        const mult = L.targetTooNear ? 0.55 : 0.74;
+        longScore=Math.round(longScore*mult);
+        signals.long.push(`⚠️ R39 üst hedef yakın${L.targetTooNear?' (TAM DİRENÇTE, kırılım yok)':''}: ${L.nearestResistance?.type||''} ${L.nearestResistance?.distPct ?? '?'}%`);
+      }
+      if(S.nearSupport && !S.breakConfirmed){
+        const mult = S.targetTooNear ? 0.55 : 0.74;
+        shortScore=Math.round(shortScore*mult);
+        signals.short.push(`⚠️ R39 alt hedef yakın${S.targetTooNear?' (TAM DESTEKTE, kırılım yok)':''}: ${S.nearestSupport?.type||''} ${S.nearestSupport?.distPct ?? '?'}%`);
+      }
     }
     // 6. FUNDING
     if(fundSig==='EXTREME_NEGATIVE'){longScore+=10;signals.long.push(`💸 Fund ${curFund.toFixed(4)}%`);}
@@ -15704,7 +15720,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r291f = decisionChain?.r291Confluence;
           const txt291 = [decisionChain?.reason, decisionChain?.brainSummary].filter(Boolean).join(' ');
           const fast291 = !!(decisionChain?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt291));
-          if (r291f && ((r291f.hardNo) || (fast291 && Number(r291f.capacity||0) < 72) || (Number(r291f.capacity||0) < 58 && !r291f.tradeOk))) {
+          if (r291f && ((r291f.hardNo) || (fast291 && Number(r291f.capacity||0) < 60) || (Number(r291f.capacity||0) < 48 && !r291f.tradeOk && !r291f.radar))) {
             const why291 = `R291 final SMC+likidite bekle — ${r291f.summary}`;
             logAuto(`⛔ ${coin.symbol} ${why291}`);
             markAutoSkip(coin.symbol, why291, {rec:recommendation, score, r291:r291f, reason:why291, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
