@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R295_EARLY_REVERSE_SQUEEZE_GUARD';
+const LAZARUS_BUILD = 'R296_ATR_FELC_FIX_DASHBOARD';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -8891,7 +8891,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // atrPct > slPct*1.5 → skor düşür, A-Tier engellenebilir
     const slPctForGate=parseFloat(autoConfig?.slPct||2);
     const atrGateWarn=atrPct>slPctForGate*1.5; // ATR SL'den %50 büyükse uyarı
-    const atrGateBlock=atrPct>slPctForGate*2.5; // ATR SL'den %150 büyükse blok
+    // R296 FELÇ FİX: eski blok atrPct>slPct*2.5 idi (SL %1.7 → %4.25 tavan). Ama TOP10 gainer
+    // coinleri doğası gereği %5-12 ATR'li (zaten pump etmişler) — bu, oynatılabilir TÜM coinleri
+    // kesiyordu (10/10 atlama). Blok artık SL oranına değil, mutlak aşırı-volatilite tavanına bağlı:
+    // ATR %12+ ise gerçekten tehlikeli (düşen bıçak/parabolik); altı işlenebilir. SL/kaldıraç ROI
+    // tarafında zaten yönetiliyor. Bu, frekansı öldüren ana kapıyı açar ama gerçek aşırı-oynaklığı korur.
+    const atrGateBlock=atrPct>12; // mutlak tavan %12 (eskiden slPct*2.5 = TOP10'da hepsini keserdi)
 
     // Hesapla
     const sqz1h=calcSqueeze(k1h);
@@ -15410,8 +15415,8 @@ async function runAutoScan(prioritySymbol=null) {
             Number(score||0) >= Number(effectiveMinScore||0) &&
             !decisionChain?.poorLiquidity && !decisionChain?.rvolVeryLow
           );
-          const atrExtreme = coinAtrPct > Math.max(14, userSLPct * 7.0);
-          const atrLossGap = coinAtrPct > userSLPct * 3.2 &&
+          const atrExtreme = coinAtrPct > Math.max(12, userSLPct * 6.0);  // R296: gerçek aşırı volatilite (düşen bıçak) — bu blok KALIR
+          const atrLossGap = coinAtrPct > userSLPct * 5.0 &&  // R296: 3.2→5.0 — TOP10 gainer doğal yüksek ATR'li, çok geniş kesiyordu
             String(decisionChain?.entryPermissionReason||'').includes('R135_FAST_EDGE_PASS') &&
             !(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r118CandleOk) &&
             Number(decisionChain?.brainConfidence||0) < 96;
