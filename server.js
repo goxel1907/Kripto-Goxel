@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R301_SADE_BEYIN_NIHAI_KAPI';
+const LAZARUS_BUILD = 'R302_SADE_BEYIN_EMIR_KAPISI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3303,8 +3303,11 @@ function r300SimpleBrain(side, d, ctx={}) {
   // HTF karşı seviye uzaklığı (en yakın)
   const htfDists = [...txt.matchAll(/karşı\s+(?:15m|1H|4H|1h|4h)[^u]*u:%\s*([0-9.]+)/gi)].map(m=>Number(m[1])).filter(Number.isFinite);
   const htfCounterDist = htfDists.length ? Math.min(...htfDists) : 999;
-  // Gerçek kırılım/dönüş kanıtı
-  const realProof = !!(d.r117BodyReclaimOk || d.r117MssOk || d.r117TrapSweepTaken || /body[- ]?reclaim|MSS|ChoCH|SSL_ALINDI_CHOCH|BSL_ALINDI_CHOCH|wick\+body/i.test(txt));
+  // Gerçek kırılım/dönüş kanıtı — SADECE doğrulanmış boolean flag'ler.
+  // DİKKAT: "LIQUIDITY_RECLAIM" / "FVG_OTE_RETEST" gibi SETUP ADLARI kanıt DEĞİL (yanlış pozitif).
+  // Sadece motorun gerçekten doğruladığı body-reclaim/MSS/sweep flag'i kanıttır.
+  const realProof = !!(d.r117BodyReclaimOk || d.r117MssOk || d.r117TrapSweepTaken
+    || /SSL_ALINDI_CHOCH|BSL_ALINDI_CHOCH|wick\+body[- ]?(geri|reclaim)|body[- ]?reclaim q[0-9]/i.test(txt));
   // Anlık akış sinyalleri (Binance canlı)
   const delta = n(d.r125LiveDeltaPct, 0);
   const bm = txt.match(/book:\s*(YÜKSELİŞ|DÜŞÜŞ|LONG|SHORT|NEUTRAL)\s*imb:\s*(-?[0-9.]+)%/i);
@@ -15965,6 +15968,32 @@ async function runAutoScan(prioritySymbol=null) {
           userRR = userTPPct / Math.max(0.05, userSLPct);
           logAuto(`🧑‍🍳 ${coin.symbol} ${r283Recipe.summary} · plan:${r282TradePlan.mode} TP:${userTPPct}% SL:${userSLPct}% · ${r282TradePlan.notes.join(',')}`);
         } catch(_r283planE) { logAuto(`⚠️ ${coin.symbol} R283 recipe hatası: ${String(_r283planE?.message||_r283planE).slice(0,80)}`); }
+
+        // ═══ R300 SON KAPI — emrin fiziksel açıldığı TEK nokta, hemen önünde ═══
+        // R285/R291/R287/R283 dâhil hangi yoldan gelirse gelsin, emir buradan geçer.
+        // 6 kural geçmezse emir AÇILMAZ. Bu, "ek katmanlı kapı yok" deyip kaçan
+        // (AERO/XLM/ZEC tipi "İZLE yetersiz" + tepeden/dipten) işlemleri kesin durdurur.
+        try {
+          const r300Gate = r300SimpleBrain(recommendation, {
+            brainSummary: String(decisionChain?.brainSummary || decisionChain?.reason || ''),
+            r125OrderflowSummary: String(decisionChain?.r125OrderflowSummary || ''),
+            score: Number(score || 0),
+            brainConfidence: Number(decisionChain?.brainConfidence || decisionChain?.priorityScore || 0),
+            r125LiveDeltaPct: Number(decisionChain?.r125LiveDeltaPct || 0),
+            r117BodyReclaimOk: !!decisionChain?.r117BodyReclaimOk,
+            r117MssOk: !!decisionChain?.r117MssOk,
+            r117TrapSweepTaken: !!decisionChain?.r117TrapSweepTaken,
+            r111: decisionChain?.r111Sonuc || null,
+            _r276RangePos: Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
+                         : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5)
+          }, { minScore: Number(effectiveMinScore || 70) });
+          if (!r300Gate.allow) {
+            logAuto(`⛔ ${coin.symbol} R300 SON KAPI RED: ${r300Gate.reason} — emir AÇILMADI`);
+            markAutoSkip(coin.symbol, `R300 son kapı: ${r300Gate.reason}`, {rec:recommendation, score, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
+            continue;
+          }
+          logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason}`);
+        } catch(_r300gE) { logAuto(`⚠️ ${coin.symbol} R300 kapı hatası: ${String(_r300gE?.message||_r300gE).slice(0,80)}`); }
 
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
 
