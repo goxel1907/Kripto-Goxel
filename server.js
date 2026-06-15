@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R302_SADE_BEYIN_EMIR_KAPISI';
+const LAZARUS_BUILD = 'R304_SADE_BEYIN_ERKEN_BIN';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3296,7 +3296,7 @@ function r300SimpleBrain(side, d, ctx={}) {
 
   // ── Veri toplama (hepsi zaten hesaplanmış) ──
   const rangePos = n(d.r276RangePos ?? d._r276RangePos ?? ctx.rangePos, 0.5);
-  const rsi = (()=>{ const m=txt.match(/RSI4?s?[:\s]+([0-9.]+)/i); return m?Number(m[1]):n(d.rsi,50); })();
+  const rsi = (()=>{ const dv=Number(d.rsi); if(Number.isFinite(dv)&&dv>0) return dv; const m=txt.match(/RSI4?s?[:\s]+([0-9.]+)/i); return m?Number(m[1]):50; })();
   const score = n(d.score, 0);
   const minScore = n(ctx.minScore, 70);
   const edge = n(d.brainConfidence ?? d.edge, 0);
@@ -3323,6 +3323,7 @@ function r300SimpleBrain(side, d, ctx={}) {
   if (dirOk(deepSide) && deepPct>=20) flowSignals++;
   if (isL ? /taker:\s*1\.[2-9]|taker:\s*[2-9]/i.test(txt) : /taker:\s*0\.[0-7]/i.test(txt)) flowSignals++;
   const flowAligned = flowSignals >= 2;
+  const flowStrong = flowSignals >= 3;  // erken bin için güçlü akış (3-4 sinyal aynı yön)
   // Squeeze + funding
   const shortSqueeze = !!(d.r111?.shortSqueeze || /shortSqueeze:EVET/i.test(txt));
   const longSqueeze = !!(d.r111?.longSqueeze || /longSqueeze:EVET/i.test(txt));
@@ -3336,17 +3337,22 @@ function r300SimpleBrain(side, d, ctx={}) {
 
   // ═══ 6 KURAL (sırayla, ilk RED kazanır) ═══
 
-  // KURAL 1: Yetersiz dediğini açma (skor barajın altında + kalite yetersiz)
-  if (watchWeak && !realProof && !flowAligned) {
-    return { allow:false, side, reason:`R300-1 RED: kalite yetersiz (skor ${score}<${minScore}), gerçek kanıt yok` };
+  // KURAL 1: Yetersiz dediğini açma. ERKEN BİN istisnası: skor barajın altında olsa bile,
+  // GERÇEK kanıt VEYA GÜÇLÜ akış (3+ sinyal aynı yön) varsa erken girebilir.
+  // Ama skor düşük + kanıt yok + akış zayıf/orta (≤2) = gerçek yetersiz → açma.
+  if (watchWeak && !realProof && !flowStrong) {
+    return { allow:false, side, reason:`R300-1 RED: yetersiz (skor ${score}<${minScore}, kanıt yok, akış ${flowSignals}/4 zayıf) — erken bin için güçlü akış (3+) ya da kanıt lazım` };
   }
 
-  // KURAL 2: Tepede LONG / dipte SHORT alma (trend-yönü chase) — sadece gerçek dönüş kanıtı deler
-  if (isL && atTop && !(realProof || flowAligned)) {
-    return { allow:false, side, reason:`R300-2 RED: tepede LONG (rangePos ${rangePos.toFixed(2)}, RSI ${rsi.toFixed(0)}), dönüş kanıtı yok` };
+  // KURAL 2: Tepede LONG / dipte SHORT alma (trend-yönü chase).
+  // ÖNEMLİ: Tepedeyken "akış yukarı" LONG'u HAKLI ÇIKARMAZ — akış zaten yukarı olduğu için
+  // fiyat tepede. Tepede LONG'u sadece GERÇEK dönüş kanıtı (aşağıdan body-reclaim/sweep) deler.
+  // (AERO: skor 57, RSI 79, tepe, sadece "akış 2/4" — bu tam kovalanan tepe, RED olmalı.)
+  if (isL && atTop && !realProof) {
+    return { allow:false, side, reason:`R300-2 RED: tepede LONG (rangePos ${rangePos.toFixed(2)}, RSI ${rsi.toFixed(0)}), gerçek dönüş kanıtı yok (akış tek başına yetmez)` };
   }
-  if (!isL && atBottom && !(realProof || flowAligned)) {
-    return { allow:false, side, reason:`R300-2 RED: dipte SHORT (rangePos ${rangePos.toFixed(2)}, RSI ${rsi.toFixed(0)}), dönüş kanıtı yok` };
+  if (!isL && atBottom && !realProof) {
+    return { allow:false, side, reason:`R300-2 RED: dipte SHORT (rangePos ${rangePos.toFixed(2)}, RSI ${rsi.toFixed(0)}), gerçek dönüş kanıtı yok (akış tek başına yetmez)` };
   }
 
   // KURAL 3: HTF dirence/desteğe çok yakın (≤%0.6) + gerçek kırılım yok → girme
@@ -15971,9 +15977,13 @@ async function runAutoScan(prioritySymbol=null) {
 
         // ═══ R300 SON KAPI — emrin fiziksel açıldığı TEK nokta, hemen önünde ═══
         // R285/R291/R287/R283 dâhil hangi yoldan gelirse gelsin, emir buradan geçer.
-        // 6 kural geçmezse emir AÇILMAZ. Bu, "ek katmanlı kapı yok" deyip kaçan
-        // (AERO/XLM/ZEC tipi "İZLE yetersiz" + tepeden/dipten) işlemleri kesin durdurur.
+        // 6 kural geçmezse emir AÇILMAZ. RSI/rangePos METİNDEN DEĞİL, güvenilir sayısaldan.
         try {
+          const r300Rsi5m = Number(analysis?.timeframes?.['5m']?.rsi);
+          const r300Rsi4h = Number(analysis?.timeframes?.['4h']?.rsi);
+          const r300RsiUse = Number.isFinite(r300Rsi5m) ? r300Rsi5m : (Number.isFinite(r300Rsi4h) ? r300Rsi4h : 50);
+          const r300Range = Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
+                          : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5);
           const r300Gate = r300SimpleBrain(recommendation, {
             brainSummary: String(decisionChain?.brainSummary || decisionChain?.reason || ''),
             r125OrderflowSummary: String(decisionChain?.r125OrderflowSummary || ''),
@@ -15984,15 +15994,15 @@ async function runAutoScan(prioritySymbol=null) {
             r117MssOk: !!decisionChain?.r117MssOk,
             r117TrapSweepTaken: !!decisionChain?.r117TrapSweepTaken,
             r111: decisionChain?.r111Sonuc || null,
-            _r276RangePos: Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
-                         : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5)
+            _r276RangePos: r300Range,
+            rsi: r300RsiUse
           }, { minScore: Number(effectiveMinScore || 70) });
           if (!r300Gate.allow) {
-            logAuto(`⛔ ${coin.symbol} R300 SON KAPI RED: ${r300Gate.reason} — emir AÇILMADI`);
+            logAuto(`⛔ ${coin.symbol} R300 SON KAPI RED: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)}) — emir AÇILMADI`);
             markAutoSkip(coin.symbol, `R300 son kapı: ${r300Gate.reason}`, {rec:recommendation, score, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
             continue;
           }
-          logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason}`);
+          logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)})`);
         } catch(_r300gE) { logAuto(`⚠️ ${coin.symbol} R300 kapı hatası: ${String(_r300gE?.message||_r300gE).slice(0,80)}`); }
 
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
