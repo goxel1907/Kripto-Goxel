@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308D_AI_PRO_TRADER_TOP1_LIVE_OPUS_AICARD';
+const LAZARUS_BUILD = 'R308E_AI_STRICT_LIVE_OPUS_AICARD';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5034,6 +5034,8 @@ const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_D
 const AI_BRAIN_MIN_CONF = Math.max(1, Math.min(99, parseInt(process.env.AI_BRAIN_MIN_CONF || '72', 10) || 72));
 const AI_BRAIN_MIN_RR = Math.max(0.8, Number(process.env.AI_BRAIN_MIN_RR || 1.5) || 1.5);
 const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 3.0) || 3.0);
+// R308E: CANLI modda eski motor AI onayı olmadan emir açamaz.
+const AI_BRAIN_STRICT_GATE = process.env.AI_BRAIN_STRICT_GATE !== '0';
 let r308AiSpendDay = new Date().toISOString().slice(0,10);
 let r308AiSpendCount = 0;
 const r308AiLastBySymbol = new Map();
@@ -5074,7 +5076,7 @@ function r308SetLastAiDecision(p={}) {
       } : null,
       order: p.order || null,
       daily: r308AiDailyInfo(),
-      limits: { topN:AI_BRAIN_TOP_N, minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000) }
+      limits: { topN:AI_BRAIN_TOP_N, minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000), strictGate:AI_BRAIN_STRICT_GATE }
     };
   } catch(e) {
     r308LastAiDecision = { ts:Date.now(), build:LAZARUS_BUILD, status:'AI_KART_HATA', error:String(e?.message||e).slice(0,180), daily:r308AiDailyInfo() };
@@ -5084,7 +5086,7 @@ function r308AiDashboardStatus(){
   return {
     enabled: !!AI_BRAIN_ENABLED, keySet: !!ANTHROPIC_API_KEY, shadow: !!AI_BRAIN_SHADOW, mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
     model: ANTHROPIC_MODEL, bMode: !!AI_BRAIN_B_MODE, topN: AI_BRAIN_TOP_N, daily: r308AiDailyInfo(),
-    limits: { minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000) },
+    limits: { minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000), strictGate:AI_BRAIN_STRICT_GATE },
     last: r308LastAiDecision
   };
 }
@@ -14939,7 +14941,7 @@ async function r308RunAiCandidateReviewAfterScan() {
       .filter(r => r && r.symbol && !['ERR','CD'].includes(String(r.rec||'')))
       .slice(0, AI_BRAIN_TOP_N);
     if (!rows.length) return;
-    logAuto(`🤖 R308C AI-MOD: en iyi ${rows.length} aday AI ${AI_BRAIN_SHADOW?'gölge':'CANLI'} incelemeye gidiyor · model:${ANTHROPIC_MODEL} · limit:${r308AiSpendCount}/${AI_BRAIN_MAX_DAILY_CALLS}`);
+    logAuto(`🤖 R308E AI-MOD: en iyi ${rows.length} aday AI ${AI_BRAIN_SHADOW?'gölge':'CANLI'} incelemeye gidiyor · model:${ANTHROPIC_MODEL} · limit:${r308AiSpendCount}/${AI_BRAIN_MAX_DAILY_CALLS}`);
 
     // Canlı modda aynı scan içinde birden fazla emir açma riskini azalt: TOP_N=1 önerilir, yine de ilk açılışta dur.
     for (const r of rows) {
@@ -16496,11 +16498,19 @@ async function runAutoScan(prioritySymbol=null) {
             } else if (AI_BRAIN_SHADOW) {
               logAuto(`⚪ ${coin.symbol} GÖLGE MOD: AI kararı alınamadı (API/parse), işlem yine de AÇILMADI`);
               continue;
+            } else if (AI_BRAIN_STRICT_GATE) {
+              const why = ai?.reason || ai?.error || 'AI onayı yok / maliyet freni / parse yok';
+              logAuto(`⛔ ${coin.symbol} R308E STRICT: AI net onay vermedi (${why}) — eski motor EMİR AÇAMAZ`);
+              markAutoSkip(coin.symbol, `R308E STRICT AI onayı yok: ${why}`, {rec:recommendation, score, aiBrain:ai});
+              continue;
             }
-            // ai null + gerçek mod: fail-soft, eski karara devam (bot açar)
+            // strict kapalıysa eski fail-soft davranışa izin verilebilir
           } catch(_aiE) {
             logAuto(`⚠️ ${coin.symbol} AI beyin bağlama hatası: ${String(_aiE?.message||_aiE).slice(0,80)}`);
-            if (AI_BRAIN_SHADOW) continue; // gölge modda hata olsa da açma
+            if (AI_BRAIN_SHADOW || AI_BRAIN_STRICT_GATE) {
+              markAutoSkip(coin.symbol, `R308E STRICT AI hata: ${String(_aiE?.message||_aiE).slice(0,80)}`, {rec:recommendation, score});
+              continue;
+            }
           }
         }
 
