@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308J_VOLATIL_BTC_YON';
+const LAZARUS_BUILD = 'R308K_PUANSIZ_HAM_MUM';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3303,49 +3303,50 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       try { logAuto(`🧊 ${symbol} AI maliyet freni: ${spendGate.reason}`); } catch(_) {}
       return { ok:false, skipped:true, reason:spendGate.reason };
     }
-    // Botun topladığı 4-TF veriyi pro trader brief'ine çevir (token tasarrufu: özet, ham mum değil)
+    // ═══ R308K: PUANSIZ BRIEF — botun skoru/yorumu YOK, sadece ham veri ═══
+    // AI bir pro trader gibi mumların kendi hikayesini okur. Botun "skor 100, edge 89, R159" gibi
+    // hükümleri AI'ya GÖNDERİLMEZ — sadece nesnel gerçekler (mumlar + metrikler) gider.
     const brief = {
       symbol,
-      aiSource: data.aiSource || 'R308',
-      botAdayYon: data.recommendation || data.botSide || null,
-      botSkor: data.score ?? null,
-      botElemeSebebi: data.skipReason || data.reason || null,
       fiyat: data.lastPrice,
-      timeframes: {
-        '5m':  { rsi: data.rsi5m,  trend: data.trend5m },
-        '15m': { rsi: data.rsi15m, trend: data.trend15m },
-        '1h':  { rsi: data.rsi1h,  trend: data.trend1h },
-        '4h':  { rsi: data.rsi4h,  trend: data.trend4h }
-      },
-      yapı:        data.structure,
-      likidite:    data.liquidity,
-      fvg:         data.fvg,
-      ote:         data.ote,
-      sweep:       data.sweepInfo,
-      akış:        data.flow,
-      funding:     data.funding,
-      oi:          data.oiChange,
-      squeeze:     data.squeeze,
-      atrPct:      data.atrPct,
-      rangePos:    data.rangePos,
-      mum:         data.candleSummary,
-      piyasa:      data.marketCtx || null  // R308J: anlık BTC/genel piyasa durumu
+      mumlar: data.candles || null,   // 60×5m + 12×15m + 12×1h + 8×4h + 24×btc5m ham OHLCV
+      rsi: { '5m': data.rsi5m, '15m': data.rsi15m, '1h': data.rsi1h, '4h': data.rsi4h },
+      funding: data.funding,
+      oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
+      emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
+      canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
+      buyukTraderLongYuzde: data.topTraderLongPct,
+      genelLongYuzde: data.globalLongPct,
+      likiditeSeviyeleri: data.liqLevels,                 // üst/alt likidite (TP/SL hedefi için)
+      atrYuzde: data.atrPct,
+      piyasaNotu: data.marketCtx || null
     };
 
-    const sys = `Sen 10 yıllık deneyimli bir kripto futures scalp trader'ısın. 5m TOP24 gainer coinlerinde işlem yapıyorsun.
-Sana bir coinin 5m/15m/1h/4h analiz verisi verilecek. Bir pro trader gibi BÜTÜN resme bak: çok-zaman-dilimli hikaye, price action, likidite avı, MM hareketi, FVG/OTE, mum yapısı, akış (CVD/delta/book/taker), funding, squeeze.
-KURALLAR:
-- ÖNCE PİYASAYA BAK: "piyasa" alanında anlık BTC durumu var. BTC düşüyorsa LONG'a çok dikkatli ol (altcoinler BTC'yi takip eder), BTC yükseliyorsa SHORT'a dikkatli ol. BTC sert düşerken altcoin LONG = yüksek risk.
-- Tepeden LONG / dipten SHORT alma (chase yapma). Geri çekilmeye/dönüşe gir.
-- Herkes short düşünüyorsa MM yukarı squeeze yapabilir — funding+squeeze'e dikkat.
-- Net fırsat YOKSA "WAIT" de. Zorlama. Çoğu coin "WAIT" olmalı.
-- Fırsat varsa: yön, giriş, TP (likidite/direnç hedefine göre), SL (yapı altına/üstüne göre), güven (0-100).
-- TP'yi likidite hedefine, SL'i yapıyı bozan yere koy. Mantıklı R:R (en az 1.8).
+    const sys = `Sen 10 yıllık deneyimli bir kripto futures scalp trader'ısın. 5m TOP24 volatil coinlerde yüksek kaldıraçlı işlem yapıyorsun.
+
+Sana HAM piyasa verisi veriliyor — hiçbir hazır skor, öneri ya da "al/sat" hükmü YOK. Bir bot sana puan vermiyor; ham gerçekleri sen yorumlayacaksın, tıpkı kendi ekranındaki grafiğe bakar gibi.
+
+ELİNDEKİ VERİ:
+- "mumlar": gerçek OHLCV dizileri. Her mum [Açılış, Yüksek, Düşük, Kapanış, Hacim]. En sağdaki en güncel mum. 5m (son 60), 15m (12), 1h (12), 4h (8) ve btc5m (BTC son 24×5m).
+- "rsi", "funding", "oiDegisim" (open interest), "canliDelta" (alıcı/satıcı baskısı), "emirDefteriDengesizlik", trader long/short oranları, "likiditeSeviyeleri" (üst/alt), "atrYuzde".
+
+NASIL ANALİZ EDERSİN (kendi gözünle, sıfırdan):
+1. ÖNCE BTC: btc5m mumlarına bak. BTC sert düşüyorsa altcoin LONG riskli (altlar BTC'yi takip eder); BTC yükseliyorsa SHORT riskli. Piyasanın genel yönünü kafanda netleştir.
+2. ÇOK ZAMAN DİLİMİ HİKAYE: 4h→1h→15m→5m sırayla oku. Trend nerede? Fiyat yapının neresinde — tepede mi, dipte mi, range ortasında mı? HH/HL mi (yükseliş yapısı), LH/LL mi (düşüş yapısı)?
+3. PRICE ACTION: Son 5m mumlarda ne oluyor? İğne (sweep) var mı — bir seviye süpürülüp geri mi alınmış (reclaim)? Yutan mum, momentum, sıkışma, dikey kaçış? Likidite seviyesi test edilip reddedilmiş mi?
+4. AKIŞ TEYİDİ: canliDelta ve emirDefteriDengesizlik yönü mum hikayesini destekliyor mu, çelişiyor mu? Funding aşırıysa (örn >0.1% veya <-0.1%) ters squeeze riski düşün — herkes aynı yöndeyse MM ters çevirebilir.
+5. KONUM: Tepeden LONG / dipten SHORT alma (chase). Geri çekilmeye veya net dönüşe gir. Yapı bozulmadıkça trendle git.
+
+KARAR:
+- Net, yüksek-olasılıklı bir kurulum YOKSA "WAIT" de. Zorlama — çoğu coin "WAIT" olmalı, bu normal ve doğru. Vasat kurulumda beklemek para kazandırır.
+- Fırsat varsa: yön (LONG/SHORT), giriş fiyatı, TP (likidite/yapı hedefine göre), SL (yapıyı bozan yere göre). R:R en az 1.8 olsun.
+- confidence: kendi inancın (0-100). Emin değilsen düşük ver ya da WAIT de.
+
 SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"kısa Türkçe gerekçe (max 200 karakter)"}`;
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"kısa Türkçe gerekçe — mumlarda ne gördüğün (max 220 karakter)"}`;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 25000); // R308K: ham mum payload'u büyük, süre artırıldı
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -3356,7 +3357,7 @@ SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 400,
+        max_tokens: 500,
         // R308F: PROMPT CACHING — sabit sistem promptu (pro trader talimatı) cache'lenir.
         // Aynı talimat her çağrıda tekrar gönderilmez, %90 daha ucuz. Coin verisi (değişken) cache'lenmez.
         system: [{ type:'text', text: sys, cache_control: { type:'ephemeral' } }],
@@ -3395,7 +3396,7 @@ SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
       reasoning: String(decision.reasoning || '').slice(0, 220)
     };
   } catch (e) {
-    if (e?.name === 'AbortError') logAuto(`⚠️ AI Beyin zaman aşımı (12sn) — ${symbol}`);
+    if (e?.name === 'AbortError') logAuto(`⚠️ AI Beyin zaman aşımı (25sn) — ${symbol}`);
     else logAuto(`⚠️ AI Beyin hatası: ${String(e?.message || e).slice(0,120)}`);
     return null;
   }
@@ -12760,8 +12761,32 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
     const r128DecisionChain = r128SafeForJson(decisionChain);
     const r128SideDecisions = { LONG: r128SafeForJson(longDecision), SHORT: r128SafeForJson(shortDecision) };
+
+    // ═══ R308K: AI'YA HAM MUM VERİSİ ═══
+    // AI artık botun skorunu değil, gerçek mum dizisini okuyacak (pro trader gibi).
+    // Kompakt OHLCV: her mum [O,H,L,C,V] — anlamlı basamak korunarak, token tasarrufu.
+    function r308PackKlines(kl, n) {
+      if (!Array.isArray(kl) || !kl.length) return [];
+      const slice = kl.slice(-n);
+      // fiyat basamağı: son kapanışa göre dinamik (örn 0.0048 → 6 hane, 66000 → 1 hane)
+      const lastC = parseFloat(slice[slice.length-1][4]) || 1;
+      const dp = lastC >= 1000 ? 1 : lastC >= 1 ? 4 : lastC >= 0.01 ? 6 : 8;
+      const f = (v) => +parseFloat(v).toFixed(dp);
+      const fv = (v) => { const x = parseFloat(v); return x >= 1e6 ? +(x/1e6).toFixed(2)+'M' : x >= 1e3 ? +(x/1e3).toFixed(1)+'K' : +x.toFixed(0); };
+      return slice.map(c => [f(c[1]), f(c[2]), f(c[3]), f(c[4]), fv(c[5])]);
+    }
+    const r308RawCandles = {
+      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda (guncel). En eski en solda.',
+      '5m':  r308PackKlines(k5m, 60),
+      '15m': r308PackKlines(k15m, 12),
+      '1h':  r308PackKlines(k1h, 12),
+      '4h':  r308PackKlines(k4h, 8),
+      btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 24)
+    };
+
     res.json({
       ok:true, symbol:full, price:lastPrice,
+      r308RawCandles,
       freshness, signalAgeMin, isExpired,
       marketMaker:{target:mmTarget,confidence:mmConf,reasoning:mmReasoning,
         nextTarget:mmNextTarget,retailBias,smartMoneyBias:smBias,oiTrend},
@@ -14938,8 +14963,9 @@ function r308AiPlanQuality(ai) {
     const tp = Number(ai?.tp);
     const sl = Number(ai?.sl);
     const conf = Number(ai?.confidence || 0);
+    // R308K: PUANSIZ — minConf eşiği KALDIRILDI. AI WAIT demezse güven eşiğine takılmaz.
+    // Sadece plan GEÇERLİLİĞİ ve aşırı-geniş-SL güvenliği kontrol edilir (bunlar puan değil, koruma).
     if (!['LONG','SHORT'].includes(side)) return { ok:false, reason:`AI ${side || 'WAIT'} dedi` };
-    if (conf < AI_BRAIN_MIN_CONF) return { ok:false, reason:`AI güven düşük ${conf}/${AI_BRAIN_MIN_CONF}` };
     if (![entry,tp,sl].every(x => Number.isFinite(x) && x > 0)) return { ok:false, reason:'AI giriş/TP/SL sayısal değil' };
     const isLong = side === 'LONG';
     if (isLong && !(tp > entry && sl < entry)) return { ok:false, reason:'AI LONG TP/SL yönü hatalı' };
@@ -14949,9 +14975,8 @@ function r308AiPlanQuality(ai) {
     if (!(risk > 0 && reward > 0)) return { ok:false, reason:'AI risk/ödül sıfır' };
     const rr = reward / risk;
     const slPct = risk / entry * 100;
-    if (rr < AI_BRAIN_MIN_RR) return { ok:false, reason:`AI RR düşük ${rr.toFixed(2)} < ${AI_BRAIN_MIN_RR}` };
-    if (slPct > AI_BRAIN_MAX_SL_PCT) return { ok:false, reason:`AI SL geniş ${slPct.toFixed(2)}% > ${AI_BRAIN_MAX_SL_PCT}%` };
-    return { ok:true, rr, slPct };
+    if (slPct > AI_BRAIN_MAX_SL_PCT) return { ok:false, reason:`AI SL aşırı geniş ${slPct.toFixed(2)}% > ${AI_BRAIN_MAX_SL_PCT}% (güvenlik)` };
+    return { ok:true, rr, slPct, confidence:conf };
   } catch(e) {
     return { ok:false, reason:String(e?.message || e).slice(0,120) };
   }
@@ -16497,29 +16522,30 @@ async function runAutoScan(prioritySymbol=null) {
         if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) {
           try {
             const aiData = {
+              // ═══ R308K: PUANSIZ — AI ham veriyi okur, botun skoruna mahkum değil ═══
               lastPrice: Number(coin.lastPrice || analysis?.price || 0),
+              // HAM MUM DİZİLERİ (asıl grafik): 60×5m + 12×15m + 12×1h + 8×4h + 24×btc5m
+              candles: analysis?.r308RawCandles || null,
+              // HAM METRİKLER (mumda görünmeyen gerçekler — yorum değil, sayı)
               rsi5m: analysis?.timeframes?.['5m']?.rsi, rsi15m: analysis?.timeframes?.['15m']?.rsi,
               rsi1h: analysis?.timeframes?.['1h']?.rsi, rsi4h: analysis?.timeframes?.['4h']?.rsi,
-              trend5m: analysis?.timeframes?.['5m']?.trend, trend15m: analysis?.timeframes?.['15m']?.trend,
-              trend1h: analysis?.timeframes?.['1h']?.trend, trend4h: analysis?.timeframes?.['4h']?.trend,
-              structure: decisionChain?.htfTani || decisionChain?.mumOzet || '',
-              liquidity: decisionChain?.ictDashboard || '',
-              fvg: decisionChain?.r274Signal?.summary || analysis?.fvg || '',
-              ote: decisionChain?.r110ICT?.summary || '',
-              sweepInfo: decisionChain?.r289Summary || String(decisionChain?.brainSummary||'').slice(0,200),
-              flow: decisionChain?.r125OrderflowSummary || '',
-              funding: analysis?.funding?.current, oiChange: decisionChain?.r140Summary || '',
-              squeeze: (decisionChain?.r111Sonuc?.shortSqueeze ? 'shortSqueeze' : decisionChain?.r111Sonuc?.longSqueeze ? 'longSqueeze' : 'yok'),
-              atrPct: analysis?.leverage?.atrPct, rangePos: r308LastRangePos,
-              candleSummary: decisionChain?.mumOzet || '',
+              funding: analysis?.funding?.current,
+              oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
+              orderBookImbalance: analysis?.orderBook?.imbalance,
+              cvdDelta: analysis?.r125OrderFlow?.deltaPct ?? null,
+              topTraderLongPct: analysis?.smartMoney?.topLongPct,
+              globalLongPct: analysis?.smartMoney?.globalLongPct,
+              // HAM LİKİDİTE SEVİYELERİ (mumda yok, AI hedef/stop için kullanır)
+              liqLevels: analysis?.liquidityLevels || null,
+              atrPct: analysis?.leverage?.atrPct,
+              // PİYASA BAĞLAMI (BTC ham mumları candles.btc5m'de; bu sadece kısa not)
               marketCtx: (function(){
-                // R308J: AI'ya anlık BTC/piyasa durumunu ver. r140Summary içinde BTC drop/bounce + divergence bilgisi var.
                 const s = String(decisionChain?.r140Summary||'');
                 const btcBit = /BTC[^·]*/.exec(s);
                 const div = decisionChain?.r140BtcDiv;
                 let txt = btcBit ? btcBit[0].trim() : '';
                 if (div?.label) txt += (txt?' · ':'') + div.label;
-                return txt || 'BTC durumu bilinmiyor';
+                return txt || 'BTC ham mumlari candles.btc5m icinde';
               })()
             };
             const ai = await r308AiProTraderBrain(coin.symbol, aiData);
@@ -16537,26 +16563,62 @@ async function runAutoScan(prioritySymbol=null) {
                 markAutoSkip(coin.symbol, `AI gölge mod: ${ai.side} güven ${ai.confidence}% (işlem açılmadı)`, {rec:recommendation, score, aiBrain:ai});
                 continue;
               } else {
-                // Gerçek mod: AI WAIT derse veya yön uyuşmazsa açma
+                // R308K: AI BAĞIMSIZ KARAR VERİR. Botun önerdiği yöne mahkum DEĞİL.
+                // AI WAIT derse açma. AI'nın YÖNÜ neyse o açılır (botun recommendation'ı değil).
                 if (ai.side === 'WAIT') {
                   logAuto(`⛔ ${coin.symbol} AI PRO TRADER WAIT dedi — emir AÇILMADI: ${ai.reasoning}`);
-                  markAutoSkip(coin.symbol, `AI WAIT: ${ai.reasoning}`, {rec:recommendation, score, aiBrain:ai});
+                  markAutoSkip(coin.symbol, `AI WAIT: ${ai.reasoning}`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
+                if (ai.side !== 'LONG' && ai.side !== 'SHORT') {
+                  logAuto(`⛔ ${coin.symbol} AI geçersiz yön (${ai.side}) — emir AÇILMADI`);
+                  markAutoSkip(coin.symbol, `AI geçersiz yön: ${ai.side}`, {rec:ai.side, score, aiBrain:ai});
+                  continue;
+                }
+                // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
                 if (ai.side !== recommendation) {
-                  logAuto(`⛔ ${coin.symbol} AI yön uyuşmazlığı: bot ${recommendation}, AI ${ai.side} — emir AÇILMADI`);
-                  markAutoSkip(coin.symbol, `AI ters yön: ${ai.side}`, {rec:recommendation, score, aiBrain:ai});
-                  continue;
+                  logAuto(`🔄 ${coin.symbol} AI bağımsız yön: bot ${recommendation} demişti, AI ${ai.side} okudu — AI'nın kararı uygulanıyor`);
+                  recommendation = ai.side; // R308K: AI yön otoritesi
+                  isLong = ai.side === 'LONG'; isShort = ai.side === 'SHORT';
+                  score = ai.side === 'LONG' ? longScore : shortScore;
                 }
-                // R308J: AI'nın önerdiği yön panelde kapalıysa açma (kullanıcı "sadece düşüş/yükseliş" dediyse uy)
+                // ═══ R308K: AI'NIN TP/SL PLANINI UYGULA ═══
+                // AI TP'yi likidite hedefine, SL'i yapıya göre koyuyor (botun sabit %'sinden iyi).
+                // Yön ters çevrildiyse eski targetPrice/stopPrice YANLIŞ tarafta kalırdı — bu onu da düzeltir.
+                // Güvenlik: R283/R282 kaldıraç-SL sınırı korunur (AI SL'i çok genişse r308AiPlanQuality zaten reddetti).
+                try {
+                  const aiEntry = Number(ai.entry), aiTp = Number(ai.tp), aiSl = Number(ai.sl);
+                  if ([aiEntry,aiTp,aiSl].every(x=>Number.isFinite(x)&&x>0)) {
+                    const dirOk = isLong ? (aiTp>aiEntry && aiSl<aiEntry) : (aiTp<aiEntry && aiSl>aiEntry);
+                    if (dirOk) {
+                      targetPrice = +aiTp.toFixed(8);
+                      stopPrice   = +aiSl.toFixed(8);
+                      userTPPct = +(Math.abs(aiTp-aiEntry)/aiEntry*100).toFixed(3);
+                      userSLPct = +(Math.abs(aiEntry-aiSl)/aiEntry*100).toFixed(3);
+                      userRR = userTPPct / Math.max(0.05, userSLPct);
+                      logAuto(`🎯 ${coin.symbol} AI planı uygulandı: giriş${aiEntry} TP${aiTp}(%${userTPPct}) SL${aiSl}(%${userSLPct}) R:R≈${userRR.toFixed(2)}`);
+                      // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
+                      try {
+                        const maxRoiRisk = Number(r282TradePlan?.maxRoiRisk || 15);
+                        if (userSLPct * executeLeverage > maxRoiRisk + 1) {
+                          const oldLev = executeLeverage;
+                          executeLeverage = Math.max(1, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct)));
+                          leverageNote += ` · R308K AI-SL kaldıraç ${oldLev}x→${executeLeverage}x (risk≤${maxRoiRisk}%)`;
+                          logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} geniş → kaldıraç ${oldLev}x→${executeLeverage}x (ROI risk ≤${maxRoiRisk}%)`);
+                        }
+                      } catch(_levSafeE) {}
+                    }
+                  }
+                } catch(_aiPlanE) { logAuto(`⚠️ ${coin.symbol} AI TP/SL uygulama hatası: ${String(_aiPlanE?.message||_aiPlanE).slice(0,60)}`); }
+                // Panel yön izni (kullanıcı "sadece düşüş/yükseliş" dediyse uy) — bu güvenlik, korunur
                 if (ai.side === 'LONG' && !allowLong) {
                   logAuto(`⛔ ${coin.symbol} AI LONG dedi ama panel LONG KAPALI — emir AÇILMADI`);
-                  markAutoSkip(coin.symbol, `Panel LONG kapalı (AI LONG dedi)`, {rec:recommendation, score, aiBrain:ai});
+                  markAutoSkip(coin.symbol, `Panel LONG kapalı (AI LONG dedi)`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
                 if (ai.side === 'SHORT' && !allowShort) {
                   logAuto(`⛔ ${coin.symbol} AI SHORT dedi ama panel SHORT KAPALI — emir AÇILMADI`);
-                  markAutoSkip(coin.symbol, `Panel SHORT kapalı (AI SHORT dedi)`, {rec:recommendation, score, aiBrain:ai});
+                  markAutoSkip(coin.symbol, `Panel SHORT kapalı (AI SHORT dedi)`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
                 logAuto(`✅ ${coin.symbol} AI PRO TRADER ONAY: ${ai.side} güven ${ai.confidence}% — emir açılıyor`);
@@ -16580,12 +16642,13 @@ async function runAutoScan(prioritySymbol=null) {
           }
         }
 
-        // ═══ R308I TEK KAPI SIZDIRMAZLIK ═══
-        // R300 yumuşak red verdi ve AI bunu AÇIK onaya çevirmediyse (AI kapalı / key yok / onay gelmedi) → AÇMA.
-        // decisionChain.aiBrain.ok && side==recommendation ise AI onayı vardır, yukarıda zaten "ONAY" loglandı, devam eder.
+        // ═══ R308I TEK KAPI SIZDIRMAZLIK (R308K: AI bağımsız yön) ═══
+        // R300 yumuşak red verdi ve AI bunu AÇIK onaya (LONG/SHORT) çevirmediyse → AÇMA.
+        // AI artık kendi yönünü seçiyor; recommendation yukarıda AI'nın yönüne güncellendi.
         if (decisionChain.r300SoftReject) {
+          const aiSideUp = String(decisionChain.aiBrain?.side || '').toUpperCase();
           const aiApproved = decisionChain.aiBrain && decisionChain.aiBrain.ok &&
-                             String(decisionChain.aiBrain.side).toUpperCase() === String(recommendation).toUpperCase() &&
+                             (aiSideUp === 'LONG' || aiSideUp === 'SHORT') &&
                              !AI_BRAIN_SHADOW;
           if (!aiApproved) {
             logAuto(`⛔ ${coin.symbol} TEK KAPI: R300 yumuşak red (${decisionChain.r300SoftReject}) + AI net onay yok — emir AÇILMADI`);
