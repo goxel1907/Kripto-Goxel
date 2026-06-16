@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R304_SADE_BEYIN_ERKEN_BIN';
+const LAZARUS_BUILD = 'R306_R300_TEK_KARAR_GUVENLIK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3329,19 +3329,34 @@ function r300SimpleBrain(side, d, ctx={}) {
   const longSqueeze = !!(d.r111?.longSqueeze || /longSqueeze:EVET/i.test(txt));
   const fundMatch = txt.match(/funding:\s*(-?[0-9.]+)%/i);
   const funding = fundMatch ? Number(fundMatch[1]) : 0;
-  // "yetersiz" işareti
-  const watchWeak = /kalite\/edge yetersiz|İZLE:/i.test(txt) && score < minScore;
+  // "yetersiz" işareti — metin "İZLE/yetersiz" diyorsa skor ne olursa olsun yetersizdir.
+  // (WLD: bot "İZLE yetersiz" + skor 100 çelişkisi verdi; metin kazanır.)
+  const watchWeak = /kalite\/edge yetersiz|İZLE:/i.test(txt);
   // Tepe/dip
   const atTop = rangePos >= 0.84 || rsi >= 78;
   const atBottom = rangePos <= 0.16 || rsi <= 22;
 
   // ═══ 6 KURAL (sırayla, ilk RED kazanır) ═══
 
+  // KURAL 0: GÜVENLİK KORUMALARI — eski kapılardan taşınan gizli korumalar.
+  // Bunlar karar değil, tehlike engeli: kayma, sahte pump, grafik tuzağı, aşırı volatilite.
+  // Bot bunları kaybederse tehlikeli işlem açar — o yüzden R300'ün İÇİNDE de kontrol edilir.
+  const safetySpread = !!(ctx.spreadBlock || d.spreadBlock);                          // kayma/POOR likidite
+  const safetyFakePump = !!((ctx.lateTrapRisk || d.lateTrapRisk) && !(d.r111?.squeeze || ctx.squeeze)); // sahte pump/dump
+  const safetyChartTrap = !!((ctx.chartHardNo || d.chartHardNo) && !(ctx.runner || d.runner));  // grafik tuzağı (karşı likidite+duvar)
+  const safetyAtrExtreme = !!(ctx.atrExtreme || d.atrExtreme);                        // aşırı volatilite (düşen bıçak)
+  const safetyRrLow = !!(ctx.rrLow || d.rrLow);                                       // risk/ödül oranı düşük
+  if (safetySpread)    return { allow:false, side, reason:`R300-0 GÜVENLİK: spread/kayma riski yüksek (POOR likidite)` };
+  if (safetyFakePump)  return { allow:false, side, reason:`R300-0 GÜVENLİK: sahte pump/dump veya geç-giriş tuzağı` };
+  if (safetyChartTrap) return { allow:false, side, reason:`R300-0 GÜVENLİK: grafik tuzağı (karşı likidite yakın + HTF duvar)` };
+  if (safetyAtrExtreme) return { allow:false, side, reason:`R300-0 GÜVENLİK: ATR aşırı volatilite (düşen bıçak riski)` };
+  if (safetyRrLow)     return { allow:false, side, reason:`R300-0 GÜVENLİK: risk/ödül oranı çok düşük` };
+
   // KURAL 1: Yetersiz dediğini açma. ERKEN BİN istisnası: skor barajın altında olsa bile,
   // GERÇEK kanıt VEYA GÜÇLÜ akış (3+ sinyal aynı yön) varsa erken girebilir.
   // Ama skor düşük + kanıt yok + akış zayıf/orta (≤2) = gerçek yetersiz → açma.
   if (watchWeak && !realProof && !flowStrong) {
-    return { allow:false, side, reason:`R300-1 RED: yetersiz (skor ${score}<${minScore}, kanıt yok, akış ${flowSignals}/4 zayıf) — erken bin için güçlü akış (3+) ya da kanıt lazım` };
+    return { allow:false, side, reason:`R300-1 RED: bot 'yetersiz/İZLE' dedi (skor ${score}, kanıt yok, akış ${flowSignals}/4) — geçmek için gerçek kanıt ya da güçlü akış (3+) lazım` };
   }
 
   // KURAL 2: Tepede LONG / dipte SHORT alma (trend-yönü chase).
@@ -12167,7 +12182,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if((tier==='B'||tier==='WAIT') && softEntry && !hasEntry && !nonSweepQualityOk) blocks.push('Yumuşak bağlam var ama canlı emir için gerçek giriş izi yok');
         if((isTierA||isTierBPlus) && !microConfirmR35) blocks.push('Mikro teyit eksik');
         const passCount=[entryPermissionOk,hasEntry||softEntry||nonSweepQualityOk,deltaOk,fundOk,rsiOk,mmOk,sc>=55,priorityScore>=50,!hardVeto].filter(Boolean).length;
+        // R305: Eski tier kapıları (isTierA/isTierBPlus) artık autoOk'i BELİRLEMİYOR — sadece veri.
+        // Güvenlik korumaları korunur (spread, lateTrap, grafik hardNo). Asıl karar R300'de.
         const autoOkLegacy=(isTierA||isTierBPlus) && entryPermissionOk && !r190Edge?.spreadBlock && !(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) && !(r281Map?.hardNo && !r281Map?.runner);
+        const r305Safety = entryPermissionOk && !r190Edge?.spreadBlock && !(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) && !(r281Map?.hardNo && !r281Map?.runner) && !hardVeto;
         // R300 SADE BEYİN — son söz. Eski kapılar veriyi üretti; nihai evet/hayır 6 net kuralda.
         // reasons dizisi + r274/ICT metinleri beynin okuyacağı özet; rangePos r276 motorundan (varsa).
         const r300SummaryTxt = [].concat(reasons||[]).join(' · ') + ' ' + String((typeof r274Signal!=='undefined'&&r274Signal?.summary)||'') + ' ' + String((typeof r110ICT!=='undefined'&&r110ICT?.summary)||'');
@@ -12182,7 +12200,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           r111: (typeof r111Sonuc!=='undefined'?r111Sonuc:null),
           _r276RangePos: r300RangePos, rsi: r300Rsi
         }, { minScore: 70, rangePos: r300RangePos });
-        const autoOk = autoOkLegacy && r300.allow;
+        const autoOk = r305Safety && r300.allow;
         if (!r300.allow && autoOkLegacy) blocks.push(r300.reason);
         return{ pass:tier!=='WAIT', tier, score:sc, passCount,
           reasons, blocks, autoOk,
@@ -13764,19 +13782,36 @@ async function managePosition(apiKey, apiSecret, pos) {
     const adverseCascade = !!(cascadeNow && cascadeNow.adverse);
     let exitScore = 0;
     const reasons = [];
-    if (extra.cvdFlip?.flip) { exitScore += 2; reasons.push('alım/satım baskısı ters döndü'); }
-    if (cvdAgainst) { exitScore += 1.5; reasons.push('anlık baskı pozisyona karşı'); }
-    if (extra.tickFlip) { exitScore += 2; reasons.push('işlem akışı ters döndü'); }
-    if (extra.exhaustExit) { exitScore += 2; reasons.push('hareket yoruldu'); }
+    // R305 KAZANANI BIRAK: kâr +%4 ROI üstündeyse, minik pullback/tek sinyalle kapatma.
+    // Sadece GERÇEK ters dönüş (CVD flip + tick flip birlikte) veya büyük geri verme kapatır.
+    // Bu, JTO +30% gibi kazananları 3-4dk'da kesmeyi durdurur — nefes verir.
+    const inProfit = Number(pnlPct || 0) >= 4;  // ROI %4+ = kâr taşıma bölgesi
+    const realReversal = !!((extra.cvdFlip?.flip && extra.tickFlip) || (extra.cvdFlip?.flip && extra.exhaustExit));
+    if (extra.cvdFlip?.flip) { exitScore += inProfit ? 1 : 2; reasons.push('alım/satım baskısı ters döndü'); }
+    if (cvdAgainst) { exitScore += inProfit ? 0.5 : 1.5; reasons.push('anlık baskı pozisyona karşı'); }
+    if (extra.tickFlip) { exitScore += inProfit ? 1 : 2; reasons.push('işlem akışı ters döndü'); }
+    if (extra.exhaustExit) { exitScore += inProfit ? 1 : 2; reasons.push('hareket yoruldu'); }
     if (extra.trappedExit) { exitScore += 2; reasons.push('tuzak izi var'); }
     if (adverseCascade) { exitScore += 2; reasons.push('ters likidasyon baskısı'); }
-    if (div.divergence) { exitScore += 1.5; reasons.push('fiyat gidiyor ama veri desteklemiyor'); }
-    if (pullbackPct >= 0.25) { exitScore += 1; reasons.push(`tepeden geri verme %${pullbackPct.toFixed(2)}`); }
+    if (div.divergence) { exitScore += inProfit ? 0.5 : 1.5; reasons.push('fiyat gidiyor ama veri desteklemiyor'); }
+    // Kârdayken minik pullback (%0.25) kazananı ÖLDÜRMESİN — eşik yükseltildi
+    if (!inProfit && pullbackPct >= 0.25) { exitScore += 1; reasons.push(`tepeden geri verme %${pullbackPct.toFixed(2)}`); }
     if (pullbackPct >= 0.45) { exitScore += 1; }
-    if (givebackRoi >= 5) { exitScore += 1; reasons.push(`kârdan geri verme ROI %${givebackRoi.toFixed(1)}`); }
-    if (givebackRoi >= 10) { exitScore += 1.5; }
+    // TRAILING: kârdayken sadece zirveden BÜYÜK geri verme (ROI %40) kapatsın — kâr taşı
+    if (inProfit) {
+      const givebackFromPeakRatio = Number(state.peakPnl || 0) > 0 ? givebackRoi / Number(state.peakPnl) : 0;
+      if (givebackFromPeakRatio >= 0.40 && givebackRoi >= 3) { exitScore += 3; reasons.push(`zirveden %${(givebackFromPeakRatio*100).toFixed(0)} geri verildi — kâr kilidi`); }
+    } else {
+      if (givebackRoi >= 5) { exitScore += 1; reasons.push(`kârdan geri verme ROI %${givebackRoi.toFixed(1)}`); }
+      if (givebackRoi >= 10) { exitScore += 1.5; }
+    }
     if (realProfitPct < 0 && openMinutes >= 3 && cvdAgainst && adverseTick) {
       exitScore += 2; reasons.push('işlem fikri erken bozuldu');
+    }
+    // R305 KAYBEDENİ ERKEN KES: zarardayken (ROI -%5 altı) fikir bozulduysa, SL'i bekleme.
+    // Kayıpları -%13/-%23 ROI'ye kadar tutmayı durdurur — küçükken kes.
+    if (Number(pnlPct||0) <= -5 && openMinutes >= 1.5 && (cvdAgainst || adverseTick || extra.cvdFlip?.flip)) {
+      exitScore += 2.5; reasons.push(`zarar -%${Math.abs(Number(pnlPct)).toFixed(0)} ROI + akış karşı — küçükken kes`);
     }
     if (r281ProtectMode && openMinutes >= 0.8 && (cvdAgainst || adverseTick || pullbackPct >= 0.18)) {
       exitScore += 1.2; reasons.push('R281 PROTECT: grafik bölgesi hassas');
@@ -14111,7 +14146,8 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
 
     // 4) İşlem fikri erken bozulursa SL sonunu bekleme; ama tek zayıf veriyle de kapatma.
-    if (!action && openMinutes >= 3 && pnlPct <= -6 && r91Brain.exitScore >= 6 && !r91Brain.devamGucu) {
+    // R305: eşik 6→4 (kaybı küçükken kes), -%6→-%5 (daha erken). Kayıpları -%13/-%23'e taşımayı durdurur.
+    if (!action && openMinutes >= 2 && pnlPct <= -5 && r91Brain.exitScore >= 4 && !r91Brain.devamGucu) {
       action = {
         type:'R97_FIKIR_BOZULDU_KAPAT', urgency:'HIGH',
         reason:`5m Fırsat Beyni fikir bozuldu: ROI %${pnlPct.toFixed(1)}, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ')}`
@@ -15896,10 +15932,9 @@ async function runAutoScan(prioritySymbol=null) {
           const chase288 = !!((recommendation === 'LONG' && p3_288 >= 1.80) || (recommendation === 'SHORT' && p3_288 <= -1.80));
           const block288 = !!(fast288 && Number(score||0) < Number(effectiveMinScore||minScore||70) && weak288 && !realAccept288 && !e288.squeeze && (fuel288 < 8 || rvol288 < 0.80 || oi288 >= 500 || chase288));
           if (block288) {
-            const why288 = `R288 final trader: R156/TOP10 bypass grafik kabulü yok — skor ${score}/${effectiveMinScore}, mum yok, fuel ${fuel288}, RVOL ${rvol288.toFixed(2)}, p3 ${p3_288.toFixed(2)}%, OI15 ${oi288.toFixed(0)}%; FVG/OTE retest veya gerçek 5m kabul bekle`;
-            logAuto(`⛔ ${coin.symbol} ${why288}`);
-            markAutoSkip(coin.symbol, why288, {rec:recommendation, score, r288:true, reason:why288, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
-            continue;
+            const why288 = `R288 not: R156/TOP10 bypass grafik kabulü zayıf — skor ${score}/${effectiveMinScore}, fuel ${fuel288}, RVOL ${rvol288.toFixed(2)} (karar R300'e bırakıldı)`;
+            decisionChain.r288Note = why288;
+            // R305: continue KALDIRILDI — eski kapı artık karar vermiyor, sadece not düşüyor. Son söz R300.
           }
         } catch(_r288gE) { logAuto(`⚠️ ${coin.symbol} R288 final grafik valisi hata: ${String(_r288gE?.message||_r288gE).slice(0,80)}`); }
 
@@ -15909,10 +15944,8 @@ async function runAutoScan(prioritySymbol=null) {
           const txt290 = [decisionChain?.reason, decisionChain?.brainSummary].filter(Boolean).join(' ');
           const fast290 = !!(decisionChain?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt290));
           if (r290f?.hardNo && !r290f?.tradeOk && (fast290 || Number(r290f.capacity||0) < 58)) {
-            const why290 = `R290 final SMC bekle — ${r290f.summary}`;
-            logAuto(`⛔ ${coin.symbol} ${why290}`);
-            markAutoSkip(coin.symbol, why290, {rec:recommendation, score, r290:r290f, reason:why290, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
-            continue;
+            decisionChain.r290Note = `R290 not: SMC zayıf — ${r290f.summary} (karar R300'e bırakıldı)`;
+            // R305: continue KALDIRILDI — karar R300'e.
           }
         } catch(_r290gE) { logAuto(`⚠️ ${coin.symbol} R290 final SMC hata: ${String(_r290gE?.message||_r290gE).slice(0,80)}`); }
 
@@ -15922,10 +15955,8 @@ async function runAutoScan(prioritySymbol=null) {
           const txt291 = [decisionChain?.reason, decisionChain?.brainSummary].filter(Boolean).join(' ');
           const fast291 = !!(decisionChain?.r156FastBypass || /R156 TOP10 hızlı bypass|R144 hızlı|edge mikro-scalp|hızlı bypass/i.test(txt291));
           if (r291f && ((r291f.hardNo) || (fast291 && Number(r291f.capacity||0) < 60) || (Number(r291f.capacity||0) < 48 && !r291f.tradeOk && !r291f.radar))) {
-            const why291 = `R291 final SMC+likidite bekle — ${r291f.summary}`;
-            logAuto(`⛔ ${coin.symbol} ${why291}`);
-            markAutoSkip(coin.symbol, why291, {rec:recommendation, score, r291:r291f, reason:why291, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
-            continue;
+            decisionChain.r291Note = `R291 not: SMC+likidite zayıf — ${r291f.summary} (karar R300'e bırakıldı)`;
+            // R305: continue KALDIRILDI — karar R300'e.
           }
         } catch(_r291gE) { logAuto(`⚠️ ${coin.symbol} R291 final confluence hata: ${String(_r291gE?.message||_r291gE).slice(0,80)}`); }
 
@@ -15936,9 +15967,8 @@ async function runAutoScan(prioritySymbol=null) {
         try {
           r283Recipe = r283TradeRecipe(recommendation, decisionChain || {}, { score, minScore:effectiveMinScore, effectiveMinScore });
           if (!r283Recipe.tradeOk) {
-            logAuto(`⛔ ${coin.symbol} ${r283Recipe.summary} — malzeme var ama setup tamam değil; trader bekler`);
-            markAutoSkip(coin.symbol, `R283 recipe bekle: ${r283Recipe.notes.join(' + ')}`, {rec:recommendation, score, r283:r283Recipe});
-            continue;
+            decisionChain.r283Note = `R283 not: setup tam değil — ${r283Recipe.notes.join(' + ')} (karar R300'e bırakıldı)`;
+            // R305: continue KALDIRILDI — recipe verisi (TP/SL/mode) kalsın ama karar R300'e.
           }
 
           const r282Edge = Number(decisionChain?.brainConfidence || 0);
@@ -15995,7 +16025,15 @@ async function runAutoScan(prioritySymbol=null) {
             r117TrapSweepTaken: !!decisionChain?.r117TrapSweepTaken,
             r111: decisionChain?.r111Sonuc || null,
             _r276RangePos: r300Range,
-            rsi: r300RsiUse
+            rsi: r300RsiUse,
+            // ── R305 GÜVENLİK KORUMALARI (eski kapılardan taşındı) ──
+            spreadBlock: !!(decisionChain?.r190Edge?.spreadBlock || decisionChain?.spreadBlock),
+            lateTrapRisk: !!(decisionChain?.r190Edge?.lateTrapRisk || decisionChain?.lateTrapRisk),
+            squeeze: !!(decisionChain?.r190Edge?.squeeze || decisionChain?.r111Sonuc?.shortSqueeze || decisionChain?.r111Sonuc?.longSqueeze),
+            chartHardNo: !!(decisionChain?.r281Map?.hardNo || decisionChain?.r281ProMap?.hardNo),
+            runner: !!(decisionChain?.r281Map?.runner || decisionChain?.r283Recipe?.mode === 'RUNNER'),
+            atrExtreme: !!(decisionChain?.atrExtreme || (Number(decisionChain?.coinAtrPct||0) > 12)),
+            rrLow: !!(Number(userRR||99) < Number(minRR||1.2))
           }, { minScore: Number(effectiveMinScore || 70) });
           if (!r300Gate.allow) {
             logAuto(`⛔ ${coin.symbol} R300 SON KAPI RED: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)}) — emir AÇILMADI`);
