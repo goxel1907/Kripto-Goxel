@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308H_MODEL_TRIM_FIX';
+const LAZARUS_BUILD = 'R308I_TEK_KAPI_KALICI_GRAFIK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5038,7 +5038,7 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || '').trim();
 const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-haiku-4-5').trim(); // .trim(): env'e kaçan boşluk 404 yapıyordu
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
-const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE !== '0'; // B şıkkı: R300'e takılmadan scan sonrası en iyi adayları AI'ya göster
+const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
 const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
 const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '900', 10) || 900) * 1000); // sembol başına tekrar freni
 const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '200', 10) || 200);
@@ -16455,11 +16455,21 @@ async function runAutoScan(prioritySymbol=null) {
             rrLow: !!(Number(userRR||99) < Number(minRR||1.2))
           }, { minScore: Number(effectiveMinScore || 70) });
           if (!r300Gate.allow) {
-            logAuto(`⛔ ${coin.symbol} R300 SON KAPI RED: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)}) — emir AÇILMADI`);
-            markAutoSkip(coin.symbol, `R300 son kapı: ${r300Gate.reason}`, {rec:recommendation, score, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
-            continue;
+            // R308I TEK TEMİZ KAPI: R300-0 GÜVENLİK redleri (spread/sahte pump/ATR aşırı/grafik tuzağı/RR düşük)
+            // gerçek tehlikedir → AI'ya bile sorulmaz, kesilir. Diğer "yetersiz/İZLE" redleri ise AI'ya gider,
+            // nihai kararı AI verir. Böylece hiçbir şey AI'sız açılmaz AMA AI güçlü adayı da değerlendirir.
+            const isSafetyBlock = /R300-0 GÜVENLİK/i.test(String(r300Gate.reason||''));
+            if (isSafetyBlock) {
+              logAuto(`⛔ ${coin.symbol} R300 GÜVENLİK RED (AI'ya sorulmaz): ${r300Gate.reason} — emir AÇILMADI`);
+              markAutoSkip(coin.symbol, `R300 güvenlik: ${r300Gate.reason}`, {rec:recommendation, score, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
+              continue;
+            }
+            // Yumuşak red: AI'ya devret. Bayrak koy, aşağıdaki AI gate kesin kararı versin.
+            logAuto(`🔍 ${coin.symbol} R300 yumuşak red (${r300Gate.reason}) — AI PRO TRADER'a devrediliyor, son kararı AI verecek`);
+            decisionChain.r300SoftReject = r300Gate.reason;
+          } else {
+            logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)})`);
           }
-          logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)})`);
         } catch(_r300gE) { logAuto(`⚠️ ${coin.symbol} R300 kapı hatası: ${String(_r300gE?.message||_r300gE).slice(0,80)}`); }
 
         // ═══ R308 AI PRO TRADER BEYNİ — aday R300'ü geçti, şimdi Claude pro trader gibi baksın ═══
@@ -16522,6 +16532,20 @@ async function runAutoScan(prioritySymbol=null) {
               markAutoSkip(coin.symbol, `R308E STRICT AI hata: ${String(_aiE?.message||_aiE).slice(0,80)}`, {rec:recommendation, score});
               continue;
             }
+          }
+        }
+
+        // ═══ R308I TEK KAPI SIZDIRMAZLIK ═══
+        // R300 yumuşak red verdi ve AI bunu AÇIK onaya çevirmediyse (AI kapalı / key yok / onay gelmedi) → AÇMA.
+        // decisionChain.aiBrain.ok && side==recommendation ise AI onayı vardır, yukarıda zaten "ONAY" loglandı, devam eder.
+        if (decisionChain.r300SoftReject) {
+          const aiApproved = decisionChain.aiBrain && decisionChain.aiBrain.ok &&
+                             String(decisionChain.aiBrain.side).toUpperCase() === String(recommendation).toUpperCase() &&
+                             !AI_BRAIN_SHADOW;
+          if (!aiApproved) {
+            logAuto(`⛔ ${coin.symbol} TEK KAPI: R300 yumuşak red (${decisionChain.r300SoftReject}) + AI net onay yok — emir AÇILMADI`);
+            markAutoSkip(coin.symbol, `Tek kapı: R300 yetersiz + AI onayı yok`, {rec:recommendation, score, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
+            continue;
           }
         }
 
