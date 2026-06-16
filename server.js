@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R306_R300_TEK_KARAR_GUVENLIK';
+const LAZARUS_BUILD = 'R308_AI_PRO_TRADER_GOLGE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3289,6 +3289,96 @@ function r281ProTraderMap(side='LONG', ctx={}) {
 // Altyapıya (emir, SLTP, dashboard) DOKUNMAZ — sadece autoOk'i nihai belirler.
 // Dönüş: { allow:bool, side:'LONG'|'SHORT', reason:string }
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// R308 AI PRO TRADER BEYNİ — Claude'a "pro trader gibi bak" der, karar alır.
+// Ucuz motorlar (r300) eler; SADECE aday coin Claude'a gider (günde ~5-15 çağrı).
+// Gölge modda (AI_BRAIN_SHADOW=true): karar verir ama İŞLEM AÇMAZ — sadece loglar/gösterir.
+// Dönüş: { ok, side, entry, tp, sl, confidence, reasoning } | null
+// ═══════════════════════════════════════════════════════════════════════════
+async function r308AiProTraderBrain(symbol, data = {}) {
+  if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY) return null;
+  try {
+    // Botun topladığı 4-TF veriyi pro trader brief'ine çevir (token tasarrufu: özet, ham mum değil)
+    const brief = {
+      symbol,
+      fiyat: data.lastPrice,
+      timeframes: {
+        '5m':  { rsi: data.rsi5m,  trend: data.trend5m },
+        '15m': { rsi: data.rsi15m, trend: data.trend15m },
+        '1h':  { rsi: data.rsi1h,  trend: data.trend1h },
+        '4h':  { rsi: data.rsi4h,  trend: data.trend4h }
+      },
+      yapı:        data.structure,
+      likidite:    data.liquidity,
+      fvg:         data.fvg,
+      ote:         data.ote,
+      sweep:       data.sweepInfo,
+      akış:        data.flow,
+      funding:     data.funding,
+      oi:          data.oiChange,
+      squeeze:     data.squeeze,
+      atrPct:      data.atrPct,
+      rangePos:    data.rangePos,
+      mum:         data.candleSummary
+    };
+
+    const sys = `Sen 10 yıllık deneyimli bir kripto futures scalp trader'ısın. 5m TOP10 gainer coinlerinde işlem yapıyorsun.
+Sana bir coinin 5m/15m/1h/4h analiz verisi verilecek. Bir pro trader gibi BÜTÜN resme bak: çok-zaman-dilimli hikaye, price action, likidite avı, MM hareketi, FVG/OTE, mum yapısı, akış (CVD/delta/book/taker), funding, squeeze.
+KURALLAR:
+- Tepeden LONG / dipten SHORT alma (chase yapma). Geri çekilmeye/dönüşe gir.
+- Herkes short düşünüyorsa MM yukarı squeeze yapabilir — funding+squeeze'e dikkat.
+- Net fırsat YOKSA "WAIT" de. Zorlama. Çoğu coin "WAIT" olmalı.
+- Fırsat varsa: yön, giriş, TP (likidite/direnç hedefine göre), SL (yapı altına/üstüne göre), güven (0-100).
+- TP'yi likidite hedefine, SL'i yapıyı bozan yere koy. Mantıklı R:R (en az 1.8).
+SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"kısa Türkçe gerekçe (max 200 karakter)"}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-8',
+        max_tokens: 400,
+        system: sys,
+        messages: [{ role: 'user', content: JSON.stringify(brief) }]
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) {
+      const errTxt = await resp.text().catch(()=> '');
+      logAuto(`⚠️ AI Beyin API hata ${resp.status}: ${String(errTxt).slice(0,120)}`);
+      return null;
+    }
+    const j = await resp.json();
+    const text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
+    const clean = text.replace(/```json|```/g, '').trim();
+    let decision;
+    try { decision = JSON.parse(clean); }
+    catch(_) { logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`); return null; }
+
+    return {
+      ok: true,
+      side: String(decision.side || 'WAIT').toUpperCase(),
+      entry: Number(decision.entry) || data.lastPrice,
+      tp: Number(decision.tp) || null,
+      sl: Number(decision.sl) || null,
+      confidence: Number(decision.confidence) || 0,
+      reasoning: String(decision.reasoning || '').slice(0, 220)
+    };
+  } catch (e) {
+    if (e?.name === 'AbortError') logAuto(`⚠️ AI Beyin zaman aşımı (12sn) — ${symbol}`);
+    else logAuto(`⚠️ AI Beyin hatası: ${String(e?.message || e).slice(0,120)}`);
+    return null;
+  }
+}
+
 function r300SimpleBrain(side, d, ctx={}) {
   const isL = side === 'LONG';
   const txt = String(d.brainSummary || d.reason || '') + ' ' + String(d.r125OrderflowSummary || '');
@@ -3303,11 +3393,13 @@ function r300SimpleBrain(side, d, ctx={}) {
   // HTF karşı seviye uzaklığı (en yakın)
   const htfDists = [...txt.matchAll(/karşı\s+(?:15m|1H|4H|1h|4h)[^u]*u:%\s*([0-9.]+)/gi)].map(m=>Number(m[1])).filter(Number.isFinite);
   const htfCounterDist = htfDists.length ? Math.min(...htfDists) : 999;
-  // Gerçek kırılım/dönüş kanıtı — SADECE doğrulanmış boolean flag'ler.
-  // DİKKAT: "LIQUIDITY_RECLAIM" / "FVG_OTE_RETEST" gibi SETUP ADLARI kanıt DEĞİL (yanlış pozitif).
-  // Sadece motorun gerçekten doğruladığı body-reclaim/MSS/sweep flag'i kanıttır.
-  const realProof = !!(d.r117BodyReclaimOk || d.r117MssOk || d.r117TrapSweepTaken
-    || /SSL_ALINDI_CHOCH|BSL_ALINDI_CHOCH|wick\+body[- ]?(geri|reclaim)|body[- ]?reclaim q[0-9]/i.test(txt));
+  // İKİ KANIT SEVİYESİ:
+  // strongProof = GERÇEK sweep+reclaim (likidite alındı + ChoCH). "İZLE yetersiz"i bile deler.
+  // realProof = mum reclaim dahil daha geniş. SADECE tepe/dip kuralında (Kural 2) kullanılır.
+  // SPCX dersi: 12/12 mum (Engulfing+Hammer) "yetersiz"i delemez — sadece gerçek sweep+reclaim deler.
+  const strongProof = !!(d.r117TrapSweepTaken
+    || /SSL_ALINDI_CHOCH|BSL_ALINDI_CHOCH|wick\+body[- ]?(geri|reclaim)/i.test(txt));
+  const realProof = !!(strongProof || d.r117BodyReclaimOk || d.r117MssOk || /body[- ]?reclaim q[0-9]/i.test(txt));
   // Anlık akış sinyalleri (Binance canlı)
   const delta = n(d.r125LiveDeltaPct, 0);
   const bm = txt.match(/book:\s*(YÜKSELİŞ|DÜŞÜŞ|LONG|SHORT|NEUTRAL)\s*imb:\s*(-?[0-9.]+)%/i);
@@ -3355,8 +3447,8 @@ function r300SimpleBrain(side, d, ctx={}) {
   // KURAL 1: Yetersiz dediğini açma. ERKEN BİN istisnası: skor barajın altında olsa bile,
   // GERÇEK kanıt VEYA GÜÇLÜ akış (3+ sinyal aynı yön) varsa erken girebilir.
   // Ama skor düşük + kanıt yok + akış zayıf/orta (≤2) = gerçek yetersiz → açma.
-  if (watchWeak && !realProof && !flowStrong) {
-    return { allow:false, side, reason:`R300-1 RED: bot 'yetersiz/İZLE' dedi (skor ${score}, kanıt yok, akış ${flowSignals}/4) — geçmek için gerçek kanıt ya da güçlü akış (3+) lazım` };
+  if (watchWeak && !strongProof && !flowStrong) {
+    return { allow:false, side, reason:`R300-1 RED: bot 'yetersiz/İZLE' dedi (skor ${score}, gerçek sweep+reclaim yok, akış ${flowSignals}/4) — mum tek başına yetmez, gerçek kanıt ya da güçlü akış (3+) lazım` };
   }
 
   // KURAL 2: Tepede LONG / dipte SHORT alma (trend-yönü chase).
@@ -4921,6 +5013,10 @@ function trTime(ts = Date.now()) {
 
 const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
+// R308: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
+const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 let   tgLastSent = 0;
 let   tgQueue = Promise.resolve();
 const TG_MIN_GAP = 1200; // art arda mesajı düşürme; kısa gecikmeyle sıraya al
@@ -16042,6 +16138,61 @@ async function runAutoScan(prioritySymbol=null) {
           }
           logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)})`);
         } catch(_r300gE) { logAuto(`⚠️ ${coin.symbol} R300 kapı hatası: ${String(_r300gE?.message||_r300gE).slice(0,80)}`); }
+
+        // ═══ R308 AI PRO TRADER BEYNİ — aday R300'ü geçti, şimdi Claude pro trader gibi baksın ═══
+        // Gölge modda (AI_BRAIN_SHADOW): karar gösterilir ama işlem AÇILMAZ — sen Claude vs gerçek fiyatı karşılaştır.
+        if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) {
+          try {
+            const aiData = {
+              lastPrice: Number(coin.lastPrice || analysis?.price || 0),
+              rsi5m: analysis?.timeframes?.['5m']?.rsi, rsi15m: analysis?.timeframes?.['15m']?.rsi,
+              rsi1h: analysis?.timeframes?.['1h']?.rsi, rsi4h: analysis?.timeframes?.['4h']?.rsi,
+              trend5m: analysis?.timeframes?.['5m']?.trend, trend15m: analysis?.timeframes?.['15m']?.trend,
+              trend1h: analysis?.timeframes?.['1h']?.trend, trend4h: analysis?.timeframes?.['4h']?.trend,
+              structure: decisionChain?.htfTani || decisionChain?.mumOzet || '',
+              liquidity: decisionChain?.ictDashboard || '',
+              fvg: decisionChain?.r274Signal?.summary || analysis?.fvg || '',
+              ote: decisionChain?.r110ICT?.summary || '',
+              sweepInfo: decisionChain?.r289Summary || String(decisionChain?.brainSummary||'').slice(0,200),
+              flow: decisionChain?.r125OrderflowSummary || '',
+              funding: analysis?.funding?.current, oiChange: decisionChain?.r140Summary || '',
+              squeeze: (decisionChain?.r111Sonuc?.shortSqueeze ? 'shortSqueeze' : decisionChain?.r111Sonuc?.longSqueeze ? 'longSqueeze' : 'yok'),
+              atrPct: analysis?.leverage?.atrPct, rangePos: r300Range,
+              candleSummary: decisionChain?.mumOzet || ''
+            };
+            const ai = await r308AiProTraderBrain(coin.symbol, aiData);
+            if (ai && ai.ok) {
+              const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
+              logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}`);
+              decisionChain.aiBrain = ai;
+              if (AI_BRAIN_SHADOW) {
+                logAuto(`👁️ ${coin.symbol} GÖLGE MOD: AI kararı kaydedildi, işlem AÇILMADI (gerçek fiyatla karşılaştır). Bot ${recommendation} açacaktı.`);
+                markAutoSkip(coin.symbol, `AI gölge mod: ${ai.side} güven ${ai.confidence}% (işlem açılmadı)`, {rec:recommendation, score, aiBrain:ai});
+                continue;
+              } else {
+                // Gerçek mod: AI WAIT derse veya yön uyuşmazsa açma
+                if (ai.side === 'WAIT') {
+                  logAuto(`⛔ ${coin.symbol} AI PRO TRADER WAIT dedi — emir AÇILMADI: ${ai.reasoning}`);
+                  markAutoSkip(coin.symbol, `AI WAIT: ${ai.reasoning}`, {rec:recommendation, score, aiBrain:ai});
+                  continue;
+                }
+                if (ai.side !== recommendation) {
+                  logAuto(`⛔ ${coin.symbol} AI yön uyuşmazlığı: bot ${recommendation}, AI ${ai.side} — emir AÇILMADI`);
+                  markAutoSkip(coin.symbol, `AI ters yön: ${ai.side}`, {rec:recommendation, score, aiBrain:ai});
+                  continue;
+                }
+                logAuto(`✅ ${coin.symbol} AI PRO TRADER ONAY: ${ai.side} güven ${ai.confidence}% — emir açılıyor`);
+              }
+            } else if (AI_BRAIN_SHADOW) {
+              logAuto(`⚪ ${coin.symbol} GÖLGE MOD: AI kararı alınamadı (API/parse), işlem yine de AÇILMADI`);
+              continue;
+            }
+            // ai null + gerçek mod: fail-soft, eski karara devam (bot açar)
+          } catch(_aiE) {
+            logAuto(`⚠️ ${coin.symbol} AI beyin bağlama hatası: ${String(_aiE?.message||_aiE).slice(0,80)}`);
+            if (AI_BRAIN_SHADOW) continue; // gölge modda hata olsa da açma
+          }
+        }
 
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
 
