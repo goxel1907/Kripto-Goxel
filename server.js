@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308_AI_PRO_TRADER_GOLGE';
+const LAZARUS_BUILD = 'R308D_AI_PRO_TRADER_TOP1_LIVE_OPUS_AICARD';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3291,16 +3291,25 @@ function r281ProTraderMap(side='LONG', ctx={}) {
 // ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
 // R308 AI PRO TRADER BEYNİ — Claude'a "pro trader gibi bak" der, karar alır.
-// Ucuz motorlar (r300) eler; SADECE aday coin Claude'a gider (günde ~5-15 çağrı).
-// Gölge modda (AI_BRAIN_SHADOW=true): karar verir ama İŞLEM AÇMAZ — sadece loglar/gösterir.
+// R308C: Eski kapılar AI'yı susturmasın; scan sonrası en iyi 1 aday Claude'a gider.
+// AI_BRAIN_SHADOW=false ise AI son karar olur ve güvenli planla gerçek emir açabilir.
 // Dönüş: { ok, side, entry, tp, sl, confidence, reasoning } | null
 // ═══════════════════════════════════════════════════════════════════════════
 async function r308AiProTraderBrain(symbol, data = {}) {
   if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY) return null;
   try {
+    const spendGate = r308ReserveAiSpend(symbol, data.aiSource || 'R308', data.fingerprint || '');
+    if (!spendGate.ok) {
+      try { logAuto(`🧊 ${symbol} AI maliyet freni: ${spendGate.reason}`); } catch(_) {}
+      return { ok:false, skipped:true, reason:spendGate.reason };
+    }
     // Botun topladığı 4-TF veriyi pro trader brief'ine çevir (token tasarrufu: özet, ham mum değil)
     const brief = {
       symbol,
+      aiSource: data.aiSource || 'R308',
+      botAdayYon: data.recommendation || data.botSide || null,
+      botSkor: data.score ?? null,
+      botElemeSebebi: data.skipReason || data.reason || null,
       fiyat: data.lastPrice,
       timeframes: {
         '5m':  { rsi: data.rsi5m,  trend: data.trend5m },
@@ -3343,7 +3352,7 @@ SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-opus-4-8',
+        model: ANTHROPIC_MODEL,
         max_tokens: 400,
         system: sys,
         messages: [{ role: 'user', content: JSON.stringify(brief) }]
@@ -5013,10 +5022,72 @@ function trTime(ts = Date.now()) {
 
 const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
-// R308: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
+// R308B: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const ANTHROPIC_MODEL   = process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-haiku-4-5'; // maliyet korumalı varsayılan
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
+const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE !== '0'; // B şıkkı: R300'e takılmadan scan sonrası en iyi adayları AI'ya göster
+const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
+const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '900', 10) || 900) * 1000); // sembol başına tekrar freni
+const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '200', 10) || 200);
+const AI_BRAIN_MIN_CONF = Math.max(1, Math.min(99, parseInt(process.env.AI_BRAIN_MIN_CONF || '72', 10) || 72));
+const AI_BRAIN_MIN_RR = Math.max(0.8, Number(process.env.AI_BRAIN_MIN_RR || 1.5) || 1.5);
+const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 3.0) || 3.0);
+let r308AiSpendDay = new Date().toISOString().slice(0,10);
+let r308AiSpendCount = 0;
+const r308AiLastBySymbol = new Map();
+let r308LastAiDecision = null;
+function r308Round(v, d=6) { const n=Number(v); return Number.isFinite(n) ? Number(n.toFixed(d)) : null; }
+function r308AiDailyInfo(){
+  const day = r308AiDayKey();
+  if (r308AiSpendDay !== day) { r308AiSpendDay = day; r308AiSpendCount = 0; r308AiLastBySymbol.clear(); }
+  return { day:r308AiSpendDay, count:r308AiSpendCount, limit:AI_BRAIN_MAX_DAILY_CALLS, remaining:Math.max(0, AI_BRAIN_MAX_DAILY_CALLS-r308AiSpendCount) };
+}
+function r308SetLastAiDecision(p={}) {
+  try {
+    const ai = p.ai || {}; const q = p.quality || {};
+    const entry = Number(ai.entry ?? p.entry); const tp = Number(ai.tp ?? p.tp); const sl = Number(ai.sl ?? p.sl);
+    const rr = Number.isFinite(Number(q.rr)) ? Number(q.rr) : ((Number.isFinite(entry)&&Number.isFinite(tp)&&Number.isFinite(sl)&&Math.abs(entry-sl)>0) ? Math.abs(tp-entry)/Math.abs(entry-sl) : null);
+    const slPct = Number.isFinite(Number(q.slPct)) ? Number(q.slPct) : ((Number.isFinite(entry)&&Number.isFinite(sl)&&entry>0) ? Math.abs(entry-sl)/entry*100 : null);
+    r308LastAiDecision = {
+      ts: Date.now(),
+      build: LAZARUS_BUILD,
+      enabled: !!AI_BRAIN_ENABLED,
+      shadow: !!AI_BRAIN_SHADOW,
+      mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
+      model: ANTHROPIC_MODEL,
+      status: String(p.status || 'AI_İZLEME'),
+      symbol: String(p.symbol || ai.symbol || '').replace('USDT','').toUpperCase(),
+      side: String(ai.side || p.side || 'WAIT').toUpperCase(),
+      confidence: Number(ai.confidence || p.confidence || 0),
+      entry: r308Round(entry, 8), tp: r308Round(tp, 8), sl: r308Round(sl, 8),
+      rr: rr == null ? null : r308Round(rr, 2),
+      slPct: slPct == null ? null : r308Round(slPct, 2),
+      reasoning: String(ai.reasoning || p.reasoning || p.reason || '').slice(0,260),
+      rejectReason: String(p.rejectReason || q.reason || '').slice(0,180),
+      candidate: p.candidate ? {
+        symbol:String(p.candidate.symbol||'').replace('USDT','').toUpperCase(),
+        rec:String(p.candidate.rec||''), recTR:String(p.candidate.recTR||''),
+        tier:String(p.candidate.tier||''), tierTR:String(p.candidate.tierTR||''),
+        score:Number(p.candidate.score||0), reason:String(p.candidate.reasonTR || p.candidate.reason || '').slice(0,260)
+      } : null,
+      order: p.order || null,
+      daily: r308AiDailyInfo(),
+      limits: { topN:AI_BRAIN_TOP_N, minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000) }
+    };
+  } catch(e) {
+    r308LastAiDecision = { ts:Date.now(), build:LAZARUS_BUILD, status:'AI_KART_HATA', error:String(e?.message||e).slice(0,180), daily:r308AiDailyInfo() };
+  }
+}
+function r308AiDashboardStatus(){
+  return {
+    enabled: !!AI_BRAIN_ENABLED, keySet: !!ANTHROPIC_API_KEY, shadow: !!AI_BRAIN_SHADOW, mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
+    model: ANTHROPIC_MODEL, bMode: !!AI_BRAIN_B_MODE, topN: AI_BRAIN_TOP_N, daily: r308AiDailyInfo(),
+    limits: { minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000) },
+    last: r308LastAiDecision
+  };
+}
 let   tgLastSent = 0;
 let   tgQueue = Promise.resolve();
 const TG_MIN_GAP = 1200; // art arda mesajı düşürme; kısa gecikmeyle sıraya al
@@ -14756,6 +14827,240 @@ function markAutoSkip(symbol, reason, row={}) {
   if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
 }
 
+// R308B: AI B-modu için analiz sırasında dolan zengin context havuzu.
+// Amaç: Eski kapılar adayı elese bile scan sonunda en iyi 1-2 adayı AI'ya göstermek.
+const autoAiContextBySymbol = new Map();
+
+function r308AiDayKey() { return new Date().toISOString().slice(0,10); }
+function r308ReserveAiSpend(symbol, source='R308', fingerprint='') {
+  const day = r308AiDayKey();
+  if (r308AiSpendDay !== day) {
+    r308AiSpendDay = day;
+    r308AiSpendCount = 0;
+    r308AiLastBySymbol.clear();
+  }
+  if (r308AiSpendCount >= AI_BRAIN_MAX_DAILY_CALLS) {
+    return { ok:false, reason:`günlük AI limit dolu ${r308AiSpendCount}/${AI_BRAIN_MAX_DAILY_CALLS}` };
+  }
+  const sym = String(symbol||'').replace('USDT','').toUpperCase();
+  const now = Date.now();
+  const prev = r308AiLastBySymbol.get(sym);
+  if (prev && AI_BRAIN_REVIEW_GAP_MS > 0 && now - prev.ts < AI_BRAIN_REVIEW_GAP_MS) {
+    return { ok:false, reason:`${sym} tekrar freni ${Math.ceil((AI_BRAIN_REVIEW_GAP_MS - (now-prev.ts))/1000)}sn` };
+  }
+  r308AiSpendCount += 1;
+  r308AiLastBySymbol.set(sym, { ts:now, source, fingerprint:String(fingerprint||'').slice(0,120) });
+  return { ok:true, count:r308AiSpendCount };
+}
+
+function r308RememberAiContext(symbol, coin, analysis, decisionChain, recommendation, score, skipReason='') {
+  try {
+    const sym = String(symbol || coin?.symbol || coin?.fullSymbol || '').replace('USDT','').toUpperCase();
+    if (!sym || !analysis) return;
+    const r300Rsi5m = Number(analysis?.timeframes?.['5m']?.rsi);
+    const r300Rsi4h = Number(analysis?.timeframes?.['4h']?.rsi);
+    const rangePos = Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
+      : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5);
+    autoAiContextBySymbol.set(sym, {
+      aiSource: 'R308D_TOP1_SCAN',
+      recommendation, score, skipReason,
+      lastPrice: Number(coin?.lastPrice || analysis?.price || analysis?.lastPrice || analysis?.ticker?.lastPrice || 0),
+      rsi5m: Number.isFinite(r300Rsi5m) ? r300Rsi5m : undefined,
+      rsi15m: analysis?.timeframes?.['15m']?.rsi,
+      rsi1h: analysis?.timeframes?.['1h']?.rsi,
+      rsi4h: Number.isFinite(r300Rsi4h) ? r300Rsi4h : analysis?.timeframes?.['4h']?.rsi,
+      trend5m: analysis?.timeframes?.['5m']?.trend, trend15m: analysis?.timeframes?.['15m']?.trend,
+      trend1h: analysis?.timeframes?.['1h']?.trend, trend4h: analysis?.timeframes?.['4h']?.trend,
+      structure: decisionChain?.htfTani || decisionChain?.mumOzet || decisionChain?.r119HtfDiag || '',
+      liquidity: decisionChain?.ictDashboard || '',
+      fvg: decisionChain?.r274Signal?.summary || analysis?.fvg || '',
+      ote: decisionChain?.r110ICT?.summary || '',
+      sweepInfo: decisionChain?.r289Summary || String(decisionChain?.brainSummary||decisionChain?.reason||'').slice(0,260),
+      flow: decisionChain?.r125OrderflowSummary || '',
+      funding: analysis?.funding?.current,
+      oiChange: decisionChain?.r140Summary || '',
+      squeeze: (decisionChain?.r111Sonuc?.shortSqueeze ? 'shortSqueeze' : decisionChain?.r111Sonuc?.longSqueeze ? 'longSqueeze' : 'yok'),
+      atrPct: analysis?.leverage?.atrPct || decisionChain?.coinAtrPct,
+      rangePos,
+      candleSummary: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || '',
+      fingerprint: `${recommendation}|${Math.round(Number(score||0))}|${String(decisionChain?.reason||skipReason||'').slice(0,80)}`
+    });
+  } catch(_) {}
+}
+
+function r308BuildAiDataFromCandidate(c) {
+  const sym = String(c?.symbol||'').replace('USDT','').toUpperCase();
+  const ctx = autoAiContextBySymbol.get(sym) || {};
+  return {
+    ...ctx,
+    aiSource: 'R308D_TOP1_SCAN',
+    recommendation: c?.rec || ctx.recommendation || null,
+    score: Number(c?.score || ctx.score || 0),
+    skipReason: c?.reason || ctx.skipReason || '',
+    structure: ctx.structure || c?.htfTani || c?.mumOzet || '',
+    liquidity: ctx.liquidity || c?.ictDashboard || '',
+    flow: ctx.flow || c?.r125OrderflowSummary || c?.r126FlowSummary || '',
+    oiChange: ctx.oiChange || c?.r140Summary || '',
+    candleSummary: ctx.candleSummary || c?.mumOzet || '',
+    fingerprint: ctx.fingerprint || `${c?.rec}|${c?.score}|${String(c?.reason||'').slice(0,80)}`
+  };
+}
+
+function r308AiPlanQuality(ai) {
+  try {
+    const side = String(ai?.side || '').toUpperCase();
+    const entry = Number(ai?.entry);
+    const tp = Number(ai?.tp);
+    const sl = Number(ai?.sl);
+    const conf = Number(ai?.confidence || 0);
+    if (!['LONG','SHORT'].includes(side)) return { ok:false, reason:`AI ${side || 'WAIT'} dedi` };
+    if (conf < AI_BRAIN_MIN_CONF) return { ok:false, reason:`AI güven düşük ${conf}/${AI_BRAIN_MIN_CONF}` };
+    if (![entry,tp,sl].every(x => Number.isFinite(x) && x > 0)) return { ok:false, reason:'AI giriş/TP/SL sayısal değil' };
+    const isLong = side === 'LONG';
+    if (isLong && !(tp > entry && sl < entry)) return { ok:false, reason:'AI LONG TP/SL yönü hatalı' };
+    if (!isLong && !(tp < entry && sl > entry)) return { ok:false, reason:'AI SHORT TP/SL yönü hatalı' };
+    const risk = Math.abs(entry - sl);
+    const reward = Math.abs(tp - entry);
+    if (!(risk > 0 && reward > 0)) return { ok:false, reason:'AI risk/ödül sıfır' };
+    const rr = reward / risk;
+    const slPct = risk / entry * 100;
+    if (rr < AI_BRAIN_MIN_RR) return { ok:false, reason:`AI RR düşük ${rr.toFixed(2)} < ${AI_BRAIN_MIN_RR}` };
+    if (slPct > AI_BRAIN_MAX_SL_PCT) return { ok:false, reason:`AI SL geniş ${slPct.toFixed(2)}% > ${AI_BRAIN_MAX_SL_PCT}%` };
+    return { ok:true, rr, slPct };
+  } catch(e) {
+    return { ok:false, reason:String(e?.message || e).slice(0,120) };
+  }
+}
+
+async function r308RunAiCandidateReviewAfterScan() {
+  if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY || !AI_BRAIN_B_MODE) return;
+  try {
+    const rows = (autoScanState.topCandidates || [])
+      .filter(r => r && r.symbol && !['ERR','CD'].includes(String(r.rec||'')))
+      .slice(0, AI_BRAIN_TOP_N);
+    if (!rows.length) return;
+    logAuto(`🤖 R308C AI-MOD: en iyi ${rows.length} aday AI ${AI_BRAIN_SHADOW?'gölge':'CANLI'} incelemeye gidiyor · model:${ANTHROPIC_MODEL} · limit:${r308AiSpendCount}/${AI_BRAIN_MAX_DAILY_CALLS}`);
+
+    // Canlı modda aynı scan içinde birden fazla emir açma riskini azalt: TOP_N=1 önerilir, yine de ilk açılışta dur.
+    for (const r of rows) {
+      const sym = String(r.symbol||'').replace('USDT','').toUpperCase();
+      const fullSym = normalizeSymbol(sym);
+      const data = r308BuildAiDataFromCandidate(r);
+      r308SetLastAiDecision({status:'AI_İNCELİYOR', symbol:sym, candidate:r, reason:'Opus/Claude son kararı isteniyor'});
+      const ai = await r308AiProTraderBrain(sym, data);
+      if (ai && ai.ok) {
+        const q = r308AiPlanQuality(ai);
+        const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
+        if (AI_BRAIN_SHADOW) {
+          r308SetLastAiDecision({status:'AI_GÖLGE_KARAR', symbol:sym, ai, quality:q, candidate:r});
+          logAuto(`🤖 ${sym} B-GÖLGE AI PRO: ${ai.side} güven:${ai.confidence}% · bot:${r.rec} skor:${r.score} · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}`);
+          r.aiBrain = ai; r.aiReviewedAt = Date.now();
+          continue;
+        }
+
+        r308SetLastAiDecision({status:'AI_CANLI_KARAR', symbol:sym, ai, quality:q, candidate:r});
+        logAuto(`🤖 ${sym} AI CANLI KARAR: ${ai.side} güven:${ai.confidence}% · bot:${r.rec} skor:${r.score} · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}`);
+        if (!q.ok) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:q.reason}); logAuto(`⛔ ${sym} AI canlı emir reddi: ${q.reason}`); continue; }
+
+        const cfg = autoConfig || {};
+        const allowLong = cfg.allowLong !== false;
+        const allowShort = cfg.allowShort !== false;
+        if (ai.side === 'LONG' && !allowLong) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Panel LONG kapalı'}); logAuto(`⛔ ${sym} AI LONG dedi ama panel LONG kapalı`); continue; }
+        if (ai.side === 'SHORT' && !allowShort) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Panel SHORT kapalı'}); logAuto(`⛔ ${sym} AI SHORT dedi ama panel SHORT kapalı`); continue; }
+        if (!cfg.apiKey || !cfg.apiSecret) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'API key/secret autoConfig içinde yok'}); logAuto(`⛔ ${sym} AI canlı emir yok: API key/secret autoConfig içinde yok`); continue; }
+        if (isOnCooldown(fullSym, ai.side, { aiBrain:ai, tier:r.tier, score:r.score })) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Cooldown aktif'}); logAuto(`⛔ ${sym} AI canlı emir yok: cooldown aktif`); continue; }
+
+        // Pozisyon limiti ve aynı sembol koruması: /api/order da kontrol eder, burada API maliyeti sonrası hızlı ön-kontrol.
+        try {
+          const posRows = await getPositionRiskCached(cfg.apiKey, cfg.apiSecret);
+          const openRows = Array.isArray(posRows) ? posRows.filter(p => Math.abs(parseFloat(p.positionAmt||0)) > 0) : [];
+          const maxP = normalizeUserMaxPositions(cfg.maxPositions || autoScanState?.settings?.maxPositions || 1, 1);
+          if (openRows.find(p => String(p.symbol||'').toUpperCase() === fullSym)) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Aynı sembolde açık pozisyon var'}); logAuto(`⛔ ${sym} AI canlı emir yok: aynı sembolde açık pozisyon var`); continue; }
+          if (openRows.length >= maxP) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:`Max pozisyon dolu (${openRows.length}/${maxP})`}); logAuto(`⛔ ${sym} AI canlı emir yok: max pozisyon dolu (${openRows.length}/${maxP})`); continue; }
+        } catch(e) {
+          r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:`Pozisyon limiti doğrulanamadı ${String(e?.message||e).slice(0,80)}`});
+          logAuto(`⛔ ${sym} AI canlı emir yok: pozisyon limiti doğrulanamadı ${String(e?.message||e).slice(0,80)}`);
+          continue;
+        }
+
+        const lev = normalizeRequestedLeverage(cfg.leverage || autoScanState?.settings?.leverage || 1, 1);
+        const margin = Number(cfg.usdtAmount || autoScanState?.settings?.usdtAmount || 0);
+        if (!(margin > 0)) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Panel marjı yok'}); logAuto(`⛔ ${sym} AI canlı emir yok: panel marjı yok`); continue; }
+
+        r308SetLastAiDecision({status:'AI_EMİR_YOLDA', symbol:sym, ai, quality:q, candidate:r, order:{state:'YOLDA', margin, leverage:lev}});
+        logAuto(`🚀 ${sym} AI PRO TRADER CANLI EMİR: ${ai.side} · güven:${ai.confidence}% · RR:${q.rr.toFixed(2)} · SL:${q.slPct.toFixed(2)}% · marj:${margin}USDT lev:${lev}x`);
+        const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            apiKey: cfg.apiKey, apiSecret: cfg.apiSecret,
+            symbol: fullSym, side: ai.side,
+            leverage: lev, marginType: cfg.marginType,
+            targetPrice: ai.tp, stopPrice: ai.sl,
+            usdtAmount: margin,
+            maxPositions: cfg.maxPositions || autoScanState?.settings?.maxPositions || 1
+          })
+        }).then(x => x.json());
+
+        if (!orderResp.ok) {
+          r308SetLastAiDecision({status:'AI_EMİR_HATA', symbol:sym, ai, quality:q, candidate:r, order:{state:'HATA', error:String(orderResp.error || orderResp.message || 'bilinmeyen').slice(0,180), margin, leverage:lev}});
+          logAuto(`❌ ${sym} AI canlı emir HATA: ${String(orderResp.error || orderResp.message || 'bilinmeyen').slice(0,160)}`);
+          continue;
+        }
+
+        markAutoOpened(fullSym, ai.side);
+        invalidatePositionRiskCache('AI_ORDER_OPENED');
+        autoScanState.phase = 'EMİR_AÇILDI';
+        autoScanState.lastAction = `${sym} AI ${ai.side} açıldı — güven:${ai.confidence}% RR:${q.rr.toFixed(2)}`;
+        const entry = Number(orderResp.executedPrice || orderResp.details?.entry || ai.entry);
+        const st = {
+          side: ai.side,
+          entryPrice: entry,
+          highWater: entry,
+          breakEvenSet:false,
+          currentSL: orderResp.details?.stop || ai.sl,
+          targetTP: orderResp.details?.target || ai.tp,
+          leverage: Number(orderResp.details?.leverage || lev),
+          slPct: q.slPct,
+          tpPct: Math.abs(Number(ai.tp)-entry)/entry*100,
+          sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
+          openedAt: Date.now(),
+          aiBrain: ai,
+          brainMode: 'R308C_AI_LIVE',
+          tier: r.tier || 'AI',
+          score: Number(r.score || ai.confidence || 0),
+          openReason: `AI PRO TRADER ${ai.side} güven:${ai.confidence}% RR:${q.rr.toFixed(2)} — ${ai.reasoning}`,
+          entryReason:{ score:Number(r.score||0), reason:`AI PRO TRADER ${ai.side}: ${ai.reasoning}`, ai, panel:{ usdtAmount:margin, leverage:lev, aiModel:ANTHROPIC_MODEL } },
+          managerStatus:{ type:'AÇILDI', reason:`${sym} AI ${ai.side} açıldı — güven:${ai.confidence}% RR:${q.rr.toFixed(2)}`, urgency:'LOW', lastCheck:Date.now() },
+          peakPnl:0, peakRealPct:0, step1Set:false, step2Set:false, step3Set:false,
+          r91Exit:{active:true, mode:'İZLE', exitScore:0, reasons:['AI canlı pozisyon yeni açıldı'], pnlPct:0, realProfitPct:0, peakPnl:0, pullbackPct:0, givebackRoi:0},
+          exitMode:'İZLE', profitLockLevel:0,
+          config:{ trailing:true, trailingPct: cfg.trailingPct, trailStep: cfg.trailStep, breakEvenPct: cfg.breakEvenPct, entryPrice: entry, targetTP: orderResp.details?.target || ai.tp }
+        };
+        trailingState.set(fullSym, st);
+        try {
+          recordTradeOpen(fullSym, ai.side, entry, orderResp.details?.quantity || null, st);
+          const qtyKnown = Math.abs(Number(orderResp.details?.quantity || orderResp.quantity || 0)) || 1;
+          rememberOpenPositionForReentry({symbol:fullSym, positionAmt: ai.side==='LONG' ? qtyKnown : -qtyKnown, entryPrice:entry, leverage:Number(orderResp.details?.leverage || lev)}, st);
+          saveLastKnownPositions();
+        } catch(e) { logAuto(`⚠️ ${sym} AI ledger kaydı yazılamadı: ${String(e?.message||e).slice(0,80)}`); }
+        r308SetLastAiDecision({status:'AI_EMİR_AÇILDI', symbol:sym, ai:{...ai, entry, tp:orderResp.details?.target || ai.tp, sl:orderResp.details?.stop || ai.sl}, quality:q, candidate:r, order:{state:'AÇILDI', margin, leverage:lev, entry, quantity:orderResp.details?.quantity || orderResp.quantity || null, slSuccess:!!orderResp.slSuccess, tpSuccess:!!orderResp.tpSuccess}});
+        logAuto(`✅ ${sym} AI CANLI EMİR AÇILDI: ${ai.side} entry:${entry} TP:${orderResp.details?.target || ai.tp} SL:${orderResp.details?.stop || ai.sl}`);
+        break;
+      } else if (ai && ai.skipped) {
+        r308SetLastAiDecision({status:'AI_ATLANDI', symbol:sym, side:'WAIT', candidate:r, rejectReason:ai.reason});
+        logAuto(`🧊 ${sym} AI atlandı: ${ai.reason}`);
+      } else {
+        r308SetLastAiDecision({status:'AI_KARAR_YOK', symbol:sym, side:'WAIT', candidate:r, rejectReason:'AI kararı alınamadı'});
+        logAuto(`⚪ ${sym} AI kararı alınamadı`);
+      }
+    }
+  } catch(e) {
+    r308SetLastAiDecision({status:'AI_MOD_HATA', side:'WAIT', rejectReason:String(e?.message||e).slice(0,180)});
+    logAuto(`⚠️ R308C AI canlı inceleme hatası: ${String(e?.message||e).slice(0,140)}`);
+  }
+}
+
+
 
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
 app.get('/api/diagnostics/status', (_req, res) => {
@@ -14884,6 +15189,7 @@ app.get('/api/health', (_req, res) => {
         },
       },
       recentLogs: logs,
+      aiBrain: r308AiDashboardStatus(),
     });
   } catch (e) {
     res.status(500).json({ ok:false, error:e.message, build: typeof LAZARUS_BUILD !== 'undefined' ? LAZARUS_BUILD : 'UNKNOWN' });
@@ -14910,7 +15216,7 @@ app.post('/api/auto/config', (req, res) => {
 app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
     config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
-    cooldowns: getCooldownList(),
+    cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(),
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
       sonIslem: toTurkishText(autoScanState?.lastAction || ''),
@@ -15238,6 +15544,8 @@ async function runAutoScan(prioritySymbol=null) {
           isShort = recommendation==='SHORT';
           logAuto(`🧠 ${coin.symbol} R163 WAIT→${recommendation} düzeltmesi: beyin TRADE kararını legacy WAIT gölgesinden çıkardı`);
         }
+        // R308B: B şıkkı için bu coinin zengin analiz özetini sakla; eski kapılar elese bile scan sonunda AI görecek.
+        r308RememberAiContext(coin.symbol, coin, analysis, decisionChain, recommendation, score);
 
 
         // R284: WAIT içinde kalan ama normal 5m traderın alacağı temiz setup'ı emir yoluna yükselt.
@@ -16104,12 +16412,14 @@ async function runAutoScan(prioritySymbol=null) {
         // ═══ R300 SON KAPI — emrin fiziksel açıldığı TEK nokta, hemen önünde ═══
         // R285/R291/R287/R283 dâhil hangi yoldan gelirse gelsin, emir buradan geçer.
         // 6 kural geçmezse emir AÇILMAZ. RSI/rangePos METİNDEN DEĞİL, güvenilir sayısaldan.
+        let r308LastRangePos = 0.5;
         try {
           const r300Rsi5m = Number(analysis?.timeframes?.['5m']?.rsi);
           const r300Rsi4h = Number(analysis?.timeframes?.['4h']?.rsi);
           const r300RsiUse = Number.isFinite(r300Rsi5m) ? r300Rsi5m : (Number.isFinite(r300Rsi4h) ? r300Rsi4h : 50);
           const r300Range = Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
                           : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5);
+          r308LastRangePos = r300Range;
           const r300Gate = r300SimpleBrain(recommendation, {
             brainSummary: String(decisionChain?.brainSummary || decisionChain?.reason || ''),
             r125OrderflowSummary: String(decisionChain?.r125OrderflowSummary || ''),
@@ -16157,7 +16467,7 @@ async function runAutoScan(prioritySymbol=null) {
               flow: decisionChain?.r125OrderflowSummary || '',
               funding: analysis?.funding?.current, oiChange: decisionChain?.r140Summary || '',
               squeeze: (decisionChain?.r111Sonuc?.shortSqueeze ? 'shortSqueeze' : decisionChain?.r111Sonuc?.longSqueeze ? 'longSqueeze' : 'yok'),
-              atrPct: analysis?.leverage?.atrPct, rangePos: r300Range,
+              atrPct: analysis?.leverage?.atrPct, rangePos: r308LastRangePos,
               candleSummary: decisionChain?.mumOzet || ''
             };
             const ai = await r308AiProTraderBrain(coin.symbol, aiData);
@@ -16350,6 +16660,9 @@ async function runAutoScan(prioritySymbol=null) {
     autoScanState.currentSymbol = null;
     autoScanState.lastScanEnd = Date.now();
     autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + AUTO_SCAN_INTERVAL_MS : null;
+
+    // R308C: B şıkkı — eski kapılar sustursa bile scan'in en iyi adayını AI değerlendirir; SHADOW=0 ise canlı emir açabilir.
+    await r308RunAiCandidateReviewAfterScan();
 
     // Görünürlük düzeltmesi: emir denemesi hata verdikten sonra eski MAX_POZİSYON_DOLU
     // fazı ekranda takılı kalmasın. Binance pozisyonu tekrar okunur; 0/1 ise BEKLİYOR gösterilir.
