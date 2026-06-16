@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308E_AI_STRICT_LIVE_OPUS_AICARD';
+const LAZARUS_BUILD = 'R308G_AI_TOP24_UI_AUTOTV';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3331,7 +3331,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       mum:         data.candleSummary
     };
 
-    const sys = `Sen 10 yıllık deneyimli bir kripto futures scalp trader'ısın. 5m TOP10 gainer coinlerinde işlem yapıyorsun.
+    const sys = `Sen 10 yıllık deneyimli bir kripto futures scalp trader'ısın. 5m TOP24 gainer coinlerinde işlem yapıyorsun.
 Sana bir coinin 5m/15m/1h/4h analiz verisi verilecek. Bir pro trader gibi BÜTÜN resme bak: çok-zaman-dilimli hikaye, price action, likidite avı, MM hareketi, FVG/OTE, mum yapısı, akış (CVD/delta/book/taker), funding, squeeze.
 KURALLAR:
 - Tepeden LONG / dipten SHORT alma (chase yapma). Geri çekilmeye/dönüşe gir.
@@ -3349,12 +3349,15 @@ SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
       headers: {
         'content-type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31'
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
         max_tokens: 400,
-        system: sys,
+        // R308F: PROMPT CACHING — sabit sistem promptu (pro trader talimatı) cache'lenir.
+        // Aynı talimat her çağrıda tekrar gönderilmez, %90 daha ucuz. Coin verisi (değişken) cache'lenmez.
+        system: [{ type:'text', text: sys, cache_control: { type:'ephemeral' } }],
         messages: [{ role: 'user', content: JSON.stringify(brief) }]
       }),
       signal: controller.signal
@@ -3371,6 +3374,14 @@ SADECE şu JSON formatında cevap ver, başka hiçbir şey yazma:
     let decision;
     try { decision = JSON.parse(clean); }
     catch(_) { logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`); return null; }
+
+    // R308F: Cache kullanımını logla — tasarruf çalışıyor mu gör
+    const u = j.usage || {};
+    const cacheRead = Number(u.cache_read_input_tokens || 0);
+    const cacheWrite = Number(u.cache_creation_input_tokens || 0);
+    const inTok = Number(u.input_tokens || 0);
+    if (cacheRead > 0) logAuto(`💰 AI cache HIT: ${cacheRead} token önbellekten (%90 ucuz) · yeni girdi:${inTok} · çıktı:${u.output_tokens||0}`);
+    else if (cacheWrite > 0) logAuto(`💾 AI cache yazıldı: ${cacheWrite} token (sonraki çağrılar %90 ucuz olacak)`);
 
     return {
       ok: true,
@@ -15203,7 +15214,7 @@ app.post('/api/auto/config', (req, res) => {
   autoConfig.maxPositions = normalizeUserMaxPositions(autoConfig.maxPositions, 3);
   // R282: Panelde seçilen tarama modu server tarafında da amir olsun.
   // Eski/local kayıt TOP24 taşıyorsa veya scanLimit=24 gelmişse normalize edip görünür log basar.
-  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP10');
+  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP24');
   autoConfig.scanLimit = r54ScanLimitForMode(autoConfig.scanMode, autoConfig.scanLimit);
   logAuto(`⚙️ R282 auto ayar: tarama modu ${autoConfig.scanMode}/${autoConfig.scanLimit}, max poz:${autoConfig.maxPositions}, min skor:${autoConfig.minScore}`);
   if (autoConfig.enabled) {
