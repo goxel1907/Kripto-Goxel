@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308G_AI_TOP24_UI_AUTOTV';
+const LAZARUS_BUILD = 'R308H_MODEL_TRIM_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5034,8 +5034,8 @@ function trTime(ts = Date.now()) {
 const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 // R308B: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const ANTHROPIC_MODEL   = process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-haiku-4-5'; // maliyet korumalı varsayılan
+const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || '').trim();
+const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-haiku-4-5').trim(); // .trim(): env'e kaçan boşluk 404 yapıyordu
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE !== '0'; // B şıkkı: R300'e takılmadan scan sonrası en iyi adayları AI'ya göster
