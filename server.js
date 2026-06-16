@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308I_TEK_KAPI_KALICI_GRAFIK';
+const LAZARUS_BUILD = 'R308I2_BMODE_OFF';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5096,7 +5096,7 @@ function r308SetLastAiDecision(p={}) {
 function r308AiDashboardStatus(){
   return {
     enabled: !!AI_BRAIN_ENABLED, keySet: !!ANTHROPIC_API_KEY, shadow: !!AI_BRAIN_SHADOW, mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
-    model: ANTHROPIC_MODEL, bMode: !!AI_BRAIN_B_MODE, topN: AI_BRAIN_TOP_N, daily: r308AiDailyInfo(),
+    model: ANTHROPIC_MODEL, bMode: false, topN: AI_BRAIN_TOP_N, daily: r308AiDailyInfo(),
     limits: { minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000), strictGate:AI_BRAIN_STRICT_GATE },
     last: r308LastAiDecision
   };
@@ -14946,6 +14946,14 @@ function r308AiPlanQuality(ai) {
 }
 
 async function r308RunAiCandidateReviewAfterScan() {
+  // R308I: TEK TEMİZ KAPI. Bu ikinci yol (B-mode) KALICI KAPATILDI — env AI_BRAIN_B_MODE=1 olsa bile çalışmaz.
+  // Tüm AI kararları artık ana tarama döngüsündeki tek kapıdan geçer (R300 → AI gate → emir).
+  // İki paralel emir yolunun çakışması (BABY tipi sızıntı) bu satırla biter.
+  return;
+  /* eski B-mode gövdesi devre dışı:
+  if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY || !AI_BRAIN_B_MODE) return; */
+}
+async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
   if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY || !AI_BRAIN_B_MODE) return;
   try {
     const rows = (autoScanState.topCandidates || [])
