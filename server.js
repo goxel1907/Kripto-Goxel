@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308I2_BMODE_OFF';
+const LAZARUS_BUILD = 'R308J_VOLATIL_BTC_YON';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -737,7 +737,7 @@ const posRiskCache = {
   lastError: null,
 };
 const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
-const POS_RISK_TTL_ACTIVE = 15000;   // R280: 10sn→15sn (dakikada 6 istek; 429/418 baskısını azaltır). fastManager sync.
+const POS_RISK_TTL_ACTIVE = 25000;   // R308J: 15sn→25sn. TOP24'te 429 baskısı arttı, pozisyon-risk okuma sıklığı düşürüldü.
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
 
@@ -3328,12 +3328,14 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       squeeze:     data.squeeze,
       atrPct:      data.atrPct,
       rangePos:    data.rangePos,
-      mum:         data.candleSummary
+      mum:         data.candleSummary,
+      piyasa:      data.marketCtx || null  // R308J: anlık BTC/genel piyasa durumu
     };
 
     const sys = `Sen 10 yıllık deneyimli bir kripto futures scalp trader'ısın. 5m TOP24 gainer coinlerinde işlem yapıyorsun.
 Sana bir coinin 5m/15m/1h/4h analiz verisi verilecek. Bir pro trader gibi BÜTÜN resme bak: çok-zaman-dilimli hikaye, price action, likidite avı, MM hareketi, FVG/OTE, mum yapısı, akış (CVD/delta/book/taker), funding, squeeze.
 KURALLAR:
+- ÖNCE PİYASAYA BAK: "piyasa" alanında anlık BTC durumu var. BTC düşüyorsa LONG'a çok dikkatli ol (altcoinler BTC'yi takip eder), BTC yükseliyorsa SHORT'a dikkatli ol. BTC sert düşerken altcoin LONG = yüksek risk.
 - Tepeden LONG / dipten SHORT alma (chase yapma). Geri çekilmeye/dönüşe gir.
 - Herkes short düşünüyorsa MM yukarı squeeze yapabilir — funding+squeeze'e dikkat.
 - Net fırsat YOKSA "WAIT" de. Zorlama. Çoğu coin "WAIT" olmalı.
@@ -5861,8 +5863,18 @@ function r33TopGainersFromTickers(data=[], n=R33_TOP_GAINER_LOCK_COUNT) {
       rangePct: Number(t.lastPrice) > 0 ? +(((Number(t.highPrice||0)-Number(t.lowPrice||0))/Number(t.lastPrice))*100).toFixed(2) : 0,
       source: 'top_gainers_lock'
     }))
-    .filter(c => Number.isFinite(c.change24h) && c.change24h > 0)
-    .sort((a,b) => (b.change24h - a.change24h) || (b.volume - a.volume))
+    // R308J: 24s "en çok kazanan" yerine ANLIK VOLATİL + HACİMLİ coin seç (scalp mantığı).
+    // Eski: change24h>0 filtre + change24h sort → bugün artmış ama şu an durağan coinleri seçiyordu.
+    // Yeni: mutlak hareket (yön farketmez, yükselen+düşen) + gün-içi oynaklık (rangePct) + hacim + işlem sayısı.
+    // Scalp'te önemli olan coinin ŞU AN oynak ve likit olması; 24s kazanmış olması değil.
+    .filter(c => Number.isFinite(c.change24h) && (Math.abs(c.change24h) >= 2 || c.rangePct >= 4))
+    .map(c => ({
+      ...c,
+      // Volatilite skoru: gün-içi aralık (oynaklık) ağırlıklı + mutlak yön hareketi + hacim/işlem canlılığı
+      r308VolScore: (c.rangePct * 1.6) + (Math.abs(c.change24h) * 0.8) +
+                    (Math.log10(Math.max(1, c.volume)) * 2) + (Math.log10(Math.max(1, c.trades)) * 1.5)
+    }))
+    .sort((a,b) => (b.r308VolScore - a.r308VolScore))
     .slice(0, n);
   const out = new Map();
   rows.forEach((c, i) => out.set(c.fullSymbol, {...c, topGainerRank:i+1, topGainerLocked:true}));
@@ -14658,7 +14670,7 @@ app.post('/api/close', async (req, res) => {
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
-const AUTO_SCAN_INTERVAL_MS = 30 * 1000; // R65: scalper core için 30sn; TOP6/TOP10'da fırsat kaçırmayı azaltır
+const AUTO_SCAN_INTERVAL_MS = 45 * 1000; // R308J: TOP24'te 30sn çok istek atıp 429 yiyordu → 45sn. 5m scalp için yeterli (mum 300sn).
 const autoLog = []; // Son 50 otomatik işlem logu
 
 // ── CANLI TARAMA TELEMETRİSİ ────────────────────────────────────────────────
@@ -16499,13 +16511,27 @@ async function runAutoScan(prioritySymbol=null) {
               funding: analysis?.funding?.current, oiChange: decisionChain?.r140Summary || '',
               squeeze: (decisionChain?.r111Sonuc?.shortSqueeze ? 'shortSqueeze' : decisionChain?.r111Sonuc?.longSqueeze ? 'longSqueeze' : 'yok'),
               atrPct: analysis?.leverage?.atrPct, rangePos: r308LastRangePos,
-              candleSummary: decisionChain?.mumOzet || ''
+              candleSummary: decisionChain?.mumOzet || '',
+              marketCtx: (function(){
+                // R308J: AI'ya anlık BTC/piyasa durumunu ver. r140Summary içinde BTC drop/bounce + divergence bilgisi var.
+                const s = String(decisionChain?.r140Summary||'');
+                const btcBit = /BTC[^·]*/.exec(s);
+                const div = decisionChain?.r140BtcDiv;
+                let txt = btcBit ? btcBit[0].trim() : '';
+                if (div?.label) txt += (txt?' · ':'') + div.label;
+                return txt || 'BTC durumu bilinmiyor';
+              })()
             };
             const ai = await r308AiProTraderBrain(coin.symbol, aiData);
             if (ai && ai.ok) {
               const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
               logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}`);
               decisionChain.aiBrain = ai;
+              // R308J: AI kararını dashboard kartına yaz (B-mode kapandığı için buraya taşındı)
+              try {
+                const _q = r308AiPlanQuality(ai);
+                r308SetLastAiDecision({status: ai.side==='WAIT'?'AI_BEKLE':'AI_CANLI_KARAR', symbol:coin.symbol, ai, quality:_q, candidate:{symbol:coin.symbol, rec:recommendation, score, tier:decisionChain?.tier||'AI'}});
+              } catch(_setE) {}
               if (AI_BRAIN_SHADOW) {
                 logAuto(`👁️ ${coin.symbol} GÖLGE MOD: AI kararı kaydedildi, işlem AÇILMADI (gerçek fiyatla karşılaştır). Bot ${recommendation} açacaktı.`);
                 markAutoSkip(coin.symbol, `AI gölge mod: ${ai.side} güven ${ai.confidence}% (işlem açılmadı)`, {rec:recommendation, score, aiBrain:ai});
@@ -16520,6 +16546,17 @@ async function runAutoScan(prioritySymbol=null) {
                 if (ai.side !== recommendation) {
                   logAuto(`⛔ ${coin.symbol} AI yön uyuşmazlığı: bot ${recommendation}, AI ${ai.side} — emir AÇILMADI`);
                   markAutoSkip(coin.symbol, `AI ters yön: ${ai.side}`, {rec:recommendation, score, aiBrain:ai});
+                  continue;
+                }
+                // R308J: AI'nın önerdiği yön panelde kapalıysa açma (kullanıcı "sadece düşüş/yükseliş" dediyse uy)
+                if (ai.side === 'LONG' && !allowLong) {
+                  logAuto(`⛔ ${coin.symbol} AI LONG dedi ama panel LONG KAPALI — emir AÇILMADI`);
+                  markAutoSkip(coin.symbol, `Panel LONG kapalı (AI LONG dedi)`, {rec:recommendation, score, aiBrain:ai});
+                  continue;
+                }
+                if (ai.side === 'SHORT' && !allowShort) {
+                  logAuto(`⛔ ${coin.symbol} AI SHORT dedi ama panel SHORT KAPALI — emir AÇILMADI`);
+                  markAutoSkip(coin.symbol, `Panel SHORT kapalı (AI SHORT dedi)`, {rec:recommendation, score, aiBrain:ai});
                   continue;
                 }
                 logAuto(`✅ ${coin.symbol} AI PRO TRADER ONAY: ${ai.side} güven ${ai.confidence}% — emir açılıyor`);
