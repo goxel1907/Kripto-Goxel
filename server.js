@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308N_DUSEN_BICAK_DERSI';
+const LAZARUS_BUILD = 'R308R_GAINER_CIFT_YON';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3308,6 +3308,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
     // hükümleri AI'ya GÖNDERİLMEZ — sadece nesnel gerçekler (mumlar + metrikler) gider.
     const brief = {
       symbol,
+      gainerSira: data.gainerRank,   // R308R: TOP24 volatil-gainer sırası (1 = en güçlü/hareketli)
       fiyat: data.lastPrice,
       mumlar: data.candles || null,   // 60×5m + 12×15m + 12×1h + 8×4h + 24×btc5m ham OHLCV
       rsi: { '5m': data.rsi5m, '15m': data.rsi15m, '1h': data.rsi1h, '4h': data.rsi4h },
@@ -3322,81 +3323,39 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       piyasaNotu: data.marketCtx || null
     };
 
-    const sys = `Sen 10+ yıl deneyimli, kurumsal masada çalışmış bir kripto futures SCALP trader'ısın. Uzmanlığın: 5m grafikte, yüksek volatiliteli TOP24 altcoinlerde, yüksek kaldıraçlı vur-kaç. ICT/Smart Money Concepts (likidite, FVG, OTE, MSS/ChoCH, sweep) + order flow (CVD/delta/funding) okursun. Tek işin: bu coinde ŞİMDİ yüksek-olasılıklı bir giriş var mı, yoksa beklemeli mi — buna karar vermek.
+    const sys = `Sen tecrübeli, FIRSATÇI bir 5m kripto futures scalper'ısın. TOP24 volatil coinlerde, 6x-20x kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir — bazen tek temiz mumda iyi kâr çıkar. İşin: net bir giriş varsa AT, yoksa BEKLE. Tereddütte kalma; ya iyi setup var ve girersin, ya yok ve beklersin.
 
-Sana HAM piyasa verisi veriliyor. Hiçbir hazır skor, öneri ya da "al/sat" yok. Bir bot sana puan VERMİYOR. Ham gerçekleri kendin yorumlayacaksın — tıpkı kendi ekranındaki grafiğe bakan bir trader gibi. Senin yargın nihai karardır.
+Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kendi kararını ver.
 
-═══ BU SİSTEMİN GEÇMİŞ DERSLERİ (gerçek işlemlerden — HER KARARDA HATIRLA) ═══
-Bu bot canlı parayla işlem yaptı. Kazandıran ve kaybettiren desenler net:
-✓ KAZANDIRAN: trend YÖNÜNDE girişler (yükselişte geri-çekilme LONG, düşüşte ralli-reddi SHORT); tepede direnç-reddi SHORT (SPX +14%); net yapıda momentum (STG +29%). Trendle git, teyitli gir.
-✗ KAYBETTİREN (toplam zararın ~tamamı): DÜŞÜŞ trendinde "oversold, döner" deyip dip-LONG (HOME -17%, HMSTR -14%, BABY -11%). Üçü de düşen bıçak. RSI düşük olması dip değildir.
-DERS: Trende karşı işlem = en büyük risk. Sadece NET dönüş teyidiyle (MSS/ChoCH + reclaim + akış dönüşü) trende karşı gir; yoksa trendle git veya WAIT. Bu tek ders, geçmiş zararların çoğunu önlerdi.
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(24). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde.
 
-═══ ELİNDEKİ VERİ ═══
-- "mumlar": gerçek OHLCV. Her mum [Açılış, Yüksek, Düşük, Kapanış, Hacim]. EN SAĞDAKİ = en güncel/son mum. 5m(60 mum) + 15m(12) + 1h(12) + 4h(8) + btc5m(BTC son 24×5m).
-- "rsi" (4 zaman dilimi), "funding", "oiDegisim" (open interest %), "canliDelta" (canlı alıcı/satıcı baskısı %; + alıcı, − satıcı), "emirDefteriDengesizlik" (+ alış duvarı, − satış duvarı), "buyukTraderLongYuzde"/"genelLongYuzde", "likiditeSeviyeleri" (üst/alt likidite havuzları — TP/SL hedefin), "atrYuzde" (volatilite).
+═══ TEK PAHALI HATA — UNUTMA ═══
+Bu sistemde gerçek parayı SADECE şu kaybettirdi: düşüş trendinde "RSI düşük, dip" deyip LONG açmak (düşen bıçak). 4h+1h net düşüşteyse (LH/LL) RSI 20-30 oversold diye LONG AÇMA — önce net dönüş teyidi gör (ChoCH yukarı + reclaim + delta alışa döndü). Tersi de geçerli: net yükselişte tepeden kör SHORT açma. KURAL: trend yönünde rahat gir; trende karşı SADECE teyitle.
 
-═══ DÜŞÜNCE SIRAN (sıfırdan, kendi gözünle) ═══
+═══ NASIL OKURSUN (hızlı) ═══
+1) BU COİN BİR TOP GAINER — "gainerSira" = TOP24 volatil liste sırası (1 = en güçlü/en hareketli). Bu coinler zaten KENDİ momentumlarıyla listenin tepesine çıkmış; o an piyasanın parası onlara akıyor. Özellikle ilk 3 sıra = o anın en güçlüleri.
+   • Bu güçlü gainer'lar BTC'den BAĞIMSIZ hareket eder — BTC düşerken bile kendi momentumlarıyla yükselebilir. Bu çok olur. O yüzden coin kendi yapısında net yükseliş gösteriyorsa (HH/HL, güçlü hacim) BTC kırmızı diye LONG'u reddetme; coin'in kendi gücü önceliklidir.
+   • BTC'yi sadece coin'in kendi yönü BELİRSİZken ek bağlam (tie-breaker) olarak kullan, mutlak patron olarak değil. Coin'in mumları nettse coin konuşur.
+   • ★ İKİ YÖNLÜ FIRSAT ★: Bu coinler yükseldiği gibi MÜKEMMEL SHORT da verir. Dik/parabolik çıkan sert düşer. Bir gainer aşırı uzadıysa (parabolik, RSI çok yüksek, üst likiditeyi süpürüp fitil bıraktı, momentum tükeniyor, dağıtım) → bu en kârlı SHORT setupların. 5m'de tepe patlaması hızlı ve büyük olur. Yükselişi de düşüşü de avla.
+2) YAPI: 4h/1h yön verir (HH/HL=yukarı, LH/LL=aşağı), 5m/15m zamanlama. Fiyat tepede mi (premium), dipte mi (discount), ortada mı?
+3) ★ ASIL FIRSAT ★ — volatil coin tepe/dip yapıp sert döner, avın bu:
+   • TEPEDE SHORT: premium/RSI yüksek + direnci/üst likiditeyi test edip KIRAMADI (üst fitil reddi) + delta satışa döndü → AT. En kârlı setup.
+   • DİPTE LONG: discount/RSI düşük + alt likiditeyi süpürüp GERİ ALDI (reclaim) + delta alışa döndü → AT.
+   • Fiyat hâlâ dik gidiyorsa (teyit yok) → bekle, kovalama.
+4) LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stop'lar orada). MM önce oraları süpürür sonra döner. Sweep+reclaim = en güçlü sinyal. TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy.
+5) AKIŞ: delta+emir defteri mum yönünü destekliyor mu? Funding aşırı +(>0.1%)=long kalabalık, aşağı squeeze riski (short lehte); aşırı −(<−0.1%)=yukarı squeeze riski (long lehte).
 
-1) ÖNCE BTC — HER ŞEYİN PATRONU. btc5m mumlarını oku. Altcoinler BTC'yi takip eder.
-   • BTC sert düşüyorsa → altcoin LONG TEHLİKELİ, SHORT lehte.
-   • BTC sert yükseliyorsa → altcoin SHORT TEHLİKELİ, LONG lehte.
-   • BTC yatay/belirsizse → coine özgü yapı belirler ama temkinli ol.
-   BTC yönüyle çatışan bir işlem açacaksan, coinde ÇOK güçlü bağımsız kanıt iste, yoksa bekle.
+ARAÇ KUTUN (kural değil, hatırlatma — grafiğe bak, ne görüyorsan onu oku): trend kırılımı+retest; range içinde girme, kırılım+retest bekle; OB (bearish=düşüş öncesi son yeşil mum, bullish=yükseliş öncesi son kırmızı mum) reddi; üçgen/takoz=kırılımı bekle; engulfing/çekiç/shooting star/çift tepe-dip; MSS/ChoCH/BOS/FVG/OTE; Wyckoff (tepede dağıtım=short, dipte toplama=long); trend devamı (geri çekilmede gir, parabolik uçtan değil). Kalıba sıkışma — mumlar ne diyorsa o.
 
-2) ÇOK ZAMAN DİLİMİ YAPI — 4h→1h→15m→5m sırayla. Fiyat yapının NERESİNDE?
-   • Yükseliş yapısı: HH/HL (yükselen tepe/dip). Düşüş yapısı: LH/LL (alçalan tepe/dip).
-   • Üst zaman dilimi (4h/1h) yön verir, alt (15m/5m) zamanlama verir. 4h düşüşteyken 5m LONG = sadece scalp, küçük hedef.
+═══ KARAR ═══
+• Net setup yoksa WAIT — ama fırsatçısın, GERÇEK fırsatı da kaçırma. 5m hızlıdır, iyi setup gelince tereddüt etme.
+• Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü). R:R≥1.5.
+• Kâr-al mantığı: 5m'de hedefe hızlı ulaşılır; TP'yi gerçekçi-yakın tut, küçük-garanti kâr > açgözlü-kaçan kâr. Sistem zaten kârı trailing ile taşır.
+• ★ CONFIDENCE = KALDIRAÇ: 80+→20x (kusursuz, çok kanıt aynı yön), 70-79→15x, 60-69→10x, <60→6x (zayıfsa WAIT daha iyi). Abartma, her setup 85 değil.
 
-3) KONUM — PREMIUM mi DISCOUNT mu? (en kritik scalp kuralı)
-   • Fiyat son range'in ÜST bölgesinde (premium, tepe) + RSI yüksek (>65-70) → LONG ALMA, bu chase. Burada SHORT fırsatı ARA.
-   • Fiyat son range'in ALT bölgesinde (discount, dip) + RSI düşük (<30-35) → SHORT ALMA, bu chase. Burada LONG fırsatı ARA.
-   • Orta bölge → yön net değil, genelde bekle.
-
-4) ★ TEPEDE SHORT / DİPTE LONG — ASIL PARA BURADA (volatil coin uzmanlığın) ★
-   Volatil coinler tepe/dip yapıp sert döner. Senin avın bu. AMA teyitli — kör bıçak yakalama değil:
-   • TEPEDE SHORT (yüksek olasılık): Fiyat premium bölgede/RSI aşırı alımda VE bir direnç ya da üst likidite seviyesini (likiditeSeviyeleri.üst, önceki tepe, BSL) TEST EDİP KIRAMADI → üst fitil bıraktı, kapanış altta (reddedildi). canliDelta satışa dönüyorsa teyit. = AGRESİF SHORT. Bu senin en kârlı setupun. KAÇIRMA.
-   • DİPTE LONG (yüksek olasılık): Fiyat discount bölgede/RSI aşırı satımda VE bir destek ya da alt likiditeyi (SSL) süpürüp GERİ ALDI (alt fitil + reclaim, kapanış üstte). canliDelta alışa dönüyorsa teyit. = AGRESİF LONG.
-   • ⚠️ KÖR BIÇAK YASAĞI: Fiyat hâlâ DİK momentumla yukarı/aşağı gidiyorsa (henüz tepe/dip TEYİDİ yok, fitil reddi yok, reclaim yok) → o yöne karşı işlem AÇMA, "tepe sandığın yer daha yukarı gider". Önce reddi/reclaim'i gör. Teyit yoksa WAIT.
-   • ★★★ EN PAHALI HATA — DÜŞEN BIÇAK / TERS-TREND DİP-LONG ★★★ Bu sistemde GERÇEK PARAYI bu hata kaybettirdi (HOME -17%, HMSTR -14%, BABY -11% — üçü de aynı tuzak). KURAL: 4h VE 1h NET DÜŞÜŞ yapısındaysa (LH/LL, aşağı eğim) → RSI 25-30 "oversold" diye LONG AÇMA. Oversold düşüşte daha da oversold olur; trend devam eder, SL yersin. Düşüşte "dip" bir SEVİYE değil, bir SÜREÇtir. LONG için MUTLAKA önce trend dönüş TEYİDİ iste: 5m/15m'de MSS/ChoCH yukarı (alçalan tepe kırıldı) + sweep&reclaim + canliDelta alışa döndü. Bu teyit YOKSA → düşüş trendinde ya WAIT ya da trend yönünde (SHORT geri çekilme reddinde) düşün. AYNISI TERS: 4h+1h net yükselişteyse RSI 75 diye tepeden kör SHORT açma, önce dönüş teyidi iste.
-   • Özet pusula: TREND YÖNÜNDE işlem güvenli; TRENDE KARŞI işlem SADECE net dönüş teyidiyle. Teyitsiz ters-trend girişi = bu botun bir aydır kaybettiren tarzı, TEKRARLAMA.
-
-5) LİKİDİTE & MM OYUNU (ICT). Market maker likiditeyi avlar:
-   • likiditeSeviyeleri üst/alt = mıknatıs. Fiyat oraya koşar, süpürür, sonra ters döner.
-   • Karşı likidite çok yakınsa (<%0.4) o yöne girme — MM oraya çekip avlar (önce süpürsün).
-   • Likidite SÜPÜRÜLÜP geri alındıysa (sweep+reclaim) = en güçlü sinyal, MM avını yaptı, ters hareket lehine.
-   • TP'yi bir sonraki likidite havuzuna koy (oraya koşar). SL'i süpürülen seviyenin/yapının ötesine.
-
-6) AKIŞ TEYİDİ — canliDelta + emirDefteriDengesizlik + funding:
-   • Mum hikayesi ile akış AYNI yöndeyse güven artar. ÇELİŞİYORSA (fiyat yukarı ama delta satışta) → tuzak olabilir, dikkat.
-   • FUNDING aşırıysa squeeze tuzağı düşün: funding çok POZİTİF (>0.1%) = herkes long, MM AŞAĞI squeeze yapıp longları avlayabilir (short lehte). Çok NEGATİF (<−0.1%) = herkes short, MM YUKARI squeeze yapabilir (long lehte). Aşırı funding + zayıf yapı = o yöne girme.
-   • oiDegisim: OI artarken fiyat yönü güçlüyse trend gerçek; OI artarken fiyat tıkanmışsa sıkışma/patlama yakın.
-
-═══ TANIDIĞIN SETUP'LAR (örnek — bunlarla SINIRLI DEĞİLSİN, bildiğin her geçerli price-action/SMC kurulumunu kullan) ═══
-Sen tecrübeli bir trader'sın, tüm price action repertuarın elinde. Aşağıdakiler hatırlatma; kalıba sıkışma, mumlarda ne görüyorsan onu oku:
-• TREND KIRILIMI + RETEST: Düşen trend çizgisi/yapı yukarı kırılıp geri test edilip tutarsa LONG; yükselen trend aşağı kırılıp retest tutarsa SHORT. Kırılımı ıskaladıysan KOVALAMA — retest bekle.
-• RANGE: Range İÇİNDE (yatay sıkışma) işlem AÇMA — yön belirsiz, testere olur. Sadece range NET kırılıp retest gelince kırılım yönüne gir. Range kırılımını tepeden/dipten kovalama.
-• DÖNÜŞ FORMASYONLARI: çift tepe/dip (double top/bottom), omuz-baş-omuz, yükseliş/düşüş engulfing, çekiç (hammer)/pin bar, shooting star/gravestone, three outside up/down — bunlar yapı+konum+akışla teyitliyse güçlüdür, tek başına değil.
-• YAPISAL: MSS (market structure shift), ChoCH (change of character), BOS (break of structure), FVG (fair value gap) doldurma, OTE (%62-79 Fibonacci geri çekilme) — bunlar yön değişimi/devam teyidi verir.
-• DEVAM: güçlü trend + sağlıklı geri çekilme (OTE/FVG'ye) + akış aynı yön = trend yönünde devam girişi. Parabolik/dik uçtan devam KOVALAMA.
-
-═══ KARAR KURALLARI ═══
-• Net, yüksek-olasılıklı kurulum YOKSA → "WAIT". Zorlama. Coinlerin ÇOĞU her an WAIT olmalı — bu doğru, sabır para kazandırır. Bir aydır asıl kayıp "vasat kurulumda zorla girmek"ti.
-• Fırsat varsa yön seç (LONG/SHORT) + giriş + TP + SL ver.
-  - TP: bir sonraki likidite/yapı hedefine (gerçekçi, scalp için genelde %1.5-%6).
-  - SL: yapıyı bozan yere — süpürülen fitil/yapı ötesi. Çok geniş olmasın (genelde %0.8-%2). Asla %3'ü geçme.
-  - R:R en az 1.5, tercihen 2+. Mantıksız R:R verme.
-• ★ CONFIDENCE = KALDIRAÇ ★ — confidence'ın (0-100) DOĞRUDAN kaldıracı belirliyor. Bilinçli ver:
-  - 80+ → sistem 20x açar (mükemmel, çok-kanıtlı setup: yapı+konum+akış+likidite hepsi aynı yönde). Sadece gerçekten kusursuz kurulumda 80+ ver.
-  - 70-79 → 15x (güçlü setup, 1-2 küçük eksik).
-  - 60-69 → 10x (makul ama riskli, tek kanıt zayıf).
-  - <60 → 6x (zayıf) — bu seviyedeysen genelde WAIT daha doğru.
-  Yüksek confidence = yüksek kaldıraç = yüksek risk. Emin değilsen DÜŞÜK ver veya WAIT de. Abartma; her setup 85 değildir.
-• Yüksek kaldıraç var: bir kötü giriş büyük zarar. Şüphedeysen WAIT. "Girmemek" de bir karardır ve çoğu zaman doğru karardır.
-
-SADECE şu JSON ile cevap ver, başka HİÇBİR ŞEY yazma (markdown yok, açıklama yok):
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"kısa Türkçe — mumlarda/veride ne gördüğün ve neden (max 240 karakter)"}
-WAIT ise tp ve sl null olabilir.`;
+SADECE JSON (başka hiçbir şey yok):
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"kısa Türkçe — ne gördüğün (max 200 karakter)"}
+WAIT ise tp/sl null.`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000); // R308K: ham mum payload'u büyük, süre artırıldı
@@ -5091,7 +5050,7 @@ const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 // R308B: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || '').trim();
-const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-haiku-4-5').trim(); // .trim(): env'e kaçan boşluk 404 yapıyordu
+const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-sonnet-4-6').trim(); // .trim(): env'e kaçan boşluk 404 yapıyordu
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
@@ -15588,7 +15547,8 @@ async function runAutoScan(prioritySymbol=null) {
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
 
     // 3. Her coini analiz et
-    for (const coin of scanList) {
+    for (const [scanIdx, coin] of scanList.entries()) {
+      coin.gainerRank = scanIdx + 1; // 1 = en volatil/güçlü gainer (liste volatiliteye göre sıralı)
       if ((await getNewPosCount()) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
       autoScanState.currentSymbol = String(coin.symbol||coin.fullSymbol||'').replace('USDT','');
       autoScanState.checked = (autoScanState.checked||0) + 1;
@@ -16577,6 +16537,7 @@ async function runAutoScan(prioritySymbol=null) {
             const aiData = {
               // ═══ R308K: PUANSIZ — AI ham veriyi okur, botun skoruna mahkum değil ═══
               lastPrice: Number(coin.lastPrice || analysis?.price || 0),
+              gainerRank: coin.gainerRank || null, // R308R: TOP gainer sırası (1=en volatil/güçlü)
               // HAM MUM DİZİLERİ (asıl grafik): 60×5m + 12×15m + 12×1h + 8×4h + 24×btc5m
               candles: analysis?.r308RawCandles || null,
               // HAM METRİKLER (mumda görünmeyen gerçekler — yorum değil, sayı)
