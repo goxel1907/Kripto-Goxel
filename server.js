@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308T_HABER_FRENI_KALKTI';
+const LAZARUS_BUILD = 'R308U_YON_CEVIRME_GUVENLIK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3313,6 +3313,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       mumlar: data.candles || null,   // 60×5m + 12×15m + 12×1h + 8×4h + 24×btc5m ham OHLCV
       rsi: { '5m': data.rsi5m, '15m': data.rsi15m, '1h': data.rsi1h, '4h': data.rsi4h },
       funding: data.funding,
+      shortSqueeze: data.shortSqueeze,  // true=herkes short, MM YUKARI sıkıştırır → SHORT tehlikeli
+      longSqueeze: data.longSqueeze,    // true=herkes long, MM AŞAĞI sıkıştırır → LONG tehlikeli
       oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
       emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
       canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
@@ -3347,6 +3349,7 @@ KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: y
    • Fiyat hâlâ dik gidiyorsa (teyit yok) → bekle, kovalama.
 4) LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stop'lar orada). MM önce oraları süpürür sonra döner. Sweep+reclaim = en güçlü sinyal. TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy.
 5) AKIŞ: delta+emir defteri mum yönünü destekliyor mu? Funding aşırı +(>0.1%)=long kalabalık, aşağı squeeze riski (short lehte); aşırı −(<−0.1%)=yukarı squeeze riski (long lehte).
+   ★ SQUEEZE BAYRAĞI — DİNLE (bunu yok saymak en büyük kayıpları yazdırdı): "shortSqueeze":true gelirse → herkes short olmuş, MM fiyatı YUKARI sıkıştırıp shortları avlayacak. Bu durumda SHORT AÇMA (yukarı ezilirsin, BIO/TAG/ENA böyle kaybetti); ya LONG ya WAIT. "longSqueeze":true gelirse → herkes long, MM AŞAĞI sıkıştırır, LONG AÇMA; ya SHORT ya WAIT. Squeeze bayrağı o yönde işlemi VETO eder — ne kadar iyi görünürse görünsün, squeeze yönüne karşı gitme.
 
 ARAÇ KUTUN (kural değil, hatırlatma — grafiğe bak, ne görüyorsan onu oku): trend kırılımı+retest; range içinde girme, kırılım+retest bekle; OB (bearish=düşüş öncesi son yeşil mum, bullish=yükseliş öncesi son kırmızı mum) reddi; üçgen/takoz=kırılımı bekle; engulfing/çekiç/shooting star/çift tepe-dip; MSS/ChoCH/BOS/FVG/OTE; Wyckoff (tepede dağıtım=short, dipte toplama=long); trend devamı (geri çekilmede gir, parabolik uçtan değil). Kalıba sıkışma — mumlar ne diyorsa o.
 
@@ -16547,6 +16550,10 @@ async function runAutoScan(prioritySymbol=null) {
               rsi5m: analysis?.timeframes?.['5m']?.rsi, rsi15m: analysis?.timeframes?.['15m']?.rsi,
               rsi1h: analysis?.timeframes?.['1h']?.rsi, rsi4h: analysis?.timeframes?.['4h']?.rsi,
               funding: analysis?.funding?.current,
+              // R308V: SQUEEZE sinyali (bot hesaplıyor, AI'dan saklanıyordu — BIO/TAG/MITO/ENA kayıplarının ortak sebebi)
+              // shortSqueeze=herkes short→MM YUKARI sıkıştırır (SHORT tehlikeli). longSqueeze=herkes long→MM AŞAĞI sıkıştırır (LONG tehlikeli).
+              shortSqueeze: !!(decisionChain?.r111ShortSqueeze),
+              longSqueeze: !!(decisionChain?.r111LongSqueeze),
               oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
               orderBookImbalance: analysis?.orderBook?.imbalance,
               cvdDelta: analysis?.r125OrderFlow?.deltaPct ?? null,
@@ -16593,11 +16600,13 @@ async function runAutoScan(prioritySymbol=null) {
                   continue;
                 }
                 // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
+                let r308AiFlippedDir = false;
                 if (ai.side !== recommendation) {
                   logAuto(`🔄 ${coin.symbol} AI bağımsız yön: bot ${recommendation} demişti, AI ${ai.side} okudu — AI'nın kararı uygulanıyor`);
                   recommendation = ai.side; // R308K: AI yön otoritesi
                   isLong = ai.side === 'LONG'; isShort = ai.side === 'SHORT';
                   score = ai.side === 'LONG' ? longScore : shortScore;
+                  r308AiFlippedDir = true;
                 }
                 // ═══ R308K: AI'NIN TP/SL PLANINI UYGULA ═══
                 // AI TP'yi likidite hedefine, SL'i yapıya göre koyuyor (botun sabit %'sinden iyi).
@@ -16646,7 +16655,25 @@ async function runAutoScan(prioritySymbol=null) {
                           logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} geniş → kaldıraç ${oldLev}x→${executeLeverage}x (ROI risk ≤${maxRoiRisk}%)`);
                         }
                       } catch(_levSafeE) {}
+                    } else {
+                      // ═══ R308U KRİTİK GÜVENLİK: AI'nın TP/SL'i yönle TUTARSIZ ═══
+                      // dirOk=false → AI planı bu yöne uymuyor. Yön ÇEVRİLDİYSE eski targetPrice/stopPrice
+                      // KARŞI yöne aitti (ölümcül: SHORT'ta TP yukarıda/SL aşağıda). ASLA eski değerle açma.
+                      if (r308AiFlippedDir) {
+                        logAuto(`⛔ ${coin.symbol} R308U İPTAL: AI yön çevirdi (${ai.side}) ama TP/SL yönle tutarsız (TP${aiTp} SL${aiSl} entry${aiEntry}) — eski karşı-yön TP/SL ile açmak ölümcül, emir AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R308U: AI yön çevirdi ama plan tutarsız — güvenlik iptali`, {rec:ai.side, score, aiBrain:ai});
+                        continue;
+                      }
+                      // Yön çevrilmedi (bot=AI aynı yön) ama AI planı tutarsız → AI planını yok say,
+                      // botun mevcut targetPrice/stopPrice'ı (zaten doğru yönde) kalsın. Sadece log.
+                      logAuto(`⚠️ ${coin.symbol} AI TP/SL tutarsız ama yön aynı — botun TP/SL planı korunuyor`);
                     }
+                  } else if (r308AiFlippedDir) {
+                    // ═══ R308U: AI yön çevirdi AMA TP/SL sayısal değil (eksik/0) ═══
+                    // Eski targetPrice/stopPrice karşı yöne ait → ölümcül. Açma.
+                    logAuto(`⛔ ${coin.symbol} R308U İPTAL: AI yön çevirdi (${ai.side}) ama geçerli TP/SL vermedi (entry${ai.entry} tp${ai.tp} sl${ai.sl}) — emir AÇILMADI`);
+                    markAutoSkip(coin.symbol, `R308U: AI yön çevirdi ama TP/SL eksik — güvenlik iptali`, {rec:ai.side, score, aiBrain:ai});
+                    continue;
                   }
                 } catch(_aiPlanE) { logAuto(`⚠️ ${coin.symbol} AI TP/SL uygulama hatası: ${String(_aiPlanE?.message||_aiPlanE).slice(0,60)}`); }
                 // Panel yön izni (kullanıcı "sadece düşüş/yükseliş" dediyse uy) — bu güvenlik, korunur
