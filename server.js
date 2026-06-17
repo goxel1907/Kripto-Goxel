@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308S_YUKSELEN_BICAK';
+const LAZARUS_BUILD = 'R308T_HABER_FRENI_KALKTI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15509,8 +15509,8 @@ async function runAutoScan(prioritySymbol=null) {
         fetch(`http://localhost:${PORT}/api/market-mood`).then(r=>r.json()),
       ]);
       if (calRes.status==='fulfilled' && calRes.value?.dangerZone) {
-        logAuto('⛔ Haber saati — tarama durduruldu: ' + (calRes.value.todayEvents||[]).map(e=>e.event).join(', '));
-        return;
+        // R308T: Haber saati TARAMAYI DURDURMUYOR — sadece bilgi logu. AI zaten her coini kendi okuyor.
+        logAuto('📰 Haber saati (bilgi): ' + (calRes.value.todayEvents||[]).map(e=>e.event).join(', ') + ' — tarama devam ediyor');
       }
       if (fgRes.status==='fulfilled') {
         fgSignal = fgRes.value?.signal || 'NEUTRAL';
