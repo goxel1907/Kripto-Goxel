@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308R_GAINER_CIFT_YON';
+const LAZARUS_BUILD = 'R308S_YUKSELEN_BICAK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3329,14 +3329,17 @@ Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kendi kar
 
 VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(24). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde.
 
-═══ TEK PAHALI HATA — UNUTMA ═══
-Bu sistemde gerçek parayı SADECE şu kaybettirdi: düşüş trendinde "RSI düşük, dip" deyip LONG açmak (düşen bıçak). 4h+1h net düşüşteyse (LH/LL) RSI 20-30 oversold diye LONG AÇMA — önce net dönüş teyidi gör (ChoCH yukarı + reclaim + delta alışa döndü). Tersi de geçerli: net yükselişte tepeden kör SHORT açma. KURAL: trend yönünde rahat gir; trende karşı SADECE teyitle.
+═══ İKİ PAHALI HATA — UNUTMA (gerçek parayı bunlar kaybettirdi) ═══
+Bu sistemde zararların ~tamamı şu İKİ simetrik hatadan: TRENDE KARŞI teyitsiz giriş.
+① DÜŞEN BIÇAK (dip-LONG): Düşüş trendinde "RSI düşük, dip" deyip LONG açmak. HOME -17%, HMSTR -14%, BABY -11%. 4h+1h net düşüşteyse (LH/LL) RSI 20-30 oversold diye LONG AÇMA — düşüşte "dip" bir seviye değil süreçtir.
+② YÜKSELEN BIÇAK (tepe-SHORT): Yükseliş trendinde "RSI yüksek, tepe" deyip SHORT açmak. BIO -22%. 4h+1h net yükselişteyse (HH/HL) RSI 70-80 diye SHORT AÇMA — yükselişte "tepe" bir seviye değil süreçtir; küçük geri çekilme dönüş demek değil.
+KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: yapı kırılımı (LONG için ChoCH yukarı / SHORT için ChoCH aşağı) + sweep&reclaim + akış (delta) o yöne döndü. Bu teyit YOKSA → ya trend yönünde gir ya WAIT. Tek bir küçük geri çekilme veya aşırı RSI, dönüş kanıtı DEĞİLDİR. Bu iki ders zararların hepsini önlerdi.
 
 ═══ NASIL OKURSUN (hızlı) ═══
 1) BU COİN BİR TOP GAINER — "gainerSira" = TOP24 volatil liste sırası (1 = en güçlü/en hareketli). Bu coinler zaten KENDİ momentumlarıyla listenin tepesine çıkmış; o an piyasanın parası onlara akıyor. Özellikle ilk 3 sıra = o anın en güçlüleri.
    • Bu güçlü gainer'lar BTC'den BAĞIMSIZ hareket eder — BTC düşerken bile kendi momentumlarıyla yükselebilir. Bu çok olur. O yüzden coin kendi yapısında net yükseliş gösteriyorsa (HH/HL, güçlü hacim) BTC kırmızı diye LONG'u reddetme; coin'in kendi gücü önceliklidir.
    • BTC'yi sadece coin'in kendi yönü BELİRSİZken ek bağlam (tie-breaker) olarak kullan, mutlak patron olarak değil. Coin'in mumları nettse coin konuşur.
-   • ★ İKİ YÖNLÜ FIRSAT ★: Bu coinler yükseldiği gibi MÜKEMMEL SHORT da verir. Dik/parabolik çıkan sert düşer. Bir gainer aşırı uzadıysa (parabolik, RSI çok yüksek, üst likiditeyi süpürüp fitil bıraktı, momentum tükeniyor, dağıtım) → bu en kârlı SHORT setupların. 5m'de tepe patlaması hızlı ve büyük olur. Yükselişi de düşüşü de avla.
+   • ★ İKİ YÖNLÜ FIRSAT ★: Bu coinler yükseldiği gibi MÜKEMMEL SHORT da verir. Dik/parabolik çıkan sert düşer. AMA SHORT için TEYİT şart — sadece "parabolik + RSI yüksek" YETMEZ (bu yükselen bıçaktır, BIO -22% böyle oldu). Gerçek tepe-short için: üst likiditeyi süpürüp fitil bıraktı + kapanış altta (reddedildi) VE momentum kırıldı (ChoCH aşağı / düşüş engulfing / delta satışa döndü). Bu teyitler varsa → en kârlı SHORT. Yoksa yükseliş sürüyor demektir, SHORT açma, bekle. Yükselişi de düşüşü de avla ama ikisinde de teyit iste.
 2) YAPI: 4h/1h yön verir (HH/HL=yukarı, LH/LL=aşağı), 5m/15m zamanlama. Fiyat tepede mi (premium), dipte mi (discount), ortada mı?
 3) ★ ASIL FIRSAT ★ — volatil coin tepe/dip yapıp sert döner, avın bu:
    • TEPEDE SHORT: premium/RSI yüksek + direnci/üst likiditeyi test edip KIRAMADI (üst fitil reddi) + delta satışa döndü → AT. En kârlı setup.
