@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308U_YON_CEVIRME_GUVENLIK';
+const LAZARUS_BUILD = 'R308X_KARNE_AI_DETAY';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3347,6 +3347,12 @@ KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: y
    • TEPEDE SHORT: premium/RSI yüksek + direnci/üst likiditeyi test edip KIRAMADI (üst fitil reddi) + delta satışa döndü → AT. En kârlı setup.
    • DİPTE LONG: discount/RSI düşük + alt likiditeyi süpürüp GERİ ALDI (reclaim) + delta alışa döndü → AT.
    • Fiyat hâlâ dik gidiyorsa (teyit yok) → bekle, kovalama.
+   ★ ZAMANLAMA — ERKEN GİRME, AMA TRENİ DE KAÇIRMA (kanıtlandı: ID/SENT/PORTAL/BIO erken girişten kaybetti) ★
+   Kırılım/dönüş gördüğünde MM çoğu zaman ÖNCE ters yöne taşır (stop avı / likidite toplama), SONRA gerçek yöne gider. İlk kırılım anında körü körüne girersen bu taşımada SL yersin.
+   - GİRMEDEN ÖNCE SOR: yakında karşı likidite (BSL/SSL) var mı? Varsa MM önce oraya taşıyabilir → o süpürme bitene/reclaim olana kadar BEKLE, sonra gir (ikinci giriş ilkinden iyidir).
+   - İDEAL GİRİŞ: kırılan seviyeye/OB/FVG'ye geri çekilme (retest) + tutması, VEYA karşı likidite süpürülüp senin yönüne reclaim. Bunlar "MM avını yaptı, sıra gerçek harekette" demektir.
+   - AMA TRENİ KAÇIRMA: Eğer teyit ZATEN güçlü ve tamsa (sweep+reclaim olmuş + delta net senin yönünde + yapı kırılmış + karşı likidite uzakta/süpürülmüş) → BEKLEME, AT. Her setup retest yapmaz; güçlü momentum kırılımında retest beklemek treni kaçırtır. "Mükemmel retest" hayaliyle net fırsatı kaçırma.
+   - KARAR PUSULASI: Karşı likidite YAKIN + teyit ZAYIF → bekle (MM taşıyacak). Karşı likidite UZAK/SÜPÜRÜLMÜŞ + teyit GÜÇLÜ → gir (tren kalkıyor). Grafik yapısı asıldır; delta/funding onu DESTEKLERSE gir, ÇELİŞİRSE veri seni kandırıyor olabilir, grafiğe güven.
 4) LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stop'lar orada). MM önce oraları süpürür sonra döner. Sweep+reclaim = en güçlü sinyal. TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy.
 5) AKIŞ: delta+emir defteri mum yönünü destekliyor mu? Funding aşırı +(>0.1%)=long kalabalık, aşağı squeeze riski (short lehte); aşırı −(<−0.1%)=yukarı squeeze riski (long lehte).
    ★ SQUEEZE BAYRAĞI — DİNLE (bunu yok saymak en büyük kayıpları yazdırdı): "shortSqueeze":true gelirse → herkes short olmuş, MM fiyatı YUKARI sıkıştırıp shortları avlayacak. Bu durumda SHORT AÇMA (yukarı ezilirsin, BIO/TAG/ENA böyle kaybetti); ya LONG ya WAIT. "longSqueeze":true gelirse → herkes long, MM AŞAĞI sıkıştırır, LONG AÇMA; ya SHORT ya WAIT. Squeeze bayrağı o yönde işlemi VETO eder — ne kadar iyi görünürse görünsün, squeeze yönüne karşı gitme.
@@ -5719,6 +5725,7 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
     leverage:Number(state?.leverage||autoConfig?.leverage||0)||null,
     marginUSDT:safeNum(autoConfig?.usdtAmount,2),
     entryReason:state?.openReason||`${normalizeSide(side)} açıldı`,
+    aiSnapshot: state?.aiSnapshot || null,  // R308X: AI'nın açılış anındaki kararı + piyasa durumu (karne detayı)
     score:state?.score||null, tier:state?.tier||null,
     exitReason:null,resultNote:null,pnlUSDT:null,roiPct:null,
     closedAt:null,closedAtTR:null,cooldownMin:null,
@@ -16821,6 +16828,42 @@ async function runAutoScan(prioritySymbol=null) {
           });
           try {
             const _stOpen = trailingState.get(coin.fullSymbol) || {};
+            // ═══ R308X: KARNE İÇİN ZENGİN AI ANLIK GÖRÜNTÜSÜ ═══
+            // İşlem açıldığı andaki AI kararı + piyasa durumu. Sonra "AI ne gördü, nerede yanıldı/doğru yaptı" diye bakılır.
+            try {
+              const _ai = decisionChain?.aiBrain || {};
+              const _tf = analysis?.timeframes || {};
+              _stOpen.aiSnapshot = {
+                // AI'nın kararı ve gerekçesi
+                aiSide: _ai.side || recommendation,
+                aiConfidence: Number(_ai.confidence || 0) || null,
+                aiReasoning: String(_ai.reasoning || '').slice(0, 600),  // AI grafiği nasıl okudu — asıl değerli kısım
+                aiEntry: _ai.entry ?? null, aiTp: _ai.tp ?? null, aiSl: _ai.sl ?? null,
+                aiFlippedBotDir: (_ai.side && _ai.side !== recommendation) ? `bot ${recommendation}→AI ${_ai.side}` : null,
+                // Açılış anındaki HAM PİYASA DURUMU (AI bunlara bakarak karar verdi)
+                rsi: { '5m': _tf['5m']?.rsi ?? null, '15m': _tf['15m']?.rsi ?? null, '1h': _tf['1h']?.rsi ?? null, '4h': _tf['4h']?.rsi ?? null },
+                funding: analysis?.funding?.current ?? null,
+                delta: analysis?.r125OrderFlow?.deltaPct ?? analysis?.cvd?.momentum ?? null,
+                oiChange1h: analysis?.openInterest?.change1h ?? null,
+                orderBookImbalance: analysis?.orderBook?.imbalance ?? null,
+                atrPct: analysis?.leverage?.atrPct ?? null,
+                // SQUEEZE & LİKİDİTE (timing/yön hataları buradan görülür)
+                shortSqueeze: !!(decisionChain?.r111ShortSqueeze),
+                longSqueeze: !!(decisionChain?.r111LongSqueeze),
+                liqLevels: analysis?.liquidityLevels ? {
+                  ust: (analysis.liquidityLevels.sellLiq||[]).slice(0,2),
+                  alt: (analysis.liquidityLevels.buyLiq||[]).slice(0,2)
+                } : null,
+                // KALDIRAÇ & BAĞLAM
+                leverage: Number(executeLeverage) || null,
+                leverageNote: String(leverageNote || '').slice(0, 200),
+                gainerRank: coin.gainerRank || null,
+                marketCtx: String(decisionChain?.r140Summary || '').slice(0, 150),
+                openPrice: orderResp.executedPrice || analysis.price || null,
+                snapshotAt: Date.now()
+              };
+              trailingState.set(coin.fullSymbol, _stOpen);
+            } catch(_snapE) { logAuto(`⚠️ ${coin.symbol} AI snapshot yazılamadı: ${String(_snapE?.message||_snapE).slice(0,60)}`); }
             recordTradeOpen(coin.fullSymbol, recommendation, orderResp.executedPrice||analysis.price, orderResp.details?.quantity||null, _stOpen);
             const _realQtyForKnown = Math.abs(Number(orderResp.details?.quantity || orderResp.quantity || 0)) || 1;
             rememberOpenPositionForReentry({symbol:coin.fullSymbol, positionAmt: recommendation==='LONG' ? _realQtyForKnown : -_realQtyForKnown, entryPrice:orderResp.executedPrice||analysis.price, leverage:parseInt(executeLeverage)||parseInt(leverage)||1}, _stOpen);
