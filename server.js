@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308Y_GUVEN64_LEV10_DETAY';
+const LAZARUS_BUILD = 'R309A_MSS_GECERLILIK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3347,6 +3347,11 @@ KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: y
    • TEPEDE SHORT: premium/RSI yüksek + direnci/üst likiditeyi test edip KIRAMADI (üst fitil reddi) + delta satışa döndü → AT. En kârlı setup.
    • DİPTE LONG: discount/RSI düşük + alt likiditeyi süpürüp GERİ ALDI (reclaim) + delta alışa döndü → AT.
    • Fiyat hâlâ dik gidiyorsa (teyit yok) → bekle, kovalama.
+   ★ MSS/YAPI KIRILIMI GERÇEK Mİ, TUZAK MI? (ENA -%15 dersi: MSS geldi ama veri yoktu, MM ters çekti) ★
+   MSS/ChoCH/BOS görmek TEK BAŞINA yeterli DEĞİL. Bir yapı kırılımının DEVAM etmesi için arkasında CİDDİ VERİ olmalı: delta kalıcı o yönde (anlık değil, son birkaç mum), hacim artışı, OB/FVG teyidi, akış aynı yön.
+   Bu veri desteği YOKSA → MSS bir TUZAKTIR. MM o kırılımı devam ettirmez; mutlaka şu iki hamleden birini yapar: (1) ters yöndeki LİKİDİTEYE gider (üst BSL / alt SSL süpürür), VEYA (2) kırılımdan önceki SON İVME MUMUNUN bölgesine çeker (düşüşte son yükselen yeşil mum / yükselişte son düşen kırmızı mum = OB bölgesi), oradan gerçek yönü başlatır.
+   KURAL: MSS gördün ama veri zayıfsa → HEMEN o yöne girme. MM'in ters hamlesini (likidite süpürme VEYA son-ivme-mumu retest) BEKLE, o hamle + reclaim görünce gir. Düşüş MSS'inde de yükseliş MSS'inde de aynen geçerli. Veri GÜÇLÜyse MSS gerçektir, beklemeden devam yönünde gir.
+   Pusula: MSS + güçlü veri = gerçek, gir. MSS + zayıf veri = tuzak, MM ters çekecek, likidite/OB retestini bekle.
    ★ ZAMANLAMA — ERKEN GİRME, AMA TRENİ DE KAÇIRMA (kanıtlandı: ID/SENT/PORTAL/BIO erken girişten kaybetti) ★
    Kırılım/dönüş gördüğünde MM çoğu zaman ÖNCE ters yöne taşır (stop avı / likidite toplama), SONRA gerçek yöne gider. İlk kırılım anında körü körüne girersen bu taşımada SL yersin.
    - GİRMEDEN ÖNCE SOR: yakında karşı likidite (BSL/SSL) var mı? Varsa MM önce oraya taşıyabilir → o süpürme bitene/reclaim olana kadar BEKLE, sonra gir (ikinci giriş ilkinden iyidir).
@@ -16561,8 +16566,8 @@ async function runAutoScan(prioritySymbol=null) {
               funding: analysis?.funding?.current,
               // R308V: SQUEEZE sinyali (bot hesaplıyor, AI'dan saklanıyordu — BIO/TAG/MITO/ENA kayıplarının ortak sebebi)
               // shortSqueeze=herkes short→MM YUKARI sıkıştırır (SHORT tehlikeli). longSqueeze=herkes long→MM AŞAĞI sıkıştırır (LONG tehlikeli).
-              shortSqueeze: !!(decisionChain?.r111ShortSqueeze),
-              longSqueeze: !!(decisionChain?.r111LongSqueeze),
+              shortSqueeze: !!(decisionChain?.r111ShortSqueeze || decisionChain?.r111?.shortSqueeze || decisionChain?.r190Edge?.squeeze),
+              longSqueeze: !!(decisionChain?.r111LongSqueeze || decisionChain?.r111?.longSqueeze),
               oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
               orderBookImbalance: analysis?.orderBook?.imbalance,
               cvdDelta: analysis?.r125OrderFlow?.deltaPct ?? null,
@@ -16861,8 +16866,8 @@ async function runAutoScan(prioritySymbol=null) {
                 orderBookImbalance: analysis?.orderBook?.imbalance ?? null,
                 atrPct: analysis?.leverage?.atrPct ?? null,
                 // SQUEEZE & LİKİDİTE (timing/yön hataları buradan görülür)
-                shortSqueeze: !!(decisionChain?.r111ShortSqueeze),
-                longSqueeze: !!(decisionChain?.r111LongSqueeze),
+                shortSqueeze: !!(decisionChain?.r111ShortSqueeze || decisionChain?.r111?.shortSqueeze || decisionChain?.r190Edge?.squeeze),
+                longSqueeze: !!(decisionChain?.r111LongSqueeze || decisionChain?.r111?.longSqueeze),
                 liqLevels: analysis?.liquidityLevels ? {
                   ust: (analysis.liquidityLevels.sellLiq||[]).slice(0,2),
                   alt: (analysis.liquidityLevels.buyLiq||[]).slice(0,2)
