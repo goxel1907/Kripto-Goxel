@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309K_PROMPT_SADE';
+const LAZARUS_BUILD = 'R309L_VOLATILITE_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -6021,6 +6021,16 @@ async function scanVolatility() {
   try {
 
     const now = Date.now();
+    // ═══ R309L KRİTİK FIX (sessiz hata) ═══
+    // ESKİ HATA: bu fonksiyon tanımsız bir 'tickers' değişkenine bakıyordu → her çağrıda
+    // ReferenceError fırlatıp catch tarafından sessizce yutuluyordu → volatilityStore.coins
+    // HİÇ güncellenmiyordu → TOP24 listesi gerçek volatil coinler değil, bayat/yanlış kaynak.
+    // DÜZELTME: diğer tüm fonksiyonların kullandığı futures_tickers cache'inden besle (8362/8459 ile aynı).
+    const tickers = await cached('futures_tickers', FUTURES_TICKERS_CACHE_MS, () => bPub('/fapi/v1/ticker/24hr'));
+    if (!Array.isArray(tickers) || tickers.length === 0) {
+      console.log('[VOLATILITE] futures_tickers boş/alınamadı — liste güncellenmedi');
+      return;
+    }
     const scored = tickers
       .filter(t => t.symbol.endsWith('USDT') &&
         parseFloat(t.quoteVolume) > 20000000 && // min 20M hacim
