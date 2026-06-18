@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309A_MSS_GECERLILIK';
+const LAZARUS_BUILD = 'R309B_AILEV_TABAN10';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16651,20 +16651,23 @@ async function runAutoScan(prioritySymbol=null) {
                       try {
                         const aiConf = Number(ai.confidence || 0);
                         const panelMax = Math.max(1, parseInt(cfg.vurKacMaxLev || leverage || 20) || 20);
-                        // executeLeverage bu noktada zaten Binance izinli + panel ile sınırlanmış → bunu ÜST TAVAN kabul et
+                        // R309B: AI tabanı R151 'yeni coin' düşüşünü EZER (kullanıcı talimatı: AI 64+ güvenle açtıysa min 10x).
+                        // binancePanelCap'i AI tabanından ÇIKARDIK — sadece panelMax (kullanıcı tavanı) + Binance gerçek limiti korunur.
+                        // Binance'in o coin için fiziksel max kaldıracı (örn bazı coinlerde 25x) panelMax ile zaten sınırlı.
                         const binancePanelCap = Math.max(1, executeLeverage);
                         let aiTargetLev;
                         if (aiConf >= 80)      aiTargetLev = 20;
                         else if (aiConf >= 74) aiTargetLev = 15;
                         else if (aiConf >= 70) aiTargetLev = 12;
-                        else                   aiTargetLev = 10;  // R308Y: taban 10x (64-69 güven). 64 altı zaten reddedildi. Düşük kaldıraç=güvensizlik=açma.
-                        // AI hedefi: kademe ile sınırla ama Binance/panel tavanını ASLA aşma
-                        aiTargetLev = Math.min(aiTargetLev, panelMax, binancePanelCap);
+                        else                   aiTargetLev = 10;  // R308Y: taban 10x (64-69 güven). 64 altı zaten reddedildi.
+                        // R309B: AI hedefini SADECE panelMax (kullanıcı tavanı) ile sınırla — R151'in düşürdüğü binancePanelCap'i taban için DİKKATE ALMA.
+                        // Yani R151 6x'e düşürse bile AI 10x diyorsa 10x açılır (panelMax izin verdiği sürece).
+                        aiTargetLev = Math.min(aiTargetLev, panelMax);
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
-                          leverageNote += ` · R308M AI güven ${aiConf} → ${oldAiLev}x→${executeLeverage}x`;
-                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (güven yüksekse agresif, Binance tavanı ${binancePanelCap}x korunur)`);
+                          leverageNote += ` · R309B AI güven ${aiConf} taban → ${oldAiLev}x→${executeLeverage}x (R151 düşüşü ezildi)`;
+                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R309B: AI tabanı min 10x, R151 yeni-coin düşüşü ezildi, panel tavanı ${panelMax}x)`);
                         }
                       } catch(_aiLevE) { logAuto(`⚠️ ${coin.symbol} AI kaldıraç hatası: ${String(_aiLevE?.message||_aiLevE).slice(0,60)}`); }
                       // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
