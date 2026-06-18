@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309B_AILEV_TABAN10';
+const LAZARUS_BUILD = 'R309D_STOP_AVI_FIRSAT';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3315,6 +3315,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       funding: data.funding,
       shortSqueeze: data.shortSqueeze,  // true=herkes short, MM YUKARI sıkıştırır → SHORT tehlikeli
       longSqueeze: data.longSqueeze,    // true=herkes long, MM AŞAĞI sıkıştırır → LONG tehlikeli
+      altSupurmeYapildi: data.altSupurmeYapildi,  // alt likidite/SSL süpürüldü+reclaim → LONG fırsatı (MM avını yaptı)
+      ustSupurmeYapildi: data.ustSupurmeYapildi,  // üst likidite/BSL süpürüldü+reddedildi → SHORT fırsatı
       oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
       emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
       canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
@@ -3352,6 +3354,12 @@ KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: y
    Bu veri desteği YOKSA → MSS bir TUZAKTIR. MM o kırılımı devam ettirmez; mutlaka şu iki hamleden birini yapar: (1) ters yöndeki LİKİDİTEYE gider (üst BSL / alt SSL süpürür), VEYA (2) kırılımdan önceki SON İVME MUMUNUN bölgesine çeker (düşüşte son yükselen yeşil mum / yükselişte son düşen kırmızı mum = OB bölgesi), oradan gerçek yönü başlatır.
    KURAL: MSS gördün ama veri zayıfsa → HEMEN o yöne girme. MM'in ters hamlesini (likidite süpürme VEYA son-ivme-mumu retest) BEKLE, o hamle + reclaim görünce gir. Düşüş MSS'inde de yükseliş MSS'inde de aynen geçerli. Veri GÜÇLÜyse MSS gerçektir, beklemeden devam yönünde gir.
    Pusula: MSS + güçlü veri = gerçek, gir. MSS + zayıf veri = tuzak, MM ters çekecek, likidite/OB retestini bekle.
+   ★★ MM STOP AVI = EN BÜYÜK FIRSAT (5m'de EN SIK kalıp — bunu ustalaş, kârın buradan gelir) ★★
+   5m'de MM sürekli şunu yapar (range/konsolidasyonda defalarca): bir tarafın likiditesini/stoplarını süpürür → ters uzun mum → gerçek yön. İKİ tip:
+   (A) ALT SÜPÜRME → LONG fırsatı: Fiyat alttaki desteği/SSL'i/long-stopları + son düşen kırmızı mumun dibini süpürdü (iğne/fitil aşağı), AMA kapanış geri yukarı (reclaim) + delta alışa döndü → MM aşağı avını yaptı, şimdi YUKARI itecek. LONG AT.
+   (B) ÜST SÜPÜRME → SHORT fırsatı: Fiyat üstteki direnci/BSL'i/short-stopları + son yükselen yeşil mumun tepesini süpürdü (iğne/fitil yukarı), AMA kapanış geri aşağı (reddedildi) + delta satışa döndü → MM yukarı avını yaptı, şimdi AŞAĞI itecek. SHORT AT.
+   ANAHTAR: Süpürme + REDDETME/RECLAIM + delta dönüşü ÜÇÜ birlikte = MM avını tamamladı, ters hareket lehine, EN YÜKSEK olasılıklı 5m girişi. Bu üçü yoksa süpürme devam edebilir, bekle.
+   TUZAK AYRIMI: Süpürme olmadan fiyatın bir yöne gitmesi (sadece kırılım) = MM henüz avlamadı, tehlikeli. Asıl güvenli giriş, MM avını YAPTIKTAN sonradır (stop avı bitti, artık o yönde yakıt kalmadı).
    ★ ZAMANLAMA — ERKEN GİRME, AMA TRENİ DE KAÇIRMA (kanıtlandı: ID/SENT/PORTAL/BIO erken girişten kaybetti) ★
    Kırılım/dönüş gördüğünde MM çoğu zaman ÖNCE ters yöne taşır (stop avı / likidite toplama), SONRA gerçek yöne gider. İlk kırılım anında körü körüne girersen bu taşımada SL yersin.
    - GİRMEDEN ÖNCE SOR: yakında karşı likidite (BSL/SSL) var mı? Varsa MM önce oraya taşıyabilir → o süpürme bitene/reclaim olana kadar BEKLE, sonra gir (ikinci giriş ilkinden iyidir).
@@ -14048,7 +14056,18 @@ async function managePosition(apiKey, apiSecret, pos) {
     // TRAILING: kârdayken sadece zirveden BÜYÜK geri verme (ROI %40) kapatsın — kâr taşı
     if (inProfit) {
       const givebackFromPeakRatio = Number(state.peakPnl || 0) > 0 ? givebackRoi / Number(state.peakPnl) : 0;
-      if (givebackFromPeakRatio >= 0.40 && givebackRoi >= 3) { exitScore += 3; reasons.push(`zirveden %${(givebackFromPeakRatio*100).toFixed(0)} geri verildi — kâr kilidi`); }
+      // R309C AKILLI KÂR KORUMA (MITO dersi: +%6.57 zirve yaptı, kâr geri verildi).
+      // Zirve ne kadar yüksekse geri verme toleransı o kadar DÜŞÜK — büyük kazancı sıkı koru, küçüğe nefes ver.
+      const peak = Number(state.peakPnl || 0);
+      let giveCap, minGive;
+      if (peak >= 12)      { giveCap = 0.20; minGive = 2.5; }  // büyük kâr: zirveden %20 geri verince kilitle
+      else if (peak >= 8)  { giveCap = 0.25; minGive = 2.0; }
+      else if (peak >= 5)  { giveCap = 0.30; minGive = 1.5; }  // MITO bandı: %5+ zirve → %30 geri verme kilidi
+      else                 { giveCap = 0.40; minGive = 3.0; }  // küçük kâr (%4-5): eski gevşek, nefes payı
+      if (givebackFromPeakRatio >= giveCap && givebackRoi >= minGive) {
+        exitScore += 3;
+        reasons.push(`zirveden %${(givebackFromPeakRatio*100).toFixed(0)} geri verildi (zirve %${peak.toFixed(1)} ROI) — akıllı kâr kilidi`);
+      }
     } else {
       if (givebackRoi >= 5) { exitScore += 1; reasons.push(`kârdan geri verme ROI %${givebackRoi.toFixed(1)}`); }
       if (givebackRoi >= 10) { exitScore += 1.5; }
@@ -14385,7 +14404,10 @@ async function managePosition(apiKey, apiSecret, pos) {
       (pnlPct >= 18 && r91Brain.exitScore >= 3.0) ||
       (pnlPct >= 12 && r91Brain.exitScore >= 4.0) ||
       (pnlPct >= 10 && r91Brain.givebackRoi >= 7 && r91Brain.exitScore >= 3.0) ||
-      (pnlPct >= 8  && realProfitPct >= 0.55 && r91Brain.givebackRoi >= 9 && r91Brain.exitScore >= 4.0);
+      (pnlPct >= 8  && realProfitPct >= 0.55 && r91Brain.givebackRoi >= 9 && r91Brain.exitScore >= 4.0) ||
+      // R309C ORTA KÂR BANDI (MITO dersi: +%6.57 zirve yapıp geri verdi, eski kapılar %8 altını kapsamıyordu).
+      // %4-8 ROI arası kâr + zirveden ciddi geri verme + ters akış → kârı koru, kapat.
+      (pnlPct >= 4 && Number(state.peakPnl||0) >= 5 && r91Brain.givebackRoi >= (Number(state.peakPnl||0) * 0.30) && r91Brain.exitScore >= 3.0);
     if (!action && r91ExitNow) {
       action = {
         type:'R97_VUR_KAC_KAPAT', urgency:'HIGH',
@@ -16568,6 +16590,12 @@ async function runAutoScan(prioritySymbol=null) {
               // shortSqueeze=herkes short→MM YUKARI sıkıştırır (SHORT tehlikeli). longSqueeze=herkes long→MM AŞAĞI sıkıştırır (LONG tehlikeli).
               shortSqueeze: !!(decisionChain?.r111ShortSqueeze || decisionChain?.r111?.shortSqueeze || decisionChain?.r190Edge?.squeeze),
               longSqueeze: !!(decisionChain?.r111LongSqueeze || decisionChain?.r111?.longSqueeze),
+              // R309D: MM STOP AVI sinyalleri (bot tespit ediyor, AI'dan saklanıyordu). AI ham mumdan da okur ama bu teyit eder.
+              // altSupurmeYapildi=alt likidite/SSL süpürüldü+reclaim (LONG fırsatı). ustSupurmeYapildi=üst/BSL süpürüldü+reddedildi (SHORT fırsatı).
+              altSupurmeYapildi: !!(decisionChain?.r278SslSwept),
+              ustSupurmeYapildi: !!(decisionChain?.r278BslSwept),
+              altSupurmeKalite: Number(decisionChain?.r278SslSweepQ || 0),
+              ustSupurmeKalite: Number(decisionChain?.r278BslSweepQ || 0),
               oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
               orderBookImbalance: analysis?.orderBook?.imbalance,
               cvdDelta: analysis?.r125OrderFlow?.deltaPct ?? null,
