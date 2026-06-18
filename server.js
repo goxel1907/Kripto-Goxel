@@ -3315,8 +3315,10 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       funding: data.funding,
       shortSqueeze: data.shortSqueeze,  // true=herkes short, MM YUKARI sıkıştırır → SHORT tehlikeli
       longSqueeze: data.longSqueeze,    // true=herkes long, MM AŞAĞI sıkıştırır → LONG tehlikeli
-      altSupurmeYapildi: data.altSupurmeYapildi,  // alt likidite/SSL süpürüldü+reclaim → LONG fırsatı (MM avını yaptı)
-      ustSupurmeYapildi: data.ustSupurmeYapildi,  // üst likidite/BSL süpürüldü+reddedildi → SHORT fırsatı
+      altSupurmeYapildi: data.altSupurmeYapildi,  // SADECE süpürme+RECLAIM TEYİTLİ (q>=3) ise true → MM avı TAMAMLANDI, LONG fırsatı
+      ustSupurmeYapildi: data.ustSupurmeYapildi,  // SADECE süpürme+RED TEYİTLİ (q>=3) ise true → MM avı TAMAMLANDI, SHORT fırsatı
+      altSupurmeSuruyorReclaimYok: data.altSupurmeSuruyorReclaimYok, // alt süpürme başladı AMA reclaim YOK → av SÜRÜYOR, dip oluşmadı, LONG için ERKEN
+      ustSupurmeSuruyorRedYok: data.ustSupurmeSuruyorRedYok,         // üst süpürme başladı AMA red YOK → av SÜRÜYOR, tepe oluşmadı, SHORT için ERKEN
       oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
       emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
       canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
@@ -3335,21 +3337,22 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 
 ═══ İKİ PAHALI HATA — UNUTMA (gerçek parayı bunlar kaybettirdi) ═══
 Bu sistemde zararların ~tamamı şu İKİ simetrik hatadan: TRENDE KARŞI teyitsiz giriş.
-① DÜŞEN BIÇAK (dip-LONG): Düşüş trendinde "RSI düşük, dip" deyip LONG açmak. HOME -17%, HMSTR -14%, BABY -11%. 4h+1h net düşüşteyse (LH/LL) RSI 20-30 oversold diye LONG AÇMA — düşüşte "dip" bir seviye değil süreçtir.
-② YÜKSELEN BIÇAK (tepe-SHORT): Yükseliş trendinde "RSI yüksek, tepe" deyip SHORT açmak. BIO -22%. 4h+1h net yükselişteyse (HH/HL) RSI 70-80 diye SHORT AÇMA — yükselişte "tepe" bir seviye değil süreçtir; küçük geri çekilme dönüş demek değil.
+① DÜŞEN BIÇAK (dip-LONG): Düşüş trendinde "RSI düşük, dip" deyip LONG açmak (geçmişte -11% ila -17% kayıplar). 4h+1h net düşüşteyse (LH/LL) RSI 20-30 oversold diye LONG AÇMA — düşüşte "dip" bir seviye değil süreçtir.
+② YÜKSELEN BIÇAK (tepe-SHORT): Yükseliş trendinde "RSI yüksek, tepe" deyip SHORT açmak (en kötüsü -22%). 4h+1h net yükselişteyse (HH/HL) RSI 70-80 diye SHORT AÇMA — yükselişte "tepe" bir seviye değil süreçtir; küçük geri çekilme dönüş demek değil.
 KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: yapı kırılımı (LONG için ChoCH yukarı / SHORT için ChoCH aşağı) + sweep&reclaim + akış (delta) o yöne döndü. Bu teyit YOKSA → ya trend yönünde gir ya WAIT. Tek bir küçük geri çekilme veya aşırı RSI, dönüş kanıtı DEĞİLDİR. Bu iki ders zararların hepsini önlerdi.
 
 ═══ NASIL OKURSUN (hızlı) ═══
 1) BU COİN BİR TOP GAINER — "gainerSira" = TOP24 volatil liste sırası (1 = en güçlü/en hareketli). Bu coinler zaten KENDİ momentumlarıyla listenin tepesine çıkmış; o an piyasanın parası onlara akıyor. Özellikle ilk 3 sıra = o anın en güçlüleri.
    • Bu güçlü gainer'lar BTC'den BAĞIMSIZ hareket eder — BTC düşerken bile kendi momentumlarıyla yükselebilir. Bu çok olur. O yüzden coin kendi yapısında net yükseliş gösteriyorsa (HH/HL, güçlü hacim) BTC kırmızı diye LONG'u reddetme; coin'in kendi gücü önceliklidir.
    • BTC'yi sadece coin'in kendi yönü BELİRSİZken ek bağlam (tie-breaker) olarak kullan, mutlak patron olarak değil. Coin'in mumları nettse coin konuşur.
-   • ★ İKİ YÖNLÜ FIRSAT ★: Bu coinler yükseldiği gibi MÜKEMMEL SHORT da verir. Dik/parabolik çıkan sert düşer. AMA SHORT için TEYİT şart — sadece "parabolik + RSI yüksek" YETMEZ (bu yükselen bıçaktır, BIO -22% böyle oldu). Gerçek tepe-short için: üst likiditeyi süpürüp fitil bıraktı + kapanış altta (reddedildi) VE momentum kırıldı (ChoCH aşağı / düşüş engulfing / delta satışa döndü). Bu teyitler varsa → en kârlı SHORT. Yoksa yükseliş sürüyor demektir, SHORT açma, bekle. Yükselişi de düşüşü de avla ama ikisinde de teyit iste.
-2) YAPI: 4h/1h yön verir (HH/HL=yukarı, LH/LL=aşağı), 5m/15m zamanlama. Fiyat tepede mi (premium), dipte mi (discount), ortada mı?
+   • ★ İKİ YÖNLÜ FIRSAT ★: Bu coinler yükseldiği gibi MÜKEMMEL SHORT da verir. Dik/parabolik çıkan sert düşer. AMA SHORT için TEYİT şart — sadece "parabolik + RSI yüksek" YETMEZ (bu yükselen bıçaktır, -22% böyle oldu). Gerçek tepe-short için: üst likiditeyi süpürüp fitil bıraktı + kapanış altta (reddedildi) VE momentum kırıldı (ChoCH aşağı / düşüş engulfing / delta satışa döndü). Bu teyitler varsa → en kârlı SHORT. Yoksa yükseliş sürüyor demektir, SHORT açma, bekle. Yükselişi de düşüşü de avla ama ikisinde de teyit iste.
+2) YAPI / ZAMAN DİLİMİ ROLLERİ (KARIŞTIRMA): 4h/1h = YÖN (HH/HL=yukarı, LH/LL=aşağı). 15m = YÖN TEYİDİ + ara yapı (4h/1h yönünü doğruluyor mu, kırılım var mı). 5m = GİRİŞ TETİĞİ. Fiyat tepede mi (premium), dipte mi (discount), ortada mı?
+   ★ KRİTİK: GİRİŞ TETİĞİ (sweep, reclaim, mum formasyonu, ChoCH) SADECE 5m'de (gerekirse 15m teyidiyle) ARANIR. 4h/1h'taki sweep/reclaim TETİK DEĞİL, sadece yön/bağlamdır — 1 adet 4h mum = 48 adet 5m mum; "4h reclaim oldu" dediğinde 5m'de fiyat o reclaim'in TEPESİNE çıkmış olabilir (gerçek kayıp: AI 4h reclaim'i tetik sandı, 5m premium'dan aldı, -%10). KURAL: girmeden 5m'de TAZE tetik gör (son birkaç 5m mumda sweep+reclaim / dönüş mumu / 5m ChoCH). 5m tetik YOKSA — 4h/1h ne kadar güzelse de — BEKLE. Üst TF yönü verir, tetiği 5m verir.
 3) ★ ASIL FIRSAT ★ — volatil coin tepe/dip yapıp sert döner, avın bu:
    • TEPEDE SHORT: premium/RSI yüksek + direnci/üst likiditeyi test edip KIRAMADI (üst fitil reddi) + delta satışa döndü → AT. En kârlı setup.
    • DİPTE LONG: discount/RSI düşük + alt likiditeyi süpürüp GERİ ALDI (reclaim) + delta alışa döndü → AT.
    • Fiyat hâlâ dik gidiyorsa (teyit yok) → bekle, kovalama.
-   ★ MSS/YAPI KIRILIMI GERÇEK Mİ, TUZAK MI? (ENA -%15 dersi: MSS geldi ama veri yoktu, MM ters çekti) ★
+   ★ MSS/YAPI KIRILIMI GERÇEK Mİ, TUZAK MI? (gerçek -%15 dersi: MSS geldi ama veri yoktu, MM ters çekti) ★
    MSS/ChoCH/BOS görmek TEK BAŞINA yeterli DEĞİL. Bir yapı kırılımının DEVAM etmesi için arkasında CİDDİ VERİ olmalı: delta kalıcı o yönde (anlık değil, son birkaç mum), hacim artışı, OB/FVG teyidi, akış aynı yön.
    Bu veri desteği YOKSA → MSS bir TUZAKTIR. MM o kırılımı devam ettirmez; mutlaka şu iki hamleden birini yapar: (1) ters yöndeki LİKİDİTEYE gider (üst BSL / alt SSL süpürür), VEYA (2) kırılımdan önceki SON İVME MUMUNUN bölgesine çeker (düşüşte son yükselen yeşil mum / yükselişte son düşen kırmızı mum = OB bölgesi), oradan gerçek yönü başlatır.
    KURAL: MSS gördün ama veri zayıfsa → HEMEN o yöne girme. MM'in ters hamlesini (likidite süpürme VEYA son-ivme-mumu retest) BEKLE, o hamle + reclaim görünce gir. Düşüş MSS'inde de yükseliş MSS'inde de aynen geçerli. Veri GÜÇLÜyse MSS gerçektir, beklemeden devam yönünde gir.
@@ -3359,8 +3362,9 @@ KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: y
    (A) ALT SÜPÜRME → LONG fırsatı: Fiyat alttaki desteği/SSL'i/long-stopları + son düşen kırmızı mumun dibini süpürdü (iğne/fitil aşağı), AMA kapanış geri yukarı (reclaim) + delta alışa döndü → MM aşağı avını yaptı, şimdi YUKARI itecek. LONG AT.
    (B) ÜST SÜPÜRME → SHORT fırsatı: Fiyat üstteki direnci/BSL'i/short-stopları + son yükselen yeşil mumun tepesini süpürdü (iğne/fitil yukarı), AMA kapanış geri aşağı (reddedildi) + delta satışa döndü → MM yukarı avını yaptı, şimdi AŞAĞI itecek. SHORT AT.
    ANAHTAR: Süpürme + REDDETME/RECLAIM + delta dönüşü ÜÇÜ birlikte = MM avını tamamladı, ters hareket lehine, EN YÜKSEK olasılıklı 5m girişi. Bu üçü yoksa süpürme devam edebilir, bekle.
+   ★ BAYRAK OKUMA (2x SL dersi — bunu karıştırma): "altSupurmeYapildi:true" = süpürme+reclaim TEYİTLİ, av bitti, LONG'a GÜVEN. AMA "altSupurmeSuruyorReclaimYok:true" = fiyat alt likiditeyi süpürdü ama HENÜZ reclaim YOK = MM AVI SÜRÜYOR, dip oluşmadı → LONG AÇMA, düşen bıçaktır, BEKLE (reclaim mumunu gör). Üst için: "ustSupurmeYapildi" güvenli SHORT; "ustSupurmeSuruyorRedYok" = av sürüyor, tepe oluşmadı, SHORT için erken. Bot mumda reclaim görmedi diye bu bayrağı vermiyor — sen ham mumda "süpürdü+geri kapattı" görmeden trende karşı girme.
    TUZAK AYRIMI: Süpürme olmadan fiyatın bir yöne gitmesi (sadece kırılım) = MM henüz avlamadı, tehlikeli. Asıl güvenli giriş, MM avını YAPTIKTAN sonradır (stop avı bitti, artık o yönde yakıt kalmadı).
-   ★ ZAMANLAMA — ERKEN GİRME, AMA TRENİ DE KAÇIRMA (kanıtlandı: ID/SENT/PORTAL/BIO erken girişten kaybetti) ★
+   ★ ZAMANLAMA — ERKEN GİRME, AMA TRENİ DE KAÇIRMA (birçok coin erken girişten kaybetti) ★
    Kırılım/dönüş gördüğünde MM çoğu zaman ÖNCE ters yöne taşır (stop avı / likidite toplama), SONRA gerçek yöne gider. İlk kırılım anında körü körüne girersen bu taşımada SL yersin.
    - GİRMEDEN ÖNCE SOR: yakında karşı likidite (BSL/SSL) var mı? Varsa MM önce oraya taşıyabilir → o süpürme bitene/reclaim olana kadar BEKLE, sonra gir (ikinci giriş ilkinden iyidir).
    - İDEAL GİRİŞ: kırılan seviyeye/OB/FVG'ye geri çekilme (retest) + tutması, VEYA karşı likidite süpürülüp senin yönüne reclaim. Bunlar "MM avını yaptı, sıra gerçek harekette" demektir.
@@ -3368,7 +3372,7 @@ KURAL (iki yön için de): Trende KARŞI işlem SADECE net dönüş teyidiyle: y
    - KARAR PUSULASI: Karşı likidite YAKIN + teyit ZAYIF → bekle (MM taşıyacak). Karşı likidite UZAK/SÜPÜRÜLMÜŞ + teyit GÜÇLÜ → gir (tren kalkıyor). Grafik yapısı asıldır; delta/funding onu DESTEKLERSE gir, ÇELİŞİRSE veri seni kandırıyor olabilir, grafiğe güven.
 4) LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stop'lar orada). MM önce oraları süpürür sonra döner. Sweep+reclaim = en güçlü sinyal. TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy.
 5) AKIŞ: delta+emir defteri mum yönünü destekliyor mu? Funding aşırı +(>0.1%)=long kalabalık, aşağı squeeze riski (short lehte); aşırı −(<−0.1%)=yukarı squeeze riski (long lehte).
-   ★ SQUEEZE BAYRAĞI — DİNLE (bunu yok saymak en büyük kayıpları yazdırdı): "shortSqueeze":true gelirse → herkes short olmuş, MM fiyatı YUKARI sıkıştırıp shortları avlayacak. Bu durumda SHORT AÇMA (yukarı ezilirsin, BIO/TAG/ENA böyle kaybetti); ya LONG ya WAIT. "longSqueeze":true gelirse → herkes long, MM AŞAĞI sıkıştırır, LONG AÇMA; ya SHORT ya WAIT. Squeeze bayrağı o yönde işlemi VETO eder — ne kadar iyi görünürse görünsün, squeeze yönüne karşı gitme.
+   ★ SQUEEZE BAYRAĞI — DİNLE (bunu yok saymak en büyük kayıpları yazdırdı): "shortSqueeze":true gelirse → herkes short olmuş, MM fiyatı YUKARI sıkıştırıp shortları avlayacak. Bu durumda SHORT AÇMA (yukarı ezilirsin, birçok büyük kayıp böyle oldu); ya LONG ya WAIT. "longSqueeze":true gelirse → herkes long, MM AŞAĞI sıkıştırır, LONG AÇMA; ya SHORT ya WAIT. Squeeze bayrağı o yönde işlemi VETO eder — ne kadar iyi görünürse görünsün, squeeze yönüne karşı gitme.
 
 ARAÇ KUTUN (kural değil, hatırlatma — grafiğe bak, ne görüyorsan onu oku): trend kırılımı+retest; range içinde girme, kırılım+retest bekle; OB (bearish=düşüş öncesi son yeşil mum, bullish=yükseliş öncesi son kırmızı mum) reddi; üçgen/takoz=kırılımı bekle; engulfing/çekiç/shooting star/çift tepe-dip; MSS/ChoCH/BOS/FVG/OTE; Wyckoff (tepede dağıtım=short, dipte toplama=long); trend devamı (geri çekilmede gir, parabolik uçtan değil). Kalıba sıkışma — mumlar ne diyorsa o.
 
@@ -5083,7 +5087,13 @@ const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYI
 const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
 const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '900', 10) || 900) * 1000); // sembol başına tekrar freni
 const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '200', 10) || 200);
-const AI_BRAIN_MIN_CONF = Math.max(1, Math.min(99, parseInt(process.env.AI_BRAIN_MIN_CONF || '72', 10) || 72));
+// ═══ R309F2: GÜVEN TABANI = 64 (tasarım kararı: 64 tabanı, üstü AI'nın kararına bırakılır) ═══
+// Gerçek emir kapısı r308AiPlanQuality içinde conf<64 ile uygulanır (tek gerçek kapı).
+// ESKİ SESSİZ HATA: AI_BRAIN_MIN_CONF env'den 74 okunup panelde gösteriliyordu ama emir kapısında
+// HİÇ kullanılmıyordu → panel "74" derken kod 64 uyguluyordu (TAG 66 ile açıldı, kullanıcı şaşırdı).
+// DÜZELTME: göstergeyi gerçek kapıya (64) sabitledik. Env'deki eski 74 değeri artık tabanı bozamaz.
+const AI_BRAIN_CONF_FLOOR = 64; // değiştirme: tasarım kararı. Üstü AI'ya bırakılır, leverage güvenle ölçeklenir.
+const AI_BRAIN_MIN_CONF = AI_BRAIN_CONF_FLOOR; // panel göstergesi = gerçek kapı (artık tutarlı)
 const AI_BRAIN_MIN_RR = Math.max(0.8, Number(process.env.AI_BRAIN_MIN_RR || 1.5) || 1.5);
 const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 3.0) || 3.0);
 // R308E: CANLI modda eski motor AI onayı olmadan emir açamaz.
@@ -15019,7 +15029,7 @@ function r308AiPlanQuality(ai) {
     // R308Y: GÜVEN TABANI 64. AI 64 altı güvenle açamaz (zayıf işlem = kayıp kaynağı). 64+ ise karar AI'ya bırakılır.
     // Sadece plan GEÇERLİLİĞİ + aşırı-geniş-SL güvenliği + güven tabanı kontrol edilir.
     if (!['LONG','SHORT'].includes(side)) return { ok:false, reason:`AI ${side || 'WAIT'} dedi` };
-    if (conf < 64) return { ok:false, reason:`AI güven ${conf}% < 64 taban — zayıf işlem açılmadı (AI yeterince emin değil)` };
+    if (conf < AI_BRAIN_CONF_FLOOR) return { ok:false, reason:`AI güven ${conf}% < ${AI_BRAIN_CONF_FLOOR} taban — zayıf işlem açılmadı (AI yeterince emin değil)` };
     if (![entry,tp,sl].every(x => Number.isFinite(x) && x > 0)) return { ok:false, reason:'AI giriş/TP/SL sayısal değil' };
     const isLong = side === 'LONG';
     if (isLong && !(tp > entry && sl < entry)) return { ok:false, reason:'AI LONG TP/SL yönü hatalı' };
@@ -16642,9 +16652,17 @@ async function runAutoScan(prioritySymbol=null) {
               shortSqueeze: !!(decisionChain?.r111ShortSqueeze || decisionChain?.r111?.shortSqueeze || decisionChain?.r190Edge?.squeeze),
               longSqueeze: !!(decisionChain?.r111LongSqueeze || decisionChain?.r111?.longSqueeze),
               // R309D: MM STOP AVI sinyalleri (bot tespit ediyor, AI'dan saklanıyordu). AI ham mumdan da okur ama bu teyit eder.
-              // altSupurmeYapildi=alt likidite/SSL süpürüldü+reclaim (LONG fırsatı). ustSupurmeYapildi=üst/BSL süpürüldü+reddedildi (SHORT fırsatı).
-              altSupurmeYapildi: !!(decisionChain?.r278SslSwept),
-              ustSupurmeYapildi: !!(decisionChain?.r278BslSwept),
+              // ═══ R309F KRİTİK DÜZELTME (XLM tekrarlı kayıp dersi) ═══
+              // ESKİ HATA: altSupurmeYapildi sadece sslSwept'e bakıyordu (fiyat SSL'e DOKUNDU).
+              // Ama prompt "süpürme+RECLAIM oldu, MM avını YAPTI, gir" diyordu. Reclaim teyidi (q>=3) eksikti.
+              // Sonuç: fiyat alt likiditeyi süpürüp RECLAIM YAPMADAN düşmeye devam ettiğinde (düşen bıçak)
+              // AI'ya "av tamamlandı, LONG" sinyali gidiyordu → XLM 2x SL. Bot kendi girişinde zaten q>=3 ister (satır ~3010).
+              // ŞİMDİ: "Yapildi" = süpürme + reclaim teyidi (q>=3). Reclaim yoksa ayrı "sürüyor" sinyali → AI BEKLEMELİ.
+              altSupurmeYapildi: !!(decisionChain?.r278SslSwept && Number(decisionChain?.r278SslSweepQ || 0) >= 3),
+              ustSupurmeYapildi: !!(decisionChain?.r278BslSwept && Number(decisionChain?.r278BslSweepQ || 0) >= 3),
+              // Süpürme başladı ama reclaim/reddi TEYİT YOK → MM avı SÜRÜYOR, dip/tepe henüz oluşmadı. Trende karşı girme.
+              altSupurmeSuruyorReclaimYok: !!(decisionChain?.r278SslSwept && Number(decisionChain?.r278SslSweepQ || 0) < 3),
+              ustSupurmeSuruyorRedYok: !!(decisionChain?.r278BslSwept && Number(decisionChain?.r278BslSweepQ || 0) < 3),
               altSupurmeKalite: Number(decisionChain?.r278SslSweepQ || 0),
               ustSupurmeKalite: Number(decisionChain?.r278BslSweepQ || 0),
               oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
