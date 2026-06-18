@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R308X_KARNE_AI_DETAY';
+const LAZARUS_BUILD = 'R308Y_GUVEN64_LEV10_DETAY';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3363,11 +3363,11 @@ ARAÇ KUTUN (kural değil, hatırlatma — grafiğe bak, ne görüyorsan onu oku
 • Net setup yoksa WAIT — ama fırsatçısın, GERÇEK fırsatı da kaçırma. 5m hızlıdır, iyi setup gelince tereddüt etme.
 • Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü). R:R≥1.5.
 • Kâr-al mantığı: 5m'de hedefe hızlı ulaşılır; TP'yi gerçekçi-yakın tut, küçük-garanti kâr > açgözlü-kaçan kâr. Sistem zaten kârı trailing ile taşır.
-• ★ CONFIDENCE = KALDIRAÇ: 80+→20x (kusursuz, çok kanıt aynı yön), 70-79→15x, 60-69→10x, <60→6x (zayıfsa WAIT daha iyi). Abartma, her setup 85 değil.
+• ★ GÜVEN = KALDIRAÇ (taban kuralı): Güvenin 64'ün ALTINDAYSA → WAIT (açma, zayıf işlem para kaybettirir). 64+ ise: 64-69→10x, 70-73→12x, 74-79→15x, 80+→20x (kusursuz, çok kanıt aynı yön). Düşük kaldıraç açmak = "güvenmiyorum ama yine de gireyim" demektir, bu yanlış — ya emin ol (64+) gir, ya bekle. Abartma da: her setup 85 değil.
 
 SADECE JSON (başka hiçbir şey yok):
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"kısa Türkçe — ne gördüğün (max 200 karakter)"}
-WAIT ise tp/sl null.`;
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"DETAYLI Türkçe açıklama (max 500 karakter): ne gördüğün — trend yönü (4h/1h/5m), mum yapısı/formasyon (engulfing, fitil reddi, OB, FVG, ChoCH/MSS vb.), RSI/funding/delta/squeeze ne diyor, hangi likidite seviyesi önemli","plan":"DETAYLI Türkçe (max 350 karakter): NEDEN şimdi girdin/bekledin (timing) — sweep+reclaim oldu mu, karşı likidite yakın/uzak mı, retest bekledin mi; TP'yi neden o seviyeye koydun (hedef likidite), SL'i neden oraya (hangi yapının ötesi); risk ne (squeeze/karşı akış var mı)"}
+WAIT ise tp/sl null, plan'da neden beklediğini yaz.`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000); // R308K: ham mum payload'u büyük, süre artırıldı
@@ -3381,7 +3381,7 @@ WAIT ise tp/sl null.`;
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 500,
+        max_tokens: 700,
         // R308F: PROMPT CACHING — sabit sistem promptu (pro trader talimatı) cache'lenir.
         // Aynı talimat her çağrıda tekrar gönderilmez, %90 daha ucuz. Coin verisi (değişken) cache'lenmez.
         system: [{ type:'text', text: sys, cache_control: { type:'ephemeral' } }],
@@ -3417,7 +3417,8 @@ WAIT ise tp/sl null.`;
       tp: Number(decision.tp) || null,
       sl: Number(decision.sl) || null,
       confidence: Number(decision.confidence) || 0,
-      reasoning: String(decision.reasoning || '').slice(0, 220)
+      reasoning: String(decision.reasoning || '').slice(0, 550),
+      plan: String(decision.plan || '').slice(0, 400)
     };
   } catch (e) {
     if (e?.name === 'AbortError') logAuto(`⚠️ AI Beyin zaman aşımı (25sn) — ${symbol}`);
@@ -14988,9 +14989,10 @@ function r308AiPlanQuality(ai) {
     const tp = Number(ai?.tp);
     const sl = Number(ai?.sl);
     const conf = Number(ai?.confidence || 0);
-    // R308K: PUANSIZ — minConf eşiği KALDIRILDI. AI WAIT demezse güven eşiğine takılmaz.
-    // Sadece plan GEÇERLİLİĞİ ve aşırı-geniş-SL güvenliği kontrol edilir (bunlar puan değil, koruma).
+    // R308Y: GÜVEN TABANI 64. AI 64 altı güvenle açamaz (zayıf işlem = kayıp kaynağı). 64+ ise karar AI'ya bırakılır.
+    // Sadece plan GEÇERLİLİĞİ + aşırı-geniş-SL güvenliği + güven tabanı kontrol edilir.
     if (!['LONG','SHORT'].includes(side)) return { ok:false, reason:`AI ${side || 'WAIT'} dedi` };
+    if (conf < 64) return { ok:false, reason:`AI güven ${conf}% < 64 taban — zayıf işlem açılmadı (AI yeterince emin değil)` };
     if (![entry,tp,sl].every(x => Number.isFinite(x) && x > 0)) return { ok:false, reason:'AI giriş/TP/SL sayısal değil' };
     const isLong = side === 'LONG';
     if (isLong && !(tp > entry && sl < entry)) return { ok:false, reason:'AI LONG TP/SL yönü hatalı' };
@@ -16582,11 +16584,11 @@ async function runAutoScan(prioritySymbol=null) {
             const ai = await r308AiProTraderBrain(coin.symbol, aiData);
             if (ai && ai.ok) {
               const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
-              logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}`);
+              logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}${ai.plan?' · PLAN: '+ai.plan:''}`);
               decisionChain.aiBrain = ai;
               // R308J: AI kararını dashboard kartına yaz (B-mode kapandığı için buraya taşındı)
+              const _q = r308AiPlanQuality(ai);  // R308Y: try dışına alındı — emir kapısı (aşağıda) bunu görmeli
               try {
-                const _q = r308AiPlanQuality(ai);
                 r308SetLastAiDecision({status: ai.side==='WAIT'?'AI_BEKLE':'AI_CANLI_KARAR', symbol:coin.symbol, ai, quality:_q, candidate:{symbol:coin.symbol, rec:recommendation, score, tier:decisionChain?.tier||'AI'}});
               } catch(_setE) {}
               if (AI_BRAIN_SHADOW) {
@@ -16604,6 +16606,14 @@ async function runAutoScan(prioritySymbol=null) {
                 if (ai.side !== 'LONG' && ai.side !== 'SHORT') {
                   logAuto(`⛔ ${coin.symbol} AI geçersiz yön (${ai.side}) — emir AÇILMADI`);
                   markAutoSkip(coin.symbol, `AI geçersiz yön: ${ai.side}`, {rec:ai.side, score, aiBrain:ai});
+                  continue;
+                }
+                // ═══ R308Y: GÜVEN TABANI + PLAN GEÇERLİLİK KAPISI (emirden ÖNCE) ═══
+                // _q yukarıda hesaplandı; ok değilse (güven<64 / SL aşırı geniş / plan tutarsız) AÇMA.
+                // Bu kapı eksikti — 64 tabanı sadece burada uygulanırsa gerçekten işler.
+                if (!_q.ok) {
+                  logAuto(`⛔ ${coin.symbol} AI emir reddi: ${_q.reason} — AÇILMADI`);
+                  markAutoSkip(coin.symbol, `AI kalite/güven reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
                 // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
@@ -16640,9 +16650,9 @@ async function runAutoScan(prioritySymbol=null) {
                         const binancePanelCap = Math.max(1, executeLeverage);
                         let aiTargetLev;
                         if (aiConf >= 80)      aiTargetLev = 20;
-                        else if (aiConf >= 70) aiTargetLev = 15;
-                        else if (aiConf >= 60) aiTargetLev = 10;
-                        else                   aiTargetLev = 6;
+                        else if (aiConf >= 74) aiTargetLev = 15;
+                        else if (aiConf >= 70) aiTargetLev = 12;
+                        else                   aiTargetLev = 10;  // R308Y: taban 10x (64-69 güven). 64 altı zaten reddedildi. Düşük kaldıraç=güvensizlik=açma.
                         // AI hedefi: kademe ile sınırla ama Binance/panel tavanını ASLA aşma
                         aiTargetLev = Math.min(aiTargetLev, panelMax, binancePanelCap);
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
@@ -16802,7 +16812,9 @@ async function runAutoScan(prioritySymbol=null) {
             } : null,
             sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
             openedAt: Date.now(),
-                openReason: decisionChain?.reason || '',
+                openReason: (decisionChain?.aiBrain?.ok && decisionChain.aiBrain.reasoning)
+                  ? `AI ${decisionChain.aiBrain.side} güven ${decisionChain.aiBrain.confidence}%: ${decisionChain.aiBrain.reasoning}${decisionChain.aiBrain.plan?' | PLAN: '+decisionChain.aiBrain.plan:''}`
+                  : (decisionChain?.reason || ''),
                 brainMode: decisionChain?.brainMode || '',
                 entryPermissionReason: decisionChain?.entryPermissionReason || '',
                 r126OrderflowSummary: decisionChain?.r125Flow?.summary || '',
@@ -16838,6 +16850,7 @@ async function runAutoScan(prioritySymbol=null) {
                 aiSide: _ai.side || recommendation,
                 aiConfidence: Number(_ai.confidence || 0) || null,
                 aiReasoning: String(_ai.reasoning || '').slice(0, 600),  // AI grafiği nasıl okudu — asıl değerli kısım
+                aiPlan: String(_ai.plan || '').slice(0, 400),  // R308Y: AI'nın timing/TP/SL/risk mantığı
                 aiEntry: _ai.entry ?? null, aiTp: _ai.tp ?? null, aiSl: _ai.sl ?? null,
                 aiFlippedBotDir: (_ai.side && _ai.side !== recommendation) ? `bot ${recommendation}→AI ${_ai.side}` : null,
                 // Açılış anındaki HAM PİYASA DURUMU (AI bunlara bakarak karar verdi)
