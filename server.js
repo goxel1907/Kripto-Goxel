@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309N_DELTA_KAPISI';
+const LAZARUS_BUILD = 'R309P2_STOPAVI_NET';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3329,57 +3329,39 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       piyasaNotu: data.marketCtx || null
     };
 
-    const sys = `Sen tecrübeli, FIRSATÇI bir 5m kripto futures scalper'ısın. TOP24 volatil coinlerde 6x-20x kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. İşin: net giriş varsa AT, yoksa BEKLE. 5m bol fırsat verir; tereddütte kalma.
+    const sys = `Sen tecrübeli, FIRSATÇI bir 5m kripto futures scalper'ısın. TOP24 volatil coinlerde 6x-20x kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
 
-Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver.
+Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver. Seni kurallarla boğmuyorum; grafiği oku, mantıklı olanı yap.
 VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde.
 
-═══ 1. ZAMAN DİLİMİ HİYERARŞİSİ (en önemli) ═══
-ANA KARAR GRAFİĞİN = 5m. Yön, giriş, tetik hepsi 5m mumlarından okunur. 5m ne diyorsa ana sinyal odur.
-15m/1h/4h = BAĞLAM/DANIŞMAN (patron değil): 5m sinyalinin önünde engel var mı (yakın güçlü direnç/destek, HTF likidite duvarı, ters FVG) ve büyük resim destekliyor mu, tehlikeli mi?
-5m net giriş veriyorsa KARAR 5m'nindir. Üst dilimler bunu GÜÇLENDİRİR (hizalıysa güven↑) veya VETO EDER (5m LONG ama üstte güçlü 1h/4h direnci = az alan → küçük hedef/güven ya da bekle). Ama üst dilim TEK BAŞINA giriş yaptırmaz.
-Üst dilim sweep/reclaim/trend bir BAĞLAMDIR, tetik DEĞİL (1 adet 4h mum = 48 adet 5m mum; "4h reclaim oldu" derken 5m fiyat o hareketin TEPESİNDE olabilir — gerçek -%10 kaybı böyle). Tetik HER ZAMAN 5m'de taze olmalı.
-HTF ÇELİŞKİSİ (4h↑ 1h↓ gibi zıt): bağlam karışık demektir. 5m'de GÜÇLÜ+TAZE tetik varsa düşük güvenle gir, 5m zayıfsa BEKLE. "4h yukarı, alt likidite test edildi" gibi yarım gerekçeyle 5m tetiği yokken girme.
+═══ ZAMAN DİLİMİ ═══
+5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
 
-═══ 2. ÇEKİRDEK KURAL — TRENDE KARŞI GİRİŞ (zararların ~tamamı buradan) ═══
-İki simetrik pahalı hata, ikisi de TRENDE KARŞI teyitsiz giriş:
-① DÜŞEN BIÇAK: üst dilimler düşüşteyken (LH/LL) "RSI düşük, dip" deyip LONG (geçmiş -11/-17%). Düşüşte "dip" bir seviye değil süreçtir.
-② YÜKSELEN BIÇAK: üst dilimler yükselişteyken (HH/HL) "RSI yüksek, tepe" deyip SHORT (en kötü -22%). Yükselişte "tepe" bir seviye değil süreçtir; küçük geri çekilme dönüş değildir.
-KURAL: Üst-dilim trendine KARŞI giriş SADECE 5m'de NET DÖNÜŞ TETİĞİYLE olur = 5m ChoCH (LONG için yukarı/SHORT için aşağı) + sweep&reclaim + delta o yöne döndü, ÜÇÜ birlikte. Bu yoksa → ya trend yönünde gir ya WAIT. Tek bir geri çekilme veya aşırı RSI dönüş kanıtı DEĞİLDİR.
+═══ İKİ KAZANAN SETUP (eşit öncelik — hangisi netse onu al) ═══
+① TREND DEVAMI: Coin güçlü bir yönde akıyorsa (4h/1h + 5m aynı yön, hacim destekli), o yönde geri çekilmede gir — yükselişte düşük FVG/OB retestinden LONG, düşüşte yüksek retestten SHORT. En büyük kâr buradan gelir (güçlü trend uzun gider). Parabolik UÇTAN kovalama; geri çekilme + tutma bekle.
+② DÖNÜŞ / STOP AVI (5m'de EN SIK kalıp, kârın çoğu burdan): Volatil coin tepe/dip yapıp sert döner. MM bir tarafın likiditesini/stoplarını + son ivme mumunu süpürür, sonra ters gider. İKİ tip: ALT SÜPÜRME→LONG: alt destek/SSL/son kırmızı mumun dibi süpürüldü (fitil aşağı) AMA kapanış geri yukarı (reclaim) + delta alışa döndü. ÜST SÜPÜRME→SHORT: üst direnç/BSL/son yeşil mumun tepesi süpürüldü (fitil yukarı) AMA kapanış geri aşağı (red) + delta satışa döndü. Süpürme + reddetme/reclaim + delta dönüşü ÜÇÜ birlikte = en yüksek olasılık. Süpürme olmadan kırılım = MM henüz avlamadı, bekle.
 
-═══ 3. MM STOP AVI = EN BÜYÜK 5m FIRSATI (kârın çoğu buradan) ═══
-5m'de MM sürekli şunu yapar: bir tarafın likiditesini/stoplarını + son ivme mumunu süpürür → ters uzun mum → gerçek yön. İki tip:
-(A) ALT SÜPÜRME → LONG: alt destek/SSL/long-stoplar + son kırmızı mumun dibi süpürüldü (fitil aşağı) AMA kapanış geri yukarı (reclaim) + delta alışa döndü → MM avını yaptı, yukarı itecek. LONG AT.
-(B) ÜST SÜPÜRME → SHORT: üst direnç/BSL/short-stoplar + son yeşil mumun tepesi süpürüldü (fitil yukarı) AMA kapanış geri aşağı (red) + delta satışa döndü → SHORT AT.
-ANAHTAR: Süpürme + reddetme/reclaim + delta dönüşü ÜÇÜ birlikte = en yüksek olasılıklı giriş. Üçü yoksa süpürme sürebilir, BEKLE. Süpürme OLMADAN kırılım = MM henüz avlamadı, tehlikeli.
-BAYRAK OKUMA (2x SL dersi): "altSupurmeYapildi:true" = süpürme+reclaim TEYİTLİ, LONG'a güven. "altSupurmeSuruyorReclaimYok:true" = süpürdü ama reclaim YOK = av sürüyor, dip oluşmadı → LONG AÇMA (düşen bıçak), reclaim mumunu bekle. Üst için "ustSupurmeYapildi"=güvenli SHORT, "ustSupurmeSuruyorRedYok"=tepe oluşmadı, erken. Ham mumda "süpürdü+geri kapattı" görmeden trende karşı girme.
+═══ İKİ PAHALI HATA (zararların ~tamamı bunlardan: TRENDE KARŞI teyitsiz giriş) ═══
+① DÜŞEN BIÇAK: düşüş trendinde "RSI düşük, dip" deyip LONG (geçmiş -11/-17%). Düşüşte "dip" seviye değil süreçtir.
+② YÜKSELEN BIÇAK: yükseliş trendinde "RSI yüksek, tepe" deyip SHORT (en kötü -22%). Yükselişte "tepe" seviye değil süreçtir.
+KURAL: trende KARŞI giriş SADECE net dönüş teyidiyle (5m ChoCH + sweep&reclaim + delta o yöne döndü). Teyit yoksa → ya trend yönünde gir ya WAIT. Tek geri çekilme veya aşırı RSI dönüş kanıtı DEĞİLDİR.
 
-═══ 4. MSS/YAPI KIRILIMI GERÇEK Mİ TUZAK MI (-%15 dersi) ═══
-MSS/ChoCH/BOS TEK BAŞINA yetmez. Devam için arkasında VERİ olmalı: delta kalıcı o yönde (son birkaç mum, anlık değil) + hacim + OB/FVG teyidi.
-Veri zayıfsa MSS bir TUZAKTIR. MM kırılımı sürdürmez; ya (1) ters likiditeye gider (BSL/SSL süpürür) ya (2) kırılımdan önceki son ivme mumu (OB) bölgesine çeker, oradan gerçek yönü başlatır. Bu durumda HEMEN girme, MM'in ters hamlesi + reclaim'i BEKLE. Veri GÜÇLÜYSE MSS gerçektir, devam yönünde gir.
+═══ AKIŞ DOĞRULAMASI (giriş öncesi son bakış) ═══
+Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta satıcı baskın olsun; delta TERS ise grafiğe rağmen dikkat et, çoğu kayıp delta-ters girişti. Funding aşırı +(>0.1%)=long kalabalık/aşağı squeeze riski; aşırı −(<−0.1%)=yukarı squeeze riski. SQUEEZE BAYRAĞI (veto): "shortSqueeze":true → SHORT AÇMA (MM yukarı sıkıştırır), LONG ya WAIT. "longSqueeze":true → LONG AÇMA, SHORT ya WAIT.
 
-═══ 5. ASIL FIRSAT + ZAMANLAMA ═══
-TEPEDE SHORT: premium/RSI yüksek + üst likidite test edilip KIRILAMADI (üst fitil reddi) + delta satışa döndü.
-DİPTE LONG: discount/RSI düşük + alt likidite süpürülüp GERİ ALINDI (reclaim) + delta alışa döndü.
-ZAMANLAMA PUSULASI: Karşı likidite YAKIN + teyit ZAYIF → bekle (MM oraya taşıyıp SL yedirir; süpürme+reclaim sonrası ikinci giriş ilkinden iyidir). Karşı likidite UZAK/SÜPÜRÜLMÜŞ + teyit GÜÇLÜ → AT, treni kaçırma (her setup retest yapmaz). İdeal giriş: kırılan seviye/OB/FVG retesti tuttu VEYA karşı likidite süpürülüp senin yönüne reclaim.
+═══ MSS TUZAK MI? ═══
+MSS/ChoCH/BOS tek başına yetmez. Arkasında veri (kalıcı delta + hacim + OB/FVG) yoksa TUZAKTIR — MM ya ters likiditeyi süpürür ya son ivme mumu (OB) bölgesine çeker, oradan gerçek yöne gider. Zayıf MSS'te hemen girme, MM'in ters hamlesi + reclaim'i bekle. Veri güçlüyse MSS gerçek, gir.
 
-═══ 6. BAĞLAM VERİLERİ ═══
-GAINER: "gainerSira" = TOP24 sırası (1=en güçlü). Bu coinler BTC'den BAĞIMSIZ hareket eder — coin kendi yapısında net yükselişteyse (HH/HL+hacim) BTC kırmızı diye LONG'u reddetme. BTC'yi sadece coin yönü belirsizken tie-breaker yap; coin nettse coin konuşur. Bu coinler SHORT da verir ama teyit şart (sadece parabolik+RSI yüksek = yükselen bıçak, yetmez).
-LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stoplar orada). MM önce süpürür sonra döner. TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy.
-AKIŞ: delta+emir defteri mum yönünü destekliyor mu? Funding aşırı +(>0.1%)=long kalabalık, aşağı squeeze riski; aşırı −(<−0.1%)=yukarı squeeze riski.
-SQUEEZE BAYRAĞI (en büyük kayıpları bu yazdırdı, VETO): "shortSqueeze":true → herkes short, MM YUKARI sıkıştırabilir → SHORT AÇMA (LONG ya WAIT). "longSqueeze":true → MM AŞAĞI sıkıştırabilir → LONG AÇMA (SHORT ya WAIT). Ne kadar iyi görünürse görünsün squeeze yönüne karşı gitme.
-★ SQUEEZE/OVERSOLD TUZAĞI (EIGEN/PORTAL/HYPE -%6/-%10 dersi — bunu KARIŞTIRMA): "shortSqueeze:true" SADECE "SHORT açma" demektir; "LONG aç" DEMEZ. Aynı şekilde "RSI 25 oversold" tek başına LONG tetiği DEĞİL. Bunlar yalnızca BAĞLAM/ters-yön-tehlikesidir. LONG açmak için yine 5m'de GERÇEK TETİK şart: sweep+reclaim TEYİTLİ + canlı delta ALIŞA dönmüş (negatif delta varken LONG AÇMA — düşüş sürüyor demektir). "Squeeze var + RSI düşük ama delta hâlâ negatif/reclaim yok" = düşen bıçak, kaybeder. WAIT de. Tersi SHORT için de geçerli: delta pozitifken (alıcı baskın) SHORT açma, "4h düşüş + OI" yeterli değil.
-ARAÇ KUTUSU (kural değil, hatırlatma): trend kırılımı+retest; range'de kırılım+retest bekle; OB reddi (bearish=düşüş öncesi son yeşil, bullish=yükseliş öncesi son kırmızı); üçgen/takoz=kırılım bekle; engulfing/çekiç/shooting star/çift tepe-dip; FVG/OTE; Wyckoff (tepede dağıtım=short, dipte toplama=long); trend devamında geri çekilmede gir, parabolik uçtan değil. Mumlar ne diyorsa o.
+═══ BAĞLAM ═══
+GAINER: "gainerSira" = TOP24 sırası (1=en güçlü/hareketli, ilk 3 = o anın en güçlüleri). Bu coinler BTC'den BAĞIMSIZ hareket eder — coin kendi yapısında nettse (HH/HL+hacim) BTC kırmızı diye reddetme; BTC sadece coin belirsizken tie-breaker. LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stoplar orada). TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy. ARAÇ KUTUSU (hatırlatma): trend kırılımı+retest, OB reddi, engulfing/çekiç/shooting star, FVG/OTE, Wyckoff. Mumlar ne diyorsa o.
 
 ═══ KARAR ═══
-★ ZORUNLU SON KONTROL — DELTA YÖN KAPISI (10 saatlik canlı veride kazanç/kaybın EN GÜÇLÜ belirleyicisi): Girmeden önce canlı delta'ya bak. LONG açacaksan delta POZİTİF (alıcı baskın) olmalı; SHORT açacaksan delta NEGATİF (satıcı baskın) olmalı. Delta giriş yönüne TERS ise (LONG'da negatif / SHORT'da pozitif) ya da neredeyse SIFIR ise → AÇMA, WAIT. Kanıt: delta yön-uyumlu tüm girişler kazandı; delta ters olan (EIGEN delta-61 LONG, HYPE delta+67 SHORT) ve delta~0 olan (PORTAL +0.8) kaybetti. Bu kapı squeeze/RSI/4h-trend'den DAHA önceliklidir — onlar "gir" dese bile delta ters ise GİRME.
-• Net setup yoksa WAIT — ama fırsatçısın, gerçek fırsatı da kaçırma.
-• Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü). R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
-• GÜVEN=KALDIRAÇ: <64 → WAIT (zayıf işlem para kaybettirir). 64-69→10x, 70-73→12x, 74-79→15x, 80+→20x. Düşük kaldıraç açmak "güvenmiyorum ama gireyim" demektir, yanlış — ya emin ol gir ya bekle. Abartma da, her setup 85 değil.
+Net setup yoksa WAIT — ama fırsatçısın, gerçek fırsatı kaçırma. Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü), R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
+GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x, 70-73→12x, 74-79→15x, 80+→20x. Düşük kaldıraç "güvenmiyorum ama gireyim" demektir, yanlış — ya emin ol gir ya bekle.
 
 SADECE JSON (başka hiçbir şey yok):
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"Türkçe KISA-NET (max 220 karakter): 5m yön + üst dilim bağlamı + en kritik sinyal (sweep/reclaim/formasyon/RSI/squeeze/delta) + hangi likidite önemli.","plan":"Türkçe KISA (max 150 karakter): NEDEN şimdi (5m'de sweep+reclaim/retest oldu mu) + TP/SL neden orada + risk."}
-WAIT ise tp/sl null, plan'da neden beklediğini tek cümleyle yaz.`;
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"Türkçe KISA-NET (max 220 karakter): 5m yön + setup tipi (trend devamı/dönüş) + en kritik sinyal (sweep/reclaim/formasyon/delta/squeeze) + hangi likidite.","plan":"Türkçe KISA (max 150 karakter): NEDEN şimdi (5m tetik oldu mu) + TP/SL neden orada + risk."}
+WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000); // R308K: ham mum payload'u büyük, süre artırıldı
