@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309U_DEVIR_ACILDI';
+const LAZARUS_BUILD = 'R309W_SIMETRI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3330,6 +3330,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
     };
 
     const sys = `Sen tecrübeli, FIRSATÇI bir 5m kripto futures scalper'ısın. TOP24 volatil coinlerde 6x-20x kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
+★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver. Seni kurallarla boğmuyorum; grafiği oku, mantıklı olanı yap.
 VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde.
@@ -3340,7 +3341,8 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 ═══ İKİ KAZANAN SETUP (eşit öncelik — hangisi netse onu al) ═══
 ① TREND DEVAMI: Coin güçlü bir yönde akıyorsa (4h/1h + 5m aynı yön, hacim destekli), o yönde geri çekilmede gir — yükselişte düşük FVG/OB retestinden LONG, düşüşte yüksek retestten SHORT. En büyük kâr buradan gelir (güçlü trend uzun gider). Parabolik UÇTAN kovalama; geri çekilme + tutma bekle.
   ★ "KONSOLİDASYON" TUZAĞI (kazanç/kayıp ayrımının kalbi, -%16/-%19/-%21 hep buradan): Fiyat ZATEN büyük pump yaptıysa (%10-15+) ve şimdi tepede yatay duruyorsa, bu "konsolidasyon, devam eder" DEĞİL — pump BİTTİ olabilir. Tepede yatay + delta hâlâ pozitif = "son alıcılar tepede alıyor, yakıt bitti" = düşüş gelir. KAZANANLAR hareketin BAŞINDA girdi (dip yeni döndü / trend yeni ivmeleniyor / taze reclaim). KAYBEDENLER hareketin SONUNDA girdi (pump olmuş, tepede "konsolidasyon" diye geç giriş). KURAL: Trend devamı girişi, pump'ın TEPESİNDEN değil, TAZE bir geri çekilme + tutmadan olur. Fiyat zaten çok koştuysa ve net retest/reclaim yoksa → LONG için geç kaldın.
-  ★ PUMP BİTTİYSE → LONG'u BIRAK, SHORT FIRSATI ARA: Pump bitmiş tepede LONG'a girme; AMA orada otomatik WAIT'e de geçme — o tepe artık SHORT adayı. Üst likidite/BSL süpürülüp REDDEDİLDİ (üst fitil, kapanış altta) + delta satışa döndü + 5m yapı aşağı kırıldı (ChoCH) ise → SHORT AT (en kârlı setup, düşüş hızlı gelir). DİKKAT: Sadece "pump oldu, tepe gibi" diye erken SHORT AÇMA — bu yükselen bıçaktır (-%22). Yükseliş bitti SANMAK yetmez; üst süpürme+red+delta dönüşü TEYİDİNİ gör, sonra short. Teyit yoksa yükseliş sürebilir, bekle. Yani: pump tepesi LONG için "geç", SHORT için "teyit gelirse fırsat".
+  ★ PUMP BİTTİYSE → LONG'u BIRAK, SHORT FIRSATI ARA (ama TEYİTLE): Pump bitmiş tepede LONG'a girme; o tepe artık SHORT adayı. AMA otomatik short da açma. SHORT için ŞART: üst likidite/BSL süpürülüp REDDEDİLDİ (üst fitil, kapanış altta) + delta SATIŞA döndü (negatif) + 5m yapı aşağı kırıldı (ChoCH). Üçü varsa SHORT AT (düşüş hızlı gelir).
+  ★ DOĞRU YÖN + YANLIŞ AN = ZARAR (-%20 dersi, çok önemli): Yönü doğru okumak YETMEZ, ANI da doğru olmalı. Tepede "dağılım var, düşecek" diye SHORT açtın ama delta hâlâ +47 ALICI ve üst süpürme tamamlanmamışsa → MM önce bir kez daha YUKARI itip stop'unu alır, SONRA düşer. Düşüş tahminin doğru çıkar ama sen çoktan SL yemişsindir. KURAL: "Düşecek" hissi + delta hâlâ alıcı = HENÜZ DEĞİL, bekle. Önce delta'nın gerçekten satışa döndüğünü + tepenin süpürülüp reddedildiğini GÖR. Aynısı dipte LONG için (delta hâlâ satıcıysa MM bir kez daha aşağı iter). "Pump oldu/tepe gibi" diye erken short = yükselen bıçak (-%22). Doğru yönü erken yakalamak yanlış yönden beter — haklıyken kaybedersin.
 ② DÖNÜŞ / STOP AVI (5m'de EN SIK kalıp, kârın çoğu burdan): Volatil coin tepe/dip yapıp sert döner. MM bir tarafın likiditesini/stoplarını + son ivme mumunu süpürür, sonra ters gider. İKİ tip: ALT SÜPÜRME→LONG: alt destek/SSL/son kırmızı mumun dibi süpürüldü (fitil aşağı) AMA kapanış geri yukarı (reclaim) + delta alışa döndü. ÜST SÜPÜRME→SHORT: üst direnç/BSL/son yeşil mumun tepesi süpürüldü (fitil yukarı) AMA kapanış geri aşağı (red) + delta satışa döndü. Süpürme + reddetme/reclaim + delta dönüşü ÜÇÜ birlikte = en yüksek olasılık. Süpürme olmadan kırılım = MM henüz avlamadı, bekle.
 
 ═══ İKİ PAHALI HATA (zararların ~tamamı bunlardan: TRENDE KARŞI teyitsiz giriş) ═══
@@ -8508,8 +8510,14 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
   try {
     await r309Add12hChange(ordered);
     const isPinned = (c) => /TOP24_PINNED_TOP10|TOP10_GAINER|TOP3_ULTRA/.test(String(c.r54Bucket||''));
+    // R309V: 12h FİLTRESİ — rest (volatil) grubundan 12h hareketi ZAYIF olanları (mutlak <%3) ÇIKAR.
+    // SOL gibi 12h'de durağan (%2) coinler artık TOP24'e SIZMAZ. Pinned (TOP10 gainer) korunur — onlar
+    // zaten en güçlü gainer'lar. Liste 24'ün altına düşebilir, sorun değil: kalite > kemiyet (volatil coin ararız).
+    const R309V_MIN_12H = 3; // mutlak %3 hareket eşiği (yükselen+düşen, iki yönlü)
     const pinnedGrp = ordered.filter(isPinned).sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
-    const restGrp   = ordered.filter(c => !isPinned(c)).sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
+    const restGrp   = ordered.filter(c => !isPinned(c))
+      .filter(c => Math.abs(Number(c.change12h ?? c.change24h ?? 0)) >= R309V_MIN_12H)
+      .sort((a,b) => Math.abs(b.change12h ?? b.change24h) - Math.abs(a.change12h ?? a.change24h)); // mutlak harekete göre (iki yönlü)
     return [...pinnedGrp, ...restGrp];
   } catch (_) {
     return ordered; // 12h hesabı patlarsa eski sırayla devam (fail-soft)
