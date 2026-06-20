@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309P2_STOPAVI_NET';
+const LAZARUS_BUILD = 'R309T_PUMP_SHORT';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3339,6 +3339,8 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 
 ═══ İKİ KAZANAN SETUP (eşit öncelik — hangisi netse onu al) ═══
 ① TREND DEVAMI: Coin güçlü bir yönde akıyorsa (4h/1h + 5m aynı yön, hacim destekli), o yönde geri çekilmede gir — yükselişte düşük FVG/OB retestinden LONG, düşüşte yüksek retestten SHORT. En büyük kâr buradan gelir (güçlü trend uzun gider). Parabolik UÇTAN kovalama; geri çekilme + tutma bekle.
+  ★ "KONSOLİDASYON" TUZAĞI (kazanç/kayıp ayrımının kalbi, -%16/-%19/-%21 hep buradan): Fiyat ZATEN büyük pump yaptıysa (%10-15+) ve şimdi tepede yatay duruyorsa, bu "konsolidasyon, devam eder" DEĞİL — pump BİTTİ olabilir. Tepede yatay + delta hâlâ pozitif = "son alıcılar tepede alıyor, yakıt bitti" = düşüş gelir. KAZANANLAR hareketin BAŞINDA girdi (dip yeni döndü / trend yeni ivmeleniyor / taze reclaim). KAYBEDENLER hareketin SONUNDA girdi (pump olmuş, tepede "konsolidasyon" diye geç giriş). KURAL: Trend devamı girişi, pump'ın TEPESİNDEN değil, TAZE bir geri çekilme + tutmadan olur. Fiyat zaten çok koştuysa ve net retest/reclaim yoksa → LONG için geç kaldın.
+  ★ PUMP BİTTİYSE → LONG'u BIRAK, SHORT FIRSATI ARA: Pump bitmiş tepede LONG'a girme; AMA orada otomatik WAIT'e de geçme — o tepe artık SHORT adayı. Üst likidite/BSL süpürülüp REDDEDİLDİ (üst fitil, kapanış altta) + delta satışa döndü + 5m yapı aşağı kırıldı (ChoCH) ise → SHORT AT (en kârlı setup, düşüş hızlı gelir). DİKKAT: Sadece "pump oldu, tepe gibi" diye erken SHORT AÇMA — bu yükselen bıçaktır (-%22). Yükseliş bitti SANMAK yetmez; üst süpürme+red+delta dönüşü TEYİDİNİ gör, sonra short. Teyit yoksa yükseliş sürebilir, bekle. Yani: pump tepesi LONG için "geç", SHORT için "teyit gelirse fırsat".
 ② DÖNÜŞ / STOP AVI (5m'de EN SIK kalıp, kârın çoğu burdan): Volatil coin tepe/dip yapıp sert döner. MM bir tarafın likiditesini/stoplarını + son ivme mumunu süpürür, sonra ters gider. İKİ tip: ALT SÜPÜRME→LONG: alt destek/SSL/son kırmızı mumun dibi süpürüldü (fitil aşağı) AMA kapanış geri yukarı (reclaim) + delta alışa döndü. ÜST SÜPÜRME→SHORT: üst direnç/BSL/son yeşil mumun tepesi süpürüldü (fitil yukarı) AMA kapanış geri aşağı (red) + delta satışa döndü. Süpürme + reddetme/reclaim + delta dönüşü ÜÇÜ birlikte = en yüksek olasılık. Süpürme olmadan kırılım = MM henüz avlamadı, bekle.
 
 ═══ İKİ PAHALI HATA (zararların ~tamamı bunlardan: TRENDE KARŞI teyitsiz giriş) ═══
@@ -3348,6 +3350,16 @@ KURAL: trende KARŞI giriş SADECE net dönüş teyidiyle (5m ChoCH + sweep&recl
 
 ═══ AKIŞ DOĞRULAMASI (giriş öncesi son bakış) ═══
 Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta satıcı baskın olsun; delta TERS ise grafiğe rağmen dikkat et, çoğu kayıp delta-ters girişti. Funding aşırı +(>0.1%)=long kalabalık/aşağı squeeze riski; aşırı −(<−0.1%)=yukarı squeeze riski. SQUEEZE BAYRAĞI (veto): "shortSqueeze":true → SHORT AÇMA (MM yukarı sıkıştırır), LONG ya WAIT. "longSqueeze":true → LONG AÇMA, SHORT ya WAIT.
+
+═══ BOTUN GÖRMEDİĞİ 5m TUZAKLARI (bunlar sık zarar yazdırır, dikkat) ═══
+• DEAD-CAT (ölü kedi sıçraması): Düşüşte küçük yeşil mum = "dip döndü" DEĞİL. Düşüş trendinde her sıçrama satılır; reclaim+delta dönüşü yoksa düşüş sürer. "Dip aldım" deyip girme.
+• HACİMSİZ YÜKSELİŞ: Fiyat yükseliyor ama hacim DÜŞÜK = gerçek alım yok, MM fiyatı boşluğa itiyor; ilk satışta geri düşer. Yükselişe hacim eşlik etmiyorsa güvenme.
+• FUNDING YANLIŞ OKUMA: "Aşırı negatif funding = yukarı squeeze" tek başına giriş sebebi DEĞİL. Squeeze tetiklenmezse short kalabalığı haklı çıkar, fiyat düşer (geçmiş -%21). Funding sadece destek; asıl tetik 5m sweep+reclaim+delta.
+• YUVARLAK RAKAM / PSİKOLOJİK SEVİYE: Yuvarlak fiyatlarda (0.10, 0.017, 1.00) stop birikir, MM oraya çekip avlar. Yuvarlak seviyeye yakın körlemesine girme, sweep+reclaim bekle.
+• GENEL: Tanımadığın ama mantıksız görünen bir hareket varsa (sebepsiz dik mum, tek mumda büyük fitil) = MM oyunu, WAIT. Emin olmadığın yerde girme.
+
+═══ TERS TARAF DERSİ (yön seçimi her şeydir) ═══
+Bir işlem kaybediyorsa, çoğu zaman TERS yön kazançlıydı. Tepede "trend devam" deyip LONG açıp -%19 yersen, o noktada SHORT +%19 olurdu. Dipte "dip aldım" deyip LONG açıp düşersen, SHORT kazanırdı. DERS: Girmeden önce "ya tersi doğruysa?" diye sor. Veri (delta yönü, hacim, sweep) hangi tarafı gösteriyorsa O taraf. Yanlış yöne girmek, beklemekten çok daha pahalı — emin değilsen WAIT, ama veri net bir yön gösteriyorsa O yöne git (ters değil).
 
 ═══ MSS TUZAK MI? ═══
 MSS/ChoCH/BOS tek başına yetmez. Arkasında veri (kalıcı delta + hacim + OB/FVG) yoksa TUZAKTIR — MM ya ters likiditeyi süpürür ya son ivme mumu (OB) bölgesine çeker, oradan gerçek yöne gider. Zayıf MSS'te hemen girme, MM'in ters hamlesi + reclaim'i bekle. Veri güçlüyse MSS gerçek, gir.
@@ -5975,8 +5987,20 @@ function r152FilterAndExtendGainers(data=[], onboardMap=new Map(), n=R33_TOP_GAI
       rangePct: Number(t.lastPrice) > 0 ? +(((Number(t.highPrice||0)-Number(t.lowPrice||0))/Number(t.lastPrice))*100).toFixed(2) : 0,
       source: 'top_gainers_lock'
     }))
-    .filter(c => Number.isFinite(c.change24h) && c.change24h > 0)
-    .sort((a,b) => (b.change24h - a.change24h) || (b.volume - a.volume));
+    .filter(c => Number.isFinite(c.change24h) && Math.abs(c.change24h) >= 2 && Number(c.volume) > 1_000_000)
+    // R309P3: İKİ YÖNLÜ + ANLIK VOLATİL seçim (eski hata: change24h>0 sadece yükselenleri alıyordu →
+    // düşen coinler/SHORT fırsatları (ESPORTS tipi) listeye HİÇ giremiyordu; change24h sort 24h bazlıydı,
+    // "dün pump bugün ölü" coinler üstte kalıyordu). Yeni: yön farketmez (yükselen+düşen), anlık oynaklık
+    // (rangePct) + mutlak hareket + hacim, + fiyatın 24h aralığındaki konumu (ucundaysa taze, ortadaysa durağan).
+    .map(c => {
+      const _range = Math.max(1e-12, c.high - c.low);
+      const _pos = (c.price - c.low) / _range;
+      const _fresh = 0.55 + (Math.abs(_pos - 0.5) * 2 * 0.45); // 0.55x (ölü orta) → 1.0x (taze uç)
+      const _score = ((c.rangePct * 1.6) + (Math.abs(c.change24h) * 0.8) +
+                      (Math.log10(Math.max(1, c.volume)) * 2) + (Math.log10(Math.max(1, c.trades)) * 1.5)) * _fresh;
+      return { ...c, r152Score: _score };
+    })
+    .sort((a,b) => (b.r152Score - a.r152Score));
 
   // Yaş filtresini uygula: yeni coinleri ayır, eskilerden ilerle
   const hasAgeData = onboardMap.size > 0;
@@ -8358,6 +8382,33 @@ function r39FiveMinuteSR(k5m, k1h, lastPrice, atrPct=1, vpvr1h=null, liq1h=null)
   return out;
 }
 
+// ═══ R309Q: 12 SAATLİK YÜKSELİŞ YÜZDESİ ═══
+// Kullanıcı isteği: TOP10/TOP24 sıralaması 24h değil 12h yükselişe göre olsun (12h anlık momentumu daha iyi yakalar).
+// Binance ticker sadece 24h verir → 12h için 1h kline gerekir. 429 koruması: SADECE nihai listeye giren
+// coinler için (≤24 adet, 200+ değil) çekilir, cache'li (3dk), throttle'lı, paralel.
+async function r309Add12hChange(coins) {
+  if (!Array.isArray(coins) || coins.length === 0) return coins;
+  await Promise.all(coins.map(async (c) => {
+    const full = c.fullSymbol || (c.symbol ? c.symbol + 'USDT' : null);
+    if (!full || !(Number(c.price) > 0)) { c.change12h = c.change24h; return; }
+    try {
+      // 13 adet 1h mum = 12 saat öncesinden şimdiye. [0]=12s önce, son=şimdi.
+      const k = await cached(`k1h12_${full}`, 3*60*1000,
+        () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1h&limit=13`));
+      if (Array.isArray(k) && k.length >= 2) {
+        const open12h = Number(k[0][1]);            // 12 saat önceki açılış
+        const nowPrice = Number(c.price) || Number(k[k.length-1][4]);
+        c.change12h = open12h > 0 ? +(((nowPrice - open12h) / open12h) * 100).toFixed(2) : c.change24h;
+      } else {
+        c.change12h = c.change24h; // veri yoksa 24h'e düş (fail-soft)
+      }
+    } catch (_) {
+      c.change12h = c.change24h; // hata olursa 24h kullan, bloklamaz
+    }
+  }));
+  return coins;
+}
+
 async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
   // R54: Pro scalper tarama modu. FAST6 = Top Gainers ilk 10 içinden en volatil 3 + top10'a girmeye aday 3.
   // TOP10 = Binance Futures Top Gainers ilk 10. TOP24 = eski geniş havuz.
@@ -8449,7 +8500,20 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
     ordered.push(c);
     if (ordered.length >= lim) break;
   }
-  return ordered;
+
+  // ═══ R309Q: 12h YÜKSELİŞE GÖRE SIRALA ═══
+  // Sadece nihai listedeki ≤24 coin için 12h çek (429 korumalı). Sonra grup-içi sırala:
+  // TOP10 (pinned) grubu kendi içinde 12h'e göre, rest grubu kendi içinde 12h'e göre.
+  // Grup önceliği KORUNUR (TOP10 hep önde), sadece her grubun İÇ sırası 12h olur.
+  try {
+    await r309Add12hChange(ordered);
+    const isPinned = (c) => /TOP24_PINNED_TOP10|TOP10_GAINER|TOP3_ULTRA/.test(String(c.r54Bucket||''));
+    const pinnedGrp = ordered.filter(isPinned).sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
+    const restGrp   = ordered.filter(c => !isPinned(c)).sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
+    return [...pinnedGrp, ...restGrp];
+  } catch (_) {
+    return ordered; // 12h hesabı patlarsa eski sırayla devam (fail-soft)
+  }
 }
 
 app.get('/api/scan-candidates', async (req, res) => {
