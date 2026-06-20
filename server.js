@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310_4COIN_TOP2_GARANTI';
+const LAZARUS_BUILD = 'R310B_DEVIR_SKOR_ACILDI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -8516,7 +8516,7 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
     // R309V: 12h FİLTRESİ — rest (volatil) grubundan 12h hareketi ZAYIF olanları (mutlak <%3) ÇIKAR.
     // SOL gibi 12h'de durağan (%2) coinler artık TOP24'e SIZMAZ. Pinned (TOP10 gainer) korunur — onlar
     // zaten en güçlü gainer'lar. Liste 24'ün altına düşebilir, sorun değil: kalite > kemiyet (volatil coin ararız).
-    const R309V_MIN_12H = 3; // mutlak %3 hareket eşiği (yükselen+düşen, iki yönlü)
+    const R309V_MIN_12H = 5; // R310B: %3→%5 (liste daha seçici, zayıf/durağan coinler girmesin — kullanıcı: liste hâlâ zayıf)
     const pinnedGrp = ordered.filter(isPinned).sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
     const restGrp   = ordered.filter(c => !isPinned(c))
       .filter(c => Math.abs(Number(c.change12h ?? c.change24h ?? 0)) >= R309V_MIN_12H)
@@ -16045,7 +16045,7 @@ async function runAutoScan(prioritySymbol=null) {
           continue;
         }
 
-        if (!r121BrainTradeOk && !decisionChain?.r284WaitUpgradeOk && score < effectiveMinScore && !r80ControlledBPlusScoreOk && !r78BridgeScoreBypassOk && !r78PermissionScoreBypassOk) {
+        if (!r121BrainTradeOk && !decisionChain?.r284WaitUpgradeOk && score < effectiveMinScore && !r80ControlledBPlusScoreOk && !r78BridgeScoreBypassOk && !r78PermissionScoreBypassOk && !r309uDevirBypass(decisionChain, scanIdx)) {
           logAuto(`${coin.symbol} skor ${score} < ${effectiveMinScore} — atlandı`);
           markAutoSkip(coin.symbol, `Skor düşük ${score}<${effectiveMinScore}`, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, ...r119BuildAutoDiag(decisionChain), r80BPlusScoreFloor, r80ControlledBPlusScoreOk, r78BridgeScoreFloor, r78BridgeScoreBypassOk, r78PermissionScoreBypassOk});
           continue;
