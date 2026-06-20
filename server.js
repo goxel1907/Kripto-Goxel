@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309W_SIMETRI';
+const LAZARUS_BUILD = 'R309X_TERS_YON';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3346,8 +3346,9 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 ② DÖNÜŞ / STOP AVI (5m'de EN SIK kalıp, kârın çoğu burdan): Volatil coin tepe/dip yapıp sert döner. MM bir tarafın likiditesini/stoplarını + son ivme mumunu süpürür, sonra ters gider. İKİ tip: ALT SÜPÜRME→LONG: alt destek/SSL/son kırmızı mumun dibi süpürüldü (fitil aşağı) AMA kapanış geri yukarı (reclaim) + delta alışa döndü. ÜST SÜPÜRME→SHORT: üst direnç/BSL/son yeşil mumun tepesi süpürüldü (fitil yukarı) AMA kapanış geri aşağı (red) + delta satışa döndü. Süpürme + reddetme/reclaim + delta dönüşü ÜÇÜ birlikte = en yüksek olasılık. Süpürme olmadan kırılım = MM henüz avlamadı, bekle.
 
 ═══ İKİ PAHALI HATA (zararların ~tamamı bunlardan: TRENDE KARŞI teyitsiz giriş) ═══
-① DÜŞEN BIÇAK: düşüş trendinde "RSI düşük, dip" deyip LONG (geçmiş -11/-17%). Düşüşte "dip" seviye değil süreçtir.
-② YÜKSELEN BIÇAK: yükseliş trendinde "RSI yüksek, tepe" deyip SHORT (en kötü -22%). Yükselişte "tepe" seviye değil süreçtir.
+① DÜŞEN BIÇAK: düşüş trendinde "RSI düşük, dip" deyip LONG (geçmiş -11/-17/-18%). Düşüşte "dip" seviye değil süreçtir. ÖZELLİKLE DİKKAT: 5m RSI 20 (oversold) AMA 4h/1h RSI hâlâ yüksek/düşüş sürüyorsa → bu DİP DEĞİL, düşüşün molası. 5m oversold + delta pozitif seni kandırır (o alıcılar düşüşün ortasında "dip" sanıp alanlar, MM onları da ezer). Büyük resim (4h/1h) aşağıysa, 5m'in tek başına "oversold + delta+" demesi LONG için yetmez.
+② YÜKSELEN BIÇAK: yükseliş trendinde "RSI yüksek, tepe" deyip SHORT (en kötü -22%). Yükselişte "tepe" seviye değil süreçtir. SİMETRİK DİKKAT: 5m RSI 80 ama 4h/1h yükseliş sürüyorsa → tepe değil, yükselişin molası.
+★ TERS YÖNÜ DÜŞÜN: Düşüş trendinde "dip LONG" yerine, düşüş sürüyorsa o aslında SHORT fırsatıdır (trend yönünde). "Bu coin dipte, LONG alayım" derken kaybediyorsan, demek ki yön aşağı — o zaman teyitli SHORT düşün (-%18 LONG yerine +%18 SHORT olurdu). Aynısı tepe için: yükseliş trendinde "tepe SHORT" yerine trend yönünde LONG. Kaybeden yöne ısrar etme, trendin yönüne bak.
 KURAL: trende KARŞI giriş SADECE net dönüş teyidiyle (5m ChoCH + sweep&reclaim + delta o yöne döndü). Teyit yoksa → ya trend yönünde gir ya WAIT. Tek geri çekilme veya aşırı RSI dönüş kanıtı DEĞİLDİR.
 
 ═══ AKIŞ DOĞRULAMASI (giriş öncesi son bakış) ═══
