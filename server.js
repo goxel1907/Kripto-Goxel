@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309Z_KAR_KOSTUR_KALDIRAC';
+const LAZARUS_BUILD = 'R310_4COIN_TOP2_GARANTI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15685,14 +15685,17 @@ async function runAutoScan(prioritySymbol=null) {
     // Eski WATCH/WAIT/tier kapıları artık coini SİLMİYOR; AI açıkken en iyi adayları AI'ya devreder.
     // Tarama başında skor yüksekten düşüğe sıralı olduğu için ilk gelenler en güçlü adaylardır.
     // Bu sayaç, tek taramada AI'ya gidecek coin sayısını sınırlar (maliyet kontrolü).
-    const R309E_MAX_AI_PER_SCAN = 2;   // kullanıcı seçimi: tarama başına en fazla 2 coin AI'ya gider
+    const R309E_MAX_AI_PER_SCAN = 4;   // R310: 2→4 (dar boğaz açıldı, AI daha çok coin görsün, işlem şansı artar)
     let r309eAiSentCount = 0;
-    const r309eAiBudgetLeft = () => (r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
+    // R310: TOP2 GARANTİ — ilk 2 sıradaki coin (en volatil/en yüksek 12h, scanIdx 0-1) AI bütçe kontrolünden MUAF.
+    // Bütçe dolsa bile TOP2 her zaman AI'ya gider (kullanıcı: "ilk 2 sıra garanti öncelikli olsun"). Kalan bütçe diğerlerine.
+    const r310IsTop2 = (idx) => (typeof idx === 'number' && idx <= 1);
+    const r309eAiBudgetLeft = (idx) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
     // ═══ R309U: DEVİR-BYPASS ═══
     // AI'ya devredilmiş (WAIT/entryPermission/tier) + AI bütçesi varsa, YUMUŞAK skor/yön frenleri
     // (bot'un kendi görüşü: riskli yön, HTF amiri, body-shift, R190 akış, B+ giriş izi) coini AI'ya
     // ULAŞMADAN kesmesin — kararı AI verecek. SERT güvenlik (RVOL/ATR/spread/RR/cascade/öğrenme) HER ZAMAN kalır.
-    const r309uDevirBypass = (dc) => (AI_BRAIN_ENABLED && r309eAiBudgetLeft() && !!(dc?.r309eFromWait || dc?.r300SoftReject));
+    const r309uDevirBypass = (dc, idx) => (AI_BRAIN_ENABLED && r309eAiBudgetLeft(idx) && !!(dc?.r309eFromWait || dc?.r300SoftReject));
 
     for (const [scanIdx, coin] of scanList.entries()) {
       coin.gainerRank = scanIdx + 1; // 1 = en volatil/güçlü gainer (liste volatiliteye göre sıralı)
@@ -15844,7 +15847,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ═══ R309E: WAIT'i AI'ya DEVRET (silme) ═══
           // Eski sistem WAIT dedi diye coini çöpe atma — AI ham mumu okuyup kendi kararını versin.
           // Bütçe varsa: skoru yüksek tarafı geçici yön yap (AI zaten kendi yönünü seçer/çevirir), AI'ya bırak.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft()) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx)) {
             // Panel yön kısıtı korunur: panel sadece LONG/SHORT'a izin veriyorsa, geçici yön ona uymalı.
             const waitSideAllowed = (waitSide === 'LONG' && allowLong) || (waitSide === 'SHORT' && allowShort);
             // Panel karşı yöne izin veriyorsa geçici yönü ona çevir; iki yön de kapalıysa devretme.
@@ -15896,7 +15899,7 @@ async function runAutoScan(prioritySymbol=null) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           // ═══ R309E: emir izni yok → AI'ya DEVRET (silme) ═══
           // ASTER dersi: bot "izin yok" dedi ama AI'nın bayılacağı sweep+reclaim setup'ı vardı. AI okusun.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft()) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx)) {
             decisionChain.r300SoftReject = `R309E entryPermission→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E AI'ya devrediyor — kararı AI verecek (${why.slice(0,80)})`);
             // continue YOK — AI'ya akar
@@ -15917,7 +15920,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           // ═══ R309E: tier düşük → AI'ya DEVRET (silme) ═══
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft()) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx)) {
             decisionChain.r300SoftReject = `R309E tier→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E AI'ya devrediyor — kararı AI verecek`);
             // continue YOK
@@ -16035,7 +16038,7 @@ async function runAutoScan(prioritySymbol=null) {
           (decisionChain?.r88VurKacOk || decisionChain?.r75RetestBridgeOk || decisionChain?.r74Top10ProScalperOk || decisionChain?.r68UnifiedScalperCoreOk || decisionChain?.r67ScalperCoreHuntEntryOk || decisionChain?.r65ScalperCoreOk || decisionChain?.r50AutoPermissionOk)
         );
         // R85: düşük skor floor ile geçecekse önce giriş disiplini raporlanır.
-        if (!r121BrainTradeOk && !decisionChain?.r284WaitUpgradeOk && score < effectiveMinScore && ['A','B+'].includes(String(decisionChain?.tier || '')) && Number(score || 0) >= r80BPlusScoreFloor && !r85BartiDisiplinOk && !r309uDevirBypass(decisionChain)) {
+        if (!r121BrainTradeOk && !decisionChain?.r284WaitUpgradeOk && score < effectiveMinScore && ['A','B+'].includes(String(decisionChain?.tier || '')) && Number(score || 0) >= r80BPlusScoreFloor && !r85BartiDisiplinOk && !r309uDevirBypass(decisionChain, scanIdx)) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: B+ görünüm var ama canlı giriş izi/akış yeterli değil — giriş:${r85CanliGirisIziOk?'VAR':'YOK'} güven:${decisionChain?.brainConfidence||0}/100`);
           logAuto(`⏳ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r85CanliGirisIziOk, r85Terazi, r85R47, r85TimingPts, r85FlowPts, r85SadeceFundingDestek, r85BartiDisiplinOk});
@@ -16109,7 +16112,7 @@ async function runAutoScan(prioritySymbol=null) {
             (sideCtxRisk >= 45 || decisionChain?.r39TargetNearBlock || (antiChaseZone && antiChaseRsi) || !r81EntryTraceOk)
           )
         );
-        if (r81AntiChaseHard && !r121BrainOwnsRisk && !r309uDevirBypass(decisionChain)) {
+        if (r81AntiChaseHard && !r121BrainOwnsRisk && !r309uDevirBypass(decisionChain, scanIdx)) {
           // R85 KARŞI YÖN RADARI karşı tuzak:
           // LONG premium/RSI/geç giriş riski yediğinde coin komple atılmaz; SHORT karşı-trap tarafı kontrol edilir.
           // SHORT dip/discount geç giriş riski yediğinde LONG reclaim/retest tarafı kontrol edilir.
@@ -16173,7 +16176,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // R116: Son emir öncesi HTF amir kontrolü. Analiz zinciri bir sebeple geçse bile 1H/4H karşı seviyede legacy emir açılmaz.
-        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk && !r309uDevirBypass(decisionChain) && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 55)) {
+        if (decisionChain?.r116HtfGuardBlock && !decisionChain?.r117HtfReverseOk && !r309uDevirBypass(decisionChain, scanIdx) && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 55)) {
           const why = r120AutoReason(decisionChain, `HTF likidite amiri — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r116CounterLevel:decisionChain?.r116CounterLevel, r116CounterDist:decisionChain?.r116CounterDist, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -16182,7 +16185,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R114: Son savunma. WLD tipi hata: B+ / Sweep+StopHunt / MM_UP_SWEEP ama 5m body-shift aşağı.
         // Bu durumda wick avı bitmemiş sayılır; 5m gövde reclaim veya ICT/squeeze yapı onayı beklenir.
-        if (decisionChain?.r114TrapBlock && !r309uDevirBypass(decisionChain) && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 60)) {
+        if (decisionChain?.r114TrapBlock && !r309uDevirBypass(decisionChain, scanIdx) && !(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4 && Number(decisionChain?.brainConfidence||0) >= 60)) {
           const why = r120AutoReason(decisionChain, `5m body-shift tuzağı — ${recommendation} emir yok`);
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r114Shift:decisionChain?.r114Shift, r114ReclaimOk:decisionChain?.r114ReclaimOk, entryPermissionReason:decisionChain?.entryPermissionReason});
@@ -16304,7 +16307,7 @@ async function runAutoScan(prioritySymbol=null) {
 
         // R191: scan loop final check. Karar zinciri içindeki bütün bypasslar normalde
         // burada autoOk=false döner; yine de eski/legacy bir yol emre yaklaşırsa son kez kes.
-        if (decisionChain?.r190Edge?.spreadBlock || ((decisionChain?.r191UnifiedEntryBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) && !r309uDevirBypass(decisionChain))) {
+        if (decisionChain?.r190Edge?.spreadBlock || ((decisionChain?.r191UnifiedEntryBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) && !r309uDevirBypass(decisionChain, scanIdx))) {
           const why = decisionChain?.r191UnifiedBlockReason || (decisionChain?.r190Edge?.spreadBlock ? `R190 spread pahalı: ${decisionChain?.r190Edge?.spreadPct}%` : `R190 geç giriş: ${decisionChain?.r190Edge?.summary||''}`);
           logAuto(`⛔ ${coin.symbol} ${why} — emir açılmadı`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r190:decisionChain?.r190Edge});
