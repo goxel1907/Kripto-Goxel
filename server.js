@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R309X_TERS_YON';
+const LAZARUS_BUILD = 'R309Z_KAR_KOSTUR_KALDIRAC';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3326,6 +3326,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       genelLongYuzde: data.globalLongPct,
       likiditeSeviyeleri: data.liqLevels,                 // üst/alt likidite (TP/SL hedefi için)
       atrYuzde: data.atrPct,
+      botOkumasi: data.botOkumasi || null,   // R309Y: botun zengin grafik/formasyon/ICT okuması — AI çapraz doğrular
       piyasaNotu: data.marketCtx || null
     };
 
@@ -3333,7 +3334,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver. Seni kurallarla boğmuyorum; grafiği oku, mantıklı olanı yap.
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde.
+★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyor ve sana SUNUYOR — mum formasyonları (Engulfing/Hammer/Tweezer/Star/ThreeOutside, teyitli + 0-12 puan), ICT durumu (SSL/BSL seviyeleri, sweep+reclaim oldu mu, OB/FVG), HTF teşhisi (HH/HL mi LH/LL mi), stop-avı tespiti, düşen/yükselen bıçak uyarısı, tuzak uyarısı, order-flow yığılması, botun kendi yön+skoru. BUNLARI KULLAN ama KÖRÜ KÖRÜNE değil: kendi ham mum okumanla ÇAPRAZ DOĞRULA. Bot "BullEngulfing + sweep+reclaim + DEMAND_OB" diyorsa ve sen de ham mumda bunu görüyorsan → güçlü teyit, güvenle gir. Bot "düşen bıçak uyarısı" veya "tuzak uyarısı" veriyorsa → ciddiye al, çoğu kez haklı. Bot ile senin okuman ÇELİŞİYORSA → daha temkinli ol, belki WAIT. Botun mum formasyonu + ICT okuması senin en güçlü yardımcın; onu ham mumla birleştir, ikisi aynı yönü gösterince en yüksek olasılık.
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, botOkumasi(botun grafik analizi).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -3372,7 +3374,7 @@ GAINER: "gainerSira" = TOP24 sırası (1=en güçlü/hareketli, ilk 3 = o anın 
 
 ═══ KARAR ═══
 Net setup yoksa WAIT — ama fırsatçısın, gerçek fırsatı kaçırma. Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü), R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
-GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x, 70-73→12x, 74-79→15x, 80+→20x. Düşük kaldıraç "güvenmiyorum ama gireyim" demektir, yanlış — ya emin ol gir ya bekle.
+GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→8x, 70-74→11x, 75-79→14x, 80-84→17x, 85+→20x. Güveni DÜRÜST ver: setup ne kadar net+çok teyitliyse (trend+sweep+reclaim+delta+OB+mum formasyonu hepsi aynı yönde) güven o kadar YÜKSEK → yüksek kaldıraç → max kâr. En bariz fırsatta (her şey hizalı) yüksek güven ver, vur-kaç max kârı hedefle. Şüpheliysen düşük güven (düşük kaldıraç, zarar küçük) veya WAIT. Düşük kaldıraç "güvenmiyorum ama gireyim" demek değil — emin olduğun kadar güven ver, sistem kaldıracı ona göre ayarlar.
 
 SADECE JSON (başka hiçbir şey yok):
 {"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"Türkçe KISA-NET (max 220 karakter): 5m yön + setup tipi (trend devamı/dönüş) + en kritik sinyal (sweep/reclaim/formasyon/delta/squeeze) + hangi likidite.","plan":"Türkçe KISA (max 150 karakter): NEDEN şimdi (5m tetik oldu mu) + TP/SL neden orada + risk."}
@@ -14144,13 +14146,16 @@ async function managePosition(apiKey, apiSecret, pos) {
     if (inProfit) {
       const givebackFromPeakRatio = Number(state.peakPnl || 0) > 0 ? givebackRoi / Number(state.peakPnl) : 0;
       // R309C AKILLI KÂR KORUMA (MITO dersi: +%6.57 zirve yaptı, kâr geri verildi).
-      // Zirve ne kadar yüksekse geri verme toleransı o kadar DÜŞÜK — büyük kazancı sıkı koru, küçüğe nefes ver.
+      // R309Z: KÂR KOŞTURMA — geri-verme toleransı GEVŞETİLDİ (kullanıcı: "kâr sonuna kadar koşsun, max hedef").
+      // Eski değerler kârı erken kapatıyordu (zirve %12+ → sadece %20 geri verince kilit). Artık daha geniş nefes:
+      // kâr trendi sürdükçe koşar, sadece BÜYÜK geri dönüşte kilitlenir. Risk: kâr geri dönebilir (kullanıcı onayladı).
       const peak = Number(state.peakPnl || 0);
       let giveCap, minGive;
-      if (peak >= 12)      { giveCap = 0.20; minGive = 2.5; }  // büyük kâr: zirveden %20 geri verince kilitle
-      else if (peak >= 8)  { giveCap = 0.25; minGive = 2.0; }
-      else if (peak >= 5)  { giveCap = 0.30; minGive = 1.5; }  // MITO bandı: %5+ zirve → %30 geri verme kilidi
-      else                 { giveCap = 0.40; minGive = 3.0; }  // küçük kâr (%4-5): eski gevşek, nefes payı
+      if (peak >= 20)      { giveCap = 0.30; minGive = 5.0; }  // çok büyük kâr (%20+): zirveden %30 geri verince kilitle (eskiden %20)
+      else if (peak >= 12) { giveCap = 0.35; minGive = 4.0; }  // büyük kâr: %35 nefes (eskiden %20) — koşmasına izin ver
+      else if (peak >= 8)  { giveCap = 0.40; minGive = 3.0; }  // (eskiden %25)
+      else if (peak >= 5)  { giveCap = 0.45; minGive = 2.5; }  // (eskiden %30)
+      else                 { giveCap = 0.55; minGive = 3.5; }  // küçük kâr: en geniş nefes, erken kapanmasın
       if (givebackFromPeakRatio >= giveCap && givebackRoi >= minGive) {
         exitScore += 3;
         reasons.push(`zirveden %${(givebackFromPeakRatio*100).toFixed(0)} geri verildi (zirve %${peak.toFixed(1)} ROI) — akıllı kâr kilidi`);
@@ -16755,6 +16760,24 @@ async function runAutoScan(prioritySymbol=null) {
               // HAM LİKİDİTE SEVİYELERİ (mumda yok, AI hedef/stop için kullanır)
               liqLevels: analysis?.liquidityLevels || null,
               atrPct: analysis?.leverage?.atrPct,
+              // ═══ R309Y: BOTUN ZENGİN OKUMASI AI'ya YÜKLENİYOR ═══
+              // Bot 60+ sinyal + 30+ mum formasyonu hesaplıyor ama AI bunları görmüyordu (sadece ham mum).
+              // Artık botun TÜM okuması AI'ya gidiyor — AI bunları KENDİ ham mum okumasıyla ÇAPRAZ DOĞRULAR.
+              botOkumasi: {
+                mumFormasyonu: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || null,  // ThreeOutsideUp, Engulfing, Hammer, Tweezer vb. teyitli formasyonlar
+                mumPuani: decisionChain?.r118CandleScore ?? null,                                  // 0-12 mum teyit gücü
+                ictDurum: decisionChain?.ictDashboard || null,                                     // SSL/BSL seviyeleri, sweep+reclaim durumu, OB, FVG
+                htfTeshis: decisionChain?.htfTani || null,                                         // HTF yapı teşhisi (HH/HL veya LH/LL, faz)
+                orderBlock: decisionChain?.r111SupplyOB ? 'SUPPLY_OB(direnç)' : decisionChain?.r111DemandOB ? 'DEMAND_OB(destek)' : null,
+                stopAviDurum: decisionChain?.r278LiquidityHunt || decisionChain?.r276MmHunt || null, // MM likidite avı tespiti
+                dusenBicakUyari: !!(decisionChain?.r41FallingKnifeBlock),                           // bot düşen bıçak gördü mü
+                yukselenBicakUyari: !!(decisionChain?.r41RisingKnifeBlock),                         // bot yükselen bıçak gördü mü
+                tuzakUyari: !!(decisionChain?.r114SweepTrap || decisionChain?.r25WickTrap || decisionChain?.r148LongTrap || decisionChain?.r148ShortTrap), // bot tuzak gördü mü
+                stackedImbalance: decisionChain?.r125StackedImbalance || null,                      // order flow yığılması
+                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/R\d+[^·]*/g,'').slice(0, 400) || null, // botun tam okuma özeti (kural kodları temizlenmiş)
+                botYonu: decisionChain?.rec || null,                                                // botun kendi yön görüşü
+                botSkoru: decisionChain?.score ?? null                                              // botun güven skoru
+              },
               // PİYASA BAĞLAMI (BTC ham mumları candles.btc5m'de; bu sadece kısa not)
               marketCtx: (function(){
                 const s = String(decisionChain?.r140Summary||'');
@@ -16836,11 +16859,14 @@ async function runAutoScan(prioritySymbol=null) {
                         // binancePanelCap'i AI tabanından ÇIKARDIK — sadece panelMax (kullanıcı tavanı) + Binance gerçek limiti korunur.
                         // Binance'in o coin için fiziksel max kaldıracı (örn bazı coinlerde 25x) panelMax ile zaten sınırlı.
                         const binancePanelCap = Math.max(1, executeLeverage);
+                        // R309Z: KALDIRAÇ GÜVENE ORANLI (kullanıcı: "en bariz fırsatta yüksek, zayıfta düşük").
+                        // En bariz fırsat (güven 85+) → yüksek kaldıraç (vur-kaç max kâr). Zayıf (64-70) → düşük (risk az).
                         let aiTargetLev;
-                        if (aiConf >= 80)      aiTargetLev = 20;
-                        else if (aiConf >= 74) aiTargetLev = 15;
-                        else if (aiConf >= 70) aiTargetLev = 12;
-                        else                   aiTargetLev = 10;  // R308Y: taban 10x (64-69 güven). 64 altı zaten reddedildi.
+                        if (aiConf >= 85)      aiTargetLev = 20;  // en bariz fırsat: max kaldıraç, vur-kaç
+                        else if (aiConf >= 80) aiTargetLev = 17;
+                        else if (aiConf >= 75) aiTargetLev = 14;
+                        else if (aiConf >= 70) aiTargetLev = 11;
+                        else                   aiTargetLev = 8;   // 64-69 zayıf güven: düşük kaldıraç (zarar küçük kalsın)
                         // R309B: AI hedefini SADECE panelMax (kullanıcı tavanı) ile sınırla — R151'in düşürdüğü binancePanelCap'i taban için DİKKATE ALMA.
                         // Yani R151 6x'e düşürse bile AI 10x diyorsa 10x açılır (panelMax izin verdiği sürece).
                         aiTargetLev = Math.min(aiTargetLev, panelMax);
