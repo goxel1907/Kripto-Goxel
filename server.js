@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310B_DEVIR_SKOR_ACILDI';
+const LAZARUS_BUILD = 'R310D_CANLI_TOP24_KART';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15663,6 +15663,17 @@ async function runAutoScan(prioritySymbol=null) {
 
     autoScanState.phase = 'TARIYOR';
     autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
+    // R310D: ZENGİN TOP24 LİSTESİ (dashboard canlı kartı için) — sıra, 12h%, 24h%, grup, fiyat. Binance'den 45sn taze ticker + 15dk 12h.
+    autoScanState.top24Detay = (scanList||[]).slice(0,24).map((c,idx)=>({
+      sira: idx+1,
+      coin: String(c.symbol||c.fullSymbol||'').replace('USDT',''),
+      degisim12h: (typeof c.change12h === 'number') ? +c.change12h.toFixed(2) : null,
+      degisim24h: (typeof c.change24h === 'number') ? +c.change24h.toFixed(2) : null,
+      fiyat: (typeof c.price === 'number') ? c.price : (typeof c.lastPrice === 'number' ? c.lastPrice : null),
+      grup: idx <= 1 ? 'TOP2' : /TOP10_GAINER|TOP24_PINNED_TOP10|TOP3_ULTRA/.test(String(c.r54Bucket||'')) ? 'TOP10' : 'VOLATIL',
+      hacim: (typeof c.volume === 'number') ? Math.round(c.volume) : null
+    }));
+    autoScanState.top24Zaman = new Intl.DateTimeFormat('tr-TR', { timeZone:'Europe/Istanbul', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(new Date());
     autoScanState.scanSource = LAZARUS_BUILD;
     autoScanState.scanLimit = effectiveScanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
@@ -15932,7 +15943,7 @@ async function runAutoScan(prioritySymbol=null) {
           }
         }
         // R20 savunma katmanı: CVD yokken sadece terazi/bridge zayıfsa durdur — bypass aktifse geç.
-        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk && !r162BrainBypassActive) {
+        if (decisionChain?.cvdWarmingBridge && !decisionChain?.cvdBridgeQualityOk && !decisionChain?.autoOk && !r162BrainBypassActive && !r309uDevirBypass(decisionChain, scanIdx)) {
           const why = `CVD köprüsü zayıf (${decisionChain?.bridgeCount||0}/4, skor ${score}, terazi ${decisionChain?.priorityScore||0}) — otomatik açılmıyor`;
           logAuto(`📊 ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, longScore, shortScore, reason:decisionChain?.reason, priorityScore:decisionChain?.priorityScore, autoOk:decisionChain?.autoOk, ...r119BuildAutoDiag(decisionChain), r48DirectSweepBalanceOk:decisionChain?.r48DirectSweepBalanceOk, r49DirectSweepUnlockOk:decisionChain?.r49DirectSweepUnlockOk, r50AutoPermissionOk:decisionChain?.r50AutoPermissionOk, r50DirectSweepMatrixOk:decisionChain?.r50DirectSweepMatrixOk, r50NonSweepMatrixOk:decisionChain?.r50NonSweepMatrixOk, r51DirectSweepMinEdgeOk:decisionChain?.r51DirectSweepMinEdgeOk, r53SmartEdgeScoreOk:decisionChain?.r53SmartEdgeScoreOk,
@@ -15947,7 +15958,7 @@ async function runAutoScan(prioritySymbol=null) {
         const mmHardOpposite = isLong
           ? (mmTarget === 'GENUINE_DOWN' && mmConf >= 65)
           : (mmTarget === 'GENUINE_UP'   && mmConf >= 65);
-        if (mmHardOpposite) {
+        if (mmHardOpposite && !r309uDevirBypass(decisionChain, scanIdx)) {
           logAuto(`${coin.symbol} yüksek güvenli MM ters (${mmTarget}/${mmConf}) — atlandı`);
           markAutoSkip(coin.symbol, `MM ters ${mmTarget}/${mmConf}`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
@@ -15961,7 +15972,7 @@ async function runAutoScan(prioritySymbol=null) {
         const cvdToxic = isLong
           ? (cvdRatio < 35 && tickTrend === 'BEAR')
           : (cvdRatio > 65 && tickTrend === 'BULL');
-        if (cvdToxic) {
+        if (cvdToxic && !r309uDevirBypass(decisionChain, scanIdx)) {
           logAuto(`${coin.symbol} CVD+Tick net ters (${cvdRatio}%/${tickTrend}) — atlandı`);
           markAutoSkip(coin.symbol, `CVD+Tick ters ${cvdRatio}%/${tickTrend}`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
@@ -16195,7 +16206,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R189: Son emir öncesi 5m micro/kanıt freni. Karar motoru bir şekilde TRADE üretse bile
         // R160 3/4 + Q4 kanıtsız + zayıf mum/HTF karşı kombinasyonu canlı emir açamaz.
         // Bu R176 gibi recovery duvarı değildir; sadece eksik kanıtlı bypass'ı keser.
-        if (decisionChain?.r188NoProofGuard || decisionChain?.r190Edge?.spreadBlock || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) {
+        if (decisionChain?.r190Edge?.spreadBlock || ((decisionChain?.r188NoProofGuard || (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))) && !r309uDevirBypass(decisionChain, scanIdx))) {
           const why = decisionChain?.r190Edge?.spreadBlock
             ? `R190 spread pahalı: ${decisionChain.r190Edge.spreadPct}% — 15x ROI makas riski yüksek`
             : (decisionChain?.r190Edge?.lateTrapRisk && !(decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk))
@@ -16210,8 +16221,8 @@ async function runAutoScan(prioritySymbol=null) {
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
         const r38FngStrongDecision = r162BrainBypassActive || (Number(decisionChain?.priorityScore||0) >= 76 && (decisionChain?.r37EarlyOk || decisionChain?.scalperBridge || decisionChain?.r38RetestBridgeOk));
-        if (fgSignal==='EXTREME_GREED' && isLong && !(r38AutoTopMover && r38FngStrongDecision))  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
-        if (fgSignal==='EXTREME_FEAR'  && isShort && !(r38AutoTopMover && r38FngStrongDecision)) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
+        if (fgSignal==='EXTREME_GREED' && isLong && !(r38AutoTopMover && r38FngStrongDecision) && !r309uDevirBypass(decisionChain, scanIdx))  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
+        if (fgSignal==='EXTREME_FEAR'  && isShort && !(r38AutoTopMover && r38FngStrongDecision) && !r309uDevirBypass(decisionChain, scanIdx)) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
         if ((fgSignal==='EXTREME_GREED' && isLong) || (fgSignal==='EXTREME_FEAR' && isShort)) logAuto(`🟡 ${coin.symbol} F&G soft geçildi: top-mover + güçlü 5m karar zinciri`);
 
         // Likidasyon cascade: sadece pozisyon yönüne direkt ters kaskad veto eder.
@@ -16224,7 +16235,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         // ── R97 VUR-KAÇ PİYASA GÜVENLİĞİ ─────────────────────────────────────
-        if (decisionChain?.r88VurKacEnabled && decisionChain?.r88PiyasaBozuk && !decisionChain?.r93DalgaliAmaIslemYapilabilir && !r121BrainOwnsRisk) {
+        if (decisionChain?.r88VurKacEnabled && decisionChain?.r88PiyasaBozuk && !decisionChain?.r93DalgaliAmaIslemYapilabilir && !r121BrainOwnsRisk && !r309uDevirBypass(decisionChain, scanIdx)) {
           const why = `5m Fırsat Beyni işlem yok: piyasa zemini tehlikeli/uygunsuz — makas:${decisionChain?.r88SpreadWide?'GENİŞ':'normal'} defter:${decisionChain?.r88DefterInce?'İNCE':'normal'} oynaklık:${decisionChain?.r88OynaklikAsiri?'AŞIRI':'normal'} zemin:${decisionChain?.r93PiyasaEtiketi||'BOZUK'} dönüş:${decisionChain?.r93DonusRadariOk?'VAR':'YOK'}`;
           logAuto(`⛔ ${coin.symbol} ${why}`);
           markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, r88:decisionChain?.r88VurKac, r93:{etiket:decisionChain?.r93PiyasaEtiketi, tehlikeli:decisionChain?.r93PiyasaTehlikeli, dalgaliIslem:decisionChain?.r93DalgaliAmaIslemYapilabilir, merdiven:decisionChain?.r93MerdivenDevamOk, donus:decisionChain?.r93DonusRadariOk, donusSkor:decisionChain?.r93DonusSkor}});
@@ -16483,7 +16494,7 @@ async function runAutoScan(prioritySymbol=null) {
             const minEdgeNeeded = r167OppLoss >= 1 ? 75 : 65;
             const calibEdge = Number(decisionChain?.brainConfidence || 0);
             const fullProof = !!(decisionChain?.r160TraderDecision && Number(decisionChain?.r160TrueCount||0) >= 4);
-            if (calibEdge < minEdgeNeeded && !fullProof) {
+            if (calibEdge < minEdgeNeeded && !fullProof && !r309uDevirBypass(decisionChain, scanIdx)) {
               logAuto(`🧊 ${coin.symbol} R167 coin tekrar-kayıp freni: loss=${r167RecentLoss}, oppLoss=${r167OppLoss}, coinWR%${r167WR4h!==null?(r167WR4h*100).toFixed(0):'?'} → edge ${calibEdge}<${minEdgeNeeded}, atlandı`);
               markAutoSkip(coin.symbol, `R167 coin rejim freni: zayıf son performans / ters-yön kaybı`, {rec:recommendation, score});
               continue;
@@ -16504,7 +16515,7 @@ async function runAutoScan(prioritySymbol=null) {
           if (r166WeakCoin) {
             const minEdgeNeeded = 65; // zayıf coin için minimum edge
             const calibEdge = Number(decisionChain?.brainConfidence || 0);
-            if (calibEdge < minEdgeNeeded) {
+            if (calibEdge < minEdgeNeeded && !r309uDevirBypass(decisionChain, scanIdx)) {
               logAuto(`⚡ ${coin.symbol} R166 coin hafızası: ${r166RecentL} kayıp, coinWR%${r166WR4h!==null?(r166WR4h*100).toFixed(0):'?'} → edge ${calibEdge}<${minEdgeNeeded}, atlandı`);
               markAutoSkip(coin.symbol, `R166 coin hafızası: zayıf WR+${r166RecentL}kayıp, edge ${calibEdge}<${minEdgeNeeded}`, {rec:recommendation, score});
               continue;
