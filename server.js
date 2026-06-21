@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310L_TERS_YON_ONCELIK';
+const LAZARUS_BUILD = 'R310N_MINRR_ENFORCE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3348,9 +3348,9 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 ② DÖNÜŞ / STOP AVI (5m'de EN SIK kalıp, kârın çoğu burdan): Volatil coin tepe/dip yapıp sert döner. MM bir tarafın likiditesini/stoplarını + son ivme mumunu süpürür, sonra ters gider. İKİ tip: ALT SÜPÜRME→LONG: alt destek/SSL/son kırmızı mumun dibi süpürüldü (fitil aşağı) AMA kapanış geri yukarı (reclaim) + delta alışa döndü. ÜST SÜPÜRME→SHORT: üst direnç/BSL/son yeşil mumun tepesi süpürüldü (fitil yukarı) AMA kapanış geri aşağı (red) + delta satışa döndü. Süpürme + reddetme/reclaim + delta dönüşü ÜÇÜ birlikte = en yüksek olasılık. Süpürme olmadan kırılım = MM henüz avlamadı, bekle.
 
 ═══ İKİ PAHALI HATA (zararların ~tamamı bunlardan: TRENDE KARŞI teyitsiz giriş) ═══
-① DÜŞEN BIÇAK: düşüş trendinde "RSI düşük, dip" deyip LONG (geçmiş -11/-17/-18%). Düşüşte "dip" seviye değil süreçtir. ÖZELLİKLE DİKKAT: 5m RSI 20 (oversold) AMA 4h/1h RSI hâlâ yüksek/düşüş sürüyorsa → bu DİP DEĞİL, düşüşün molası. 5m oversold + delta pozitif seni kandırır (o alıcılar düşüşün ortasında "dip" sanıp alanlar, MM onları da ezer). Büyük resim (4h/1h) aşağıysa, 5m'in tek başına "oversold + delta+" demesi LONG için yetmez.
+① DÜŞEN BIÇAK: düşüş trendinde "RSI düşük, dip" deyip LONG (geçmiş -11/-17/-18/-21%). Düşüşte "dip" seviye değil süreçtir. ÖZELLİKLE DİKKAT: 5m RSI 20 (oversold) AMA 4h/1h RSI hâlâ yüksek/düşüş sürüyorsa → bu DİP DEĞİL, düşüşün molası. 5m oversold + delta pozitif seni kandırır (o alıcılar düşüşün ortasında "dip" sanıp alanlar, MM onları da ezer). EN PAHALI DERS (-%21): "FVG/OTE retest + Engulfing/PiercingLine mum teyidi + 1h RSI oversold" göründü diye LONG açma — eğer OI ÇÖZÜLÜYORSA (OI 1h negatif, örn -%6) yükseliş için YAKIT YOK, retest sahte; mum formasyonu düşüşün içinde oluşan bir TUZAKTIR. Kural: FVG/OTE retest LONG'u SADECE OI artarken/sabitken VE delta pozitifken geçerli; OI çözülüyor + delta negatif/zayıf + düşüş trendi ise retest+mum kanıtı YETMEZ, WAIT veya tersini (SHORT) düşün. Simetrik: yükselişte OI artarken "tepe SHORT retest" de aynı şekilde sahtedir. Büyük resim (4h/1h) aşağıysa, 5m'in tek başına "oversold + delta+" demesi LONG için yetmez.
 ② YÜKSELEN BIÇAK: yükseliş trendinde "RSI yüksek, tepe" deyip SHORT (en kötü -22%). Yükselişte "tepe" seviye değil süreçtir. SİMETRİK DİKKAT: 5m RSI 80 ama 4h/1h yükseliş sürüyorsa → tepe değil, yükselişin molası.
-★ TERS YÖNÜ DÜŞÜN (İKİ YÖNLÜ — ID/EPIC/BICO SHORT kayıplarının dersi): Bir yönde işlem mantıklı GÖRÜNÜYOR ama o tablo sürekli kaybettiriyorsa, KARŞI yön doğru olabilir. SHORT'u düşündüğün ama kaybedilen tabloda (fiyat hâlâ yukarı akıyor, delta ALICI yönlü "L5/S0" gibi, OI artıyor, dip toplama) → o aslında LONG fırsatıdır, SHORT'a zorlama. Tersine LONG'u düşündüğün ama kaybedilen tabloda (fiyat aşağı akıyor, delta SATICI yönlü, tepe dağılımı, OI çözülüyor) → o aslında SHORT fırsatıdır. KRİTİK SOMUT KURAL: "Mum formasyonu (Engulfing/DarkCloud) aşağı AMA delta hâlâ ALICI (L>S)" diyorsan SHORT AÇMA — delta yönü mum formasyonunu EZER, çünkü mum geç bir görüntü, delta canlı gerçektir. Simetrik: "mum yukarı ama delta hâlâ SATICI" ise LONG açma. Düşüş trendinde "dip LONG" yerine trend yönünde SHORT; yükseliş trendinde "tepe SHORT" yerine trend yönünde LONG. Önce şunu sor: "bu yön bana defalarca kaybettirdi mi, veri/mum/delta aslında KARŞI yönü mü gösteriyor?" Karşı yön net teyitliyse (veri+mum+delta+yapı uyumlu) onu seç; hiçbiri net değilse WAIT. Kaybeden yöne ısrar yok.
+★ TERS YÖNÜ DÜŞÜN (İKİ YÖNLÜ — tekrarlayan ters-yön kayıplarının dersi): Bir yönde işlem mantıklı GÖRÜNÜYOR ama o tablo sürekli kaybettiriyorsa, KARŞI yön doğru olabilir. SHORT'u düşündüğün ama kaybedilen tabloda (fiyat hâlâ yukarı akıyor, delta ALICI yönlü "L5/S0" gibi, OI artıyor, dip toplama) → o aslında LONG fırsatıdır, SHORT'a zorlama. Tersine LONG'u düşündüğün ama kaybedilen tabloda (fiyat aşağı akıyor, delta SATICI yönlü, tepe dağılımı, OI çözülüyor) → o aslında SHORT fırsatıdır. KRİTİK SOMUT KURAL: "Mum formasyonu (Engulfing/DarkCloud) aşağı AMA delta hâlâ ALICI (L>S)" diyorsan SHORT AÇMA — delta yönü mum formasyonunu EZER, çünkü mum geç bir görüntü, delta canlı gerçektir. Simetrik: "mum yukarı ama delta hâlâ SATICI" ise LONG açma. Düşüş trendinde "dip LONG" yerine trend yönünde SHORT; yükseliş trendinde "tepe SHORT" yerine trend yönünde LONG. Önce şunu sor: "bu yön bana defalarca kaybettirdi mi, veri/mum/delta aslında KARŞI yönü mü gösteriyor?" Karşı yön net teyitliyse (veri+mum+delta+yapı uyumlu) onu seç; hiçbiri net değilse WAIT. Kaybeden yöne ısrar yok.
 KURAL: trende KARŞI giriş SADECE net dönüş teyidiyle (5m ChoCH + sweep&reclaim + delta o yöne döndü). Teyit yoksa → ya trend yönünde gir ya WAIT. Tek geri çekilme veya aşırı RSI dönüş kanıtı DEĞİLDİR.
 
 ═══ AKIŞ DOĞRULAMASI (giriş öncesi son bakış) ═══
@@ -15132,6 +15132,11 @@ function r308AiPlanQuality(ai) {
     const rr = reward / risk;
     const slPct = risk / entry * 100;
     if (slPct > AI_BRAIN_MAX_SL_PCT) return { ok:false, reason:`AI SL aşırı geniş ${slPct.toFixed(2)}% > ${AI_BRAIN_MAX_SL_PCT}% (güvenlik)` };
+    // ═══ R310N: MIN R/R ENFORCEMENT (sessiz açık — PUMP RR 1.47 geçmişti) ═══
+    // AI_BRAIN_MIN_RR (1.5) tanımlıydı ve dashboard'da gösteriliyordu AMA hiçbir yerde emir reddinde
+    // KULLANILMIYORDU. RR hesaplanıp atılıyordu. Sonuç: AI düşük R/R'lı (TP yakın, kayıp/kazanç asimetrik)
+    // planları açabiliyordu. Artık RR < min ise emir reddedilir — kazanç/zarar asimetrisinin bir kaynağı kapanır.
+    if (rr < AI_BRAIN_MIN_RR) return { ok:false, reason:`AI R/R ${rr.toFixed(2)} < ${AI_BRAIN_MIN_RR} (ödül/risk yetersiz — TP çok yakın veya SL çok geniş)` };
     return { ok:true, rr, slPct, confidence:conf };
   } catch(e) {
     return { ok:false, reason:String(e?.message || e).slice(0,120) };
@@ -16398,6 +16403,26 @@ async function runAutoScan(prioritySymbol=null) {
           }
         } catch(_e) {}
 
+        // ═══ R310M: ATR-ORANTILI KALDIRAÇ KISMA (BICO -%21 dersi — mikro-cap OLMASA da) ═══
+        // SORUN: R150 sadece fiyat<0.03 mikro-cap coinde kaldıraç kısıyordu. BICO (fiyat 0.0512, mikro-cap DEĞİL)
+        // ATR %8.84 ile 11x açıldı → %2 ters hareket × 11x'ten çok daha fazla, -%21 ROI. Yüksek ATR'li coin
+        // mikro-cap olmasa da TEHLİKELİ: SL'e çarpma olasılığı yüksek. "Kazanç küçük / kayıp büyük" asimetrisinin
+        // ana kaynağı bu. ÇÖZÜM: İşlemi ENGELLEME (boğma yok) — sadece ATR yükseldikçe kaldıracı kıs ki tek
+        // kayıp hesabı patlatmasın. ATR %6-8 → max 10x, %8-10 → max 8x, %10-12 → max 6x. Düşük ATR'ye dokunmaz.
+        // AI'nın yön kararı ve işlem açma hakkı AYNEN korunur; sadece pozisyon boyutu riske göre küçülür.
+        try {
+          const r310mAtr = Number(coinAtrPct || 0);
+          if (r310mAtr >= 6) {
+            const r310mCap = r310mAtr >= 10 ? 6 : r310mAtr >= 8 ? 8 : 10;
+            if (executeLeverage > r310mCap) {
+              const oldLev = executeLeverage;
+              executeLeverage = r310mCap;
+              leverageNote += ` · R310M ATR %${r310mAtr.toFixed(1)} yüksek → kaldıraç ${oldLev}x→${executeLeverage}x (kayıp asimetrisi koruması)`;
+              logAuto(`🛡️ ${coin.symbol} ATR %${r310mAtr.toFixed(1)} yüksek → kaldıraç ${oldLev}x→${executeLeverage}x kısıldı (BICO -%21 tipi tek-kayıp patlamasını önler)`);
+            }
+          }
+        } catch(_e) {}
+
         // R151: Kalibrasyon datası yetersiz (yeni) coin koruması.
         // r142 hafıza sıfırdan başlar ve edge 100 verir → işlem doğru açılır ama kaldıraç agresif olabilir.
         // < 3 geçmiş trade olan coin'de kaldıraç panelin %60'ı ile cap'lenir (işlem asla iptal edilmez).
@@ -16917,6 +16942,22 @@ async function runAutoScan(prioritySymbol=null) {
                           logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R310J: panel tavanı ${panelMax}x ezildi, Binance fiziksel limit ${r310Ceil}x, max-kâr)`);
                         }
                       } catch(_aiLevE) { logAuto(`⚠️ ${coin.symbol} AI kaldıraç hatası: ${String(_aiLevE?.message||_aiLevE).slice(0,60)}`); }
+                      // ═══ R310M: AI yükseltmesinden SONRA ATR tavanını YENİDEN uygula ═══
+                      // AI güven→kaldıraç (R310J) yukarıda kaldıracı artırmış olabilir; bu, R310M ATR korumasını EZER.
+                      // Burada tekrar uygula: yüksek ATR'de AI 20x dese bile kaldıraç ATR tavanına çekilir (BICO -%21 dersi).
+                      // Risk koruması her zaman son sözü söyler — AI'nın YÖN/işlem hakkı korunur, sadece boyut riske göre.
+                      try {
+                        const r310mAtr2 = Number(coinAtrPct || 0);
+                        if (r310mAtr2 >= 6) {
+                          const r310mCap2 = r310mAtr2 >= 10 ? 6 : r310mAtr2 >= 8 ? 8 : 10;
+                          if (executeLeverage > r310mCap2) {
+                            const oldLev = executeLeverage;
+                            executeLeverage = r310mCap2;
+                            leverageNote += ` · R310M ATR %${r310mAtr2.toFixed(1)} tavanı (AI sonrası) ${oldLev}x→${executeLeverage}x`;
+                            logAuto(`🛡️ ${coin.symbol} ATR %${r310mAtr2.toFixed(1)} → AI kaldıracı ${oldLev}x→${executeLeverage}x kısıldı (ATR koruması AI'yı ezdi, kayıp asimetrisi)`);
+                          }
+                        }
+                      } catch(_e) {}
                       // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
                       try {
                         const maxRoiRisk = Number(r282TradePlan?.maxRoiRisk || 15);
