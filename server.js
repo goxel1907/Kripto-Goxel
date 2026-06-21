@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310D_CANLI_TOP24_KART';
+const LAZARUS_BUILD = 'R310F_BOTOKUMA_UYUM';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3334,7 +3334,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver. Seni kurallarla boğmuyorum; grafiği oku, mantıklı olanı yap.
-★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyor ve sana SUNUYOR — mum formasyonları (Engulfing/Hammer/Tweezer/Star/ThreeOutside, teyitli + 0-12 puan), ICT durumu (SSL/BSL seviyeleri, sweep+reclaim oldu mu, OB/FVG), HTF teşhisi (HH/HL mi LH/LL mi), stop-avı tespiti, düşen/yükselen bıçak uyarısı, tuzak uyarısı, order-flow yığılması, botun kendi yön+skoru. BUNLARI KULLAN ama KÖRÜ KÖRÜNE değil: kendi ham mum okumanla ÇAPRAZ DOĞRULA. Bot "BullEngulfing + sweep+reclaim + DEMAND_OB" diyorsa ve sen de ham mumda bunu görüyorsan → güçlü teyit, güvenle gir. Bot "düşen bıçak uyarısı" veya "tuzak uyarısı" veriyorsa → ciddiye al, çoğu kez haklı. Bot ile senin okuman ÇELİŞİYORSA → daha temkinli ol, belki WAIT. Botun mum formasyonu + ICT okuması senin en güçlü yardımcın; onu ham mumla birleştir, ikisi aynı yönü gösterince en yüksek olasılık.
+★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge), botYonu (botun yön görüşü), botSkoru. BUNLARI KULLAN ama KÖRÜ KÖRÜNE değil: kendi ham mum okumanla ÇAPRAZ DOĞRULA. botAnalizOzeti'nde "L12/S0" = 12 alıcı 0 satıcı (güçlü LONG akışı), "kanıt yetersiz" = bot net sweep/reclaim görmedi (dikkat), "Tuzak dönüşü" = bot tuzak sezdi. ictDurum'da "SSL_ALINDI_CHOCH_BEKLENIYOR" = alt süpürüldü reclaim bekleniyor, "DEMAND_OB" = destek bölgesi. Bot ile senin okuman AYNI yönü gösterince en güçlü teyit; ÇELİŞİYORSA temkinli ol/WAIT. Bot "kanıt yetersiz" veya "Tuzak" diyorsa ciddiye al. Alan boşsa ("formasyon yok" / null) o veri yok demektir, uydurma.
 VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, botOkumasi(botun grafik analizi).
 
 ═══ ZAMAN DİLİMİ ═══
@@ -16778,19 +16778,14 @@ async function runAutoScan(prioritySymbol=null) {
               // Bot 60+ sinyal + 30+ mum formasyonu hesaplıyor ama AI bunları görmüyordu (sadece ham mum).
               // Artık botun TÜM okuması AI'ya gidiyor — AI bunları KENDİ ham mum okumasıyla ÇAPRAZ DOĞRULAR.
               botOkumasi: {
-                mumFormasyonu: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || null,  // ThreeOutsideUp, Engulfing, Hammer, Tweezer vb. teyitli formasyonlar
-                mumPuani: decisionChain?.r118CandleScore ?? null,                                  // 0-12 mum teyit gücü
-                ictDurum: decisionChain?.ictDashboard || null,                                     // SSL/BSL seviyeleri, sweep+reclaim durumu, OB, FVG
-                htfTeshis: decisionChain?.htfTani || null,                                         // HTF yapı teşhisi (HH/HL veya LH/LL, faz)
-                orderBlock: decisionChain?.r111SupplyOB ? 'SUPPLY_OB(direnç)' : decisionChain?.r111DemandOB ? 'DEMAND_OB(destek)' : null,
-                stopAviDurum: decisionChain?.r278LiquidityHunt || decisionChain?.r276MmHunt || null, // MM likidite avı tespiti
-                dusenBicakUyari: !!(decisionChain?.r41FallingKnifeBlock),                           // bot düşen bıçak gördü mü
-                yukselenBicakUyari: !!(decisionChain?.r41RisingKnifeBlock),                         // bot yükselen bıçak gördü mü
-                tuzakUyari: !!(decisionChain?.r114SweepTrap || decisionChain?.r25WickTrap || decisionChain?.r148LongTrap || decisionChain?.r148ShortTrap), // bot tuzak gördü mü
-                stackedImbalance: decisionChain?.r125StackedImbalance || null,                      // order flow yığılması
-                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/R\d+[^·]*/g,'').slice(0, 400) || null, // botun tam okuma özeti (kural kodları temizlenmiş)
-                botYonu: decisionChain?.rec || null,                                                // botun kendi yön görüşü
-                botSkoru: decisionChain?.score ?? null                                              // botun güven skoru
+                // R310F: Önceki sürümde 11 alan YANLIŞ değişken adıyla hep null/false gidiyordu (AI'yı yanıltıyordu:
+                // "bot bıçak görmedi" gibi sahte izlenim). Düzeltildi — sadece GERÇEKTEN dolu kaynaklardan besleniyor.
+                mumFormasyonu: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || null,  // teyitli mum formasyonları (Engulfing/Hammer/Tweezer/Star vb.)
+                ictDurum: decisionChain?.ictDashboard || null,                                     // SSL/BSL seviyeleri + sweep+reclaim + OB(SUPPLY/DEMAND) + FVG — hepsi bunun içinde
+                htfTeshis: decisionChain?.htfTani || null,                                         // HTF yapı (HH/HL veya LH/LL) + faz + bıçak/karşı-baskı uyarıları
+                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/\bR\d+\b\s*/g,'').replace(/\s+·\s+/g,' · ').slice(0, 550) || null, // botun TAM okuması: mum + akış(L/S) + kanıt + tuzak + edge — R-etiketi temizli, içerik korunur
+                botYonu: decisionChain?.rec || null,                                                // botun kendi yön görüşü (LONG/SHORT/WAIT)
+                botSkoru: (typeof decisionChain?.score === 'number') ? decisionChain.score : null   // botun skoru (0-100)
               },
               // PİYASA BAĞLAMI (BTC ham mumları candles.btc5m'de; bu sadece kısa not)
               marketCtx: (function(){
