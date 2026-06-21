@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310P_AKILLI_BUTCE';
+const LAZARUS_BUILD = 'R310Q_429_WEIGHT_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -115,7 +115,9 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     if (binanceGov.backoffUntil > now && !String(scope).includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
     // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
-    if (binanceGov.usedWeight + weight > 850 || binanceGov.usedOrders + orderWeight > 70) {
+    // R310Q: 850→2000 (Binance futures gerçek limit 2400/dk). Weight artık DOĞRU sayıldığı için (klines=5,
+    // depth=5/10) bu eşik gerçek kullanımı yansıtır; eski 850 hem yanlış sayıyor hem gereksiz bekletiyordu.
+    if (binanceGov.usedWeight + weight > 2000 || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
       await sleep(wait);
       _resetGovWindowIfNeeded();
@@ -621,7 +623,25 @@ async function bPub(path, qs='') {
   if(now-reqWindow>60000){reqCount=0;reqWindow=now;}
   reqCount++;
   if(reqCount>800){const w=60000-(now-reqWindow);await sleep(w+1000);reqCount=0;reqWindow=Date.now();}
-  await binanceThrottle('PUBLIC_REST', path.includes('/ticker/24hr') ? 5 : 1, 0);
+  // ═══ R310Q: GERÇEK BINANCE WEIGHT (429 fix) ═══
+  // ÖNCE: tüm public istekler weight=1 sayılıyordu (ticker=5 hariç). Ama gerçekte klines limit≤100=w2,
+  // limit 100-500=w5; depth limit 100=w5/limit 500=w10; ticker/24hr (tek sembol)=w1, (tümü)=w40.
+  // Governor "850 kullandım" derken gerçekte ~2000+ harcanmış oluyordu → Binance 429 /klines.
+  // Artık gerçek weight geçilir; governor doğru sayar, 429 patlaması durur.
+  const r310qWeight = (function(){
+    const p = path || '';
+    const q = qs || '';
+    const limMatch = /limit=(\d+)/.exec(q);
+    const lim = limMatch ? Number(limMatch[1]) : 0;
+    if (p.includes('/ticker/24hr')) return q.includes('symbol=') ? 1 : 40; // tek sembol w1, tüm liste w40
+    if (p.includes('/klines'))      return lim > 100 ? 5 : (lim > 0 ? 2 : 2);
+    if (p.includes('/depth'))       return lim > 100 ? 10 : 5;
+    if (p.includes('/futures/data')) return 1;   // ayrı havuz ama güvenli say
+    if (p.includes('/openInterest')) return 1;
+    if (p.includes('/fundingRate'))  return 1;
+    return 1;
+  })();
+  await binanceThrottle('PUBLIC_REST', r310qWeight, 0);
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
   if(r.status===429||r.status===418){registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'));}
