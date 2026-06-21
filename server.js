@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310F_BOTOKUMA_UYUM';
+const LAZARUS_BUILD = 'R310J_AI_KALDIRAC_RUNNER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3377,7 +3377,8 @@ Net setup yoksa WAIT — ama fırsatçısın, gerçek fırsatı kaçırma. Girer
 GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→8x, 70-74→11x, 75-79→14x, 80-84→17x, 85+→20x. Güveni DÜRÜST ver: setup ne kadar net+çok teyitliyse (trend+sweep+reclaim+delta+OB+mum formasyonu hepsi aynı yönde) güven o kadar YÜKSEK → yüksek kaldıraç → max kâr. En bariz fırsatta (her şey hizalı) yüksek güven ver, vur-kaç max kârı hedefle. Şüpheliysen düşük güven (düşük kaldıraç, zarar küçük) veya WAIT. Düşük kaldıraç "güvenmiyorum ama gireyim" demek değil — emin olduğun kadar güven ver, sistem kaldıracı ona göre ayarlar.
 
 SADECE JSON (başka hiçbir şey yok):
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"reasoning":"Türkçe KISA-NET (max 220 karakter): 5m yön + setup tipi (trend devamı/dönüş) + en kritik sinyal (sweep/reclaim/formasyon/delta/squeeze) + hangi likidite.","plan":"Türkçe KISA (max 150 karakter): NEDEN şimdi (5m tetik oldu mu) + TP/SL neden orada + risk."}
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"Türkçe KISA-NET (max 220 karakter): 5m yön + setup tipi (trend devamı/dönüş) + en kritik sinyal (sweep/reclaim/formasyon/delta/squeeze) + hangi likidite.","plan":"Türkçe KISA (max 150 karakter): NEDEN şimdi (5m tetik oldu mu) + TP/SL neden orada + risk."}
+KÂR KOŞMA: "NORMAL" = standart kâr koruma (kâr ~%5-6'ya kadar koşar sonra kilitlenir). "RUNNER" = setup ÇOK güçlü ve net trend var (güçlü sweep+reclaim + delta yön + trend devamı + bol koşacak alan, karşı likidite uzak), kârın %10+ koşmasına izin ver, erken kilitleme. RUNNER'ı SADECE en bariz/güçlü setuplarda seç; şüphe varsa NORMAL. Zayıf/sınırda işlemde asla RUNNER deme.
 WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
 
     const controller = new AbortController();
@@ -3429,7 +3430,10 @@ WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
       sl: Number(decision.sl) || null,
       confidence: Number(decision.confidence) || 0,
       reasoning: String(decision.reasoning || '').slice(0, 240),
-      plan: String(decision.plan || '').slice(0, 170)
+      plan: String(decision.plan || '').slice(0, 170),
+      // R310J: karKosma parse'a EKLENDİ. R310H'te bu alan return'de yoktu → AI "RUNNER" dese bile
+      // _stOpen.aiRunner hep false kalıyordu (RUNNER modu fiilen ölüydü). Artık zincir tam çalışır.
+      karKosma: (String(decision.karKosma || '').toUpperCase() === 'RUNNER') ? 'RUNNER' : 'NORMAL'
     };
   } catch (e) {
     if (e?.name === 'AbortError') logAuto(`⚠️ AI Beyin zaman aşımı (25sn) — ${symbol}`);
@@ -5119,6 +5123,7 @@ function r308SetLastAiDecision(p={}) {
       symbol: String(p.symbol || ai.symbol || '').replace('USDT','').toUpperCase(),
       side: String(ai.side || p.side || 'WAIT').toUpperCase(),
       confidence: Number(ai.confidence || p.confidence || 0),
+      karKosma: (String(ai.karKosma || '').toUpperCase() === 'RUNNER') ? 'RUNNER' : 'NORMAL',  // R310H: AI kâr koşma modu (RUNNER=güçlü setup, kâr çok koşar)
       entry: r308Round(entry, 8), tp: r308Round(tp, 8), sl: r308Round(sl, 8),
       rr: rr == null ? null : r308Round(rr, 2),
       slPct: slPct == null ? null : r308Round(slPct, 2),
@@ -14063,11 +14068,13 @@ async function managePosition(apiKey, apiSecret, pos) {
   // parseFloat + fallback — NaN koruması
   const safe = (v, def) => { const n=parseFloat(v); return isNaN(n)?def:n; };
   const trailPct      = safe(cfg.trailingPct,  2);
-  const trailStep     = safe(cfg.trailStep,    0.25); // R161: 0.3→0.25 — daha sık SL taşıması
-  const breakEvenAt   = safe(cfg.breakEvenPct, 0.25); // R161: 0.3→0.25 — daha erken BE
-  const karTasima1    = safe(cfg.karTasima1,   0.5);  // R161: 0.6→0.5 — %0.5 kârda kilitle
-  const karTasima2    = safe(cfg.karTasima2,   1.0);  // R161: 1.2→1.0 — %1.0 kârda güçlü kilit
-  const karTasima3    = safe(cfg.karTasima3,   1.8);  // R161: 2.0→1.8 — %1.8 kârda maksimum kilit
+  const trailStep     = safe(cfg.trailStep,    0.25);
+  // R310H: KÂR TAŞIMA PANELDEN BAĞIMSIZ — kullanıcı isteği: panel değerlerini EZ, kod karar versin.
+  // Panel "1/2/3.5" gibi erken kilit yazsa bile YOK SAYILIR. Kâr koşsun diye geç kademe sabit.
+  const breakEvenAt   = 0.8;   // BE %0.8 (panel ezildi) — kâr nefes alsın, erken BE yok
+  const karTasima1    = 1.5;   // ilk kilit %1.5 (panel ezildi) — eskiden %0.5 çok erken kapatıyordu
+  const karTasima2    = 3.0;   // güçlü kilit %3
+  const karTasima3    = 5.5;   // maksimum kilit %5.5 — kâr buraya kadar koşar
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
@@ -14612,15 +14619,18 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 4b. KÂR TAŞIMA ADIMLARI ─────────────────────────────────────────────────
   if (!action && state.breakEvenSet) {
     let stepSL = null, stepReason = null, stepUpdate = null;
-    if (realProfitPct >= karTasima3 && !state.step3Set) {
+    // R310H: AI "RUNNER" dediyse (güçlü setup), kâr taşıma eşiklerini İLERİ it — kâr daha çok koşsun, geç kilitle.
+    const _runnerMult = state.aiRunner ? 1.8 : 1.0;  // RUNNER: %1.5/3/5.5 → %2.7/5.4/9.9 (kâr çok koşar)
+    const kT1 = karTasima1 * _runnerMult, kT2 = karTasima2 * _runnerMult, kT3 = karTasima3 * _runnerMult;
+    if (realProfitPct >= kT3 && !state.step3Set) {
       stepSL = isLong ? +(entryPrice*(1+0.015)).toFixed(8) : +(entryPrice*(1-0.015)).toFixed(8);
-      stepReason = `Kâr taşıma 3: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
+      stepReason = `Kâr taşıma 3${state.aiRunner?' (RUNNER)':''}: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
       stepUpdate = { step3Set:true };
-    } else if (realProfitPct >= karTasima2 && !state.step2Set) {
+    } else if (realProfitPct >= kT2 && !state.step2Set) {
       stepSL = isLong ? +(entryPrice*(1+0.008)).toFixed(8) : +(entryPrice*(1-0.008)).toFixed(8);
-      stepReason = `Kâr taşıma 2: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
+      stepReason = `Kâr taşıma 2${state.aiRunner?' (RUNNER)':''}: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
       stepUpdate = { step2Set:true };
-    } else if (realProfitPct >= karTasima1 && !state.step1Set) {
+    } else if (realProfitPct >= kT1 && !state.step1Set) {
       // R136: Kâr taşıma 1, erken çıkış gibi davranmasın.
       // Akış hâlâ pozisyon yönündeyse ve ters çıkış puanı düşükse ilk taşıma için
       // %1.60'a kadar veya en fazla 6 yönetim döngüsü nefes ver. BE emniyeti zaten aktif.
@@ -16876,14 +16886,22 @@ async function runAutoScan(prioritySymbol=null) {
                         else if (aiConf >= 75) aiTargetLev = 14;
                         else if (aiConf >= 70) aiTargetLev = 11;
                         else                   aiTargetLev = 8;   // 64-69 zayıf güven: düşük kaldıraç (zarar küçük kalsın)
-                        // R309B: AI hedefini SADECE panelMax (kullanıcı tavanı) ile sınırla — R151'in düşürdüğü binancePanelCap'i taban için DİKKATE ALMA.
-                        // Yani R151 6x'e düşürse bile AI 10x diyorsa 10x açılır (panelMax izin verdiği sürece).
-                        aiTargetLev = Math.min(aiTargetLev, panelMax);
+                        // ═══ R310J: AI PANEL TAVANINDAN MUAF (kullanıcı talimatı) ═══
+                        // ÖNCE: aiTargetLev = Math.min(aiTargetLev, panelMax) → panel 15x ise AI 85+ güvenle 20x diyemiyordu.
+                        // ŞİMDİ: AI güveni max-kâr için panel "Otomatik kaldıraç üst sınırı"nı EZER. Sadece Binance'in
+                        // o coin için FİZİKSEL izin verdiği maksimumla sınırlı. Altındaki R308K SL×Lev≤maxRoiRisk
+                        // güvenliği yine çalışır (geniş SL'de kaldıraç kısılır) — yani risk korunur, fırsat büyür.
+                        let r310BinanceMax = null;
+                        try {
+                          r310BinanceMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * aiTargetLev).catch(()=>null);
+                        } catch(_e) {}
+                        const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? r310BinanceMax : Math.max(panelMax, aiTargetLev);
+                        aiTargetLev = Math.min(aiTargetLev, r310Ceil);
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
-                          leverageNote += ` · R309B AI güven ${aiConf} taban → ${oldAiLev}x→${executeLeverage}x (R151 düşüşü ezildi)`;
-                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R309B: AI tabanı min 10x, R151 yeni-coin düşüşü ezildi, panel tavanı ${panelMax}x)`);
+                          leverageNote += ` · R310J AI güven ${aiConf} → ${oldAiLev}x→${executeLeverage}x (panel ${panelMax}x EZİLDİ, Binance izin ${r310Ceil}x)`;
+                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R310J: panel tavanı ${panelMax}x ezildi, Binance fiziksel limit ${r310Ceil}x, max-kâr)`);
                         }
                       } catch(_aiLevE) { logAuto(`⚠️ ${coin.symbol} AI kaldıraç hatası: ${String(_aiLevE?.message||_aiLevE).slice(0,60)}`); }
                       // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
@@ -16965,8 +16983,6 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
-
-        // İşlemi aç
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
           method:'POST',
           headers:{'Content-Type':'application/json'},
@@ -17069,6 +17085,7 @@ async function runAutoScan(prioritySymbol=null) {
             try {
               const _ai = decisionChain?.aiBrain || {};
               const _tf = analysis?.timeframes || {};
+              _stOpen.aiRunner = (_ai.karKosma === 'RUNNER');  // R310H: AI bu işlemde kârı çok koştur dedi mi
               _stOpen.aiSnapshot = {
                 // AI'nın kararı ve gerekçesi
                 aiSide: _ai.side || recommendation,
@@ -17076,6 +17093,7 @@ async function runAutoScan(prioritySymbol=null) {
                 aiReasoning: String(_ai.reasoning || '').slice(0, 600),  // AI grafiği nasıl okudu — asıl değerli kısım
                 aiPlan: String(_ai.plan || '').slice(0, 400),  // R308Y: AI'nın timing/TP/SL/risk mantığı
                 aiEntry: _ai.entry ?? null, aiTp: _ai.tp ?? null, aiSl: _ai.sl ?? null,
+                aiKarKosma: _ai.karKosma || 'NORMAL',  // R310H: AI kâr koşma modu
                 aiFlippedBotDir: (_ai.side && _ai.side !== recommendation) ? `bot ${recommendation}→AI ${_ai.side}` : null,
                 // Açılış anındaki HAM PİYASA DURUMU (AI bunlara bakarak karar verdi)
                 rsi: { '5m': _tf['5m']?.rsi ?? null, '15m': _tf['15m']?.rsi ?? null, '1h': _tf['1h']?.rsi ?? null, '4h': _tf['4h']?.rsi ?? null },
@@ -17088,8 +17106,9 @@ async function runAutoScan(prioritySymbol=null) {
                 shortSqueeze: !!(decisionChain?.r111ShortSqueeze || decisionChain?.r111?.shortSqueeze || decisionChain?.r190Edge?.squeeze),
                 longSqueeze: !!(decisionChain?.r111LongSqueeze || decisionChain?.r111?.longSqueeze),
                 liqLevels: analysis?.liquidityLevels ? {
-                  ust: (analysis.liquidityLevels.sellLiq||[]).slice(0,2),
-                  alt: (analysis.liquidityLevels.buyLiq||[]).slice(0,2)
+                  // R310J: yapı {'1h':{buyLiq,sellLiq},'4h':{buyLiq,sellLiq}} — önceki kod .sellLiq'i kökten okuyordu (hep boş).
+                  ust: (analysis.liquidityLevels['1h']?.buyLiq || analysis.liquidityLevels['4h']?.buyLiq || []).slice(0,2),
+                  alt: (analysis.liquidityLevels['1h']?.sellLiq || analysis.liquidityLevels['4h']?.sellLiq || []).slice(0,2)
                 } : null,
                 // KALDIRAÇ & BAĞLAM
                 leverage: Number(executeLeverage) || null,
