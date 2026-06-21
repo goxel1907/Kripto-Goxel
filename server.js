@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310Q_429_WEIGHT_FIX';
+const LAZARUS_BUILD = 'R310T_5M_YAPI_OKUMASI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1164,8 +1164,9 @@ function r140BtcDivergence(btc5mCtx, coinChange15m, coinChange60m) {
 
 // Coin-özgü RVOL (kendi 48 mum ortalamasına göre)
 function r140CoinRvol(k5m) {
-  if (!k5m || k5m.length < 10) return { rvol:1, signal:'UNKNOWN' };
-  const vols = k5m.map(c=>Number(c[5]||0)).filter(v=>v>0);
+  if (!k5m || k5m.length < 11) return { rvol:1, signal:'UNKNOWN' };
+  // R310R: son mum canlı (kapanmamış) — onu çıkar, kapanmış son mumu cur al (sahte-düşük RVOL fix)
+  const vols = k5m.slice(0, -1).map(c=>Number(c[5]||0)).filter(v=>v>0);
   const avg = vols.slice(0,-1).reduce((s,v)=>s+v,0)/Math.max(1,vols.length-1);
   const cur = vols.at(-1)||0;
   const rvol = avg>0 ? cur/avg : 1;
@@ -3355,8 +3356,8 @@ SEN TAM YETKİLİ KARAR VERİCİSİN: Aşağıdaki dersler ve botun analizi sana
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver. Seni kurallarla boğmuyorum; grafiği oku, mantıklı olanı yap.
-★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot SANA PUAN/YÖN DAYATMAZ — bu nötr analizi KENDİ ham mum okumanla ÇAPRAZ DOĞRULA, kararı SEN ver. botAnalizOzeti'nde "L12/S0" = 12 alıcı 0 satıcı (güçlü LONG akışı), "kanıt yetersiz" = bot net sweep/reclaim görmedi (dikkat), "Tuzak dönüşü" = bot tuzak sezdi. ictDurum'da "SSL_ALINDI_CHOCH_BEKLENIYOR" = alt süpürüldü reclaim bekleniyor, "DEMAND_OB" = destek bölgesi. Bot ile senin okuman AYNI yönü gösterince en güçlü teyit; ÇELİŞİYORSA temkinli ol/WAIT. Bot "kanıt yetersiz" veya "Tuzak" diyorsa ciddiye al. Alan boşsa ("formasyon yok" / null) o veri yok demektir, uydurma.
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, botOkumasi(botun grafik analizi).
+★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot SANA PUAN/YÖN DAYATMAZ — bu nötr analizi KENDİ ham mum okumanla ÇAPRAZ DOĞRULA, kararı SEN ver. botAnalizOzeti'nde "L12/S0" = 12 alıcı 0 satıcı (güçlü LONG akışı), "kanıt yetersiz" = bot net sweep/reclaim görmedi (dikkat), "Tuzak dönüşü" = bot tuzak sezdi. ictDurum'da "SSL_ALINDI_CHOCH_BEKLENIYOR" = alt süpürüldü reclaim bekleniyor, "DEMAND_OB" = destek bölgesi. Bot ile senin okuman AYNI yönü gösterince en güçlü teyit; ÇELİŞİYORSA temkinli ol/WAIT. Bot "kanıt yetersiz" veya "Tuzak" diyorsa ciddiye al. Alan boşsa ("formasyon yok" / null) o veri yok demektir, uydurma.
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -9465,10 +9466,14 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // Hareketin arkasında gerçek kurumsal volume var mı?
     // RVOL < 0.7 → kuru hareket → MM süpürmesi olabilir, sinyali küçült
     function calcRVOL(klines, period=20) {
-      if(!klines||klines.length<period+1)return null;
-      const recent=klines.slice(-(period+1));
+      if(!klines||klines.length<period+2)return null;
+      // R310R: SON MUM CANLI (kapanmamış) — hacmi henüz birikmedi. Onu kıyasa katmak RVOL'u sahte-düşük yapar
+      // (1h mumun başında %258 hacim patlaması bile 0.08x "ölü" görünür → RESOLV gibi gerçek fırsat kaçar).
+      // ÇÖZÜM: son (canlı) mumu ATLA, KAPANMIŞ son mumu cur al; ortalama da ondan öncekiler.
+      const liveExcluded = klines.slice(0, -1);              // canlı mumu çıkar
+      const recent=liveExcluded.slice(-(period+1));
       const avg=recent.slice(0,period).reduce((s,k)=>s+parseFloat(k[5]),0)/period;
-      const cur=parseFloat(recent[recent.length-1][5]);
+      const cur=parseFloat(recent[recent.length-1][5]);      // KAPANMIŞ son mum
       const rvol=avg>0?cur/avg:1;
       return{
         rvol:+rvol.toFixed(2),curVol:+cur.toFixed(0),avgVol:+avg.toFixed(0),
@@ -9601,6 +9606,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const eqLvl4h  = detectEqualLevels(k4h);
     const pd1h     = calcPremiumDiscount(k1h, lastPrice, 20);
     const pd4h     = calcPremiumDiscount(k4h, lastPrice, 20);
+    const rvol5m   = calcRVOL(k5m, 20);  // R310S: 5m RVOL — BELİRLEYİCİ zaman dilimi (kullanıcı: 5m asıl, 1h/4h danışman)
     const rvol1h   = calcRVOL(k1h);
     const rvol4h   = calcRVOL(k4h);
     const brk1h    = detectBreakerBlocks(k1h);
@@ -12979,7 +12985,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       volumeProfile: { '1h':vpvr1h, '4h':vpvr4h },
       premiumDiscount: { '1h':pd1h, '4h':pd4h },
       equalLevels: { '1h':eqLvl1h, '4h':eqLvl4h },
-      rvol: { '1h':rvol1h, '4h':rvol4h },
+      rvol: { '5m':rvol5m, '1h':rvol1h, '4h':rvol4h },
       breakerBlocks: { '1h':brk1h, '4h':brk4h },
       rsiDivergence: { '1h':rsiDiv1h, '4h':rsiDiv4h },
       mtfBias,
@@ -16314,7 +16320,9 @@ async function runAutoScan(prioritySymbol=null) {
         let userRR    = userTPPct / userSLPct;
 
         // ── R24 RVOL MİKRO LİKİDİTE FRENİ — performansı boğmadan sadece ekstrem zayıf hacmi keser
-        const rvolNum = Number(analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
+        // R310S: 5m BELİRLEYİCİ (kullanıcı stratejisi: 5m asıl scalp zaman dilimi). Önce 5m RVOL'a bak,
+        // yoksa 1h'e düş. 5m scalp botu 1h hacmine göre karar vermemeli — 5m'de patlama başlamışsa hemen yakala.
+        const rvolNum = Number(analysis?.rvol?.['5m']?.rvol || analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
         if (rvolNum > 0 && rvolNum < 0.08) {
           logAuto(`⛔ ${coin.symbol} RVOL çok düşük (${rvolNum.toFixed(2)}x) — likidite yetersiz, otomatik atlandı`);
           markAutoSkip(coin.symbol, `RVOL çok düşük ${rvolNum.toFixed(2)}x`, {rec:recommendation, tier:decisionChain?.tier, score});
@@ -16833,6 +16841,7 @@ async function runAutoScan(prioritySymbol=null) {
               // HAM LİKİDİTE SEVİYELERİ (mumda yok, AI hedef/stop için kullanır)
               liqLevels: analysis?.liquidityLevels || null,
               atrPct: analysis?.leverage?.atrPct,
+              rvol5m: analysis?.rvol?.['5m']?.rvol ?? null,  // R310S: 5m göreceli hacim (>1.5 patlama, <0.6 kuru) — 5m belirleyici
               // ═══ R309Y: BOTUN ZENGİN OKUMASI AI'ya YÜKLENİYOR ═══
               // Bot 60+ sinyal + 30+ mum formasyonu hesaplıyor ama AI bunları görmüyordu (sadece ham mum).
               // Artık botun TÜM okuması AI'ya gidiyor — AI bunları KENDİ ham mum okumasıyla ÇAPRAZ DOĞRULAR.
@@ -16842,7 +16851,30 @@ async function runAutoScan(prioritySymbol=null) {
                 mumFormasyonu: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || null,  // teyitli mum formasyonları (Engulfing/Hammer/Tweezer/Star vb.)
                 ictDurum: decisionChain?.ictDashboard || null,                                     // SSL/BSL seviyeleri + sweep+reclaim + OB(SUPPLY/DEMAND) + FVG — hepsi bunun içinde
                 htfTeshis: decisionChain?.htfTani || null,                                         // HTF yapı (HH/HL veya LH/LL) + faz + bıçak/karşı-baskı uyarıları
-                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/\bR\d+\b\s*/g,'').replace(/\s+·\s+/g,' · ').slice(0, 550) || null // botun TAM okuması: mum + akış(L/S) + kanıt + tuzak + edge — R-etiketi temizli, içerik korunur
+                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/\bR\d+\b\s*/g,'').replace(/\s+·\s+/g,' · ').slice(0, 550) || null, // botun TAM okuması: mum + akış(L/S) + kanıt + tuzak + edge — R-etiketi temizli, içerik korunur
+                // ═══ R310T: 5m YAPI OKUMASI (mum formasyonunun ÖTESİ — tüm 5m price action) ═══
+                // Kullanıcı: AI'ya sadece mum formasyonu değil, 5m'in TÜM yapısı gitmeli — trend yönü (HH/HL/LH/LL),
+                // trend kırılımı (BOS/ChoCH), range, momentum/erken-devam, tuzak riski. Bot bunları r190/r194'te
+                // zaten 5m'den hesaplıyor; şimdi AI'ya derli toplu sunuluyor (R-etiketi temizli).
+                yapiOkumasi5m: (function(){
+                  const e = decisionChain?.r190Edge;
+                  if (!e || !e.ok) return null;
+                  const parts = [];
+                  // trend kırılımı (BOS = Break of Structure)
+                  if (e.r194SwingBreak?.bos) parts.push(`5m yapı kırılımı(BOS) ${e.r194SwingBreak.strong?'GÜÇLÜ':'var'} ${e.side}`);
+                  // momentum/erken devam vs geç-tuzak
+                  if (e.earlyContinuation) parts.push('erken trend-devamı (taze, geç değil)');
+                  if (e.lateTrapRisk) parts.push('GEÇ giriş tuzak riski (hareket olgun)');
+                  if (e.tooLate) parts.push('çok geç (kovalamaca)');
+                  // range pozisyonu (0=dip, 1=tepe)
+                  if (typeof e.rangePos === 'number') parts.push(`5m range konumu ${(e.rangePos*100).toFixed(0)}% (${e.rangePos>=0.7?'tepe bölge':e.rangePos<=0.3?'dip bölge':'orta'})`);
+                  // momentum yakıtı + sıkışma
+                  if (e.squeeze) parts.push('5m sıkışma (patlama yakıtı)');
+                  if (typeof e.r192FuelScore === 'number' && e.r192FuelScore >= 5) parts.push(`devam yakıtı ${e.r192FuelScore.toFixed(1)}`);
+                  // son 3 mum yön
+                  if (typeof e.price3 === 'number') parts.push(`son3mum ${e.price3>=0?'+':''}${e.price3.toFixed(2)}%`);
+                  return parts.length ? parts.join(' · ') : null;
+                })()
                 // NOT (R310P): botSkoru ve botYonu KALDIRILDI — kullanıcı "puan falan yok, AI ham veriyle kendi
                 // karar versin" dedi. AI artık botun skoruna/yön görüşüne meyletmez; ham mum + ham metrik +
                 // botun NÖTR analizini (mum formasyonu, ICT seviye, HTF yapı, akış) okur, kararı tamamen kendi verir.
