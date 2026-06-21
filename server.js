@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310J_AI_KALDIRAC_RUNNER';
+const LAZARUS_BUILD = 'R310L_TERS_YON_ONCELIK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3350,7 +3350,7 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 ═══ İKİ PAHALI HATA (zararların ~tamamı bunlardan: TRENDE KARŞI teyitsiz giriş) ═══
 ① DÜŞEN BIÇAK: düşüş trendinde "RSI düşük, dip" deyip LONG (geçmiş -11/-17/-18%). Düşüşte "dip" seviye değil süreçtir. ÖZELLİKLE DİKKAT: 5m RSI 20 (oversold) AMA 4h/1h RSI hâlâ yüksek/düşüş sürüyorsa → bu DİP DEĞİL, düşüşün molası. 5m oversold + delta pozitif seni kandırır (o alıcılar düşüşün ortasında "dip" sanıp alanlar, MM onları da ezer). Büyük resim (4h/1h) aşağıysa, 5m'in tek başına "oversold + delta+" demesi LONG için yetmez.
 ② YÜKSELEN BIÇAK: yükseliş trendinde "RSI yüksek, tepe" deyip SHORT (en kötü -22%). Yükselişte "tepe" seviye değil süreçtir. SİMETRİK DİKKAT: 5m RSI 80 ama 4h/1h yükseliş sürüyorsa → tepe değil, yükselişin molası.
-★ TERS YÖNÜ DÜŞÜN: Düşüş trendinde "dip LONG" yerine, düşüş sürüyorsa o aslında SHORT fırsatıdır (trend yönünde). "Bu coin dipte, LONG alayım" derken kaybediyorsan, demek ki yön aşağı — o zaman teyitli SHORT düşün (-%18 LONG yerine +%18 SHORT olurdu). Aynısı tepe için: yükseliş trendinde "tepe SHORT" yerine trend yönünde LONG. Kaybeden yöne ısrar etme, trendin yönüne bak.
+★ TERS YÖNÜ DÜŞÜN (İKİ YÖNLÜ — ID/EPIC/BICO SHORT kayıplarının dersi): Bir yönde işlem mantıklı GÖRÜNÜYOR ama o tablo sürekli kaybettiriyorsa, KARŞI yön doğru olabilir. SHORT'u düşündüğün ama kaybedilen tabloda (fiyat hâlâ yukarı akıyor, delta ALICI yönlü "L5/S0" gibi, OI artıyor, dip toplama) → o aslında LONG fırsatıdır, SHORT'a zorlama. Tersine LONG'u düşündüğün ama kaybedilen tabloda (fiyat aşağı akıyor, delta SATICI yönlü, tepe dağılımı, OI çözülüyor) → o aslında SHORT fırsatıdır. KRİTİK SOMUT KURAL: "Mum formasyonu (Engulfing/DarkCloud) aşağı AMA delta hâlâ ALICI (L>S)" diyorsan SHORT AÇMA — delta yönü mum formasyonunu EZER, çünkü mum geç bir görüntü, delta canlı gerçektir. Simetrik: "mum yukarı ama delta hâlâ SATICI" ise LONG açma. Düşüş trendinde "dip LONG" yerine trend yönünde SHORT; yükseliş trendinde "tepe SHORT" yerine trend yönünde LONG. Önce şunu sor: "bu yön bana defalarca kaybettirdi mi, veri/mum/delta aslında KARŞI yönü mü gösteriyor?" Karşı yön net teyitliyse (veri+mum+delta+yapı uyumlu) onu seç; hiçbiri net değilse WAIT. Kaybeden yöne ısrar yok.
 KURAL: trende KARŞI giriş SADECE net dönüş teyidiyle (5m ChoCH + sweep&reclaim + delta o yöne döndü). Teyit yoksa → ya trend yönünde gir ya WAIT. Tek geri çekilme veya aşırı RSI dönüş kanıtı DEĞİLDİR.
 
 ═══ AKIŞ DOĞRULAMASI (giriş öncesi son bakış) ═══
@@ -16744,6 +16744,19 @@ async function runAutoScan(prioritySymbol=null) {
           }
         } catch(_r300gE) { logAuto(`⚠️ ${coin.symbol} R300 kapı hatası: ${String(_r300gE?.message||_r300gE).slice(0,80)}`); }
 
+        // ═══ R310K: AI MALİYET + KALİTE KAPISI (boğma DEĞİL, israf kesme) ═══
+        // GÖZLEM (gerçek veri): AI'ya giden çok düşük skorlu adaylar (BULLA s29, CHIP s38, SAGA s39, TNSR s29)
+        // %100 WAIT dönüyor — para harcanıyor, işlem yok. Kazananların bot skoru 53+ (UB 74, W 70/65, MET 66/53,
+        // ID 85/66). Düşük-skor AI çağrısı sadece token yakıyor. Üstelik ID SHORT skor 21 ile açıldı → -%7.9 kayıp.
+        // KURAL: TOP2 (ilk 2 volatil) HER ZAMAN AI'ya gider (kullanıcı ilkesi "ilk 2 garanti") — onlara dokunma.
+        // TOP2 DEĞİLSE ve bot skoru < 42 ise AI'ya GÖNDERME. Bu bir "filtre/boğma" değil: zaten WAIT dönen,
+        // hiç kazanca dönmeyen çağrıları kesip AI'yı GERÇEK adaylara odaklar (maliyet ↓, kalite ↑). Eşik düşük
+        // tutuldu (42) — kazananların hiçbirini kesmez (en düşük kazanan skor 53), sadece çöp adayları eler.
+        const R310K_AI_MIN_SCORE = 42;
+        if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && !r310IsTop2(scanIdx) && Number(score||0) < R310K_AI_MIN_SCORE) {
+          logAuto(`🧊 ${coin.symbol} AI maliyet+kalite kapısı: bot skoru ${score} < ${R310K_AI_MIN_SCORE} (TOP2 değil) — AI'ya gönderilmedi (düşük skor %100 WAIT dönüyor, token korundu)`);
+          markAutoSkip(coin.symbol, `R310K AI taban skor: ${score}<${R310K_AI_MIN_SCORE}`, {rec:recommendation, tier:decisionChain?.tier, score, reason:`düşük skor AI'ya gönderilmedi (maliyet+kalite)`});
+        } else
         // ═══ R308 AI PRO TRADER BEYNİ — aday R300'ü geçti, şimdi Claude pro trader gibi baksın ═══
         // Gölge modda (AI_BRAIN_SHADOW): karar gösterilir ama işlem AÇILMAZ — sen Claude vs gerçek fiyatı karşılaştır.
         if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) {
