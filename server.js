@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310T_5M_YAPI_OKUMASI';
+const LAZARUS_BUILD = 'R310U_AKILLI_BUTCE_GERI_AL';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15742,29 +15742,13 @@ async function runAutoScan(prioritySymbol=null) {
     // Bütçe dolsa bile TOP2 her zaman AI'ya gider (kullanıcı: "ilk 2 sıra garanti öncelikli olsun"). Kalan bütçe diğerlerine.
     const r310IsTop2 = (idx) => (typeof idx === 'number' && idx <= 1);
     // ═══ R310P: AKILLI BÜTÇE — "en iyi adaylar AI'ya, çöp değil" (kullanıcı: token yakma hassasiyeti) ═══
-    // SORUN: Bütçe FCFS dağılıyordu (ilk gelen 4 coin). Liste 12h'e sıralı ama 12h≠5m fırsat. Liste başındaki
-    // zayıf bir coin bütçe yiyip, ortadaki gerçek fırsatı AI'dan mahrum bırakabiliyordu. Üstelik düz "WAIT/çöp"
-    // (edge yok, priorityScore çok negatif) coinler de bütçe harcayıp token yakıyordu.
-    // ÇÖZÜM: TOP2 her zaman gider (garanti). Kalan bütçe SADECE "gerçek aday" işareti taşıyanlara: bot TRADE'e
-    // yükseltmiş (brainAction TRADE / r284 upgrade / WAIT'ten devir / R300 yumuşak red) VEYA fırsat gücü makul
-    // (priorityScore >= -10 veya edge/brainConfidence >= 35). Saf çöp (priorityScore çok düşük + edge yok + hiç
-    // aday sinyali yok) bütçe YEMEZ → token gerçek fırsatlara kalır. Bu PUAN DAYATMASI DEĞİL (AI'ya skor gitmiyor),
-    // sadece "AI'ya kimi gönderelim" maliyet kararı. AI hâlâ ham veriyle tam özgür karar verir.
-    const r310pGercekAday = (dc) => {
-      if (!dc) return false;
-      const ba = String(dc.brainAction||'').toUpperCase();
-      if (ba === 'TRADE' || dc.r284WaitUpgradeOk || dc.r309eFromWait || dc.r300SoftReject) return true; // bot bunu aday gördü
-      const pri = Number(dc.priorityScore);
-      const edge = Number(dc.brainConfidence ?? dc.edge ?? 0);
-      if (Number.isFinite(pri) && pri >= -10) return true;   // fırsat terazisi makul
-      if (Number.isFinite(edge) && edge >= 35) return true;  // 5m edge var
-      return false; // çöp — bütçe harcatma
-    };
-    const r309eAiBudgetLeft = (idx, dc) => {
-      if (r310IsTop2(idx)) return true;                       // TOP2 her zaman
-      if (r309eAiSentCount >= R309E_MAX_AI_PER_SCAN) return false; // bütçe doldu
-      return r310pGercekAday(dc);                             // sadece gerçek aday bütçe yer
-    };
+    // ═══ R310U: AKILLI BÜTÇE GERİ ALINDI — R310J davranışına dönüş ═══
+    // R310P "gerçek aday değilse AI'ya gönderme" (priorityScore<-10 ele) bir HATAYDI. UB +%52.5 dahil tüm
+    // kazananlar R310J'de açıldı — orada böyle bir filtre YOKTU, tüm coinler sırayla AI'ya gidiyordu.
+    // priorityScore ile AI'ya kimin gideceğini SEÇMEK = "filtre ekleme, AI'yı boğma" ilkesinin ihlali.
+    // Token tasarrufu uğruna AI'nın kazananları görmesini engelliyordu. Basit FCFS'e dönüldü:
+    // TOP2 her zaman + sıradakiler bütçe dolana kadar. AI ham veriyle karar verir, bot kimseyi elemez.
+    const r309eAiBudgetLeft = (idx, dc) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
     // ═══ R309U: DEVİR-BYPASS ═══
     // AI'ya devredilmiş (WAIT/entryPermission/tier) + AI bütçesi varsa, YUMUŞAK skor/yön frenleri
     // (bot'un kendi görüşü: riskli yön, HTF amiri, body-shift, R190 akış, B+ giriş izi) coini AI'ya
