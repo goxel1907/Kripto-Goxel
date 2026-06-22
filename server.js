@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310Y_TOP2_FREN_418FIX';
+const LAZARUS_BUILD = 'R310Z_ATR_AI_DEVRET';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16362,27 +16362,35 @@ async function runAutoScan(prioritySymbol=null) {
 
         // ── R15 ATR GATE — UB tipi yüksek volatilite bloğu ──────────────────
         const coinAtrPct = analysis.r15?.atrGate?.atrPct || 0;
-        if (coinAtrPct > 0 && coinAtrPct > userSLPct * 2.5) {
+        // R310Z: ATR tetik eşiği SL×2.5→SL×4 (kullanıcı madde3). TOP gainer doğal yüksek ATR'li (%24-48 yükselen
+        // coin ATR'si %5-7 olur); %4.25 tavan CLO/ZEST/UB gibi net trend coinlerini AI'ya GİTMEDEN kesiyordu.
+        if (coinAtrPct > 0 && coinAtrPct > userSLPct * 4.0) {
           const atrBridgeAllowed = !!(decisionChain?.scalperBridge) || (
             ['A','B+'].includes(String(decisionChain?.tier||'')) &&
             Number(decisionChain?.priorityScore||0) >= 68 &&
             Number(score||0) >= Number(effectiveMinScore||0) &&
             !decisionChain?.poorLiquidity && !decisionChain?.rvolVeryLow
           );
-          const atrExtreme = coinAtrPct > Math.max(12, userSLPct * 6.0);  // R296: gerçek aşırı volatilite (düşen bıçak) — bu blok KALIR
-          const atrLossGap = coinAtrPct > userSLPct * 5.0 &&  // R296: 3.2→5.0 — TOP10 gainer doğal yüksek ATR'li, çok geniş kesiyordu
+          const atrExtreme = coinAtrPct > Math.max(11, userSLPct * 6.0);  // R296/R310Z: gerçek aşırı volatilite (düşen bıçak) — bu blok KALIR
+          const atrLossGap = coinAtrPct > userSLPct * 6.0 &&  // R310Z: 5.0→6.0 — TOP gainer'a daha geniş alan
             String(decisionChain?.entryPermissionReason||'').includes('R135_FAST_EDGE_PASS') &&
             !(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r118CandleOk) &&
             Number(decisionChain?.brainConfidence||0) < 96;
-          // R162: atrExtreme (>14% veya 7xSL) bypass EDİLMEZ — likidasyon riski var
-          // Normal ATR (2.5x-7x SL arası) için r162 bypass bridge açar
           const atrBridgeAllowedFinal = atrBridgeAllowed || (r162BrainBypassActive && !atrExtreme && !atrLossGap);
-          if (atrExtreme || atrLossGap || !atrBridgeAllowedFinal) {
-            logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — volatilite riski yüksek, atlandı`);
-            markAutoSkip(coin.symbol, atrLossGap ? `R135 ATR boşluk freni: ATR %${coinAtrPct.toFixed(1)} / SL %${userSLPct} hızlı-edge için fazla geniş` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*2.5 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
+          // R310Z (kullanıcı madde1): ATR yüksek ama AŞIRI değilse (atrExtreme yok), AI bütçesi varsa coini KESME —
+          // AI'ya DEVRET, son kararı AI versin. ATR bilgisi zaten AI'ya gidiyor; tepede/aşırı volatil görürse WAIT der.
+          // Bot AI'dan ÖNCE TOP gainer'ı kesmesin. Sadece gerçek %11+ düşen-bıçak (atrExtreme) kesilir.
+          const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+          if (atrExtreme || (!atrBridgeAllowedFinal && !atrAiDevret)) {
+            logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — ${atrExtreme?'aşırı volatilite (düşen bıçak)':'volatilite riski'} yüksek, atlandı`);
+            markAutoSkip(coin.symbol, atrExtreme ? `ATR %${coinAtrPct.toFixed(1)} aşırı (düşen bıçak güvenlik)` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*4 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
             continue;
           }
-          logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama 5m Fırsat Beyni kontrollü girişe izin verdi — user SL/TP korunarak devam`);
+          if (atrAiDevret && !atrBridgeAllowedFinal) {
+            logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama AŞIRI değil — AI PRO TRADER'a devrediliyor, kararı AI verecek (TOP gainer doğal volatilite)`);
+          } else {
+            logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama 5m Fırsat Beyni kontrollü girişe izin verdi — user SL/TP korunarak devam`);
+          }
         }
         // Likidite kalitesi çok düşükse skip
         if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
