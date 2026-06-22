@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311L_MARKET_YAPISI';
+const LAZARUS_BUILD = 'R311M_RISKLI_YON_DEVRET';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16318,9 +16318,18 @@ async function runAutoScan(prioritySymbol=null) {
             isShort = rotateSide === 'SHORT';
           } else {
             const why = `5m Fırsat Beyni riskli yön freni: ${recommendation} için risk ${sideCtxRisk}, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}; devam onayı:${r88DevamOnayiOk?'VAR':'YOK'}; ${rotateSide} kontrolü:${rotateAllowed?'açık':'kapalı'} skor:${rotateScore} tuzak:${rotateTrapEvidenceOk?'VAR':'YOK'} giriş-izi:${rotateEntryTraceOk?'VAR':'YOK'}`;
-            logAuto(`⛔ ${coin.symbol} ${why}`);
-            markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r81EntryTraceOk, r81StrongBPlusSoftPass, r88DevamOnayiOk, r88GeriTestOnayiOk, r88KirilimOnayiOk, r88GeriKazanimOnayiOk, r88TazeImpulsOnayiOk, r88SweepZamanlamaOnayiOk, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
-            continue;
+            // R311M: TEK PATRON AI — "riskli yön freni" botun kendi görüşü. Coin GERÇEK ADAYSA (canlı setup işareti var)
+            // + AI bütçesi varsa, bu yumuşak kapı coini KESMESİN, AI'ya DEVRET. AI tepede/riskli görürse zaten WAIT der.
+            const r311mDevret = AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+            if (r311mDevret) {
+              decisionChain.r309eFromWait = true;
+              decisionChain.r300SoftReject = true;
+              logAuto(`🔀 ${coin.symbol} riskli yön freni ama AI'ya devrediliyor — kararı AI verecek (${recommendation})`);
+            } else {
+              logAuto(`⛔ ${coin.symbol} ${why}`);
+              markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r81EntryTraceOk, r81StrongBPlusSoftPass, r88DevamOnayiOk, r88GeriTestOnayiOk, r88KirilimOnayiOk, r88GeriKazanimOnayiOk, r88TazeImpulsOnayiOk, r88SweepZamanlamaOnayiOk, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
+              continue;
+            }
           }
         }
         if (antiChase && !eliteOverride && r81StrongBPlusSoftPass) {
