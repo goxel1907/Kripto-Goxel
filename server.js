@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310X_TOP2_HIZLI_TAKIP';
+const LAZARUS_BUILD = 'R310Y_TOP2_FREN_418FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -117,7 +117,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
     // R310Q: 850→2000 (Binance futures gerçek limit 2400/dk). Weight artık DOĞRU sayıldığı için (klines=5,
     // depth=5/10) bu eşik gerçek kullanımı yansıtır; eski 850 hem yanlış sayıyor hem gereksiz bekletiyordu.
-    if (binanceGov.usedWeight + weight > 2000 || binanceGov.usedOrders + orderWeight > 70) {
+    if (binanceGov.usedWeight + weight > 1800 || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
       await sleep(wait);
       _resetGovWindowIfNeeded();
@@ -1027,6 +1027,7 @@ function getLiqData(symbol) {
 // tek beyin edge formülüne canlı olarak taşısın. Yeni REST yükü bindirmez.
 const r125BookHistory = new Map();       // symbol → [{ts, imb, spread, bid, ask}]
 const r125PriorityWake = new Map();      // symbol → {ts, reason, score}
+let r310yLastTop2Wake = 0;               // R310Y: son TOP2 hızlı-takip uyandırma zamanı (90sn cooldown için)
 let r125FastWakeTimer = null;
 
 
@@ -17345,8 +17346,16 @@ function startAutoTrader() {
           // gerçek ani hareket (delta/momentum) + pozisyon yok şartıyla.
           const top2Syms = (autoScanState?.scanList||[]).slice(0,2).map(x=>normalizeSymbol(x)).filter(Boolean);
           const isTop2Sym = top2Syms.includes(sym);
-          const wakeThreshold = isTop2Sym ? 8 : 14;  // TOP2 daha hassas
-          if (Number(ev.score||0) >= wakeThreshold && now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS) {
+          // ═══ R310Y: TOP2 HIZLI-TAKİP FRENİ (418/429 ban fix) ═══
+          // SORUN: R310X eşiği 8'di + 8sn min gap. UB gibi çok volatil coin sürekli score≥8 üretti → 8sn'de bir
+          // tam tarama → istek patlaması → 429 → 418 BAN. Düzeltme: (1) eşik 8→11 (gerçek ani hareket), (2) TOP2
+          // için AYRI 90sn cooldown (8sn değil) → dakikada en fazla ~1 kez, istek patlaması olmaz, (3) backoff'ta dur.
+          const wakeThreshold = isTop2Sym ? 11 : 14;
+          const TOP2_WAKE_COOLDOWN_MS = 90 * 1000;  // TOP2 uyandırması arası min 90sn (istek patlamasını önler)
+          const lastWakeOk = !r310yLastTop2Wake || (now - r310yLastTop2Wake > TOP2_WAKE_COOLDOWN_MS);
+          const scanGapOk = now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS;
+          if (Number(ev.score||0) >= wakeThreshold && scanGapOk && (!isTop2Sym || lastWakeOk) && !isBinanceBackoffActive()) {
+            if (isTop2Sym) r310yLastTop2Wake = now;
             autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 hızlı-takip':'R151 canlı orderflow'} uyandırdı: ${sym.replace('USDT','')} ${ev.reason}`;
             r125PriorityWake.delete(sym);
             runAutoScan(sym);
