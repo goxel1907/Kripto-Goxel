@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310Z_ATR_AI_DEVRET';
+const LAZARUS_BUILD = 'R311A_CELISKI_TARTMA';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3384,7 +3384,7 @@ Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta sa
 • HACİMSİZ YÜKSELİŞ: Fiyat yükseliyor ama hacim DÜŞÜK = gerçek alım yok, MM fiyatı boşluğa itiyor; ilk satışta geri düşer. Yükselişe hacim eşlik etmiyorsa güvenme.
 • FUNDING YANLIŞ OKUMA: "Aşırı negatif funding = yukarı squeeze" tek başına giriş sebebi DEĞİL. Squeeze tetiklenmezse short kalabalığı haklı çıkar, fiyat düşer (geçmiş -%21). Funding sadece destek; asıl tetik 5m sweep+reclaim+delta.
 • YUVARLAK RAKAM / PSİKOLOJİK SEVİYE: Yuvarlak fiyatlarda (0.10, 0.017, 1.00) stop birikir, MM oraya çekip avlar. Yuvarlak seviyeye yakın körlemesine girme, sweep+reclaim bekle.
-• EKSTREM BÖLGE SWEEP ZORUNLU (RESOLV dersi): 5m range konumu TEPEDE (>%85) LONG ya da DİPTE (<%15) SHORT düşünüyorsan, MM büyük olasılıkla ÖNCE ters yöne sweep atıp stopları avlar SONRA gerçek hareket başlar. Bu bölgede sweep+reclaim GÖRMEDEN girme — momentum güçlü olsa bile beklemeden girersen tek ters mum SL'ini süpürür (RESOLV: %95 tepede girdi, sweep SL'i aldı, sonra %15 yükseldi). KURAL: ekstrem bölgede ya sweep+reclaim bekle (tokat atıldıktan SONRA gir = en yüksek olasılık), ya da SL'i sweep zonu ÖTESİNE koy (dar SL süpürülür). Orta bölgede (%15-85) bu zorunlu değil.
+• EKSTREM BÖLGE SWEEP ZORUNLU (RESOLV dersi): 5m range konumu TEPEDE (>%70) LONG ya da DİPTE (<%30) SHORT düşünüyorsan, MM büyük olasılıkla ÖNCE ters yöne sweep atıp stopları avlar SONRA gerçek hareket başlar. Bu bölgede sweep+reclaim GÖRMEDEN girme — momentum güçlü olsa bile beklemeden girersen tek ters mum SL'ini süpürür (RESOLV: %95 tepede girdi, sweep SL'i aldı, sonra %15 yükseldi). KURAL: ekstrem bölgede ya sweep+reclaim bekle (tokat atıldıktan SONRA gir = en yüksek olasılık), ya da SL'i sweep zonu ÖTESİNE koy (dar SL süpürülür). Orta bölgede (%30-70) bu zorunlu değil. \n• GÜÇ DENGESİ — ÇELİŞKİ SAYIMI (BICO -%16 dersi): Girmeden ÖNCE lehte ve aleyhte sinyalleri SAY. LONG için aleyhte sayılır: 5m RSI>72 (aşırı alım), mum teyidi zayıf/karşı mum baskın, emir defteri satıcı baskın (negatif), range tepe bölge (>%70), hemen üstte BSL/direnç likidite, OI çözülüyor. LONG için lehte: taze BOS, delta alıcı, OI artıyor, mum teyit güçlü, dip bölge, sweep+reclaim. SHORT için hepsi tersi. KURAL: Aleyhte sinyal sayısı lehte ile EŞİT ya da FAZLAYSA = GİRME (WAIT). "OI ve delta var ama RSI tepede + mum zayıf + defter satıcı" gibi durumda 2 lehte < 3+ aleyhte = WAIT. İki güçlü sinyal, beş zayıf/ters sinyali EZMEZ. Güçlü momentum tek başına çelişkiyi iptal etmez — MM tam da böyle anlarda (tepede sahte BOS + zayıf mum) tokat atar. Çelişki çoksa ya WAIT ya da güven en fazla 55-60 (yani aç-ma). Sadece sinyallerin ÇOĞU aynı yönü gösteriyorsa güven 64+ ver.
 • GENEL: Tanımadığın ama mantıksız görünen bir hareket varsa (sebepsiz dik mum, tek mumda büyük fitil) = MM oyunu, WAIT. Emin olmadığın yerde girme.
 
 ═══ TERS TARAF DERSİ (yön seçimi her şeydir) ═══
