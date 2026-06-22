@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R310U_AKILLI_BUTCE_GERI_AL';
+const LAZARUS_BUILD = 'R310X_TOP2_HIZLI_TAKIP';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3383,6 +3383,7 @@ Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta sa
 • HACİMSİZ YÜKSELİŞ: Fiyat yükseliyor ama hacim DÜŞÜK = gerçek alım yok, MM fiyatı boşluğa itiyor; ilk satışta geri düşer. Yükselişe hacim eşlik etmiyorsa güvenme.
 • FUNDING YANLIŞ OKUMA: "Aşırı negatif funding = yukarı squeeze" tek başına giriş sebebi DEĞİL. Squeeze tetiklenmezse short kalabalığı haklı çıkar, fiyat düşer (geçmiş -%21). Funding sadece destek; asıl tetik 5m sweep+reclaim+delta.
 • YUVARLAK RAKAM / PSİKOLOJİK SEVİYE: Yuvarlak fiyatlarda (0.10, 0.017, 1.00) stop birikir, MM oraya çekip avlar. Yuvarlak seviyeye yakın körlemesine girme, sweep+reclaim bekle.
+• EKSTREM BÖLGE SWEEP ZORUNLU (RESOLV dersi): 5m range konumu TEPEDE (>%85) LONG ya da DİPTE (<%15) SHORT düşünüyorsan, MM büyük olasılıkla ÖNCE ters yöne sweep atıp stopları avlar SONRA gerçek hareket başlar. Bu bölgede sweep+reclaim GÖRMEDEN girme — momentum güçlü olsa bile beklemeden girersen tek ters mum SL'ini süpürür (RESOLV: %95 tepede girdi, sweep SL'i aldı, sonra %15 yükseldi). KURAL: ekstrem bölgede ya sweep+reclaim bekle (tokat atıldıktan SONRA gir = en yüksek olasılık), ya da SL'i sweep zonu ÖTESİNE koy (dar SL süpürülür). Orta bölgede (%15-85) bu zorunlu değil.
 • GENEL: Tanımadığın ama mantıksız görünen bir hareket varsa (sebepsiz dik mum, tek mumda büyük fitil) = MM oyunu, WAIT. Emin olmadığın yerde girme.
 
 ═══ TERS TARAF DERSİ (yön seçimi her şeydir) ═══
@@ -3400,7 +3401,7 @@ GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→8x, 70-74→11x, 75-79→14x, 80-84→17
 
 SADECE JSON (başka hiçbir şey yok):
 {"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"Türkçe KISA-NET (max 220 karakter): 5m yön + setup tipi (trend devamı/dönüş) + en kritik sinyal (sweep/reclaim/formasyon/delta/squeeze) + hangi likidite.","plan":"Türkçe KISA (max 150 karakter): NEDEN şimdi (5m tetik oldu mu) + TP/SL neden orada + risk."}
-KÂR KOŞMA: "NORMAL" = standart kâr koruma (kâr ~%5-6'ya kadar koşar sonra kilitlenir). "RUNNER" = setup ÇOK güçlü ve net trend var (güçlü sweep+reclaim + delta yön + trend devamı + bol koşacak alan, karşı likidite uzak), kârın %10+ koşmasına izin ver, erken kilitleme. RUNNER'ı SADECE en bariz/güçlü setuplarda seç; şüphe varsa NORMAL. Zayıf/sınırda işlemde asla RUNNER deme.
+KÂR KOŞMA: "NORMAL" = standart kâr koruma (kâr ~%5-6'ya kadar koşar sonra kilitlenir). "RUNNER" = net trend var (BOS + delta yön + trend devamı/momentum + koşacak alan), kârın %10+ koşmasına izin ver, trend bozulana kadar tut. TREND DEVAM SİNYALİ varsa (HH/HL yükseliş ya da LH/LL düşüş yapısı, delta aynı yön, OI artıyor, momentum taze) CÖMERTÇE RUNNER seç — HOME/RESOLV gibi güçlü trendlerde NORMAL deyip kârı erken bırakma, trend seni taşısın. Sadece gerçekten zayıf/sıkışık/range işlemde NORMAL. Şüphede: trend yapısı sağlamsa RUNNER.
 WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
 
     const controller = new AbortController();
@@ -5105,8 +5106,8 @@ const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
 const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
-const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '900', 10) || 900) * 1000); // sembol başına tekrar freni
-const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '200', 10) || 200);
+const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '300', 10) || 300) * 1000); // R310V: 900→300 varsayılan (aynı coine 5dk içinde 2. AI çağrısı = boşa para). Railway env AI_BRAIN_REVIEW_GAP_SEC=300 yap.
+const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '500', 10) || 500); // R310V: 200→500 varsayılan (bütçe gün ortası dolmasın). Railway env AI_BRAIN_MAX_DAILY_CALLS=500 yap.
 // ═══ R309F2: GÜVEN TABANI = 64 (tasarım kararı: 64 tabanı, üstü AI'nın kararına bırakılır) ═══
 // Gerçek emir kapısı r308AiPlanQuality içinde conf<64 ile uygulanır (tek gerçek kapı).
 // ESKİ SESSİZ HATA: AI_BRAIN_MIN_CONF env'den 74 okunup panelde gösteriliyordu ama emir kapısında
@@ -14113,8 +14114,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r281RunnerMode  = !!(state.r281ProMap?.runner);
   const r282Plan = state.r282TradePlan || {};
   const r283State = state.r283Recipe || {};
-  const r282RunnerMode = !!(r281RunnerMode || r283State.runner || r283State.mode === 'RUNNER' || r282Plan.mode === 'RUNNER' || state.r190Edge?.r192FuelOk || state.r190Edge?.squeeze || state.r190Edge?.earlyContinuation);
-  const r282ProtectMode = !!(!r282RunnerMode && (r281ProtectMode || r282Plan.mode === 'PROTECT' || r282Plan.mode === 'TACTICAL' || r283State.mode === 'TACTICAL'));
+  // R310W: TREND-TAKİPLİ RUNNER — kullanıcı: "trend devam ediyorsa onunla devam et" (HOME/RESOLV kârı bırakma).
+  // r310wTrendDevam aşağıda isCvdTrendHealthyForSide tanımından SONRA hesaplanır; burada placeholder.
+  const r282RunnerModeBase = !!(r281RunnerMode || r283State.runner || r283State.mode === 'RUNNER' || r282Plan.mode === 'RUNNER' || state.r190Edge?.r192FuelOk || state.r190Edge?.squeeze || state.r190Edge?.earlyContinuation);
+  let r282RunnerMode = r282RunnerModeBase; // R310W ile aşağıda trend-devam eklenir
+  const r282ProtectMode = !!(!r282RunnerModeBase && (r281ProtectMode || r282Plan.mode === 'PROTECT' || r282Plan.mode === 'TACTICAL' || r283State.mode === 'TACTICAL'));
 
   // R39_TREND_HEALTH_TRAIL: trend sağlığı güçlüyse trailing'i hemen sıkıştırma.
   // Ama bu sadece SL sıkıştırmayı en fazla 3 kez erteler; BE, hard-loss, ters CVD/tick ve büyük geri çekilme hâlâ çalışır.
@@ -14127,6 +14131,13 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
     return mom === 'ACCELERATING_BEAR' || mom === 'NEGATIVE' || ratio < 45; // R41B: tutarlı
   };
+
+  // R310W: TREND-TAKİPLİ RUNNER aktivasyonu (isCvdTrendHealthyForSide tanımlandıktan sonra).
+  // SADECE KÂR bölgesinde (pnlPct > 1.5) + CVD trend sağlıklı → RUNNER gibi davran (kârı erken bırakma, trendle git).
+  // Zararda ASLA tetiklenmez (pnlPct>1.5 şartı) → stop güvenliği korunur. HOME/RESOLV tipi trend kaçırmayı önler.
+  if (!r282RunnerMode && Number(pnlPct||0) > 1.5 && isCvdTrendHealthyForSide()) {
+    r282RunnerMode = true;
+  }
 
   const calcPullbackFromHighWaterPct = (hw) => {
     const base = Number(hw || curPrice);
@@ -15749,6 +15760,41 @@ async function runAutoScan(prioritySymbol=null) {
     // Token tasarrufu uğruna AI'nın kazananları görmesini engelliyordu. Basit FCFS'e dönüldü:
     // TOP2 her zaman + sıradakiler bütçe dolana kadar. AI ham veriyle karar verir, bot kimseyi elemez.
     const r309eAiBudgetLeft = (idx, dc) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
+    // ═══ R310V: HAM-VERİ ÖN-ELEMESİ (maliyet — bot puanı DEĞİL, fiziksel canlılık) ═══
+    // SORUN: 300 AI çağrısının ~%98'i WAIT döndü (sadece 4 işlem). Çoğu coin "ölü hacim + ekstrem bölge +
+    // hiç tetik yok" — AI'nın KESİN WAIT diyeceği durumlar. Bunları AI'ya SORMAK boşa para (13 saatte ~10$).
+    // ÇÖZÜM (boğma DEĞİL): Sadece HİÇBİR yaşam belirtisi olmayan coinleri AI'ya sorma. priorityScore/skor
+    // KULLANILMAZ — sadece ham fiziksel gerçek. Bir coin AI'ya gider EĞER en az BİR canlılık işareti varsa:
+    //   • RVOL ölü değil (5m veya 1h >= 0.6) VEYA
+    //   • 5m yapı kırılımı/momentum var (r190Edge.ok) VEYA
+    //   • sweep/reclaim olmuş (ictDashboard ALINDI/reclaim) VEYA
+    //   • güçlü delta akışı var (|delta| >= 25) VEYA
+    //   • bot zaten aday demiş (TRADE/upgrade/softReject/fromWait)
+    // Hiçbiri yoksa = tamamen ölü = AI'ya sorma (zaten WAIT derdi). TOP2 bu elemeden MUAF (her zaman gider).
+    // Bu frekansı ÖLDÜRMEZ: gerçek hareket eden coinde en az bir işaret HER ZAMAN vardır. Sadece ölü gece
+    // mumlarını eler. ŞÜPHEDE GÖNDERİR (fail-open): veri yoksa/belirsizse AI'ya gider.
+    const r310vCanliMi = (dc, analysis) => {
+      try {
+        if (!dc) return true; // veri yok → şüphede gönder
+        // bot zaten aday gördü
+        const ba = String(dc.brainAction||'').toUpperCase();
+        if (ba === 'TRADE' || dc.r284WaitUpgradeOk || dc.r309eFromWait || dc.r300SoftReject) return true;
+        // RVOL canlı mı (5m öncelik, 1h yedek)
+        const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
+        const rv1 = Number(analysis?.rvol?.['1h']?.rvol);
+        if ((Number.isFinite(rv5) && rv5 >= 0.6) || (Number.isFinite(rv1) && rv1 >= 0.6)) return true;
+        // 5m yapı/momentum var
+        if (dc.r190Edge?.ok) return true;
+        // sweep/reclaim olmuş
+        const ict = String(dc.ictDashboard||dc.ictDurum||'');
+        if (/ALINDI|reclaim|geri.?kazan/i.test(ict)) return true;
+        // güçlü delta akışı
+        const delta = Math.abs(Number(dc.r125LiveDeltaPct||0));
+        if (delta >= 25) return true;
+        // hiçbir canlılık işareti yok → AI'ya sorma (ölü)
+        return false;
+      } catch(_e) { return true; } // hata → şüphede gönder
+    };
     // ═══ R309U: DEVİR-BYPASS ═══
     // AI'ya devredilmiş (WAIT/entryPermission/tier) + AI bütçesi varsa, YUMUŞAK skor/yön frenleri
     // (bot'un kendi görüşü: riskli yön, HTF amiri, body-shift, R190 akış, B+ giriş izi) coini AI'ya
@@ -15905,7 +15951,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ═══ R309E: WAIT'i AI'ya DEVRET (silme) ═══
           // Eski sistem WAIT dedi diye coini çöpe atma — AI ham mumu okuyup kendi kararını versin.
           // Bütçe varsa: skoru yüksek tarafı geçici yön yap (AI zaten kendi yönünü seçer/çevirir), AI'ya bırak.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain)) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
             // Panel yön kısıtı korunur: panel sadece LONG/SHORT'a izin veriyorsa, geçici yön ona uymalı.
             const waitSideAllowed = (waitSide === 'LONG' && allowLong) || (waitSide === 'SHORT' && allowShort);
             // Panel karşı yöne izin veriyorsa geçici yönü ona çevir; iki yön de kapalıysa devretme.
@@ -15957,7 +16003,7 @@ async function runAutoScan(prioritySymbol=null) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           // ═══ R309E: emir izni yok → AI'ya DEVRET (silme) ═══
           // ASTER dersi: bot "izin yok" dedi ama AI'nın bayılacağı sweep+reclaim setup'ı vardı. AI okusun.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain)) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
             decisionChain.r300SoftReject = `R309E entryPermission→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E AI'ya devrediyor — kararı AI verecek (${why.slice(0,80)})`);
             // continue YOK — AI'ya akar
@@ -15978,7 +16024,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           // ═══ R309E: tier düşük → AI'ya DEVRET (silme) ═══
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain)) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
             decisionChain.r300SoftReject = `R309E tier→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E AI'ya devrediyor — kararı AI verecek`);
             // continue YOK
@@ -17292,8 +17338,16 @@ function startAutoTrader() {
         const now = Date.now();
         for (const [sym, ev] of r125PriorityWake.entries()) {
           if (now - ev.ts > 15000) { r125PriorityWake.delete(sym); continue; }
-          if (Number(ev.score||0) >= 14 && now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS) {
-            autoScanState.lastAction = `R151 canlı orderflow uyandırdı: ${sym.replace('USDT','')} ${ev.reason}`;
+          // R310X: TOP2 HIZLI-TAKİP — en volatil 2 coin için ani fırsat eşiği DÜŞÜK (8 vs 14).
+          // Kullanıcı fikri: TOP2'yi anlık takip et, bot pozisyonda DEĞİLKEN ani fırsat çıkarsa 5dk tarama
+          // beklemeden hemen atla. TOP2 zaten en hareketli coinler — orada küçük ani hareket bile gerçek fırsat
+          // olabilir. Pozisyon varsa zaten worker üst satırda dönmez (autoRunning). Maliyet kontrollü: sadece
+          // gerçek ani hareket (delta/momentum) + pozisyon yok şartıyla.
+          const top2Syms = (autoScanState?.scanList||[]).slice(0,2).map(x=>normalizeSymbol(x)).filter(Boolean);
+          const isTop2Sym = top2Syms.includes(sym);
+          const wakeThreshold = isTop2Sym ? 8 : 14;  // TOP2 daha hassas
+          if (Number(ev.score||0) >= wakeThreshold && now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS) {
+            autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 hızlı-takip':'R151 canlı orderflow'} uyandırdı: ${sym.replace('USDT','')} ${ev.reason}`;
             r125PriorityWake.delete(sym);
             runAutoScan(sym);
             break;
