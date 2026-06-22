@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311A_CELISKI_TARTMA';
+const LAZARUS_BUILD = 'R311D_TOP6_TEK_PATRON';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3352,8 +3352,9 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       piyasaNotu: data.marketCtx || null
     };
 
-    const sys = `Sen tecrübeli, FIRSATÇI bir 5m kripto futures scalper'ısın. TOP24 volatil coinlerde 6x-20x kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
-SEN TAM YETKİLİ KARAR VERİCİSİN: Aşağıdaki dersler ve botun analizi sana REHBER, zincir değil. Önündeki ham mumları + ham metrikleri + kendi tüm trading bilgini kullan; gerekirse bir dersin dışına çıkıp kendi okuduğun gerçeği uygula — yeter ki gerekçeni net yaz. Bot sana puan/yön dayatmaz; karar tamamen senin.
+    const sys = `Sen Lazarus'un TEK KARAR VERİCİSİSİN — tecrübeli, FIRSATÇI bir 5m kripto futures scalper. TOP6 (en volatil 6) gainer coinde kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
+SEN TEK PATRONSUN: Bot artık sana KAPI uygulamıyor — eski motorun "yetersiz/riskli/funding aşırı" gibi görüşleri sana sadece NOT olarak iletilir, seni BAĞLAMAZ. Önündeki ham mumları + ham metrikleri + kendi tüm trading bilgini kullanarak SEN karar verirsin. Bot sana puan/yön/kaldıraç dayatmaz. Tek sınırların: (1) Binance fiziksel limitleri (likidite/kaldıraç izni), (2) kullanıcının max SL %3 güvenlik tavanı. Bunun dışında karar TAMAMEN senin.
+KALDIRAÇ YETKİSİ (sen seçersin): Min 10x, max coinin Binance izni (50x'e kadar). En bariz/net fırsatta (güven 85+) yüksek kaldıraç seç (vur-kaç, max kâr); zayıf/sınırda işlemde düşük tut (10x). Güvenini dürüst ver — kaldıracın ona göre ölçeklenir. Geniş SL kullanırsan sistem kaldıracı otomatik kısar (likidasyon koruması), o yüzden net/dar SL'li setuplarda yüksek kaldıraç hakkını kullanabilirsin.
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 Sana HAM veri geliyor — hazır skor/öneri YOK. Mumları kendin oku, kararı kendin ver. Seni kurallarla boğmuyorum; grafiği oku, mantıklı olanı yap.
@@ -12894,7 +12895,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           decisionChain.r300FinalBlock = r300Final.reason;
           decisionChain.reason = `${decisionChain.reason || ''} · ⛔ ${r300Final.reason}`;
           if (Array.isArray(decisionChain.blocks)) decisionChain.blocks.unshift(r300Final.reason);
-          try { logAuto(`⛔ ${full} R300 NİHAİ RED: ${r300Final.reason}`); } catch(_){}
+          // R311C: TEK PATRON AI — R300 eski motoru "yetersiz" dese de coini AI'ya DEVRET, son kararı AI versin.
+          // R300 sadece eski botun görüşü; AI ham veriyle bakıp kendi karar verir (sweep/reclaim/akış AI'da).
+          decisionChain.r300SoftReject = true;
+          decisionChain.r309eFromWait = true;
+          try { logAuto(`🔀 ${full} R300 eski motor 'yetersiz' dedi ama AI'ya devrediliyor — kararı AI verecek (${r300Final.reason.slice(0,60)})`); } catch(_){}
         } else {
           decisionChain.r300FinalOk = r300Final.reason;
         }
@@ -15089,11 +15094,17 @@ function r308ReserveAiSpend(symbol, source='R308', fingerprint='') {
   const sym = String(symbol||'').replace('USDT','').toUpperCase();
   const now = Date.now();
   const prev = r308AiLastBySymbol.get(sym);
-  if (prev && AI_BRAIN_REVIEW_GAP_MS > 0 && now - prev.ts < AI_BRAIN_REVIEW_GAP_MS) {
-    return { ok:false, reason:`${sym} tekrar freni ${Math.ceil((AI_BRAIN_REVIEW_GAP_MS - (now-prev.ts))/1000)}sn` };
+  // R311B: tekrar freni SADECE coin durumu AYNIYSA uygulanır. Durum değiştiyse (yeni setup, farklı fingerprint)
+  // AI'ya gitsin — EIGEN R285 q:99.8 gibi mükemmel YENİ setup'lar "tekrar freni" yüzünden kaçmasın. reviewGap'in
+  // amacı aynı değişmemiş duruma tekrar para harcamamak; yeni fırsatı engellemek DEĞİL. fingerprint zaten setup'ın
+  // özeti (yön+kademe+seviye). Farklıysa = yeni durum = AI'ya değer.
+  const curFp = String(fingerprint||'').slice(0,120);
+  const sameState = prev && curFp && String(prev.fingerprint||'') === curFp;
+  if (prev && sameState && AI_BRAIN_REVIEW_GAP_MS > 0 && now - prev.ts < AI_BRAIN_REVIEW_GAP_MS) {
+    return { ok:false, reason:`${sym} tekrar freni ${Math.ceil((AI_BRAIN_REVIEW_GAP_MS - (now-prev.ts))/1000)}sn (durum aynı)` };
   }
   r308AiSpendCount += 1;
-  r308AiLastBySymbol.set(sym, { ts:now, source, fingerprint:String(fingerprint||'').slice(0,120) });
+  r308AiLastBySymbol.set(sym, { ts:now, source, fingerprint:curFp });
   return { ok:true, count:r308AiSpendCount };
 }
 
@@ -15457,7 +15468,7 @@ app.post('/api/auto/config', (req, res) => {
   autoConfig.maxPositions = normalizeUserMaxPositions(autoConfig.maxPositions, 3);
   // R282: Panelde seçilen tarama modu server tarafında da amir olsun.
   // Eski/local kayıt TOP24 taşıyorsa veya scanLimit=24 gelmişse normalize edip görünür log basar.
-  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP24');
+  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'FAST6'); // R311D: TOP6 (FAST6) varsayılan — en volatil 6 coin, maliyet ~$12/gün
   autoConfig.scanLimit = r54ScanLimitForMode(autoConfig.scanMode, autoConfig.scanLimit);
   logAuto(`⚙️ R282 auto ayar: tarama modu ${autoConfig.scanMode}/${autoConfig.scanLimit}, max poz:${autoConfig.maxPositions}, min skor:${autoConfig.minScore}`);
   if (autoConfig.enabled) {
@@ -16077,7 +16088,13 @@ async function runAutoScan(prioritySymbol=null) {
         const fundOk = isLong
           ? fund?.signal !== 'EXTREME_POSITIVE'
           : fund?.signal !== 'EXTREME_NEGATIVE';
-        if (!fundOk) { logAuto(`${coin.symbol} Funding aşırı karşı (${fund?.current}) — atlandı`); markAutoSkip(coin.symbol, `Funding aşırı karşı ${fund?.current}`, {rec:recommendation, score}); continue; }
+        // R311C: TEK PATRON AI — funding aşırı olsa bile coini KESME, AI'ya devret. Funding değeri zaten AI'ya
+        // gidiyor (prompt'ta var); AI aşırı funding'i görüp kendi karar verir (squeeze fırsatı mı tuzak mı).
+        if (!fundOk) {
+          logAuto(`⚠️ ${coin.symbol} funding aşırı karşı (${fund?.current}) ama AI'ya devrediliyor — kararı AI verecek`);
+          decisionChain.r309eFromWait = true;
+          decisionChain.fundingExtremeNote = `funding aşırı: ${fund?.current}`;
+        }
 
         // R78: R37/R35 B+ restore için skor filtresi artık ikinci kez öldürücü değil.
         // R37'de B+ olmuş bir aday R77'de burada tekrar minScore'a takılıyordu (ör: FLNC B+ skor 52<72).
@@ -16999,30 +17016,27 @@ async function runAutoScan(prioritySymbol=null) {
                         // binancePanelCap'i AI tabanından ÇIKARDIK — sadece panelMax (kullanıcı tavanı) + Binance gerçek limiti korunur.
                         // Binance'in o coin için fiziksel max kaldıracı (örn bazı coinlerde 25x) panelMax ile zaten sınırlı.
                         const binancePanelCap = Math.max(1, executeLeverage);
-                        // R309Z: KALDIRAÇ GÜVENE ORANLI (kullanıcı: "en bariz fırsatta yüksek, zayıfta düşük").
-                        // En bariz fırsat (güven 85+) → yüksek kaldıraç (vur-kaç max kâr). Zayıf (64-70) → düşük (risk az).
+                        // R311C: TEK PATRON AI KALDIRAÇ — kullanıcı talimatı: min 10x, max = coin izni + AI seçimi (50x'e kadar).
+                        // Taban 10x (altına inmez). AI güveni yükseldikçe kaldıraç artar; en bariz fırsatta coinin Binance
+                        // fiziksel limitine (50x'e kadar) çıkabilir. AI tek patron — vur-kaç için yüksek kaldıraç seçebilir.
                         let aiTargetLev;
-                        if (aiConf >= 85)      aiTargetLev = 20;  // en bariz fırsat: max kaldıraç, vur-kaç
-                        else if (aiConf >= 80) aiTargetLev = 17;
-                        else if (aiConf >= 75) aiTargetLev = 14;
-                        else if (aiConf >= 70) aiTargetLev = 11;
-                        else                   aiTargetLev = 8;   // 64-69 zayıf güven: düşük kaldıraç (zarar küçük kalsın)
-                        // ═══ R310J: AI PANEL TAVANINDAN MUAF (kullanıcı talimatı) ═══
-                        // ÖNCE: aiTargetLev = Math.min(aiTargetLev, panelMax) → panel 15x ise AI 85+ güvenle 20x diyemiyordu.
-                        // ŞİMDİ: AI güveni max-kâr için panel "Otomatik kaldıraç üst sınırı"nı EZER. Sadece Binance'in
-                        // o coin için FİZİKSEL izin verdiği maksimumla sınırlı. Altındaki R308K SL×Lev≤maxRoiRisk
-                        // güvenliği yine çalışır (geniş SL'de kaldıraç kısılır) — yani risk korunur, fırsat büyür.
+                        if (aiConf >= 88)      aiTargetLev = 50;  // en bariz fırsat: coin izni elverirse 50x'e kadar
+                        else if (aiConf >= 82) aiTargetLev = 35;
+                        else if (aiConf >= 76) aiTargetLev = 25;
+                        else if (aiConf >= 70) aiTargetLev = 18;
+                        else                   aiTargetLev = 10;  // 64-69: TABAN 10x (kullanıcı min 10x)
+                        // AI panel tavanından MUAF — sadece Binance'in o coin için fiziksel izni sınırlar.
                         let r310BinanceMax = null;
                         try {
                           r310BinanceMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * aiTargetLev).catch(()=>null);
                         } catch(_e) {}
-                        const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? r310BinanceMax : Math.max(panelMax, aiTargetLev);
-                        aiTargetLev = Math.min(aiTargetLev, r310Ceil);
+                        const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? Math.min(50, r310BinanceMax) : Math.max(panelMax, aiTargetLev); // R311C: 50x mutlak tavan
+                        aiTargetLev = Math.max(10, Math.min(aiTargetLev, r310Ceil)); // R311C: min 10x garanti, max coin izni (≤50x)
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
-                          leverageNote += ` · R310J AI güven ${aiConf} → ${oldAiLev}x→${executeLeverage}x (panel ${panelMax}x EZİLDİ, Binance izin ${r310Ceil}x)`;
-                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R310J: panel tavanı ${panelMax}x ezildi, Binance fiziksel limit ${r310Ceil}x, max-kâr)`);
+                          leverageNote += ` · R311C AI güven ${aiConf} → ${oldAiLev}x→${executeLeverage}x (min10x, panel ${panelMax}x EZİLDİ, Binance izin ${r310Ceil}x)`;
+                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R311C TEK PATRON: min 10x, Binance fiziksel limit ${r310Ceil}x, max 50x)`);
                         }
                       } catch(_aiLevE) { logAuto(`⚠️ ${coin.symbol} AI kaldıraç hatası: ${String(_aiLevE?.message||_aiLevE).slice(0,60)}`); }
                       // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
