@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311I_GIRIS_TARIFLERI';
+const LAZARUS_BUILD = 'R311L_MARKET_YAPISI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3352,9 +3352,16 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       piyasaNotu: data.marketCtx || null
     };
 
-    const sys = `Sen Lazarus'un TEK KARAR VERİCİSİSİN — tecrübeli, FIRSATÇI bir 5m kripto futures scalper. TOP6 (en volatil 6) gainer coinde kaldıraçla vur-kaç yaparsın. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
+    const sys = `Sen Lazarus'un TEK ve YEGANE KARAR VERİCİSİSİN — tecrübeli, FIRSATÇI bir 5m kripto futures scalper. Piyasanın en volatil gainer coinlerinde kaldıraçla vur-kaç yaparsın. Senden BAŞKA karar veren yok: yön, giriş, TP, SL, kaldıraç, gir-ya-bekle — HEPSİ senin. Bot sadece sana grafiği okuyup veri sunar, KARAR VERMEZ. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
 SEN TEK PATRONSUN: Bot artık sana KAPI uygulamıyor — eski motorun "yetersiz/riskli/funding aşırı" gibi görüşleri sana sadece NOT olarak iletilir, seni BAĞLAMAZ. Önündeki ham mumları + ham metrikleri + kendi tüm trading bilgini kullanarak SEN karar verirsin. Bot sana puan/yön/kaldıraç dayatmaz. Tek sınırların: (1) Binance fiziksel limitleri (likidite/kaldıraç izni), (2) kullanıcının max SL %3 güvenlik tavanı. Bunun dışında karar TAMAMEN senin.
 KALDIRAÇ YETKİSİ (sen seçersin): Min 10x, max coinin Binance izni (50x'e kadar). En bariz/net fırsatta (güven 85+) yüksek kaldıraç seç (vur-kaç, max kâr); zayıf/sınırda işlemde düşük tut (10x). Güvenini dürüst ver — kaldıracın ona göre ölçeklenir. Geniş SL kullanırsan sistem kaldıracı otomatik kısar (likidasyon koruması), o yüzden net/dar SL'li setuplarda yüksek kaldıraç hakkını kullanabilirsin.
+═══ KARAR AKIŞIN (her coin için bu 4 adımı SIRAYLA uygula) ═══
+ADIM 1 — YÖN: 5m yapıya bak. Yukarı mı (HH/HL) aşağı mı (LH/LL) akıyor? Hangi yönde setup arıyorsun belirle. Üst dilimler (1h/4h) bu yönü destekliyor mu kontrol et.
+ADIM 2 — SETUP VAR MI: Aşağıdaki 5 GİRİŞ TARİFİNDEN (G1-G5) biri oturuyor mu? Bir tarif net oturuyorsa = GERÇEK FIRSAT, ADIM 4'e geç. Hiçbiri oturmuyorsa WAIT.
+ADIM 3 — TEYİT SAY: Setup'ın 3 ayağı var mı? (1) yapı/seviye, (2) mum, (3) delta akışı. Üçü aynı yöndeyse güçlü gir. İkisi varsa düşük güvenle gir. Biri/hiçbiri = WAIT.
+ADIM 4 — TUZAK KONTROL: Girmeden önce SON kez sor: düşen/yükselen bıçak mı (trende karşı)? Ekstrem bölgede sweep'siz mi? Hacimsiz mi? Çelişki belirgin mi? Tuzak NETSE WAIT, değilse GİR.
+Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse bekle). "Mükemmel" arama; 3 teyit = yeter.
+
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 ★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot PUAN/YÖN DAYATMAZ — bu nötr analizi kendi ham mum okumanla ÇAPRAZ DOĞRULA. Kodlar: "L12/S0"=12 alıcı 0 satıcı (güçlü LONG akış), "kanıt yetersiz"=net sweep/reclaim yok (dikkat), "Tuzak dönüşü"=tuzak sezildi, "SSL_ALINDI_CHOCH_BEKLENIYOR"=alt süpürüldü reclaim bekleniyor, "DEMAND_OB"=destek. Bot+sen aynı yön=en güçlü teyit; çelişki=WAIT. Boş alan/null=veri yok, uydurma.
@@ -3362,6 +3369,17 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
+
+═══ MARKET YAPISI (yön ve trendi BUNUNLA oku — göstergeyle değil, fiyatın kendi yapısıyla) ═══
+Piyasa SADECE 3 şey yapar: YUKARI (HH/HL: yükselen tepe + yükselen dip), AŞAĞI (LH/LL: alçalan tepe + alçalan dip), YATAY (range/sıkışma — likidite topluyor, sonraki hamleye hazırlanıyor). Trend, yapı kırılana kadar devam eder. Önce hangi fazda olduğunu belirle; tüm kararın buna dayanır.
+• BOS (Break of Structure) = DEVAM: Fiyat trend yönünde son swing'i GÖVDE kapanışıyla kırdı (yukarı trendde son HH üstüne, aşağı trendde son LL altına). BOS trendin sürdüğünü teyit eder → trend yönünde işlem ara.
+• ChoCH (Change of Character) = İLK DÖNÜŞ UYARISI: Fiyat trende KARŞI yönde son swing'i kırdı (yukarı trendde son HL'nin ALTINA kapanış = ilk LL, ya da aşağı trendde son LH'nin ÜSTÜNE = ilk HH). ChoCH "dönebilir" der, "döndü" DEMEZ — tek başına giriş sebebi değil.
+• MSS (Market Structure Shift) = TEYİTLİ DÖNÜŞ: ChoCH + arkasından displacement (güçlü gövdeli impuls mum) + yeni yönde BOS. Dönüş artık başladı. Giriş için ChoCH değil MSS bekle.
+• ★ EN GÜÇLÜ SİNYAL — SWEEP'Lİ ChoCH (bizim MM tokadımızın yapısal adı): Fiyat HL'nin altını süpürür (stopları tetikler, fakeout gibi görünür) AMA hemen geri döner + reclaim eder + ters yöne ChoCH yapar. Bu Wyckoff spring ile aynı şeydir. Sweep olurken tuzak gibi durur, sonradan en temiz dönüş olduğu anlaşılır. Süpürme + reclaim + ChoCH üçü birlikte = en yüksek olasılıklı giriş (G1/G4 tarifi). Bunu gördüğünde tereddüt etme.
+• GÖVDE KAPANIŞI ŞART: BOS/ChoCH sadece FİTİLLE olmaz — seviyenin ötesinde GÖVDE kapanışı gerekir. Sadece fitil = sweep/tuzak, kırılım değil. Ayrıca hacim/delta yoksa kırılım sahtedir ("kanıtsız vaat") — gerçek BOS'ta displacement + hacim vardır.
+• GİRİŞ BOS'UN KENDİSİNDE DEĞİL, RETEST'TE: BOS yapısal teyittir, giriş noktası değil. Kırılım sonrası fiyat kırılan seviyeye/FVG/OB'ye geri test yapar, oradan gir. Hareket zaten birkaç ATR uzadıysa = geç kaldın, kovalama, sonraki setup'ı bekle.
+• İÇ vs DIŞ YAPI: HTF (1h/4h) BOS/ChoCH = güçlü, ana yön. 5m iç yapı = zayıf ama erken uyarı + hassas giriş zamanlaması. En iyi giriş: HTF yön + 5m'de o yöne ChoCH/MSS (HTF yukarı + 5m düzeltme bitip yukarı ChoCH = al).
+• ChoCH SONRASI ACELE SHORT/LONG ETME: Yukarı trend ChoCH yaptı diye hemen short açma — ChoCH "uptrend hasarlı" der, "downtrend başladı" demez. Bekle: LH sonra LL olursa downtrend teyitli, O ZAMAN short. Fiyat yeni HH yaparsa ChoCH fakeout'tu, trend sürüyor. (Bu, "doğru yön + yanlış an = zarar" dersinin yapısal halidir.)
 
 ═══ İKİ KAZANAN SETUP (eşit öncelik — hangisi netse onu al) ═══
 ① TREND DEVAMI: Coin güçlü bir yönde akıyorsa (4h/1h + 5m aynı yön, hacim destekli), o yönde geri çekilmede gir — yükselişte düşük FVG/OB retestinden LONG, düşüşte yüksek retestten SHORT. En büyük kâr buradan gelir (güçlü trend uzun gider). Parabolik UÇTAN kovalama; geri çekilme + tutma bekle.
@@ -3386,7 +3404,7 @@ ORTAK KURAL: Bu tariflerde ÜÇ teyit aranır — (1) yapı/seviye, (2) mum (rec
 KURAL: trende KARŞI giriş SADECE net dönüş teyidiyle (5m ChoCH + sweep&reclaim + delta o yöne döndü). Teyit yoksa → ya trend yönünde gir ya WAIT. Tek geri çekilme veya aşırı RSI dönüş kanıtı DEĞİLDİR.
 
 ═══ AKIŞ DOĞRULAMASI (giriş öncesi son bakış) ═══
-Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta satıcı baskın olsun; delta TERS ise grafiğe rağmen dikkat et, çoğu kayıp delta-ters girişti. Funding aşırı +(>0.1%)=long kalabalık/aşağı squeeze riski; aşırı −(<−0.1%)=yukarı squeeze riski. SQUEEZE BAYRAĞI (veto): "shortSqueeze":true → SHORT AÇMA (MM yukarı sıkıştırır), LONG ya WAIT. "longSqueeze":true → LONG AÇMA, SHORT ya WAIT.
+Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta satıcı baskın olsun; delta TERS ise grafiğe rağmen dikkat et, çoğu kayıp delta-ters girişti. Funding aşırı +(>0.1%)=long kalabalık/aşağı squeeze riski; aşırı −(<−0.1%)=yukarı squeeze riski. SQUEEZE BAYRAĞI: "shortSqueeze":true → SHORT AÇMA (MM yukarı sıkıştırır) AMA bu LONG için OLUMLU sinyaldir — LONG setup'ın varsa (sweep+reclaim/trend) squeeze seni DESTEKLER, GİR. "longSqueeze":true → LONG AÇMA ama SHORT için olumlu. ÖNEMLİ: squeeze bayrağı SADECE ters yönü yasaklar, kendi yönünü DEĞİL. shortSqueeze varken güçlü LONG fırsatını "veto" deyip kaçırma — squeeze LONG'u güçlendirir.
 
 ═══ BOTUN GÖRMEDİĞİ 5m TUZAKLARI (bunlar sık zarar yazdırır, dikkat) ═══
 • DEAD-CAT (ölü kedi sıçraması): Düşüşte küçük yeşil mum = "dip döndü" DEĞİL. Düşüş trendinde her sıçrama satılır; reclaim+delta dönüşü yoksa düşüş sürer. "Dip aldım" deyip girme.
@@ -3396,14 +3414,11 @@ Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta sa
 • EKSTREM BÖLGE SWEEP ZORUNLU (RESOLV dersi): 5m range konumu TEPEDE (>%70) LONG ya da DİPTE (<%30) SHORT düşünüyorsan, MM büyük olasılıkla ÖNCE ters yöne sweep atıp stopları avlar SONRA gerçek hareket başlar. Bu bölgede sweep+reclaim GÖRMEDEN girme — momentum güçlü olsa bile beklemeden girersen tek ters mum SL'ini süpürür (RESOLV: %95 tepede girdi, sweep SL'i aldı, sonra %15 yükseldi). KURAL: ekstrem bölgede ya sweep+reclaim bekle (tokat atıldıktan SONRA gir = en yüksek olasılık), ya da SL'i sweep zonu ÖTESİNE koy (dar SL süpürülür). Orta bölgede (%30-70) bu zorunlu değil. \n• GÜÇ DENGESİ — ÇELİŞKİ SAYIMI (BICO -%16 dersi): Girmeden ÖNCE lehte ve aleyhte sinyalleri SAY. LONG için aleyhte sayılır: 5m RSI>72 (aşırı alım), mum teyidi zayıf/karşı mum baskın, emir defteri satıcı baskın (negatif), range tepe bölge (>%70), hemen üstte BSL/direnç likidite, OI çözülüyor. LONG için lehte: taze BOS, delta alıcı, OI artıyor, mum teyit güçlü, dip bölge, sweep+reclaim. SHORT için hepsi tersi. KURAL: Aleyhte sinyaller lehteden BELİRGİN fazlaysa (2+ fark, örn 5 aleyhte vs 2 lehte) = WAIT. Yakın/eşitse SEN tart (tek patronsun) — ama güveni dürüst düşür. İki güçlü sinyal beş zayıfı EZMEZ; ama üç güçlü hizalı sinyal (sweep+delta+yapı aynı yön) bir-iki zayıf sinyale rağmen GİRİŞ olabilir. MM tepede sahte BOS+zayıf mumla tokat atar — net çelişkide girme. Çelişki belirginse WAIT; dengeli/lehte ağırsa fırsatı KAÇIRMA, gir.
 • GENEL: Tanımadığın ama mantıksız görünen bir hareket varsa (sebepsiz dik mum, tek mumda büyük fitil) = MM oyunu, WAIT. Emin olmadığın yerde girme.
 
-═══ MSS TUZAK MI? ═══
-MSS/ChoCH/BOS tek başına yetmez. Arkasında veri (kalıcı delta + hacim + OB/FVG) yoksa TUZAKTIR — MM ya ters likiditeyi süpürür ya son ivme mumu (OB) bölgesine çeker, oradan gerçek yöne gider. Zayıf MSS'te hemen girme, MM'in ters hamlesi + reclaim'i bekle. Veri güçlüyse MSS gerçek, gir.
-
 ═══ BAĞLAM ═══
 GAINER: "gainerSira" = TOP24 sırası (1=en güçlü/hareketli, ilk 3 = o anın en güçlüleri). Bu coinler BTC'den BAĞIMSIZ hareket eder — coin kendi yapısında nettse (HH/HL+hacim) BTC kırmızı diye reddetme; BTC sadece coin belirsizken tie-breaker. LİKİDİTE: eski tepe üstü=BSL, eski dip altı=SSL (stoplar orada). TP'yi sonraki likiditeye, SL'i süpürülen yapının ötesine koy. ARAÇ KUTUSU (hatırlatma): trend kırılımı+retest, OB reddi, engulfing/çekiç/shooting star, FVG/OTE, Wyckoff. Mumlar ne diyorsa o.
 
 ═══ KARAR ═══
-TOP6 = piyasanın EN VOLATİL coinleri, burada fırsat BOLDUR — aşırı temkinli olup hepsine WAIT deme. 2-3 sinyal aynı yönü gösteriyorsa (örn trend+delta+yapı, ya da sweep+reclaim+delta) o GERÇEK fırsattır, GİR. "Mükemmel setup" bekleme; 5m scalp'te %70 olasılık yeterli. Sadece net çelişki veya gerçek tuzakta WAIT. Fırsatı kaçırmak da kayıptır. Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü), R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
+Sana SADECE gerçek setup işareti olan coinler sunulur (bot ölüleri zaten elemiş) — yani önüne gelen coin ADAY demektir, fırsat BOLDUR, aşırı temkinli olup hepsine WAIT deme. 2-3 sinyal aynı yönü gösteriyorsa (örn trend+delta+yapı, ya da sweep+reclaim+delta) o GERÇEK fırsattır, GİR. "Mükemmel setup" bekleme; 5m scalp'te %70 olasılık yeterli. Sadece net çelişki veya gerçek tuzakta WAIT. Fırsatı kaçırmak da kayıptır. Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü), R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
 GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x(taban), 70-75→18x, 76-81→25x, 82-87→35x, 88+→50x(coin izni varsa). Güveni DÜRÜST ver: setup ne kadar net+çok teyitliyse (trend+sweep+reclaim+delta+OB+mum hepsi aynı yön) güven o kadar YÜKSEK → yüksek kaldıraç → max kâr. Şüpheliysen düşük güven veya WAIT. Sistem geniş SL'de kaldıracı otomatik kısar (likidasyon koruması).
 
 ÇIKTI KURALI (ÇOK ÖNEMLİ): Cevabın İLK karakteri { olmalı. "Looking at..." gibi önsöz/düşünce/açıklama ASLA yazma — gerekçeni "reason" alanının İÇİNE koy. Sadece tek geçerli JSON döndür, öncesi/sonrası hiçbir metin olmasın. SADECE JSON:
@@ -15784,39 +15799,49 @@ async function runAutoScan(prioritySymbol=null) {
     // Bu sayaç, tek taramada AI'ya gidecek coin sayısını sınırlar (maliyet kontrolü).
     const R309E_MAX_AI_PER_SCAN = Math.max(2, Number(process.env.AI_BRAIN_MAX_PER_SCAN || 2) || 2);   // R311F: varsayılan 2. Railway env AI_BRAIN_MAX_PER_SCAN=2.
     let r309eAiSentCount = 0;
-    // R311H: TOP6 MODU = TEK PATRON AI TAM AÇIK. Sadece 6 coin var → HEPSİ AI'ya gitsin (maliyet ~$0.06/tarama,
-    // kabul edilebilir). max_per_scan limiti ve ham-eleme yalnızca BÜYÜK modlarda (TOP10/TOP24) maliyet için.
-    // UB +%52.5'i açan R310J ruhu: AI ham veriyle hepsini görsün, bot eleme/limit koymasın. "Tek patron AI" buydu.
-    const r311hTop6Mode = (Number(scanList?.length || 0) <= 7);  // FAST6 ~6 coin
+    // ═══ R311K: R310J MODELİNE DÖNÜŞ — "AI tek patron AMA bot ucuz ön-tarama yapar" ═══
+    // UB +%52.5'i yapan R310J TOP24 tarardı ama UCUZdu: bot 24 coinden sadece GERÇEK ADAY olanları (~3-5)
+    // AI'ya sunardı, AI o adaylar arasında TEK KARAR VERİCİYDİ. Ben R311C-J'de kapıları "hepsini AI'ya devret"
+    // yapınca 24 coinin çoğu AI'ya gitti = $121/gün. ÇÖZÜM: R310J'ye dön. Bot KARAR VERMEZ (yön/giriş AI'nın),
+    // sadece "AI'ya kimi soracağını" seçer = MALİYET ÖN-FİLTRESİ. Ölü/sinyalsiz coini AI'ya sormak boşa para.
     const r310IsTop2 = (idx) => (typeof idx === 'number' && idx <= 1);
-    // R311H: TOP6'da bütçe limiti YOK (hepsi gider). Büyük modda TOP2 muaf + max_per_scan.
-    const r309eAiBudgetLeft = (idx, dc) => (r311hTop6Mode || r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
-    // ═══ R310V: HAM-VERİ ÖN-ELEMESİ (sadece BÜYÜK modlarda) ═══
-    // R311H: TOP6'da ham-eleme DEVRE DIŞI (hepsi canlı sayılır, AI karar verir). Büyük modlarda ölü gece
-    // mumlarını eler (maliyet). Bir coin AI'ya gider EĞER: RVOL≥0.6 VEYA 5m yapı VEYA sweep VEYA |delta|≥25
-    // VEYA bot aday demiş. TOP2 + TOP6 muaf. Fail-open: şüphede gönderir.
+    const r309eAiBudgetLeft = (idx, dc) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
+    // GERÇEK ADAY FİLTRESİ (R310J ruhu): Bir coin AI'ya SUNULUR eğer FİZİKSEL bir setup/canlılık işareti varsa.
+    // Bu ELEME DEĞİL — AI hâlâ gelen adayda yön/giriş/WAIT'e karar verir. Sadece "ölü coin" AI'ya gitmez (para).
+    // NOT: "bot her şeyi devretti" bayrağı (r309eFromWait/r300SoftReject) ARTIK aday sayılmaz — o herkese
+    // basılıyordu, maliyet kaçağıydı. Gerçek fiziksel işaret aranır:
     const r310vCanliMi = (dc, analysis) => {
       try {
-        if (r311hTop6Mode) return true; // R311H: TOP6'da herkes AI'ya
-        if (!dc) return true;
+        if (!dc) return false; // veri yok → aday değil (R310J: belirsizi sorma, para koru)
+        // 1) Bot gerçek TRADE sinyali gördü (en güçlü aday)
         const ba = String(dc.brainAction||'').toUpperCase();
-        if (ba === 'TRADE' || dc.r284WaitUpgradeOk || dc.r309eFromWait || dc.r300SoftReject) return true;
-        const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
-        const rv1 = Number(analysis?.rvol?.['1h']?.rvol);
-        if ((Number.isFinite(rv5) && rv5 >= 0.6) || (Number.isFinite(rv1) && rv1 >= 0.6)) return true;
-        if (dc.r190Edge?.ok) return true;
+        if (ba === 'TRADE' || dc.r284WaitUpgradeOk) return true;
+        // 2) Sweep/reclaim olmuş (G1/G4 tarifi — en yüksek olasılık setup)
         const ict = String(dc.ictDashboard||dc.ictDurum||'');
-        if (/ALINDI|reclaim|geri.?kazan/i.test(ict)) return true;
+        if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return true;
+        // 3) 5m yapı kırılımı/momentum var (G3/G5 tarifi)
+        if (dc.r190Edge?.ok) return true;
+        // 4) Güçlü delta akışı (gerçek alıcı/satıcı baskısı)
         const delta = Math.abs(Number(dc.r125LiveDeltaPct||0));
-        if (delta >= 25) return true;
+        if (delta >= 20) return true;
+        // 5) Hacim patlaması (RVOL yüksek = gerçek hareket)
+        const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
+        if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
+        // 6) Güçlü mum formasyonu teyidi (Engulfing/Tweezer/Hammer puanı yüksek)
+        if (dc.mumGuclu || (Number(dc.mumPuan||0) >= 6)) return true;
+        // Hiçbir fiziksel setup işareti yok → ölü coin, AI'ya sorma (R310J: para koru). TOP2 yine muaf (aşağıda).
         return false;
-      } catch(_e) { return true; }
+      } catch(_e) { return false; }
     };
-    // ═══ R309U: DEVİR-BYPASS ═══
-    // AI'ya devredilmiş (WAIT/entryPermission/tier) + AI bütçesi varsa, YUMUŞAK skor/yön frenleri
-    // (bot'un kendi görüşü: riskli yön, HTF amiri, body-shift, R190 akış, B+ giriş izi) coini AI'ya
-    // ULAŞMADAN kesmesin — kararı AI verecek. SERT güvenlik (RVOL/ATR/spread/RR/cascade/öğrenme) HER ZAMAN kalır.
     const r309uDevirBypass = (dc, idx) => (AI_BRAIN_ENABLED && r309eAiBudgetLeft(idx, dc) && !!(dc?.r309eFromWait || dc?.r300SoftReject));
+
+    // ═══ R311J: AI MALİYET SERT KİLİDİ (mod-bağımsız) ═══
+    // SORUN: Kullanıcı dashboard'da TOP24 bıraktı → 24 coin AI'ya → maliyet $121/gün patladı.
+    // ÇÖZÜM: scanMode ne olursa olsun, AI değerlendirmesi için aday havuzunu ilk R311J_AI_POOL coine kısıtla
+    // (en volatil/yüksek sıralı). Tarama TÜM listeyi görür (bot analizi), ama AI sadece en iyi havuzu değerlendirir.
+    // Bu, TOP24 modunda bile maliyeti TOP6-8 seviyesinde tutar. Env ile ayarlanabilir (AI_POOL_SIZE).
+    const R311J_AI_POOL = Math.max(4, Number(process.env.AI_POOL_SIZE || 8) || 8);
+    const r311jInAiPool = (idx) => (typeof idx === 'number' && idx < R311J_AI_POOL);
 
     for (const [scanIdx, coin] of scanList.entries()) {
       coin.gainerRank = scanIdx + 1; // 1 = en volatil/güçlü gainer (liste volatiliteye göre sıralı)
@@ -15968,7 +15993,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ═══ R309E: WAIT'i AI'ya DEVRET (silme) ═══
           // Eski sistem WAIT dedi diye coini çöpe atma — AI ham mumu okuyup kendi kararını versin.
           // Bütçe varsa: skoru yüksek tarafı geçici yön yap (AI zaten kendi yönünü seçer/çevirir), AI'ya bırak.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
             // Panel yön kısıtı korunur: panel sadece LONG/SHORT'a izin veriyorsa, geçici yön ona uymalı.
             const waitSideAllowed = (waitSide === 'LONG' && allowLong) || (waitSide === 'SHORT' && allowShort);
             // Panel karşı yöne izin veriyorsa geçici yönü ona çevir; iki yön de kapalıysa devretme.
@@ -16020,7 +16045,7 @@ async function runAutoScan(prioritySymbol=null) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           // ═══ R309E: emir izni yok → AI'ya DEVRET (silme) ═══
           // ASTER dersi: bot "izin yok" dedi ama AI'nın bayılacağı sweep+reclaim setup'ı vardı. AI okusun.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
             decisionChain.r300SoftReject = `R309E entryPermission→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E AI'ya devrediyor — kararı AI verecek (${why.slice(0,80)})`);
             // continue YOK — AI'ya akar
@@ -16041,7 +16066,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           // ═══ R309E: tier düşük → AI'ya DEVRET (silme) ═══
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
             decisionChain.r300SoftReject = `R309E tier→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E AI'ya devrediyor — kararı AI verecek`);
             // continue YOK
@@ -16402,7 +16427,7 @@ async function runAutoScan(prioritySymbol=null) {
           // R310Z (kullanıcı madde1): ATR yüksek ama AŞIRI değilse (atrExtreme yok), AI bütçesi varsa coini KESME —
           // AI'ya DEVRET, son kararı AI versin. ATR bilgisi zaten AI'ya gidiyor; tepede/aşırı volatil görürse WAIT der.
           // Bot AI'dan ÖNCE TOP gainer'ı kesmesin. Sadece gerçek %11+ düşen-bıçak (atrExtreme) kesilir.
-          const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+          const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
           if (atrExtreme || (!atrBridgeAllowedFinal && !atrAiDevret)) {
             logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — ${atrExtreme?'aşırı volatilite (düşen bıçak)':'volatilite riski'} yüksek, atlandı`);
             markAutoSkip(coin.symbol, atrExtreme ? `ATR %${coinAtrPct.toFixed(1)} aşırı (düşen bıçak güvenlik)` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*4 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
