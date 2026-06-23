@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311R_FOLKS_GAINER_DIP';
+const LAZARUS_BUILD = 'R311S_R190_DEVRET';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15834,7 +15834,19 @@ async function runAutoScan(prioritySymbol=null) {
         return false;
       } catch(_e) { return false; }
     };
-    const r309uDevirBypass = (dc, idx) => (AI_BRAIN_ENABLED && r309eAiBudgetLeft(idx, dc) && !!(dc?.r309eFromWait || dc?.r300SoftReject));
+    // R311S: Bypass genişletildi — bot TRADE dediği VEYA gerçek aday (canlıMi) coinlerde de yumuşak frenler
+    // (R190 akış, R97 zemin, R189 micro, F&G, riskli yön) AI'ya devretsin. Kanıt: AGT/MU/GUA bot "TRADE" dedi
+    // ama "R190 geç/ters akış freni" AI'ya GİTMEDEN kesti. AI tek patron — yumuşak bot görüşleri AI'yı boğmasın.
+    // SERT güvenlik (POOR likidite, ATR aşırı, spread, cascade) AYRI kapılarda kalır, bunlar bypass OLMAZ.
+    const r309uDevirBypass = (dc, idx) => {
+      if (!AI_BRAIN_ENABLED || !r309eAiBudgetLeft(idx, dc)) return false;
+      if (dc?.r309eFromWait || dc?.r300SoftReject) return true; // mevcut: WAIT/R300 devri
+      // YENİ: bot gerçek TRADE sinyali ürettiyse ya da fiziksel aday ise → yumuşak frenler AI'ya devretsin
+      const ba = String(dc?.brainAction||'').toUpperCase();
+      if (ba === 'TRADE') return true;
+      if (r311jInAiPool(idx) && r310vCanliMi(dc, dc?._analysis)) return true;
+      return false;
+    };
 
     // ═══ R311J: AI MALİYET SERT KİLİDİ (mod-bağımsız) ═══
     // SORUN: Kullanıcı dashboard'da TOP24 bıraktı → 24 coin AI'ya → maliyet $121/gün patladı.
