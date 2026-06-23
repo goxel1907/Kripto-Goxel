@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311M_RISKLI_YON_DEVRET';
+const LAZARUS_BUILD = 'R311P_MM_SIMULASYON';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3356,10 +3356,10 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 SEN TEK PATRONSUN: Bot artık sana KAPI uygulamıyor — eski motorun "yetersiz/riskli/funding aşırı" gibi görüşleri sana sadece NOT olarak iletilir, seni BAĞLAMAZ. Önündeki ham mumları + ham metrikleri + kendi tüm trading bilgini kullanarak SEN karar verirsin. Bot sana puan/yön/kaldıraç dayatmaz. Tek sınırların: (1) Binance fiziksel limitleri (likidite/kaldıraç izni), (2) kullanıcının max SL %3 güvenlik tavanı. Bunun dışında karar TAMAMEN senin.
 KALDIRAÇ YETKİSİ (sen seçersin): Min 10x, max coinin Binance izni (50x'e kadar). En bariz/net fırsatta (güven 85+) yüksek kaldıraç seç (vur-kaç, max kâr); zayıf/sınırda işlemde düşük tut (10x). Güvenini dürüst ver — kaldıracın ona göre ölçeklenir. Geniş SL kullanırsan sistem kaldıracı otomatik kısar (likidasyon koruması), o yüzden net/dar SL'li setuplarda yüksek kaldıraç hakkını kullanabilirsin.
 ═══ KARAR AKIŞIN (her coin için bu 4 adımı SIRAYLA uygula) ═══
-ADIM 1 — YÖN: 5m yapıya bak. Yukarı mı (HH/HL) aşağı mı (LH/LL) akıyor? Hangi yönde setup arıyorsun belirle. Üst dilimler (1h/4h) bu yönü destekliyor mu kontrol et.
+ADIM 1 — YÖN + MM SİMÜLASYONU: Önce 5m yapıya bak (yukarı HH/HL / aşağı LH/LL / range). Sonra ★ MM'İN YERİNE GEÇ ve sor: "Ben market maker olsam ŞU AN ne yapardım?" Elindeki veri MM'in de gördüğü veridir: likidite nerede birikmiş (SSL/BSL = stopların olduğu yer = MM'in hedefi), kalabalık hangi yönde (genelLong/funding = MM'in avlayacağı taraf), OI artıyor mu (gerçek pozisyon mu), delta/emir defteri ne diyor. MM her zaman likiditeyi avlar ve kalabalığı ezer. "Ben MM olsam şu stopları süpürür, şu kalabalığı sıkıştırırdım" diye düşün → MM'in gideceği gerçek yönü çıkar. ÖNEMLİ (RESOLV dersi): yüzeysel "pump bitti/LH oluştu" deme; funding negatifse shortlar sıkışık = MM yukarı sıkıştırabilir, OI artıyorsa gerçek alım = düşüş bekleme. MM mantığıyla yönü seç, sonra üst dilimlerle (1h/4h) teyit et.
 ADIM 2 — SETUP VAR MI: Aşağıdaki 5 GİRİŞ TARİFİNDEN (G1-G5) biri oturuyor mu? Bir tarif net oturuyorsa = GERÇEK FIRSAT, ADIM 4'e geç. Hiçbiri oturmuyorsa WAIT.
-ADIM 3 — TEYİT SAY: Setup'ın 3 ayağı var mı? (1) yapı/seviye, (2) mum, (3) delta akışı. Üçü aynı yöndeyse güçlü gir. İkisi varsa düşük güvenle gir. Biri/hiçbiri = WAIT.
-ADIM 4 — TUZAK KONTROL: Girmeden önce SON kez sor: düşen/yükselen bıçak mı (trende karşı)? Ekstrem bölgede sweep'siz mi? Hacimsiz mi? Çelişki belirgin mi? Tuzak NETSE WAIT, değilse GİR.
+ADIM 3 — TEYİT SAY (★ SWEEP EN AĞIR BASAN TEYİT): Setup'ın 3 ayağı: (1) yapı/seviye, (2) mum, (3) delta akışı. AMA en kritik teyit SWEEP+RECLAIM. GERÇEK VERİ DERSİ (16 işlem analizi): sweep✓ olan girişler KAZANDI (SPCX, BICO+5.72, DRIFT+), sweep✗ olanlar KAYBETTİ (RESOLV-8, BICO-3.9, MMT, MU, TNSR hepsi noSweep). KURAL: sweep+reclaim VARSA → güçlü gir (güven 75-90). Sweep YOKSA → ya WAIT ya da çok güçlü trend+delta+mum üçü birden varsa güven EN FAZLA 68 (küçük/temkinli). "trendDevam ama sweep yok" tek başına ZAYIF — bu kaybeden desendi. 3 ayak aynı yön + sweep = güçlü gir; sweep yok ama 3 ayak güçlü = küçük; 2 ayak veya az = WAIT.
+ADIM 4 — TUZAK KONTROL: Girmeden önce SON kez sor: düşen/yükselen bıçak mı (trende karşı)? Ekstrem bölgede sweep'siz mi? Hacimsiz mi? Çelişki belirgin mi? Tuzak NETSE WAIT. ★ DÖNÜŞ KURALI (RESOLV -%19 dersi): Trende KARŞI işlem (yukarı trendde SHORT, aşağı trendde LONG) açıyorsan SWEEP+RECLAIM ZORUNLU — sadece "LH oluşuyor / pump bitti / FVG retest" YETMEZ. Trend devam ederken "dönüş başladı" sanıp karşı girmek en pahalı hatadır. Sweep+reclaim YOKSA, trende karşı girme; trend yönünde fırsat bekle ya da WAIT. ★ HIZLI VUR-KAÇ: MM simülasyonunda "av geliyor" gördüysen (MM şu stopları süpürecek) ve sonra sweep GERÇEKLEŞTİ + reclaim geldi = MM'in avı bitti, gerçek hareket başlıyor. Bu anı yakala, hızlı gir (yüksek kaldıraç uygun), TP'ye hızlı vur-çık. En kârlı vur-kaç budur: MM'i önceden oku, av bitince ilk sen gir.
 Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse bekle). "Mükemmel" arama; 3 teyit = yeter.
 
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
@@ -5146,7 +5146,7 @@ const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
 const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
-const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '300', 10) || 300) * 1000); // R310V: 900→300 varsayılan (aynı coine 5dk içinde 2. AI çağrısı = boşa para). Railway env AI_BRAIN_REVIEW_GAP_SEC=300 yap.
+const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '420', 10) || 420) * 1000); // R310V: 900→300 varsayılan (aynı coine 5dk içinde 2. AI çağrısı = boşa para). Railway env AI_BRAIN_REVIEW_GAP_SEC=300 yap.
 const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '500', 10) || 500); // R310V: 200→500 varsayılan (bütçe gün ortası dolmasın). Railway env AI_BRAIN_MAX_DAILY_CALLS=500 yap.
 // ═══ R309F2: GÜVEN TABANI = 64 (tasarım kararı: 64 tabanı, üstü AI'nın kararına bırakılır) ═══
 // Gerçek emir kapısı r308AiPlanQuality içinde conf<64 ile uygulanır (tek gerçek kapı).
@@ -15840,7 +15840,7 @@ async function runAutoScan(prioritySymbol=null) {
     // ÇÖZÜM: scanMode ne olursa olsun, AI değerlendirmesi için aday havuzunu ilk R311J_AI_POOL coine kısıtla
     // (en volatil/yüksek sıralı). Tarama TÜM listeyi görür (bot analizi), ama AI sadece en iyi havuzu değerlendirir.
     // Bu, TOP24 modunda bile maliyeti TOP6-8 seviyesinde tutar. Env ile ayarlanabilir (AI_POOL_SIZE).
-    const R311J_AI_POOL = Math.max(4, Number(process.env.AI_POOL_SIZE || 8) || 8);
+    const R311J_AI_POOL = Math.max(4, Number(process.env.AI_POOL_SIZE || 6) || 6); // R311N: 8→6 maliyet (en volatil 6 coin havuzu yeter)
     const r311jInAiPool = (idx) => (typeof idx === 'number' && idx < R311J_AI_POOL);
 
     for (const [scanIdx, coin] of scanList.entries()) {
