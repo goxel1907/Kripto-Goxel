@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311W_PARSE_KURTARMA';
+const LAZARUS_BUILD = 'R311Y_YESIL_COIN';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -8660,15 +8660,27 @@ async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
   try {
     await r309Add12hChange(ordered);
     const isPinned = (c) => /TOP24_PINNED_TOP10|TOP10_GAINER|TOP3_ULTRA/.test(String(c.r54Bucket||''));
-    // R309V: 12h FİLTRESİ — rest (volatil) grubundan 12h hareketi ZAYIF olanları (mutlak <%3) ÇIKAR.
-    // SOL gibi 12h'de durağan (%2) coinler artık TOP24'e SIZMAZ. Pinned (TOP10 gainer) korunur — onlar
-    // zaten en güçlü gainer'lar. Liste 24'ün altına düşebilir, sorun değil: kalite > kemiyet (volatil coin ararız).
-    const R309V_MIN_12H = 5; // R310B: %3→%5 (liste daha seçici, zayıf/durağan coinler girmesin — kullanıcı: liste hâlâ zayıf)
-    const pinnedGrp = ordered.filter(isPinned).sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
+    // R311Y: YEŞİL FİLTRESİ (kullanıcı kuralı) — listeye SADECE o an YEŞİL (12h yükselen) coinler girsin.
+    // Düşen coinler (UB -21% gibi) ELENMELİ — düşen bıçakta LONG riskli, kullanıcı net istedi.
+    // Yeşil coin İÇİNDE hem LONG hem SHORT serbest (pump tepesinden dönüş SHORT olabilir), ama coin yükselen olmalı.
+    const r311yYesil = (c) => Number(c.change12h ?? c.change24h ?? 0) > 0;
+    // R309V: rest (volatil) grubundan 12h hareketi ZAYIF olanları (<%5) ÇIKAR.
+    const R309V_MIN_12H = 5;
+    const pinnedGrp = ordered.filter(c => isPinned(c) && r311yYesil(c)) // pinned ama SADECE yeşil (UB gibi düşen gainer elenir)
+      .sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h));
     const restGrp   = ordered.filter(c => !isPinned(c))
-      .filter(c => Math.abs(Number(c.change12h ?? c.change24h ?? 0)) >= R309V_MIN_12H)
-      .sort((a,b) => Math.abs(b.change12h ?? b.change24h) - Math.abs(a.change12h ?? a.change24h)); // mutlak harekete göre (iki yönlü)
-    return [...pinnedGrp, ...restGrp];
+      .filter(c => r311yYesil(c) && Number(c.change12h ?? c.change24h ?? 0) >= R309V_MIN_12H) // yeşil VE en az %5 yükselmiş
+      .sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h)); // yükselişe göre (en yeşil önde)
+    const out = [...pinnedGrp, ...restGrp];
+    // R311Y fail-soft: piyasa tamamen kırmızıysa yeşil coin bulunamayabilir → liste boş kalmasın.
+    // En az 3 coin garantisi: yeşil yetmezse en AZ düşmüş (en az kırmızı) pinnedleri ekle, ama yeşiller hep önde.
+    if (out.length < 3) {
+      const yedek = ordered
+        .filter(c => !out.includes(c))
+        .sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h)); // en az düşen önce
+      for (const c of yedek) { if (out.length >= 3) break; out.push(c); }
+    }
+    return out;
   } catch (_) {
     return ordered; // 12h hesabı patlarsa eski sırayla devam (fail-soft)
   }
@@ -15255,7 +15267,15 @@ function r308RememberAiContext(symbol, coin, analysis, decisionChain, recommenda
       atrPct: analysis?.leverage?.atrPct || decisionChain?.coinAtrPct,
       rangePos,
       candleSummary: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || '',
-      fingerprint: `${recommendation}|${Math.round(Number(score||0))}|${String(decisionChain?.reason||skipReason||'').slice(0,80)}`
+      // R311X: KABA fingerprint — mikro oynamalar (skor 67→68, reason'da sayı değişimi) "yeni durum" sayılıp
+      // AI'ya boşa tekrar sordurmasın. Sadece GERÇEK değişiklik yeni çağrı tetikler: yön / skor-dilimi(10luk) /
+      // sweep var-yok / tier. Sweep geldiğinde ya da yön döndüğünde fingerprint zaten değişir → fırsat kaçmaz.
+      fingerprint: [
+        recommendation,
+        Math.floor(Number(score||0)/10)*10,                                  // 67 ve 68 → ikisi de 60 dilimi
+        (/sweep|süpür|reclaim|geri kazan|✅/i.test(String(decisionChain?.r289Summary||decisionChain?.ictDashboard||decisionChain?.reason||'')) ? 'SW1' : 'SW0'), // sweep durumu değişti mi
+        String(decisionChain?.tier||decisionChain?.tierTR||'').slice(0,3)
+      ].join('|')
     });
   } catch(_) {}
 }
@@ -15274,7 +15294,7 @@ function r308BuildAiDataFromCandidate(c) {
     flow: ctx.flow || c?.r125OrderflowSummary || c?.r126FlowSummary || '',
     oiChange: ctx.oiChange || c?.r140Summary || '',
     candleSummary: ctx.candleSummary || c?.mumOzet || '',
-    fingerprint: ctx.fingerprint || `${c?.rec}|${c?.score}|${String(c?.reason||'').slice(0,80)}`
+    fingerprint: ctx.fingerprint || [c?.rec, Math.floor(Number(c?.score||0)/10)*10, (/sweep|süpür|reclaim|geri kazan|✅/i.test(String(c?.reason||'')) ? 'SW1':'SW0'), String(c?.tier||'').slice(0,3)].join('|')
   };
 }
 
