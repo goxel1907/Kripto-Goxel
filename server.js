@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311S_R190_DEVRET';
+const LAZARUS_BUILD = 'R311T_529_RETRY';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3427,32 +3427,52 @@ GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x(taban), 70-75→18x, 76-81→25x, 82
 KÂR KOŞMA: "NORMAL" = standart kâr koruma (kâr ~%5-6'ya kadar koşar sonra kilitlenir). "RUNNER" = net trend var (BOS + delta yön + trend devamı/momentum + koşacak alan), kârın %10+ koşmasına izin ver, trend bozulana kadar tut. TREND DEVAM SİNYALİ varsa (HH/HL yükseliş ya da LH/LL düşüş yapısı, delta aynı yön, OI artıyor, momentum taze) CÖMERTÇE RUNNER seç — HOME/RESOLV gibi güçlü trendlerde NORMAL deyip kârı erken bırakma, trend seni taşısın. Sadece gerçekten zayıf/sıkışık/range işlemde NORMAL. Şüphede: trend yapısı sağlamsa RUNNER.
 WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000); // R308K: ham mum payload'u büyük, süre artırıldı
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11'
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 200, // R311F: 400→200 — JSON cevap kısa, output token maliyeti düşür (cevap ~80 token yeter)
-        // R308F: PROMPT CACHING — sabit sistem promptu (pro trader talimatı) cache'lenir.
-        // Aynı talimat her çağrıda tekrar gönderilmez, %90 daha ucuz. Coin verisi (değişken) cache'lenmez.
-        system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
-        messages: [{ role: 'user', content: JSON.stringify(brief) }]
-      }),
-      signal: controller.signal
+    // R311T: 529 (overloaded) / 429 (rate limit) / 5xx geçici hatalarında RETRY.
+    // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
+    let resp = null;
+    const r311tReqBody = JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 200, // R311F: 400→200 — JSON cevap kısa
+      system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
+      messages: [{ role: 'user', content: JSON.stringify(brief) }]
     });
-    clearTimeout(timeout);
-    if (!resp.ok) {
+    const r311tTransient = (st) => (st === 429 || st === 500 || st === 502 || st === 503 || st === 529);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 25000);
+      try {
+        resp = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11'
+          },
+          body: r311tReqBody,
+          signal: controller.signal
+        });
+      } catch (fe) {
+        clearTimeout(timeout);
+        if (attempt < 2) { await new Promise(r=>setTimeout(r, 1500*(attempt+1))); continue; }
+        logAuto(`⚠️ AI Beyin bağlantı hatası: ${String(fe?.message||fe).slice(0,80)}`);
+        return null;
+      }
+      clearTimeout(timeout);
+      if (resp.ok) break;
+      // Geçici hata (529 overloaded vb) → kısa bekle, tekrar dene
+      if (r311tTransient(resp.status) && attempt < 2) {
+        const waitMs = 1500 * (attempt + 1); // 1.5sn, 3sn
+        logAuto(`⏳ AI Beyin ${resp.status} (geçici) — ${waitMs}ms bekle, tekrar dene (${attempt+1}/2)`);
+        await new Promise(r=>setTimeout(r, waitMs));
+        continue;
+      }
+      // Kalıcı hata ya da retry bitti
       const errTxt = await resp.text().catch(()=> '');
       logAuto(`⚠️ AI Beyin API hata ${resp.status}: ${String(errTxt).slice(0,120)}`);
       return null;
     }
+    if (!resp || !resp.ok) return null;
     const j = await resp.json();
     const text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
     let clean = text.replace(/```json|```/g, '').trim();
