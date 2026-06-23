@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311T_529_RETRY';
+const LAZARUS_BUILD = 'R311V_MM_OYUN_KITABI';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3358,7 +3358,7 @@ KALDIRAÇ YETKİSİ (sen seçersin): Min 10x, max coinin Binance izni (50x'e kad
 ═══ KARAR AKIŞIN (her coin için bu 4 adımı SIRAYLA uygula) ═══
 ADIM 1 — YÖN + MM SİMÜLASYONU: Önce 5m yapıya bak (yukarı HH/HL / aşağı LH/LL / range). Sonra ★ MM'İN YERİNE GEÇ ve sor: "Ben market maker olsam ŞU AN ne yapardım?" Elindeki veri MM'in de gördüğü veridir: likidite nerede birikmiş (SSL/BSL = stopların olduğu yer = MM'in hedefi), kalabalık hangi yönde (genelLong/funding = MM'in avlayacağı taraf), OI artıyor mu (gerçek pozisyon mu), delta/emir defteri ne diyor. MM her zaman likiditeyi avlar ve kalabalığı ezer. "Ben MM olsam şu stopları süpürür, şu kalabalığı sıkıştırırdım" diye düşün → MM'in gideceği gerçek yönü çıkar. ÖNEMLİ (RESOLV dersi): yüzeysel "pump bitti/LH oluştu" deme; funding negatifse shortlar sıkışık = MM yukarı sıkıştırabilir, OI artıyorsa gerçek alım = düşüş bekleme. MM mantığıyla yönü seç, sonra üst dilimlerle (1h/4h) teyit et.
 ADIM 2 — SETUP VAR MI: Giriş tariflerinden (G1-G5) biri oturuyor mu? ★ ÖNCELİK: Coin TOP gainer ise ve güçlü pump sonrası çekilme dibindeyse → G2+ (gainer çekilme dibi patlaması) en kârlı setup, ÖNCELİKLE onu ara — bu senin kovalaman gereken fırsat (FOLKS +%79 deseni). Bir tarif net oturuyorsa = GERÇEK FIRSAT, ADIM 4'e geç. Hiçbiri oturmuyorsa WAIT. Fırsat varsa KOVALA, "daha iyisini bekleyeyim" deme.
-ADIM 3 — TEYİT SAY (★ SWEEP EN AĞIR BASAN TEYİT): Setup'ın 3 ayağı: (1) yapı/seviye, (2) mum, (3) delta akışı. AMA en kritik teyit SWEEP+RECLAIM. GERÇEK VERİ DERSİ (16 işlem analizi): sweep✓ olan girişler KAZANDI (SPCX, BICO+5.72, DRIFT+), sweep✗ olanlar KAYBETTİ (RESOLV-8, BICO-3.9, MMT, MU, TNSR hepsi noSweep). KURAL: sweep+reclaim VARSA → güçlü gir (güven 75-90). Sweep YOKSA → ya WAIT ya da çok güçlü trend+delta+mum üçü birden varsa güven EN FAZLA 68 (küçük/temkinli). "trendDevam ama sweep yok" tek başına ZAYIF — bu kaybeden desendi. 3 ayak aynı yön + sweep = güçlü gir; sweep yok ama 3 ayak güçlü = küçük; 2 ayak veya az = WAIT.
+ADIM 3 — TEYİT SAY (★ SWEEP EN AĞIR BASAN TEYİT): Setup'ın 3 ayağı: (1) yapı/seviye, (2) mum, (3) delta akışı. AMA en kritik teyit SWEEP+RECLAIM. GERÇEK VERİ DERSİ (16 işlem analizi): sweep✓ olan girişler KAZANDI (SPCX, BICO+5.72, DRIFT+), sweep✗ olanlar KAYBETTİ (RESOLV-8, BICO-3.9, MMT, MU, TNSR hepsi noSweep). KURAL: sweep+reclaim VARSA → güçlü gir (güven 75-90). Sweep YOKSA → ya WAIT ya da çok güçlü trend+delta+mum üçü birden varsa güven EN FAZLA 68 (küçük/temkinli). "trendDevam ama sweep yok" tek başına ZAYIF — bu kaybeden desendi. ★ noSweep KESİN RED (FOLKS -5.96, HYPE -4.44 dersi): sweep YOKSA ve şunlardan BİRİ varsa GİRME, WAIT de: (a) genelLong/Short kalabalık (%64+) = MM ezme riski, (b) HTF (1h/4h) karşı yön/RSI aşırı, (c) OI çözülüyor/negatif, (d) mum teyidi zayıf (puan<6). Bu durumda "güveni düşürüp gir" YAPMA — noSweep + olumsuz bağlam = kesin WAIT. Sweep gelene kadar bekle. Sadece sweep+reclaim NET varsa gir. 3 ayak aynı yön + sweep = güçlü gir; sweep yok ama 3 ayak güçlü = küçük; 2 ayak veya az = WAIT.
 ADIM 4 — TUZAK KONTROL: Girmeden önce SON kez sor: düşen/yükselen bıçak mı (trende karşı)? Ekstrem bölgede sweep'siz mi? Hacimsiz mi? Çelişki belirgin mi? Tuzak NETSE WAIT. ★ DÖNÜŞ KURALI (RESOLV -%19 dersi): Trende KARŞI işlem (yukarı trendde SHORT, aşağı trendde LONG) açıyorsan SWEEP+RECLAIM ZORUNLU — sadece "LH oluşuyor / pump bitti / FVG retest" YETMEZ. Trend devam ederken "dönüş başladı" sanıp karşı girmek en pahalı hatadır. Sweep+reclaim YOKSA, trende karşı girme; trend yönünde fırsat bekle ya da WAIT. ★ HIZLI VUR-KAÇ: MM simülasyonunda "av geliyor" gördüysen (MM şu stopları süpürecek) ve sonra sweep GERÇEKLEŞTİ + reclaim geldi = MM'in avı bitti, gerçek hareket başlıyor. Bu anı yakala, hızlı gir (yüksek kaldıraç uygun), TP'ye hızlı vur-çık. En kârlı vur-kaç budur: MM'i önceden oku, av bitince ilk sen gir.
 Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse bekle). "Mükemmel" arama; 3 teyit = yeter.
 
@@ -3369,6 +3369,32 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ =
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
+
+═══ MM OYUN KİTABI (market maker'ın gerçek oyununu simüle et — kayıpların %90'ı buradan gelir) ═══
+MM (büyük oyuncu/balina) retail trader'ı AVLAYARAK kazanır. Senin işin MM'in bir SONRAKİ hamlesini önceden okuyup, MM'in avladığı tarafta DEĞİL, MM'le AYNI tarafta olmak. Her kararda MM'in oyununu zihninde canlandır:
+
+① MM'İN 3 AŞAMALI OYUNU — şu an hangi aşamada teşhis et:
+• TOPLAMA: Düşük hacim, yatay/range, OI sessizce artıyor → MM pozisyon biriktiriyor. Henüz girme, yön belirsiz.
+• TUZAK: Sahte kırılım/pump, retail FOMO ile biniyor, hacim ani ama OI çözülüyor (sahte) → MM kalabalığı yanlış yöne çekiyor. Bu yöne GİRME — tuzak. Kalabalığın tersini hazırla.
+• AVLAMA: Stop süpürme (fitil) + hemen reclaim + delta sert dönüş → MM avını TAMAMLADI. İŞTE GİRİŞ ANI bu — MM'le aynı yöne, agresif gir.
+
+② LİKİDİTE HARİTASI — MM nereyi avlar (mıknatıslar):
+• Eşit dipler/tepeler (equal high/low, eqHigh/eqLow) = stop kümesi = MM'in #1 hedefi. Oraya gitmeden dönüş bekleme, MM önce oraya gidip avlar.
+• Önceki gün/HTF SSL/BSL = büyük likidite havuzu = MM mıknatısı.
+• Yuvarlak sayılar = retail stop yoğunluğu. Fiyat oraya yakınsa MM süpürür.
+KURAL: Fiyat bir likidite seviyesine YAKIN ama henüz SÜPÜRMEDİYSE, o yöne girme — MM önce oraya çekip avlayacak (FOLKS -5.96 buydu: reclaim göründü ama üstte avlanmamış likidite vardı, MM oraya gitti).
+
+③ KALABALIK ANALİZİ — en güçlü MM sinyali (kayıplarımızın ana sebebi):
+• genelLong %64+ = retail aşırı long = MM AŞAĞI avlar (longları ezer). Bu durumda LONG açma, MM seni de avlar.
+• genelShort %64+ = retail aşırı short = MM YUKARI sıkıştırır (short squeeze). SHORT açma.
+• funding pozitif aşırı (+0.05+) = longlar ödüyor, aşırı kalabalık = MM dump hazırlığı.
+• funding negatif aşırı (-0.05+) = shortlar sıkışık = MM yukarı squeeze hazırlığı.
+DERS (FOLKS -5.96, HYPE -4.44): İkisinde de "reclaim/FVG gördüm" deyip girildi AMA genelLong kalabalıktı + sweep yoktu = MM ezdi. ARTIK: kalabalık karşı + sweep yok = KESİN WAIT.
+
+④ VUR-KAÇ ANI — MM avı bitince SERT vur (senin FOLKS +%79 anın):
+MM avını tamamladığında (sweep + reclaim + delta dönüşü ÜÇÜ birlikte) hareket HIZLI ve GÜÇLÜ başlar — çünkü avlanan stoplar yakıt olur. Bu anda: YÜKSEK KALDIRAÇ uygun (en net setup), giriş anlık, TP'ye hızlı vur ve çık (av sonrası ilk hareket en temiz, uzatma). Bu "bekle bekle sonra SERT vur" — tereddüt etme, av bittiyse bu en yüksek olasılıklı andır.
+
+DENGE: MM oyununu okumak işlem SAYISINI DÜŞÜRMEZ — sweep'siz tokatlık girişleri eler (kayıp keser) ama sweep tamamlanmış agresif girişleri ARTIRIR. Amaç "az işlem" değil, "DOĞRU anı bekleyip SERT vurmak". MM avını her tamamladığında (günde defalarca olur) sen oradasın.
 
 ═══ MARKET YAPISI (yön ve trendi BUNUNLA oku — göstergeyle değil, fiyatın kendi yapısıyla) ═══
 Piyasa SADECE 3 şey yapar: YUKARI (HH/HL: yükselen tepe + yükselen dip), AŞAĞI (LH/LL: alçalan tepe + alçalan dip), YATAY (range/sıkışma — likidite topluyor, sonraki hamleye hazırlanıyor). Trend, yapı kırılana kadar devam eder. Önce hangi fazda olduğunu belirle; tüm kararın buna dayanır.
@@ -3420,7 +3446,7 @@ GAINER: "gainerSira" = TOP24 sırası (1=en güçlü/hareketli, ilk 3 = o anın 
 
 ═══ KARAR ═══
 Sana SADECE gerçek setup işareti olan coinler sunulur (bot ölüleri zaten elemiş) — yani önüne gelen coin ADAY demektir, fırsat BOLDUR, aşırı temkinli olup hepsine WAIT deme. 2-3 sinyal aynı yönü gösteriyorsa (örn trend+delta+yapı, ya da sweep+reclaim+delta) o GERÇEK fırsattır, GİR. "Mükemmel setup" bekleme; 5m scalp'te %70 olasılık yeterli. Sadece net çelişki veya gerçek tuzakta WAIT. Fırsatı kaçırmak da kayıptır. Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü), R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
-GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x(taban), 70-75→18x, 76-81→25x, 82-87→35x, 88+→50x(coin izni varsa). Güveni DÜRÜST ver: setup ne kadar net+çok teyitliyse (trend+sweep+reclaim+delta+OB+mum hepsi aynı yön) güven o kadar YÜKSEK → yüksek kaldıraç → max kâr. Şüpheliysen düşük güven veya WAIT. Sistem geniş SL'de kaldıracı otomatik kısar (likidasyon koruması).
+GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x(taban), 70-75→18x, 76-81→25x, 82-87→35x, 88+→50x(coin izni varsa). Güveni DÜRÜST ver: setup ne kadar net+çok teyitliyse (trend+sweep+reclaim+delta+OB+mum hepsi aynı yön) güven o kadar YÜKSEK → yüksek kaldıraç → max kâr. ★ MM AVI TAMAMLANDIYSA (sweep+reclaim+delta dönüşü = MM oyun kitabı ④ vur-kaç anı) güveni CÖMERTÇE ver (82-92) → yüksek kaldıraç (35-50x) → senin FOLKS +%79 anın. Bu en net setup, çekinme. Şüpheliysen düşük güven veya WAIT. Sistem geniş SL'de kaldıracı otomatik kısar (likidasyon koruması).
 
 ÇIKTI KURALI (ÇOK ÖNEMLİ): Cevabın İLK karakteri { olmalı. "Looking at..." gibi önsöz/düşünce/açıklama ASLA yazma — gerekçeni "reason" alanının İÇİNE koy. Sadece tek geçerli JSON döndür, öncesi/sonrası hiçbir metin olmasın. SADECE JSON:
 {"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"KODLU max90krktr — analist için kısaltmalı tanı. Format: YÖN|setup|tetik|R:konum%|D:delta|OI:±|sweep?|conf neden. Örnek: L|trendDevam|BOS+FVG|R35|D+62|OI+|swept✓|güçlü akış. Açıklama cümlesi DEĞİL, etiket dizisi.","plan":"KODLU max70krktr: tetik+TP/SL mantığı. Örnek: FVGretest-gir|TP=1hBSL|SL=swept-altı"}
@@ -3506,9 +3532,17 @@ WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
     if (cacheRead > 0) logAuto(`💰 AI cache HIT: ${cacheRead} token önbellekten (%90 ucuz) · yeni girdi:${inTok} · çıktı:${u.output_tokens||0}`);
     else if (cacheWrite > 0) logAuto(`💾 AI cache yazıldı: ${cacheWrite} token (sonraki çağrılar %90 ucuz olacak)`);
 
+    // R311U: AI bazen Türkçe yön yazıyor (BEKLE/YÜKSELİŞ/DÜŞÜŞ) → İngilizceye normalize et, karar kaybolmasın
+    const r311uNormSide = (sv) => {
+      const u = String(sv || 'WAIT').toUpperCase().trim();
+      if (u === 'BEKLE' || u === 'WAIT') return 'WAIT';
+      if (u === 'YÜKSELİŞ' || u === 'YUKSELIS' || u === 'LONG' || u === 'AL') return 'LONG';
+      if (u === 'DÜŞÜŞ' || u === 'DUSUS' || u === 'SHORT' || u === 'SAT') return 'SHORT';
+      return u; // zaten LONG/SHORT/WAIT ise korunur
+    };
     return {
       ok: true,
-      side: String(decision.side || 'WAIT').toUpperCase(),
+      side: r311uNormSide(decision.side),
       entry: Number(decision.entry) || data.lastPrice,
       tp: Number(decision.tp) || null,
       sl: Number(decision.sl) || null,
