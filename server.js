@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311V_MM_OYUN_KITABI';
+const LAZARUS_BUILD = 'R311W_PARSE_KURTARMA';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3448,7 +3448,7 @@ GAINER: "gainerSira" = TOP24 sırası (1=en güçlü/hareketli, ilk 3 = o anın 
 Sana SADECE gerçek setup işareti olan coinler sunulur (bot ölüleri zaten elemiş) — yani önüne gelen coin ADAY demektir, fırsat BOLDUR, aşırı temkinli olup hepsine WAIT deme. 2-3 sinyal aynı yönü gösteriyorsa (örn trend+delta+yapı, ya da sweep+reclaim+delta) o GERÇEK fırsattır, GİR. "Mükemmel setup" bekleme; 5m scalp'te %70 olasılık yeterli. Sadece net çelişki veya gerçek tuzakta WAIT. Fırsatı kaçırmak da kayıptır. Girersen: yön + giriş + TP(%1.5-6, sonraki likidite/yapı) + SL(%0.8-2, yapı ötesi, asla %3 üstü), R:R≥1.5. TP'yi gerçekçi-yakın tut (sistem kârı trailing ile taşır).
 GÜVEN=KALDIRAÇ: <64 → WAIT. 64-69→10x(taban), 70-75→18x, 76-81→25x, 82-87→35x, 88+→50x(coin izni varsa). Güveni DÜRÜST ver: setup ne kadar net+çok teyitliyse (trend+sweep+reclaim+delta+OB+mum hepsi aynı yön) güven o kadar YÜKSEK → yüksek kaldıraç → max kâr. ★ MM AVI TAMAMLANDIYSA (sweep+reclaim+delta dönüşü = MM oyun kitabı ④ vur-kaç anı) güveni CÖMERTÇE ver (82-92) → yüksek kaldıraç (35-50x) → senin FOLKS +%79 anın. Bu en net setup, çekinme. Şüpheliysen düşük güven veya WAIT. Sistem geniş SL'de kaldıracı otomatik kısar (likidasyon koruması).
 
-ÇIKTI KURALI (ÇOK ÖNEMLİ): Cevabın İLK karakteri { olmalı. "Looking at..." gibi önsöz/düşünce/açıklama ASLA yazma — gerekçeni "reason" alanının İÇİNE koy. Sadece tek geçerli JSON döndür, öncesi/sonrası hiçbir metin olmasın. SADECE JSON:
+ÇIKTI KURALI (ÇOK ÖNEMLİ): Cevabın İLK karakteri { olmalı. "side" alanına SADECE İngilizce yaz: LONG, SHORT veya WAIT (Türkçe YÜKSELİŞ/DÜŞÜŞ/BEKLE YAZMA). "karKosma" alanına SADECE NORMAL veya RUNNER yaz. reasoning+plan KISA tut (toplam ~50 kelime) ki JSON kesilmesin. "Looking at..." gibi önsöz/düşünce/açıklama ASLA yazma — gerekçeni "reason" alanının İÇİNE koy. Sadece tek geçerli JSON döndür, öncesi/sonrası hiçbir metin olmasın. SADECE JSON:
 {"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"KODLU max90krktr — analist için kısaltmalı tanı. Format: YÖN|setup|tetik|R:konum%|D:delta|OI:±|sweep?|conf neden. Örnek: L|trendDevam|BOS+FVG|R35|D+62|OI+|swept✓|güçlü akış. Açıklama cümlesi DEĞİL, etiket dizisi.","plan":"KODLU max70krktr: tetik+TP/SL mantığı. Örnek: FVGretest-gir|TP=1hBSL|SL=swept-altı"}
 KÂR KOŞMA: "NORMAL" = standart kâr koruma (kâr ~%5-6'ya kadar koşar sonra kilitlenir). "RUNNER" = net trend var (BOS + delta yön + trend devamı/momentum + koşacak alan), kârın %10+ koşmasına izin ver, trend bozulana kadar tut. TREND DEVAM SİNYALİ varsa (HH/HL yükseliş ya da LH/LL düşüş yapısı, delta aynı yön, OI artıyor, momentum taze) CÖMERTÇE RUNNER seç — HOME/RESOLV gibi güçlü trendlerde NORMAL deyip kârı erken bırakma, trend seni taşısın. Sadece gerçekten zayıf/sıkışık/range işlemde NORMAL. Şüphede: trend yapısı sağlamsa RUNNER.
 WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
@@ -3458,7 +3458,7 @@ WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
     let resp = null;
     const r311tReqBody = JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 200, // R311F: 400→200 — JSON cevap kısa
+      max_tokens: 280, // R311W: 200→280 — HEI'de reasoning uzunsa JSON kesiliyordu, işlem kaçıyordu. 280 JSON'u tamamlar.
       system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
       messages: [{ role: 'user', content: JSON.stringify(brief) }]
     });
@@ -3519,8 +3519,32 @@ WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
           throw new Error('JSON bloğu bulunamadı');
         }
       } catch(_e2) {
-        logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`);
-        return null;
+        // R311W: JSON kesik/bozuk (max_tokens dolmuş olabilir) → regex ile alanları tek tek çıkar, kararı kurtar.
+        try {
+          const grab = (key) => {
+            const m = clean.match(new RegExp('"'+key+'"\\s*:\\s*"?([^",}\\n]+)"?'));
+            return m ? m[1].trim() : null;
+          };
+          const sideRaw = grab('side');
+          if (sideRaw) {
+            decision = {
+              side: sideRaw,
+              entry: Number(grab('entry')) || null,
+              tp: Number(grab('tp')) || null,
+              sl: Number(grab('sl')) || null,
+              confidence: Number(grab('confidence')) || 0,
+              karKosma: grab('karKosma') || 'NORMAL',
+              reasoning: grab('reasoning') || 'parse-kurtarıldı',
+              plan: grab('plan') || ''
+            };
+            logAuto(`🔧 AI JSON kesikti, alanlar regex ile kurtarıldı (side:${sideRaw})`);
+          } else {
+            throw new Error('side bulunamadı');
+          }
+        } catch(_e3) {
+          logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`);
+          return null;
+        }
       }
     }
 
