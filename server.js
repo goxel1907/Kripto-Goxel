@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R312_MM_SHORT_DENGE';
+const LAZARUS_BUILD = 'R313_LIKIDITE_DEVIR';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16615,11 +16615,25 @@ async function runAutoScan(prioritySymbol=null) {
             logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama 5m Fırsat Beyni kontrollü girişe izin verdi — user SL/TP korunarak devam`);
           }
         }
-        // Likidite kalitesi çok düşükse skip
-        if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
-          logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — kayma riski, atlandı`);
-          markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
-          continue;
+        // ═══ R313: LİKİDİTE KAPISI — GERÇEK TEHLİKE KES, SINIR DURUMU AI'YA DEVRET ═══
+        // SORUN: quality==='POOR' sert continue idi → coin AI'ya HİÇ ulaşmıyordu.
+        // TOP gainer coinleri (en volatil = en ince order book) doğası gereği POOR'a düşüyordu →
+        // 1.5 saatte tek işlem, AI bütçesi 7/600. Coin seçimi (volatil gainer) ile likidite kapısı birbirini yiyordu.
+        // ÇÖZÜM (kullanıcı felsefesi: boğma, AI'ya devret): POOR'u İKİYE ayır.
+        //   ① GERÇEK kayma riski (slippageRisk: spread>%0.08 VEYA depth<10000$) → fiziksel tehlike, SERT KES (eskisi gibi).
+        //   ② Sadece ince-depth POOR (spread düşük, slippageRisk YOK) → AI'ya DEVRET, kararı AI versin (diğer kapılar gibi).
+        // AI zaten likidite/spread/mmDurum/seviyeler görüyor; ince defteri kendi tartar. Gerçek slippage'da yine korunuyoruz.
+        const r313LiqQ = analysis.r15?.liquidityQuality;
+        if (r313LiqQ?.quality === 'POOR') {
+          const r313GercekTehlike = !!r313LiqQ.slippageRisk; // spread>%0.08 || depth<10000$ (calcLiqQuality)
+          if (r313GercekTehlike) {
+            logAuto(`⛔ ${coin.symbol} POOR likidite GERÇEK kayma riski (spread:%${r313LiqQ.spread} depth:$${r313LiqQ.depth}) — atlandı`);
+            markAutoSkip(coin.symbol, `POOR likidite (gerçek kayma) spread:${r313LiqQ.spread} depth:${r313LiqQ.depth}`, {rec:recommendation, score});
+            continue;
+          } else {
+            logAuto(`🔀 ${coin.symbol} POOR likidite ama spread düşük (%${r313LiqQ.spread}), gerçek kayma riski YOK — R313 AI'ya devrediyor, kararı AI verecek`);
+            // continue YOK — coin AI yoluna devam eder
+          }
         }
         const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
 
