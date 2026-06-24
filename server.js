@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311Y_YESIL_COIN';
+const LAZARUS_BUILD = 'R311Z_SEVIYE_HAFIZA';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3365,7 +3365,9 @@ Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 ★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot PUAN/YÖN DAYATMAZ — bu nötr analizi kendi ham mum okumanla ÇAPRAZ DOĞRULA. Kodlar: "L12/S0"=12 alıcı 0 satıcı (güçlü LONG akış), "kanıt yetersiz"=net sweep/reclaim yok (dikkat), "Tuzak dönüşü"=tuzak sezildi, "SSL_ALINDI_CHOCH_BEKLENIYOR"=alt süpürüldü reclaim bekleniyor, "DEMAND_OB"=destek. Bot+sen aynı yön=en güçlü teyit; çelişki=WAIT. Boş alan/null=veri yok, uydurma.
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi).
+★★ "seviyeler" ALANI (ÇOK ÖNEMLİ — kayıpların ana sebebi buydu, MUTLAKA OKU): Bot, 5m destek/direnç + HTF pivot/PDH-PDL + order block seviyelerini hesaplayıp sana sunuyor. Bu alan sana şunu söyler: (1) HEMEN ÜSTÜNDE direnç var mı, kaç % uzakta — LONG düşünüyorsan TP'ye yer var mı yoksa duvara mı yapışıksın? (2) HEMEN ALTINDA destek var mı — SHORT için aynısı. (3) ★KIRILIM ONAYI: "ÜST DİRENÇ KIRILDI" yazıyorsa = yukarı kırılım GERÇEK oldu (gövde kapanışı onaylı), LONG devam edebilir. "ALT DESTEK KIRILDI" = aşağı kırılım gerçek, SHORT devam. KIRILIM YOKKEN fiyat bir seviyeye YAPIŞIKSA (⚠ uyarısı) = o yöne girme, çünkü: dirence yapışık + kırılmamış LONG = ya reddedilir (düşersin) ya da MM kırılım tuzağı kurar. Range tabanına yapışık LONG, kırılım onayı yoksa = DÜŞEN BIÇAK riski (range tabanı kırılırsa sert düşer — bu G -42$ kaybının sebebiydi: range tabanına yapışık noSweep LONG, taban kırıldı, -%49). KURAL: "seviyeler" KIRILIM ONAYI gösteriyorsa o yöne güçlen; "⚠ yapışık, kırılmadı" diyorsa o yönde sweep+reclaim bekle ya da WAIT. 5m seviyeleri ÖNCELİKLİ; HTF (PDH/PDL/pivot) sadece "büyük resimde önümde duvar var mı" bilgisidir, tek başına giriş yaptırmaz.
+★ "buCoinGecmis" ALANI (kendi geçmişin — tekrar hatayı önle): Bu coinde SON saatlerde açtığın işlemlerin GERÇEK sonucu. "G son 6sa: 7 işlem (4K/3Z, net -28$) · son işlem LONG -42$ (5dk önce, noSweep)" gibi. Eğer "⚠UYARI" varsa DİKKATE AL: "noSweep LONG 3 kez yandı" diyorsa bu coinde sweep olmadan LONG açma. "LONG üst üste yandı, SHORT denenmedi, yön körlüğü olabilir" diyorsa = aynı yöne ısrar ediyorsun ve kaybediyorsun, KARŞI yönü ciddi değerlendir. Bu senin canlı dersin — aynı tuzağa tekrar düşme. (Boşsa bu coinde yakın geçmiş yok, normal değerlendir.)
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, botAnalizOzeti, ★seviyeler[destek/direnç+kırılım onayı — MUTLAKA OKU], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların]).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -5927,6 +5929,58 @@ function recordTradeClose(symbol, state={}, cls={}) {
   // R181: Kapanış bildirimi PnL 0/null olsa bile direkt gider; gerçek PnL sonra reconcile ile düzelir.
   try { r181TradeCloseCard(row, state, cls).catch(e=>{ try { pushCritical('R186_TG_CLOSE_PROMISE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {} }); } catch(_tge) {}
   saveTradeLedger(); return row;
+}
+
+// ═══ R311Z: AI'YA COİN GEÇMİŞ ÖZETİ (kendi gerçek işlemlerinden canlı ders) ═══
+// SORUN: aiSnapshot açılışta yazılıyordu ama kapanış sonucu AI'ya GERİ beslenmiyordu.
+// AI her çağrıda hafızasızdı: G coininde 3 kez noSweep LONG'da yandığını bir sonraki G kararında GÖRMÜYORDU.
+// ÇÖZÜM: tradeLedger'dan o coinin SON işlemlerini okuyup AI'ya tek satır ders olarak ver.
+// Bu "filtre/kapı" DEĞİL — bilgidir. AI tek patron; sadece kendi geçmişini görüp tekrar hatayı fark eder.
+// Maliyet: ~40-60 token/çağrı (ihmal edilebilir). Mum eklemiyoruz.
+function r311zCoinGecmisOzeti(symbol, lookbackMs = 6 * 60 * 60 * 1000) {
+  try {
+    const sym = String(symbol || '').replace('USDT', '').toUpperCase();
+    if (!sym) return null;
+    const now = Date.now();
+    const rows = (Array.isArray(tradeLedger) ? tradeLedger : []).filter(x => {
+      if (String(x.symbol || '').replace('USDT','').toUpperCase() !== sym) return false;
+      if (x.status !== 'CLOSED') return false;
+      const closedAt = Number(x.closedAt || 0);
+      return closedAt && (now - closedAt <= lookbackMs);
+    });
+    if (!rows.length) return null;
+    rows.sort((a, b) => Number(b.closedAt || 0) - Number(a.closedAt || 0)); // en yeni önce
+    const son = rows.slice(0, 8);
+    let kazanan = 0, kaybeden = 0, netPnl = 0;
+    let noSweepLossL = 0, noSweepLossS = 0, longLoss = 0, shortLoss = 0;
+    for (const r of son) {
+      const pnl = Number(r.pnlUSDT || 0);
+      netPnl += pnl;
+      const side = normalizeSide(r.side);
+      const txt = [r.entryReason, r.resultNote, r.exitReason].filter(Boolean).join(' ').toLowerCase();
+      const wasNoSweep = /sweep[✗x]|nosweep|sweep yok|süpürme yok/i.test(txt);
+      if (pnl > 0) kazanan++;
+      else if (pnl < 0) {
+        kaybeden++;
+        if (side === 'LONG') { longLoss++; if (wasNoSweep) noSweepLossL++; }
+        if (side === 'SHORT') { shortLoss++; if (wasNoSweep) noSweepLossS++; }
+      }
+    }
+    // En son işlemin tek satır özeti
+    const last = son[0];
+    const lastPnl = Number(last.pnlUSDT || 0);
+    const lastSide = normalizeSide(last.side);
+    const lastTxt = [last.entryReason, last.resultNote].filter(Boolean).join(' ').toLowerCase();
+    const lastNoSweep = /sweep[✗x]|nosweep|sweep yok|süpürme yok/i.test(lastTxt);
+    const dakikaOnce = Math.round((now - Number(last.closedAt || now)) / 60000);
+    let sonIslem = `son işlem ${lastSide} ${lastPnl >= 0 ? '+' : ''}${lastPnl.toFixed(1)}$ (${dakikaOnce}dk önce${lastNoSweep ? ', noSweep' : ''})`;
+    // Otomatik ders (sadece veri net desen gösteriyorsa)
+    let ders = '';
+    if (noSweepLossL >= 2) ders = ` ⚠UYARI: bu coinde noSweep LONG ${noSweepLossL} kez yandı — sweep yoksa LONG açma`;
+    else if (noSweepLossS >= 2) ders = ` ⚠UYARI: bu coinde noSweep SHORT ${noSweepLossS} kez yandı — sweep yoksa SHORT açma`;
+    else if (longLoss >= 3 && shortLoss === 0 && kazanan === 0) ders = ` ⚠UYARI: bu coinde LONG üst üste ${longLoss} kez yandı, SHORT denenmedi — yön körlüğü olabilir, KARŞI yönü değerlendir`;
+    return `${sym} son ${lookbackMs / 3600000}sa: ${son.length} işlem (${kazanan}K/${kaybeden}Z, net ${netPnl >= 0 ? '+' : ''}${netPnl.toFixed(1)}$) · ${sonIslem}${ders}`;
+  } catch (_) { return null; }
 }
 
 // ── R84: 5 DAKİKA UYUMLU BEKLEME SÜRELERİ — botu kilitlemez, tekrar hatayı önler ──
@@ -17080,7 +17134,33 @@ async function runAutoScan(prioritySymbol=null) {
                   // son 3 mum yön
                   if (typeof e.price3 === 'number') parts.push(`son3mum ${e.price3>=0?'+':''}${e.price3.toFixed(2)}%`);
                   return parts.length ? parts.join(' · ') : null;
-                })()
+                })(),
+                // ═══ R311Z: SEVİYELER — HTF/5m DESTEK-DİRENÇ + KIRILIM (botun R39 motoru zaten hesaplıyordu, AI'ya GİTMİYORDU) ═══
+                // SORUN: AI trend kırılımı / range kırılımı / "üstte direnç mi var" GÖRMÜYORDU → hep LONG, range tabanına yapışıp -42$.
+                // Bot R39 motoruyla S/R, PDH/PDL, pivot, OB, kırılım onayını ZATEN hesaplıyor (decisionChain.r39SR'de dolu).
+                // Burada AI'ya ÖZET olarak sunulur (ham mum DEĞİL — ucuz, ~60 token). 5m ÖNCELİK, HTF bilgi amaçlı (kullanıcı ilkesi).
+                seviyeler: (function(){
+                  const sr = decisionChain?.r39SR;
+                  if (!sr || !sr.ok) return null;
+                  const ns = sr.nearestSupport, nr = sr.nearestResistance;
+                  const L = sr.long || {}, S = sr.short || {};
+                  const parts = [];
+                  // 5m en yakın direnç (üstte ne var) — LONG'da TP'ye yer var mı / SHORT'ta hedef
+                  if (nr) parts.push(`üst direnç ${nr.type} %${nr.distPct} uzakta`);
+                  // 5m en yakın destek (altta ne var) — LONG'da tutunma / SHORT'ta hedef
+                  if (ns) parts.push(`alt destek ${ns.type} %${ns.distPct} uzakta`);
+                  // KIRILIM ONAYI (range/seviye kırıldı mı) — senin "range kırılımı" dediğin şey
+                  if (L.breakConfirmed) parts.push('✓ÜST DİRENÇ KIRILDI (gövde kapanışı onaylı) = yukarı kırılım var');
+                  if (S.breakConfirmed) parts.push('✓ALT DESTEK KIRILDI (gövde kapanışı onaylı) = aşağı kırılım var');
+                  // ÜST/ALT HEDEF ÇOK YAKIN (kırılım yokken duvara yapışık = o yöne girme uyarısı)
+                  if (L.nearResistance && !L.breakConfirmed) parts.push(`⚠LONG riski: hemen üstte direnç var (${nr?.type||''} %${nr?.distPct||'?'}) KIRILMADI — TP'ye yer dar, dirence yapışık LONG = kırılım beklemeden girme`);
+                  if (S.nearSupport && !S.breakConfirmed) parts.push(`⚠SHORT riski: hemen altta destek var (${ns?.type||''} %${ns?.distPct||'?'}) KIRILMADI — TP'ye yer dar, desteğe yapışık SHORT = kırılım beklemeden girme`);
+                  if (L.targetTooNear) parts.push('⚠LONG: TAM DİRENÇTE (üstte yer yok, range tabanı/tepe tuzağı riski)');
+                  if (S.targetTooNear) parts.push('⚠SHORT: TAM DESTEKTE (altta yer yok)');
+                  return parts.length ? parts.join(' · ') : 'net S/R seviyesi yakında yok (orta bölge, serbest)';
+                })(),
+                // R311Z KATMAN 2: BU COİNDE BUGÜN NE YAPTIK — AI kendi geçmişini görür (tekrar hata önler)
+                buCoinGecmis: r311zCoinGecmisOzeti(coin.fullSymbol || (coin.symbol ? coin.symbol + 'USDT' : ''))
                 // NOT (R310P): botSkoru ve botYonu KALDIRILDI — kullanıcı "puan falan yok, AI ham veriyle kendi
                 // karar versin" dedi. AI artık botun skoruna/yön görüşüne meyletmez; ham mum + ham metrik +
                 // botun NÖTR analizini (mum formasyonu, ICT seviye, HTF yapı, akış) okur, kararı tamamen kendi verir.
