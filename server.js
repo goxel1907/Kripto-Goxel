@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R311Z_SEVIYE_HAFIZA';
+const LAZARUS_BUILD = 'R312_MM_SHORT_DENGE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3367,7 +3367,9 @@ Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse
 ★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot PUAN/YÖN DAYATMAZ — bu nötr analizi kendi ham mum okumanla ÇAPRAZ DOĞRULA. Kodlar: "L12/S0"=12 alıcı 0 satıcı (güçlü LONG akış), "kanıt yetersiz"=net sweep/reclaim yok (dikkat), "Tuzak dönüşü"=tuzak sezildi, "SSL_ALINDI_CHOCH_BEKLENIYOR"=alt süpürüldü reclaim bekleniyor, "DEMAND_OB"=destek. Bot+sen aynı yön=en güçlü teyit; çelişki=WAIT. Boş alan/null=veri yok, uydurma.
 ★★ "seviyeler" ALANI (ÇOK ÖNEMLİ — kayıpların ana sebebi buydu, MUTLAKA OKU): Bot, 5m destek/direnç + HTF pivot/PDH-PDL + order block seviyelerini hesaplayıp sana sunuyor. Bu alan sana şunu söyler: (1) HEMEN ÜSTÜNDE direnç var mı, kaç % uzakta — LONG düşünüyorsan TP'ye yer var mı yoksa duvara mı yapışıksın? (2) HEMEN ALTINDA destek var mı — SHORT için aynısı. (3) ★KIRILIM ONAYI: "ÜST DİRENÇ KIRILDI" yazıyorsa = yukarı kırılım GERÇEK oldu (gövde kapanışı onaylı), LONG devam edebilir. "ALT DESTEK KIRILDI" = aşağı kırılım gerçek, SHORT devam. KIRILIM YOKKEN fiyat bir seviyeye YAPIŞIKSA (⚠ uyarısı) = o yöne girme, çünkü: dirence yapışık + kırılmamış LONG = ya reddedilir (düşersin) ya da MM kırılım tuzağı kurar. Range tabanına yapışık LONG, kırılım onayı yoksa = DÜŞEN BIÇAK riski (range tabanı kırılırsa sert düşer — bu G -42$ kaybının sebebiydi: range tabanına yapışık noSweep LONG, taban kırıldı, -%49). KURAL: "seviyeler" KIRILIM ONAYI gösteriyorsa o yöne güçlen; "⚠ yapışık, kırılmadı" diyorsa o yönde sweep+reclaim bekle ya da WAIT. 5m seviyeleri ÖNCELİKLİ; HTF (PDH/PDL/pivot) sadece "büyük resimde önümde duvar var mı" bilgisidir, tek başına giriş yaptırmaz.
 ★ "buCoinGecmis" ALANI (kendi geçmişin — tekrar hatayı önle): Bu coinde SON saatlerde açtığın işlemlerin GERÇEK sonucu. "G son 6sa: 7 işlem (4K/3Z, net -28$) · son işlem LONG -42$ (5dk önce, noSweep)" gibi. Eğer "⚠UYARI" varsa DİKKATE AL: "noSweep LONG 3 kez yandı" diyorsa bu coinde sweep olmadan LONG açma. "LONG üst üste yandı, SHORT denenmedi, yön körlüğü olabilir" diyorsa = aynı yöne ısrar ediyorsun ve kaybediyorsun, KARŞI yönü ciddi değerlendir. Bu senin canlı dersin — aynı tuzağa tekrar düşme. (Boşsa bu coinde yakın geçmiş yok, normal değerlendir.)
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, botAnalizOzeti, ★seviyeler[destek/direnç+kırılım onayı — MUTLAKA OKU], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların]).
+★★ "mmDurum" ALANI (MM'in GERÇEK ölçümü — SHORT/LONG dengesi için MUTLAKA OKU): Sen "MM gibi düşün" derken botun ölçtüğü MM verisini de GÖR. Bu alan MM'in ŞU AN ne yaptığını söyler: (1) FAZ: "TOPLAMA"=MM dipte biriktiriyor (sonrası yukarı eğilimli, LONG bölgesi), "DAĞITIM"=★MM TEPEDE SATIYOR (sahte pump/üst fitil — bu SHORT BÖLGESİDİR, burada LONG açma, SHORT ara), "GENİŞLEME"=trend güçlü (trend yönünde devam). (2) STOP-HUNT: "ALT AVLANDI"=MM aşağı stopları süpürdü (reclaim varsa LONG fırsatı), "ÜST AVLANDI"=★MM yukarı stopları süpürdü (red varsa SHORT fırsatı). (3) "SAHTE PUMP"=fiyat yukarı ama gerçek alım yok, düşer (LONG tuzağı = SHORT fırsatı). KURAL: mmDurum DAĞITIM ya da ÜST AVLANDI ya da SAHTE PUMP gösteriyorsa = bu coin SHORT adayıdır, üst sweep+red+delta dönüşü görürsen SHORT AT. mmDurum TOPLAMA ya da ALT AVLANDI gösteriyorsa = LONG adayı.
+★★★ SHORT'A LONG KADAR ÖNEM VER (zarar görmeden, PROAKTİF): Sen FIRSATÇI bir scalper'sın — düşüş de yükseliş kadar para kazandırır. SHORT'u LONG'un üvey kardeşi GÖRME. Her coinde ÖNCE şunu sor: "Bu LONG mu SHORT mu fırsatı?" — yön körü olma. DAĞITIM fazı + üst likidite süpürülüp reddedildi + delta satışa döndü + 5m aşağı ChoCH = LONG kadar net bir SHORT setup'ıdır, TEREDDÜTSÜZ AT. "Coin yeşil/yükselen diye sadece LONG" YANLIŞ — yükselen coin tepede dağıtıma geçtiğinde EN İYİ SHORT'lar oradan çıkar (pump tepesi = SHORT yakıtı). Geçmişte hep LONG açıp kaybettiysen (buCoinGecmis uyarısı), o körlüğü KIR: aynı tabloda SHORT doğru olabilir. SHORT setup'ı LONG kadar netse, güveni de LONG kadar yüksek ver, kaldıracı da. Düşüşü yakalamak = kazancın yarısı; onu kaçırmak büyük kayıp.
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, botAnalizOzeti, ★seviyeler[destek/direnç+kırılım onayı — MUTLAKA OKU], ★mmDurum[MM fazı TOPLAMA/DAĞITIM + stop-hunt yönü — SHORT/LONG dengesi için MUTLAKA OKU], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların]).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -17160,7 +17162,36 @@ async function runAutoScan(prioritySymbol=null) {
                   return parts.length ? parts.join(' · ') : 'net S/R seviyesi yakında yok (orta bölge, serbest)';
                 })(),
                 // R311Z KATMAN 2: BU COİNDE BUGÜN NE YAPTIK — AI kendi geçmişini görür (tekrar hata önler)
-                buCoinGecmis: r311zCoinGecmisOzeti(coin.fullSymbol || (coin.symbol ? coin.symbol + 'USDT' : ''))
+                buCoinGecmis: r311zCoinGecmisOzeti(coin.fullSymbol || (coin.symbol ? coin.symbol + 'USDT' : '')),
+                // ═══ R312: MM DURUMU — botun MM FAZ + STOP-HUNT tespiti AI'ya (eskiden hesaplanıp saklanıyordu) ═══
+                // SORUN: Bot ACCUMULATION/DISTRIBUTION fazını + stop-hunt yönünü KOD TARAFINDA tespit ediyordu
+                // ama AI'ya GÖNDERMİYORDU. AI "MM gibi düşün" diyordu ama botun MM ÖLÇÜMÜNÜ göremiyordu (kör simülasyon).
+                // ÖZELLİKLE: DISTRIBUTION (dağıtım=MM tepede satıyor=SHORT bölgesi) AI'ya gitmediği için AI SHORT'u kaçırıyordu → LONG bias.
+                // ÇÖZÜM: MM faz + stop-hunt yönü AI'ya sunulur. Bu hem MM simülasyonunu TAMAMLAR hem SHORT'u PROAKTİF dengeler.
+                // "filtre/kapı" DEĞİL — bilgi. AI tek patron; MM verisini görüp kendi yorumlar. ~40 token.
+                mmDurum: (function(){
+                  const parts = [];
+                  // MM FAZI (botun r140Phase motoru): MM şu an ne yapıyor
+                  const ph = decisionChain?.r140Phase;
+                  if (ph && ph.phase && ph.phase !== 'UNKNOWN') {
+                    if (ph.phase === 'ACCUMULATION') parts.push('Faz: TOPLAMA (MM dipte sessizce biriktiriyor — yön belirsiz, kırılım/sweep bekle; sonrası genelde YUKARI)');
+                    else if (ph.phase === 'DISTRIBUTION') parts.push('Faz: ★DAĞITIM (MM tepede satıyor, sahte pump izi/üst fitil büyüyor — SHORT BÖLGESİ, tepede LONG açma)');
+                    else if (ph.phase === 'EXPANSION') parts.push('Faz: GENİŞLEME (trend güçlü akıyor, hacim destekli — trend yönünde devam)');
+                    else if (ph.phase === 'TRANSITION') parts.push('Faz: GEÇİŞ/nötr');
+                  }
+                  // STOP-HUNT (botun detectStopHunt motoru): MM hangi yönde avladı
+                  const h1 = decisionChain?.stopHunt?.['1h'], h15 = decisionChain?.stopHunt?.['15m'];
+                  const hh = (h1 && h1.hunted) ? h1 : (h15 && h15.hunted) ? h15 : null;
+                  if (hh && hh.hunted) {
+                    if (hh.direction === 'BULL_HUNT') parts.push('Stop-hunt: ALT AVLANDI (MM aşağı stopları süpürdü → reclaim varsa LONG, MM avı bitti yukarı gider)');
+                    else if (hh.direction === 'BEAR_HUNT') parts.push('Stop-hunt: ★ÜST AVLANDI (MM yukarı stopları süpürdü → red varsa SHORT, MM avı bitti aşağı gider)');
+                  }
+                  // SAHTE PUMP / TUZAK TEPESİ (botun r140OiVel/r140EqHL motoru)
+                  if (decisionChain?.r140OiVel?.fakePump) parts.push('⚠SAHTE PUMP (fiyat yukarı ama OI çözülüyor — gerçek alım yok, düşüş gelir, LONG tuzağı/SHORT fırsatı)');
+                  if (decisionChain?.r140EqHL?.nearHighTrap) parts.push('⚠Eşit tepeler (üstte stop kümesi=MM mıknatısı, oraya gidip avlar; LONG dikkat)');
+                  if (decisionChain?.r140EqHL?.nearLowTrap) parts.push('⚠Eşit dipler (altta stop kümesi=MM mıknatısı, oraya gidip avlar; SHORT dikkat)');
+                  return parts.length ? parts.join(' · ') : 'MM fazı net değil (geçiş/belirsiz — sweep+reclaim ile yön teyidi bekle)';
+                })()
                 // NOT (R310P): botSkoru ve botYonu KALDIRILDI — kullanıcı "puan falan yok, AI ham veriyle kendi
                 // karar versin" dedi. AI artık botun skoruna/yön görüşüne meyletmez; ham mum + ham metrik +
                 // botun NÖTR analizini (mum formasyonu, ICT seviye, HTF yapı, akış) okur, kararı tamamen kendi verir.
