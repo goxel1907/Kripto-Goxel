@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R316B_TREND_LEDGER_GUARD';
+const LAZARUS_BUILD = 'R317_TREND_SERT_ENGEL';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3425,7 +3425,7 @@ Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse
 
 
 ★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot PUAN/YÖN DAYATMAZ — bu nötr analizi kendi ham mum okumanla ÇAPRAZ DOĞRULA. Kodlar: "L12/S0"=12 alıcı 0 satıcı (güçlü LONG akış), "kanıt yetersiz"=net sweep/reclaim yok (dikkat), "Tuzak dönüşü"=tuzak sezildi, "SSL_ALINDI_CHOCH_BEKLENIYOR"=alt süpürüldü reclaim bekleniyor, "DEMAND_OB"=destek. Bot+sen aynı yön=en güçlü teyit; çelişki=WAIT. Boş alan/null=veri yok, uydurma.
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, ★trendCizgisi[EĞİK trend yönü+kırılımı — TREND YÖNÜ İÇİN ÖNCE BUNU OKU], ★mmDurum[MM faz+tuzak ipucu — trendCizgisi ile ÇAPRAZ oku, tek başına yön sayma], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların — aynı hataya düşme], botAnalizOzeti).
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, ★trendCizgisi[EĞİK trend yönü+kırılımı — TREND YÖNÜ İÇİN ÖNCE BUNU OKU], ★mmDurum[MM faz+tuzak ipucu — trendCizgisi ile ÇAPRAZ oku, tek başına yön sayma], grafikFormasyon[1h teyitli klasik formasyon: çift tepe/dip, baş-omuz — HTF dönüş sinyali, varsa güçlü], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların — aynı hataya düşme], botAnalizOzeti).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -3498,6 +3498,7 @@ Canlı delta giriş yönünü desteklemeli: LONG'da alıcı baskın, SHORT'ta sa
 • HACİMSİZ YÜKSELİŞ: Fiyat yükseliyor ama hacim DÜŞÜK = gerçek alım yok, MM fiyatı boşluğa itiyor; ilk satışta geri düşer. Yükselişe hacim eşlik etmiyorsa güvenme.
 • FUNDING YANLIŞ OKUMA: "Aşırı negatif funding = yukarı squeeze" tek başına giriş sebebi DEĞİL. Squeeze tetiklenmezse short kalabalığı haklı çıkar, fiyat düşer (geçmiş -%21). Funding sadece destek; asıl tetik 5m sweep+reclaim+delta.
 • YUVARLAK RAKAM / PSİKOLOJİK SEVİYE: Yuvarlak fiyatlarda (0.10, 0.017, 1.00) stop birikir, MM oraya çekip avlar. Yuvarlak seviyeye yakın körlemesine girme, sweep+reclaim bekle.
+• ★ PREMIUM / DISCOUNT / EQUILIBRIUM (ICT değer çerçevesi — yön seçiminin TEMELİ): Bir dealing range'i (son belirgin swing yüksek↔düşük) düşün. %50 = EQUILIBRIUM (denge/adil fiyat). %50 ÜSTÜ = PREMIUM (pahalı bölge) = SHORT aranacak yer. %50 ALTI = DISCOUNT (ucuz bölge) = LONG aranacak yer. Kurumsal mantık: ucuza al (discount'ta LONG), pahalıya sat (premium'da SHORT). EN İYİ GİRİŞ = OTE zonu (%62-79 geri çekilme): discount'ta %62-79 derinliğe çekilmiş = en kaliteli LONG; premium'da simetrik = en kaliteli SHORT. KRİTİK KULLANIM: range konumu (botOkumasi'ndeki %0-100) DISCOUNT'taysa (<%50, ideal <%38) LONG'u tercih et, PREMIUM'daysa (>%50, ideal >%62) SHORT'u tercih et. Bu trendCizgisi ile ÇAPRAZ çalışır: yükselen trend + discount'a çekilme = G2+ dip LONG (en güçlü). Yükselen trend ama fiyat PREMIUM'da aşırı uzamış = LONG'u KOVALAMA (premium'da alım = pahalıya alım = G -42 tipi taban-üstü LONG hatası). EQ'da (%50 civarı) girme — orası 50/50, kenar yok, premium/discount'a çekilmesini bekle. NOT: range'i doğru seç (anlamlı swing); fiyat sürekli yeni uç yapıyorsa range eskidir, yeniden tanımla.
 • EKSTREM BÖLGE SWEEP ZORUNLU (RESOLV dersi): 5m range konumu TEPEDE (>%70) LONG ya da DİPTE (<%30) SHORT düşünüyorsan, MM büyük olasılıkla ÖNCE ters yöne sweep atıp stopları avlar SONRA gerçek hareket başlar. Bu bölgede sweep+reclaim GÖRMEDEN girme — momentum güçlü olsa bile beklemeden girersen tek ters mum SL'ini süpürür (RESOLV: %95 tepede girdi, sweep SL'i aldı, sonra %15 yükseldi). KURAL: ekstrem bölgede ya sweep+reclaim bekle (tokat atıldıktan SONRA gir = en yüksek olasılık), ya da SL'i sweep zonu ÖTESİNE koy (dar SL süpürülür). Orta bölgede (%30-70) bu zorunlu değil. \n• GÜÇ DENGESİ — ÇELİŞKİ SAYIMI (BICO -%16 dersi): Girmeden ÖNCE lehte ve aleyhte sinyalleri SAY. LONG için aleyhte sayılır: 5m RSI>72 (aşırı alım), mum teyidi zayıf/karşı mum baskın, emir defteri satıcı baskın (negatif), range tepe bölge (>%70), hemen üstte BSL/direnç likidite, OI çözülüyor. LONG için lehte: taze BOS, delta alıcı, OI artıyor, mum teyit güçlü, dip bölge, sweep+reclaim. SHORT için hepsi tersi. KURAL: Aleyhte sinyaller lehteden BELİRGİN fazlaysa (2+ fark, örn 5 aleyhte vs 2 lehte) = WAIT. Yakın/eşitse SEN tart (tek patronsun) — ama güveni dürüst düşür. İki güçlü sinyal beş zayıfı EZMEZ; ama üç güçlü hizalı sinyal (sweep+delta+yapı aynı yön) bir-iki zayıf sinyale rağmen GİRİŞ olabilir. MM tepede sahte BOS+zayıf mumla tokat atar — net çelişkide girme. Çelişki belirginse WAIT; dengeli/lehte ağırsa fırsatı KAÇIRMA, gir.
 • GENEL: Tanımadığın ama mantıksız görünen bir hareket varsa (sebepsiz dik mum, tek mumda büyük fitil) = MM oyunu, WAIT. Emin olmadığın yerde girme.
 
@@ -13187,11 +13188,21 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 5)
     };
     const r316Trend = r316TrendlineBreak(k5m); // R316: eğik trend çizgisi (diagonal) kırılımı — AI'ya VERİ
+    // R316D: klasik grafik formasyonları (çift tepe/dip, baş-omuz) — SADECE TEYİTLİ olanlar (Forming/oluşuyor HARİÇ, gürültü önle)
+    const r316ChartPat = (function(){
+      try {
+        const pats = (_chart?.patterns || []).filter(p => /^(DoubleTop|DoubleBottom|HeadShoulders|InvHeadShoulders)$/.test(p.name));
+        if (!pats.length) return null;
+        const map = { DoubleTop:'ÇİFT TEPE (M, düşüş dönüşü → SHORT)', DoubleBottom:'ÇİFT DİP (W, yükseliş dönüşü → LONG)', HeadShoulders:'BAŞ-OMUZ (düşüş dönüşü → SHORT)', InvHeadShoulders:'TERS BAŞ-OMUZ (yükseliş dönüşü → LONG)' };
+        return pats.map(p => map[p.name]).join(' · ') + ' (1h teyitli formasyon)';
+      } catch(_) { return null; }
+    })();
 
     res.json({
       ok:true, symbol:full, price:lastPrice,
       r308RawCandles,
       r316Trend,
+      r316ChartPat,
       freshness, signalAgeMin, isExpired,
       marketMaker:{target:mmTarget,confidence:mmConf,reasoning:mmReasoning,
         nextTarget:mmNextTarget,retailBias,smartMoneyBias:smBias,oiTrend},
@@ -16668,11 +16679,21 @@ async function runAutoScan(prioritySymbol=null) {
             logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama 5m Fırsat Beyni kontrollü girişe izin verdi — user SL/TP korunarak devam`);
           }
         }
-        // Likidite kalitesi çok düşükse skip
+        // Likidite kalitesi çok düşükse skip — AMA R316C: POOR'u ikiye ayır.
+        // 'POOR' damgası çoğu zaman SADECE ince-depth yüzünden gelir (volatil gainer'ın order book'u doğal ince).
+        // Gerçek kayma riski SPREAD'tir, depth değil. Dar spread + ince depth = küçük scalp emri için sorunsuz.
+        // SNDK örneği: spread %0.0005 (kusursuz) ama depth ince → POOR damgası → en iyi aday boşa kesiliyordu.
+        // ÇÖZÜM: gerçek kayma (spread > %0.12) → SERT KES. Dar spread + sadece ince depth → AI'ya DEVRET.
         if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
-          logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — kayma riski, atlandı`);
-          markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
-          continue;
+          const lqSpread = Number(analysis.r15?.liquidityQuality?.spread || 0);
+          const gercekKayma = lqSpread > 0.12; // %0.12 üstü = gerçek geniş makas = gerçek kayma riski
+          const poorAiDevret = !gercekKayma && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+          if (gercekKayma || !poorAiDevret) {
+            logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — ${gercekKayma?'gerçek geniş makas kayma riski':'AI bütçe/aday değil'}, atlandı`);
+            markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
+            continue;
+          }
+          logAuto(`🔀 ${coin.symbol} POOR ama spread düşük (%${analysis.r15.liquidityQuality.spread}) — gerçek kayma YOK, R316C AI'ya devrediyor (ince defteri AI kendi tartar)`);
         }
         const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
 
@@ -17215,6 +17236,8 @@ async function runAutoScan(prioritySymbol=null) {
                   if (!bits.length) return null;
                   return bits.join(' · ') + ' · NOT: bu MM ölçümüdür, YÖN DEĞİL — trendCizgisi + delta + sweep ile ÇAPRAZ DOĞRULA, tek başına SHORT/LONG sebebi sayma.';
                 })(),
+                // ═══ R316D: KLASİK GRAFİK FORMASYONU (1h teyitli — çift tepe/dip, baş-omuz) ═══
+                grafikFormasyon: analysis?.r316ChartPat || null,
                 // ═══ R316: LEDGER HAFIZA — bu coindeki kendi geçmiş işlem sonuçların ═══
                 buCoinGecmis: r311zCoinGecmisOzeti(coin.fullSymbol || (coin.symbol ? coin.symbol + 'USDT' : ''))
               },
@@ -17265,6 +17288,28 @@ async function runAutoScan(prioritySymbol=null) {
                   markAutoSkip(coin.symbol, `AI kalite/güven reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
+                // ═══ R317: TRENDE-KARŞI SERT ENGEL (5 dev kaybın kök çözümü, AI insafına BIRAKILMAZ) ═══
+                // Gerçek veri kanıtı: 39 işlemde trende-karşı 7 emir KESİLİNCE net -66$→+56$, WR %56→%69.
+                // 5 dev kayıp (G -42, ID -23.7, SYN -14.7...) hepsi trende-karşıydı. MM trende-karşı gireni avlar.
+                // Kural: yükselen trend DEVAM ederken SHORT açma, düşen trend DEVAM ederken LONG açma.
+                // İSTİSNA: trend ÇİZGİSİ KIRILDIYSA (dönüş onayı) karşı yön serbest — çünkü artık trend döndü.
+                try {
+                  const tr = analysis?.r316Trend;
+                  if (tr && tr.ok) {
+                    // yükselen trend devam (kırılım YOK) + AI SHORT istiyor = trende karşı SHORT → ENGELLE
+                    if (tr.slopeUp && !tr.risingBreak && ai.side === 'SHORT') {
+                      logAuto(`🛑 ${coin.symbol} R317 TRENDE-KARŞI ENGEL: yükselen trend DEVAM ediyor, SHORT trende karşı (yükselen bıçak) — emir AÇILMADI. Trend kırılırsa serbest.`);
+                      markAutoSkip(coin.symbol, `R317: yükselen trende SHORT engellendi (trend kırılmadı)`, {rec:ai.side, score, aiBrain:ai});
+                      continue;
+                    }
+                    // düşen trend devam (kırılım YOK) + AI LONG istiyor = trende karşı LONG (düşen bıçak) → ENGELLE
+                    if (tr.slopeDown && !tr.fallingBreak && ai.side === 'LONG') {
+                      logAuto(`🛑 ${coin.symbol} R317 TRENDE-KARŞI ENGEL: düşen trend DEVAM ediyor, LONG trende karşı (düşen bıçak) — emir AÇILMADI. Trend kırılırsa serbest.`);
+                      markAutoSkip(coin.symbol, `R317: düşen trende LONG engellendi (trend kırılmadı)`, {rec:ai.side, score, aiBrain:ai});
+                      continue;
+                    }
+                  }
+                } catch(_r317e) {}
                 // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
                 let r308AiFlippedDir = false;
                 if (ai.side !== recommendation) {
