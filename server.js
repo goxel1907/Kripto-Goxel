@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R317B_HASSAS_ERTELEME';
+const LAZARUS_BUILD = 'R318_KAYIP_SETUP_ELEME';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -17339,6 +17339,56 @@ async function runAutoScan(prioritySymbol=null) {
                     }
                   }
                 } catch(_r317e) {}
+                // ═══ R318: KAYBETTİREN SETUP ELEME (4 kanıtlı kayıp: RESOLV/TNSR/BAS/M, AI insafına BIRAKILMAZ) ═══
+                // Forum/araştırma dersi: 'ters al' işe yaramaz (kazananları da ters çevirir); ÇÖZÜM kaybettiren
+                // setup'ı ELE. 4 kaybın ortak paydası: sweep YOK + (P/D ihlali VEYA akış çift-ters VEYA desteksiz kırılım).
+                // DAR tutuldu — AI akışını boğmaz (R291 dersi): sadece ekstrem+sweep'siz+teyitsiz durumlar kesilir.
+                try {
+                  const ictTxt = String(decisionChain?.ictDashboard||decisionChain?.ictDurum||'');
+                  const sweepVar = /ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR|swept.?[✓Y]|sweep.?\+/i.test(ictTxt);
+                  if (!sweepVar) {
+                    // sadece SWEEP YOKSA bu engeller devreye girer (sweep varsa hepsi serbest = boğma yok)
+                    const rPos = Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
+                      : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5);
+                    const dlt = Number(decisionChain?.r125LiveDeltaPct || 0);     // + alıcı, - satıcı
+                    const obI = Number(analysis?.orderBook?.imbalance ?? decisionChain?.orderBookImbalance ?? NaN); // + alıcı, - satıcı
+                    // ENGEL 1: P/D İHLALİ — dipte(<%30) SHORT veya tepede(>%70) LONG (sweep yok)
+                    if (ai.side === 'SHORT' && rPos <= 0.30) {
+                      logAuto(`🛑 ${coin.symbol} R318 P/D ENGEL: DİPTE(%${(rPos*100).toFixed(0)}) sweep'siz SHORT = discount'ta short (TNSR/M dersi) — AÇILMADI`);
+                      markAutoSkip(coin.symbol, `R318: dipte sweep'siz SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                    }
+                    if (ai.side === 'LONG' && rPos >= 0.70) {
+                      logAuto(`🛑 ${coin.symbol} R318 P/D ENGEL: TEPEDE(%${(rPos*100).toFixed(0)}) sweep'siz LONG = premium'da long (G-42 dersi) — AÇILMADI`);
+                      markAutoSkip(coin.symbol, `R318: tepede sweep'siz LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                    }
+                    // ENGEL 2: AKIŞ ÇİFT-TERS — delta VE emir defteri İKİSİ DE giriş yönüne ters (sweep yok)
+                    // sadece İKİSİ birden ters ise engelle (biri ters = serbest, boğma yok). M SHORT dersi.
+                    const dltTers = (ai.side === 'LONG' && dlt < -3) || (ai.side === 'SHORT' && dlt > 3);
+                    const obTers  = Number.isFinite(obI) && ((ai.side === 'LONG' && obI < -3) || (ai.side === 'SHORT' && obI > 3));
+                    if (dltTers && obTers) {
+                      logAuto(`🛑 ${coin.symbol} R318 AKIŞ ENGEL: sweep yok + delta(${dlt.toFixed(1)}) VE emirDef(${obI.toFixed(1)}) İKİSİ DE ${ai.side} yönüne TERS (M SHORT dersi) — AÇILMADI`);
+                      markAutoSkip(coin.symbol, `R318: sweep yok + akış çift-ters engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                    }
+                    // ENGEL 3: DESTEKSİZ KIRILIM — 'trend kırıldı' diyor AMA akış/OI desteklemiyor (sweep yok)
+                    // RESOLV/BAS dersi: motor kırılımı son-mum rengiyle teyit ediyor (gövde içeride), AMA
+                    // kırılım yönünde delta/OI desteği yoksa = sahte breakout. Gerçek kırılım (delta+OI uyumlu) SERBEST.
+                    const tr2 = analysis?.r316Trend;
+                    const kirilimVar = tr2 && tr2.ok && (tr2.risingBreak || tr2.fallingBreak);
+                    if (kirilimVar) {
+                      // kırılım yönünde GÜÇLÜ delta desteği var mı? (eşik 25: zayıf delta sahte kırılımı kurtarmasın — BAS dersi)
+                      const deltaDestek = (ai.side === 'LONG' && dlt >= 25) || (ai.side === 'SHORT' && dlt <= -25);
+                      const oi1h = Number(analysis?.openInterest?.change1h ?? decisionChain?.oiChange1h ?? NaN);
+                      // kırılım yönünde OI çelişik mi? LONG kırılımda OI artmalı (gerçek alım); düşüyorsa desteksiz.
+                      const oiCelisik = Number.isFinite(oi1h) && ((ai.side === 'LONG' && oi1h < -2) || (ai.side === 'SHORT' && oi1h < -2));
+                      // desteksiz = delta da desteklemiyor VE (OI çelişik VEYA delta giriş yönüne ters)
+                      const deltaTersKirilimda = (ai.side === 'LONG' && dlt < -3) || (ai.side === 'SHORT' && dlt > 3);
+                      if (!deltaDestek && (oiCelisik || deltaTersKirilimda)) {
+                        logAuto(`🛑 ${coin.symbol} R318 SAHTE KIRILIM ENGEL: kırılım var ama akış desteklemiyor (delta ${dlt.toFixed(1)}${oiCelisik?', OI '+oi1h.toFixed(1)+'%':''}, sweep yok) = desteksiz breakout (RESOLV/BAS dersi) — AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R318: desteksiz kırılım engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      }
+                    }
+                  }
+                } catch(_r318e) {}
                 // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
                 let r308AiFlippedDir = false;
                 if (ai.side !== recommendation) {
