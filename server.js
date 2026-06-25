@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R318B_HATA_TEMIZ';
+const LAZARUS_BUILD = 'R318C_ENGEL_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -17345,7 +17345,11 @@ async function runAutoScan(prioritySymbol=null) {
                 // DAR tutuldu — AI akışını boğmaz (R291 dersi): sadece ekstrem+sweep'siz+teyitsiz durumlar kesilir.
                 try {
                   const ictTxt = String(decisionChain?.ictDashboard||decisionChain?.ictDurum||'');
-                  const sweepVar = /ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR|swept.?[✓Y]|sweep.?\+/i.test(ictTxt);
+                  // R318C BUG FIX: 'reclaim' tek başına sweep sayma — 'reclaim RED/reddedildi' = sweep YOK demek (TNSR -8.12 dersi).
+                  // Sadece KESİN sweep ifadeleri sweep sayılır. 'liquidity_reclaim ... red' gibi reddedilmiş reclaim sweep DEĞİL.
+                  const sweepKesin = /ALINDI|swept.?[✓Y]|LONG_HAZIR|SHORT_HAZIR|süpürme.*BODY.*teyit|sweep.*teyit|reclaim.*(onay|tutuyor|yeşil|✓)/i.test(ictTxt);
+                  const reclaimRed = /reclaim.*red|red.*reclaim|reddedil|reclaim.*✗/i.test(ictTxt);
+                  const sweepVar = sweepKesin && !reclaimRed;
                   if (!sweepVar) {
                     // sadece SWEEP YOKSA bu engeller devreye girer (sweep varsa hepsi serbest = boğma yok)
                     const rPos = Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
@@ -17361,13 +17365,16 @@ async function runAutoScan(prioritySymbol=null) {
                       logAuto(`🛑 ${coin.symbol} R318 P/D ENGEL: TEPEDE(%${(rPos*100).toFixed(0)}) sweep'siz LONG = premium'da long (G-42 dersi) — AÇILMADI`);
                       markAutoSkip(coin.symbol, `R318: tepede sweep'siz LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
                     }
-                    // ENGEL 2: AKIŞ ÇİFT-TERS — delta VE emir defteri İKİSİ DE giriş yönüne ters (sweep yok)
-                    // sadece İKİSİ birden ters ise engelle (biri ters = serbest, boğma yok). M SHORT dersi.
+                    // ENGEL 2: AKIŞ TERS — (a) delta VE emir defteri İKİSİ ters, VEYA (b) biri TEK BAŞINA şiddetli(≥40) ters
+                    // M LONG -3.85 dersi: delta+40 alıcı ama emirDef-49.5 şiddetli satıcı = çelişki, AI yine açtı.
                     const dltTers = (ai.side === 'LONG' && dlt < -3) || (ai.side === 'SHORT' && dlt > 3);
                     const obTers  = Number.isFinite(obI) && ((ai.side === 'LONG' && obI < -3) || (ai.side === 'SHORT' && obI > 3));
-                    if (dltTers && obTers) {
-                      logAuto(`🛑 ${coin.symbol} R318 AKIŞ ENGEL: sweep yok + delta(${dlt.toFixed(1)}) VE emirDef(${obI.toFixed(1)}) İKİSİ DE ${ai.side} yönüne TERS (M SHORT dersi) — AÇILMADI`);
-                      markAutoSkip(coin.symbol, `R318: sweep yok + akış çift-ters engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                    const dltSiddetliTers = dltTers && Math.abs(dlt) >= 40;            // delta tek başına şiddetli ters
+                    const obSiddetliTers  = obTers && Number.isFinite(obI) && Math.abs(obI) >= 40; // emirDef tek başına şiddetli ters
+                    if ((dltTers && obTers) || dltSiddetliTers || obSiddetliTers) {
+                      const tip = (dltTers && obTers) ? 'çift-ters' : (dltSiddetliTers ? `delta şiddetli(${dlt.toFixed(0)})` : `emirDef şiddetli(${obI.toFixed(0)})`);
+                      logAuto(`🛑 ${coin.symbol} R318 AKIŞ ENGEL: sweep yok + akış ${ai.side} yönüne TERS [${tip}] (M LONG dersi) — AÇILMADI`);
+                      markAutoSkip(coin.symbol, `R318: sweep yok + akış ters (${tip}) engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
                     }
                     // ENGEL 3: DESTEKSİZ KIRILIM — 'trend kırıldı' diyor AMA akış/OI desteklemiyor (sweep yok)
                     // RESOLV/BAS dersi: motor kırılımı son-mum rengiyle teyit ediyor (gövde içeride), AMA
