@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R318_KAYIP_SETUP_ELEME';
+const LAZARUS_BUILD = 'R318B_HATA_TEMIZ';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -5387,13 +5387,13 @@ async function r184DirectTelegramText(text, silent=false) {
     const data = await res.json().catch(()=>({}));
     if (!res.ok || data.ok === false) {
       const err = data.description || `HTTP_${res.status}`;
-      try { pushCritical('R184_TELEGRAM_DIRECT_FAIL', new Error(err), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+      try { console.log(`[telegram sessiz başarısız] ${err}`); } catch(_) {} // R318B: kritik kutuya yazma, sessiz
       return {ok:false, error:err, status:res.status, data};
     }
     return {ok:true, messageId:data?.result?.message_id || null};
   } catch(e) {
     const err = String(e?.message || e);
-    try { pushCritical('R184_TELEGRAM_DIRECT_EXCEPTION', new Error(err), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+    try { console.log(`[telegram sessiz başarısız] ${err}`); } catch(_) {} // R318B: kritik kutuya yazma, sessiz
     return {ok:false, error:err};
   }
 }
@@ -5434,14 +5434,14 @@ async function tgSendNow(text, silent=false) {
         const d2 = await r2.json().catch(()=>({}));
         if (r2.ok && d2.ok !== false) return {ok:true, fallback:'plain_text', originalError:err};
       } catch(_fallbackErr) {}
-      try { pushCritical('TELEGRAM_SEND_FAIL', new Error(err), { symbol:'TELEGRAM' }, 'WARN'); } catch(_) {}
+      try { console.log('[telegram sessiz başarısız] TELEGRAM_SEND_FAIL:', err); } catch(_) {}
       console.log('⚠️ Telegram gönderim hatası:', err);
       return {ok:false, error:err};
     }
     return {ok:true};
   } catch(e) {
     const err = String(e?.message || e).slice(0,160);
-    try { pushCritical('TELEGRAM_SEND_FAIL', new Error(err), { symbol:'TELEGRAM' }, 'WARN'); } catch(_) {}
+    try { console.log('[telegram sessiz başarısız] TELEGRAM_SEND_FAIL:', err); } catch(_) {}
     console.log('⚠️ Telegram gönderim exception:', err);
     return {ok:false, error:err};
   }
@@ -5590,7 +5590,7 @@ async function r181TradeOpenCard(row={}, state={}) {
     ].join('\n');
     return await r184DirectTelegramText(msg, false);
   } catch(e) {
-    try { pushCritical('R181_TG_OPEN_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    try { console.log('[telegram sessiz başarısız] R181_TG_OPEN_DIRECT_FAIL:', String(e?.message||e)); } catch(_) {}
     return {ok:false,error:String(e?.message||e)};
   }
 }
@@ -5619,7 +5619,7 @@ async function r181TradeCloseCard(row={}, state={}, cls={}) {
     ].join('\n');
     return await r184DirectTelegramText(msg, !win);
   } catch(e) {
-    try { pushCritical('R181_TG_CLOSE_DIRECT_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    try { console.log('[telegram sessiz başarısız] R181_TG_CLOSE_DIRECT_FAIL:', String(e?.message||e)); } catch(_) {}
     return {ok:false,error:String(e?.message||e)};
   }
 }
@@ -5685,7 +5685,7 @@ function tgNotifyTradeOpenOnce(row={}, state={}) {
         sltpVerified: state.sltpVerified ?? undefined,
       });
   } catch(e) {
-    try { pushCritical('TELEGRAM_OPEN_NOTIFY_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    try { console.log('[telegram sessiz başarısız] TELEGRAM_OPEN_NOTIFY_FAIL:', String(e?.message||e)); } catch(_) {}
   }
 }
 
@@ -5717,7 +5717,7 @@ function tgNotifyTradeCloseOnce(row={}, state={}, cls={}) {
         resultNote: row.resultNote,
       });
   } catch(e) {
-    try { pushCritical('TELEGRAM_CLOSE_NOTIFY_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {}
+    try { console.log('[telegram sessiz başarısız] TELEGRAM_CLOSE_NOTIFY_FAIL:', String(e?.message||e)); } catch(_) {}
   }
 }
 
@@ -5892,7 +5892,7 @@ async function r171MaintenanceTick() {
   try {
     if (typeof r171TelegramPollLedger === 'function') await r171TelegramPollLedger(false);
   } catch(e) {
-    try { pushCritical('R180_MAINT_TELEGRAM_POLL_FAIL', new Error(String(e?.message||e)), {symbol:'TELEGRAM'}, 'WARN'); } catch(_) {}
+    try { console.log('[telegram sessiz başarısız] R180_MAINT_TELEGRAM_POLL_FAIL:', String(e?.message||e)); } catch(_) {}
   }
 }
 
@@ -5959,7 +5959,7 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
   saveTradeLedger();
   // R181: Açılış bildirimi ledger kayıt anından direkt gider; karmaşık kart yolu bypass.
-  try { r181TradeOpenCard(row, state).catch(e=>{ try { pushCritical('R186_TG_OPEN_PROMISE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {} }); } catch(_) {}
+  try { r181TradeOpenCard(row, state).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_OPEN_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_) {}
   return row;
 }
 function recordTradeClose(symbol, state={}, cls={}) {
@@ -5986,7 +5986,7 @@ function recordTradeClose(symbol, state={}, cls={}) {
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
   // R181: Kapanış bildirimi PnL 0/null olsa bile direkt gider; gerçek PnL sonra reconcile ile düzelir.
-  try { r181TradeCloseCard(row, state, cls).catch(e=>{ try { pushCritical('R186_TG_CLOSE_PROMISE_FAIL', new Error(String(e?.message||e)), {symbol:String(row.symbol||'TELEGRAM')}, 'WARN'); } catch(_) {} }); } catch(_tge) {}
+  try { r181TradeCloseCard(row, state, cls).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_CLOSE_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_tge) {}
   saveTradeLedger(); return row;
 }
 
@@ -8836,8 +8836,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
     const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m] =
       await Promise.allSettled([
-        cached(`k4h_${full}`,  30*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)),
-        cached(`k1h_${full}`,   5*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)),
+        cached(`k4h_${full}`,  60*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)), // R318B: 30dk→60dk (4h mum 4 saatte değişir, 418 fix)
+        cached(`k1h_${full}`,   15*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)), // R318B: 5dk→15dk (1h mum saatte değişir, 418 fix)
         cached(`k15m_${full}`, 90*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=15m&limit=200`)),
         cached(`k5m_${full}`,  45*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=5m&limit=100`)),
         cached(`fund_${full}`, 30*60*1000, ()=>bPub('/fapi/v1/fundingRate',`symbol=${full}&limit=10`)),
