@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R317_TREND_SERT_ENGEL';
+const LAZARUS_BUILD = 'R317B_HASSAS_ERTELEME';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16052,6 +16052,35 @@ async function runAutoScan(prioritySymbol=null) {
         return false;
       } catch(_e) { return false; }
     };
+    // ═══ R317B: HASSAS ERTELEME (maliyet ↓, fırsat kaçırma = 0 hedef) ═══
+    // Göksel fikri: bot coini takip etsin, SADECE gerçek tetik anında AI'ya sorsun.
+    // KURAL: AI'ya sormayı ERTELE yalnızca AŞİKAR BOŞ durumda (3'ü BİRDEN):
+    //   a) sweep YOK, b) delta ZAYIF (<12), c) mum teyidi YOK.
+    //   Bu 3'ü birden = ortada hiçbir şey yok = AI zaten WAIT der → boşa çağrı.
+    // EN UFAK sinyalde SOR (hassasiyet): sweep/kırılım/TRADE/delta≥12/mum/RVOL → sor.
+    // TOP2 ASLA ertelenmez (çağrı noktasında r310IsTop2 ayrı muaf). AI tek patron kalır —
+    // bu YÖN/GİRİŞ kararı DEĞİL, sadece "şu an sormaya değer bir an mı" zamanlamasıdır.
+    const r317AsikarBos = (dc, analysis) => {
+      try {
+        if (!dc) return false; // veri yoksa erteleme kararı verme (mevcut akış karar versin)
+        // Herhangi bir GERÇEK tetik varsa ASLA aşikar-boş değildir → ertelEME, sor
+        const ba = String(dc.brainAction||'').toUpperCase();
+        if (ba === 'TRADE' || dc.r284WaitUpgradeOk) return false;
+        if (dc.r190Edge?.ok) return false; // kırılım/momentum
+        const ict = String(dc.ictDashboard||dc.ictDurum||'');
+        if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return false; // sweep
+        const delta = Math.abs(Number(dc.r125LiveDeltaPct||0));
+        if (delta >= 12) return false; // zayıf bile olsa yön var → sor
+        if (dc.mumGuclu || (Number(dc.mumPuan||0) >= 4)) return false; // mum teyidi
+        const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
+        if (Number.isFinite(rv5) && rv5 >= 1.2) return false; // hacim patlaması
+        // R316 trend çizgisi taze kırıldıysa (dönüş anı) → ASLA erteleme, sor
+        const tr = analysis?.r316Trend;
+        if (tr && tr.ok && (tr.risingBreak || tr.fallingBreak)) return false;
+        // Buraya geldiyse: sweep yok + delta<12 + mum yok + kırılım yok + RVOL düşük = AŞİKAR BOŞ
+        return true; // ertele — AI'ya sorma, bir sonraki taramada tekrar bak
+      } catch(_e) { return false; } // hata olursa erteleme (güvenli taraf: sor)
+    };
     // R311S: Bypass genişletildi — bot TRADE dediği VEYA gerçek aday (canlıMi) coinlerde de yumuşak frenler
     // (R190 akış, R97 zemin, R189 micro, F&G, riskli yön) AI'ya devretsin. Kanıt: AGT/MU/GUA bot "TRADE" dedi
     // ama "R190 geç/ters akış freni" AI'ya GİTMEDEN kesti. AI tek patron — yumuşak bot görüşleri AI'yı boğmasın.
@@ -16224,7 +16253,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ═══ R309E: WAIT'i AI'ya DEVRET (silme) ═══
           // Eski sistem WAIT dedi diye coini çöpe atma — AI ham mumu okuyup kendi kararını versin.
           // Bütçe varsa: skoru yüksek tarafı geçici yön yap (AI zaten kendi yönünü seçer/çevirir), AI'ya bırak.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             // Panel yön kısıtı korunur: panel sadece LONG/SHORT'a izin veriyorsa, geçici yön ona uymalı.
             const waitSideAllowed = (waitSide === 'LONG' && allowLong) || (waitSide === 'SHORT' && allowShort);
             // Panel karşı yöne izin veriyorsa geçici yönü ona çevir; iki yön de kapalıysa devretme.
@@ -16276,7 +16305,7 @@ async function runAutoScan(prioritySymbol=null) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           // ═══ R309E: emir izni yok → AI'ya DEVRET (silme) ═══
           // ASTER dersi: bot "izin yok" dedi ama AI'nın bayılacağı sweep+reclaim setup'ı vardı. AI okusun.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             decisionChain.r300SoftReject = `R309E entryPermission→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E AI'ya devrediyor — kararı AI verecek (${why.slice(0,80)})`);
             // continue YOK — AI'ya akar
@@ -16297,7 +16326,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           // ═══ R309E: tier düşük → AI'ya DEVRET (silme) ═══
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis))) {
+          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             decisionChain.r300SoftReject = `R309E tier→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E AI'ya devrediyor — kararı AI verecek`);
             // continue YOK
@@ -16551,7 +16580,7 @@ async function runAutoScan(prioritySymbol=null) {
             const why = `5m Fırsat Beyni riskli yön freni: ${recommendation} için risk ${sideCtxRisk}, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}; devam onayı:${r88DevamOnayiOk?'VAR':'YOK'}; ${rotateSide} kontrolü:${rotateAllowed?'açık':'kapalı'} skor:${rotateScore} tuzak:${rotateTrapEvidenceOk?'VAR':'YOK'} giriş-izi:${rotateEntryTraceOk?'VAR':'YOK'}`;
             // R311M: TEK PATRON AI — "riskli yön freni" botun kendi görüşü. Coin GERÇEK ADAYSA (canlı setup işareti var)
             // + AI bütçesi varsa, bu yumuşak kapı coini KESMESİN, AI'ya DEVRET. AI tepede/riskli görürse zaten WAIT der.
-            const r311mDevret = AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+            const r311mDevret = AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
             if (r311mDevret) {
               decisionChain.r309eFromWait = true;
               decisionChain.r300SoftReject = true;
@@ -16667,7 +16696,7 @@ async function runAutoScan(prioritySymbol=null) {
           // R310Z (kullanıcı madde1): ATR yüksek ama AŞIRI değilse (atrExtreme yok), AI bütçesi varsa coini KESME —
           // AI'ya DEVRET, son kararı AI versin. ATR bilgisi zaten AI'ya gidiyor; tepede/aşırı volatil görürse WAIT der.
           // Bot AI'dan ÖNCE TOP gainer'ı kesmesin. Sadece gerçek %11+ düşen-bıçak (atrExtreme) kesilir.
-          const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+          const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
           if (atrExtreme || (!atrBridgeAllowedFinal && !atrAiDevret)) {
             logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — ${atrExtreme?'aşırı volatilite (düşen bıçak)':'volatilite riski'} yüksek, atlandı`);
             markAutoSkip(coin.symbol, atrExtreme ? `ATR %${coinAtrPct.toFixed(1)} aşırı (düşen bıçak güvenlik)` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*4 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
@@ -16687,7 +16716,7 @@ async function runAutoScan(prioritySymbol=null) {
         if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
           const lqSpread = Number(analysis.r15?.liquidityQuality?.spread || 0);
           const gercekKayma = lqSpread > 0.12; // %0.12 üstü = gerçek geniş makas = gerçek kayma riski
-          const poorAiDevret = !gercekKayma && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || r310vCanliMi(decisionChain, analysis));
+          const poorAiDevret = !gercekKayma && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
           if (gercekKayma || !poorAiDevret) {
             logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — ${gercekKayma?'gerçek geniş makas kayma riski':'AI bütçe/aday değil'}, atlandı`);
             markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
