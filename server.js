@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R318C_ENGEL_FIX';
+const LAZARUS_BUILD = 'R318D_HTF_RSI_ENGEL';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -17392,6 +17392,20 @@ async function runAutoScan(prioritySymbol=null) {
                       if (!deltaDestek && (oiCelisik || deltaTersKirilimda)) {
                         logAuto(`🛑 ${coin.symbol} R318 SAHTE KIRILIM ENGEL: kırılım var ama akış desteklemiyor (delta ${dlt.toFixed(1)}${oiCelisik?', OI '+oi1h.toFixed(1)+'%':''}, sweep yok) = desteksiz breakout (RESOLV/BAS dersi) — AÇILMADI`);
                         markAutoSkip(coin.symbol, `R318: desteksiz kırılım engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      }
+                    }
+                    // ENGEL 4: HTF AŞIRI RSI — 1h RSI ekstremde + giriş ters yönde (sweep yok). M LONG -5.87 dersi.
+                    // LONG'da 1hRSI≥78 = HTF aşırı alım, dipten LONG = HTF direncine karşı (düşüş gelir). SHORT simetrik.
+                    // sweep varsa muaf (yukarıda zaten sweepVar kontrolü içindeyiz). Sadece EKSTREM RSI (78/22) keser, boğmaz.
+                    const r1h = Number(decisionChain?.rsi1h ?? analysis?.timeframes?.['1h']?.rsi ?? NaN);
+                    if (Number.isFinite(r1h)) {
+                      if (ai.side === 'LONG' && r1h >= 78) {
+                        logAuto(`🛑 ${coin.symbol} R318 HTF-RSI ENGEL: 1hRSI ${r1h.toFixed(0)} aşırı ALIM + sweep'siz LONG = HTF direncine karşı dip-long (M LONG dersi) — AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R318: HTF aşırı alımda sweep'siz LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      }
+                      if (ai.side === 'SHORT' && r1h <= 22) {
+                        logAuto(`🛑 ${coin.symbol} R318 HTF-RSI ENGEL: 1hRSI ${r1h.toFixed(0)} aşırı SATIM + sweep'siz SHORT = HTF desteğine karşı tepe-short — AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R318: HTF aşırı satımda sweep'siz SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
                       }
                     }
                   }
