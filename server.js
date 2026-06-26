@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R319D_AMA_REGEX_FIX';
+const LAZARUS_BUILD = 'R322_INDIKATOR_TEKNIK';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1178,6 +1178,28 @@ function r316TrendlineBreak(k5m) {
       }
     }
     out.note = out.note.trim() || `trend çizgisi sağlam — kırılım yok${out.slopeUp?' (yükselen trend DEVAM ediyor — trend yönü YUKARI, SHORT trende karşıdır dikkat)':out.slopeDown?' (düşen trend DEVAM ediyor — trend yönü AŞAĞI, LONG trende karşıdır dikkat)':' (net diagonal trend yok, yatay)'}`;
+    // R320: KANAL İÇİ KONUM — fiyat alt bant(lowProj) ile üst bant(highProj) arasında nerede? (kullanıcı kıstası: doğru zamanlama)
+    // Düşen kanal: üst banttan(>%70) SHORT doğru, dipten LONG yanlış. Yükselen kanal: alt banttan(<%30) LONG doğru, tepeden SHORT yanlış.
+    try {
+      const bandLow = Math.min(lowProj, highProj), bandHigh = Math.max(lowProj, highProj);
+      const bandRange = bandHigh - bandLow;
+      if (bandRange > 0) {
+        const pos = (lp - bandLow) / bandRange; // 0=alt bant, 1=üst bant
+        out.kanalKonum = +(pos*100).toFixed(0); // %0-100 kanal içi konum
+        const ust = pos >= 0.70, alt = pos <= 0.30, orta = !ust && !alt;
+        out.kanalNote = '';
+        if (out.slopeDown) { // düşen kanal
+          if (ust) out.kanalNote = `DÜŞEN kanal ÜST bandında (%${out.kanalKonum}) — SHORT için DOĞRU zamanlama (tepeden düşüşe)`;
+          else if (alt) out.kanalNote = `DÜŞEN kanal ALT bandında (%${out.kanalKonum}) — SHORT geç/dipte, LONG kanala karşı bıçak; dönüş teyidi olmadan girme`;
+          else out.kanalNote = `DÜŞEN kanal ORTASINDA (%${out.kanalKonum}) — net zamanlama yok, üst banda çekilmeyi bekle`;
+        } else if (out.slopeUp) { // yükselen kanal
+          if (alt) out.kanalNote = `YÜKSELEN kanal ALT bandında (%${out.kanalKonum}) — LONG için DOĞRU zamanlama (dipten yükselişe)`;
+          else if (ust) out.kanalNote = `YÜKSELEN kanal ÜST bandında (%${out.kanalKonum}) — LONG geç/tepede, SHORT kanala karşı; dönüş teyidi olmadan girme`;
+          else out.kanalNote = `YÜKSELEN kanal ORTASINDA (%${out.kanalKonum}) — net zamanlama yok, alt banda çekilmeyi bekle`;
+        }
+        if (out.kanalNote) out.note += ' | ' + out.kanalNote;
+      }
+    } catch(_kanalE) {}
     return out;
   } catch(_) { return null; }
 }
@@ -3426,14 +3448,16 @@ Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse
 ★ SİMETRİ İLKESİ (tüm dersler için): Aşağıdaki derslerin hepsi İKİ YÖNLÜDÜR. Bir ders SHORT örneğiyle anlatıldıysa (örn "tepede dağılım, delta hâlâ alıcı = erken short"), LONG için AYNEN TERSİ geçerlidir (dipte toplama, delta hâlâ satıcı = erken long). Bir ders LONG örneğiyle anlatıldıysa, SHORT için tersini uygula. Tepe↔dip, alıcı↔satıcı, üst süpürme↔alt süpürme, red↔reclaim hep simetrik. Hiçbir dersi tek yöne özel sanma; örnek hangi yöndeyse, karşı yön için aynadaki halini düşün.
 
 ★★ TREND YÖNÜ HER ŞEYDEN ÖNCE GELİR (en pahalı kayıpların kök sebebi — MUTLAKA OKU): Bir işlem açmadan önce TEK soru: "5m trend yönü ne, ben trend YÖNÜNDE mi KARŞISINDA mı gireceğim?" botOkumasi.trendCizgisi sana bunu söyler: "YÜKSELEN TREND DEVAM" = trend YUKARI (burada SHORT = yükselen bıçak, ÇOK TEHLİKELİ, sadece NET trend KIRILIMI + delta dönüşü + sweep varsa düşün). "DÜŞEN TREND DEVAM" = trend AŞAĞI (burada LONG = düşen bıçak, aynı tehlike). "YÜKSELEN TREND KIRILDI↓" = trend YUKARIYDI ama AŞAĞI döndü = artık SHORT bölgesi (dönüş onaylandı). "DÜŞEN TREND KIRILDI↑" = trend AŞAĞIYDI ama YUKARI döndü = artık LONG bölgesi. KURAL: trend yönünde işlem KOLAY para, trende karşı işlem SADECE net kırılım+dönüş onayıyla. Trende karşı "üst avlandı / dağıtım" gibi tek sinyalle GİRME — o sinyal trend devam ederken seni yükselen bıçağa sokar.
+★★ KANAL İÇİ KONUM = DOĞRU ZAMANLAMA (kullanıcının kıstası — kazanç burada): trendCizgisi sana fiyatın kanal içi konumunu da söyler (%0=alt bant, %100=üst bant). Bu, "doğru zamanlamanın" kalbidir — aynı kanal, doğru yerden girilirse kazanç, yanlış yerden kayıp. DÜŞEN kanalda: SADECE ÜST banttan (%70+) SHORT aç (tepeden düşüşe = doğru zamanlama); alt bandda (%30-) SHORT açma (geç kaldın, dönüş gelir), LONG hiç açma (kanala karşı bıçak). YÜKSELEN kanalda: SADECE ALT banttan (%30-) LONG aç (dipten yükselişe); üst bandda (%70+) LONG açma (geç/tepe), SHORT açma (kanala karşı). Kanal ORTASINDA (%30-70): net zamanlama yok, banda çekilmeyi BEKLE. Gerçek ders: aynı düşen kanalda üst banttan SHORT +kazanç, ama dipten/ortadan giriş kayıp (AIN −17.76: düşen kanalın DİBİNDE SHORT açıldı, fiyat üst banda döndü, patladı). Kanal konumu trendCizgisi+premium/discount ile ÇAPRAZ çalışır — üçü aynı yeri gösteriyorsa en net giriş.
 
+★★ PRO TRADER GÖZÜ — TÜM GÖSTERGELERİ OKU AMA BAĞIMLI KALMA (kullanıcının kuralı): Bir profesyonel trader grafiğe baktığında kanalı, Bollinger bantlarını, divergence'ı, momentumu, sweep'i, pattern'i HEPSİNİ görür — ama hiçbirine kör bağımlı değildir, bir BÜTÜN olarak okur. Sen de öyle yap. gostergeKonumu (5m Bollinger): üst bant dışı = aşırı uzama (ama trend yukarıysa devam edebilir, dönüş garantisi değil); alt bant dışı = aşırı satım tepki; SIKIŞMA = patlama yakıtı, yön bekle. divergence: fiyat tepe ama RSI düşük tepe (bearish) = yükseliş zayıflıyor; tersi (bullish) = düşüş zayıflıyor — DÖNÜŞ İPUCUDUR, tek başına emir değil. ★momentumDurum (ÇOK ÖNEMLİ, en pahalı kayıpların önlenmesi): MACD momentumu trend yönünde ZAYIFLIYORSA, o trende geç girmek BÜYÜK risktir — "yükseliş momentumu zayıflıyor" görürsen yükselen trende LONG açma (geç kaldın, dönüş gelebilir); "düşüş momentumu zayıflıyor" görürsen düşen trende SHORT açma. Momentum SIFIRI ters kesti = yön değişimi başlıyor olabilir, dönüş işlemi için teyit ara. invertedFVG: kullanılmış bir FVG ters S/R'a döner — "inverted FVG direnç yakın" varsa LONG zorlanır, "destek yakın" varsa SHORT zorlanır; bu gizli seviyeleri TP/SL koyarken hesaba kat. KRİTİK: bu göstergeler trendCizgisi + kanal konumu + sweep ile AYNI yöne işaret ediyorsa = güçlü teyit, gir. Çelişiyorsa = belirsizlik, BEKLE. Hiçbir göstergeyi tek başına "yön sebebi" yapma — bir pro trader gibi 3-4 şeyin hizalanmasını ara. Gösterge yokluğu (null) = o veri yok demek, olumsuz sinyal değil.
 ★★ "mmDurum" ALANINI DOĞRU OKU (denge için, ama SAPLANTI yapma): mmDurum botun MM ölçümüdür — DAĞITIM/ÜST-tuzak/SAHTE-PUMP gibi işaretler SHORT İHTİMALİ doğurur, TOPLAMA/ALT-tuzak LONG ihtimali. AMA bu işaretler TEK BAŞINA YÖN DEĞİLDİR. KRİTİK: "DAĞITIM" veya "üst tuzak" gördüğünde, ÖNCE trendCizgisi'ne bak — eğer trend HÂLÂ YUKARIYSA (yükselen trend devam), o "dağıtım" işareti büyük olasılıkla sadece sağlıklı bir geri çekilmedir, GERÇEK dağıtım değil; oraya SHORT açarsan yükselen bıçağı tutarsın (bu hatayı 24 saatte 11 SHORT'la yaşadık, -46$). GERÇEK SHORT için ŞART: trend YUKARI değil + (trend çizgisi aşağı kırıldı VEYA düşen trend zaten devam ediyor) + üst sweep+RED + delta SATIŞA döndü. Üçü birden yoksa SHORT AÇMA, bekle. mmDurum'u yön sebebi DEĞİL, trend+delta+sweep ile çapraz doğrulanacak bir İPUCU olarak kullan.
 
 ★ SHORT ve LONG EŞİT ÖNEMDE — ama ikisi de AYNI disipline tabi: Düşüş de yükseliş kadar para kazandırır, yön körü olma. AMA "denge" demek "her tepede SHORT ara" demek DEĞİL. Denge şu: trend AŞAĞI kırıldıysa SHORT'u LONG kadar rahat aç; trend YUKARI devam ederken LONG'u nasıl trende-karşı açmıyorsan, SHORT'u da öyle açma. Eşitlik DİSİPLİNDE, saplantıda değil. Geçmişte hep tek yön açıp kaybettiysen (buCoinGecmis), körlüğü kır ama karşı yöne de aynı kalite şartını uygula.
 
 
 ★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot PUAN/YÖN DAYATMAZ — bu nötr analizi kendi ham mum okumanla ÇAPRAZ DOĞRULA. Kodlar: "L12/S0"=12 alıcı 0 satıcı (güçlü LONG akış), "kanıt yetersiz"=net sweep/reclaim yok (dikkat), "Tuzak dönüşü"=tuzak sezildi, "SSL_ALINDI_CHOCH_BEKLENIYOR"=alt süpürüldü reclaim bekleniyor, "DEMAND_OB"=destek. Bot+sen aynı yön=en güçlü teyit; çelişki=WAIT. Boş alan/null=veri yok, uydurma.
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, ★trendCizgisi[EĞİK trend yönü+kırılımı — TREND YÖNÜ İÇİN ÖNCE BUNU OKU], ★mmDurum[MM faz+tuzak ipucu — trendCizgisi ile ÇAPRAZ oku, tek başına yön sayma], grafikFormasyon[1h teyitli klasik formasyon: çift tepe/dip, baş-omuz — HTF dönüş sinyali, varsa güçlü], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların — aynı hataya düşme], botAnalizOzeti).
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, ★trendCizgisi[EĞİK trend yönü+kırılımı — TREND YÖNÜ İÇİN ÖNCE BUNU OKU], ★mmDurum[MM faz+tuzak ipucu — trendCizgisi ile ÇAPRAZ oku, tek başına yön sayma], grafikFormasyon[1h teyitli klasik formasyon: çift tepe/dip, baş-omuz — HTF dönüş sinyali, varsa güçlü], ★gostergeKonumu[5m Bollinger bant konumu+sıkışma — bir pro trader gibi oku, BİLGİ amaçlı tek başına yön değil], ★divergence[fiyat-RSI uyumsuzluğu 5m/1h — dönüş İPUCU, tetik değil], ★momentumDurum[MACD momentum dönüşü/zayıflama — yükseliş/düşüş gücü bitiyor mu, geç giriş uyarısı], ★invertedFVG[kullanılmış FVG ters S/R — gizli direnç/destek], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların — aynı hataya düşme], botAnalizOzeti).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -6786,12 +6810,16 @@ function detectChartPatterns(klines, lastPrice, atrPct = 1.5) {
     const [a,b,c,d] = [px[i], px[i+1], px[i+2], px[i+3]];
     if (!a || !b || !c || !d) continue;
     if (a.type==='H' && b.type==='L' && c.type==='H' && d.type==='L' && near(b.v,d.v) && c.v > Math.max(a.v,b.v)) {
-      if (lastPrice > c.v * 0.995) { patterns.push({name:'DoubleBottom',str:4,dir:'BULL'}); bullScore += 16; }
-      else { patterns.push({name:'DoubleBottomForming',str:2,dir:'BULL'}); bullScore += 6; }
+      // R321D ölçülü hedef: çift dip yüksekliği (boyun-dip) kadar yukarı projeksiyon
+      const neck = Math.max(a.v, c.v), bot = Math.min(b.v, d.v), tgt = +(neck + (neck - bot)).toFixed(8);
+      if (lastPrice > c.v * 0.995) { patterns.push({name:'DoubleBottom',str:4,dir:'BULL',target:tgt}); bullScore += 16; }
+      else { patterns.push({name:'DoubleBottomForming',str:2,dir:'BULL',target:tgt}); bullScore += 6; }
     }
     if (a.type==='L' && b.type==='H' && c.type==='L' && d.type==='H' && near(b.v,d.v) && c.v < Math.min(a.v,d.v)) {
-      if (lastPrice < c.v * 1.005) { patterns.push({name:'DoubleTop',str:4,dir:'BEAR'}); bearScore += 16; }
-      else { patterns.push({name:'DoubleTopForming',str:2,dir:'BEAR'}); bearScore += 6; }
+      // R321D ölçülü hedef: çift tepe yüksekliği (tepe-boyun) kadar aşağı projeksiyon
+      const neck = Math.min(a.v, c.v), top = Math.max(b.v, d.v), tgt = +(neck - (top - neck)).toFixed(8);
+      if (lastPrice < c.v * 1.005) { patterns.push({name:'DoubleTop',str:4,dir:'BEAR',target:tgt}); bearScore += 16; }
+      else { patterns.push({name:'DoubleTopForming',str:2,dir:'BEAR',target:tgt}); bearScore += 6; }
     }
   }
   for (let i = 0; i < px.length - 4; i++) {
@@ -8949,6 +8977,82 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const atrPct=lastPrice>0?(atr1h/lastPrice)*100:1;
     const vwap1h=vwap(k1h),vwap4h=vwap(k4h);
     const bb1h=bollinger(k1h),bb15m_=bollinger(k15m);
+    // R320B: 5m Bollinger (ANA zaman dilimi — pro trader'ın ilk baktığı). Konum: fiyat bantta nerede (%0=alt, %100=üst).
+    const bb5m=bollinger(k5m);
+    const bb5mPos = (bb5m.upper > bb5m.lower) ? Math.round((lastPrice - bb5m.lower)/(bb5m.upper - bb5m.lower)*100) : 50;
+    const bb5mDurum = bb5m.width < 2.5 ? 'SIKIŞMA (patlama yakıtı — yön bekle)' : bb5mPos >= 100 ? 'fiyat ÜST bant DIŞINDA (aşırı uzama, dönüş/geri-çekilme riski)' : bb5mPos <= 0 ? 'fiyat ALT bant DIŞINDA (aşırı uzama, tepki/dönüş riski)' : bb5mPos >= 80 ? 'üst banda yakın (%'+bb5mPos+', premium)' : bb5mPos <= 20 ? 'alt banda yakın (%'+bb5mPos+', discount)' : 'bant ortası (%'+bb5mPos+', net konum yok)';
+
+    // ═══ R321B: MOMENTUM ZAYIFLAMA (Nadaraya-Watson dersi — dev kayıpların panzehiri) ═══
+    // Mantık: MACD histogram (momentum) TEPE yapıp düşmeye başladıysa = yükseliş momentumu BİTİYOR (erken uyarı).
+    // AIN/IDOL/M dev kayıpları: bot trendin devam edeceğini sandı ama momentum çoktan zayıflıyordu. Bu onu yakalar.
+    const r321MomentumZayiflama = (function(){
+      try {
+        const closes = k5m.map(k=>parseFloat(k[4]));
+        if (closes.length < 35) return null;
+        const emaArr = (arr,p)=>{ const k=2/(p+1); let e=arr[0]; const out=[e]; for(let i=1;i<arr.length;i++){e=arr[i]*k+e*(1-k);out.push(e);} return out; };
+        const ema12=emaArr(closes,12), ema26=emaArr(closes,26);
+        const macdLine=closes.map((_,i)=>ema12[i]-ema26[i]);
+        const signalArr=emaArr(macdLine.slice(-20),9);
+        const hist=macdLine.slice(-20).map((m,i)=>m-signalArr[i]);
+        const n=hist.length;
+        if (n<4) return null;
+        const h0=hist[n-1], h1=hist[n-2], h2=hist[n-3];
+        // Pozitif momentum tepe yapıp düşüyor = yükseliş zayıflıyor (SHORT dönüş ipucu)
+        const bullZayifliyor = h2>0 && h1>0 && h1>h2 && h0<h1 && h0>0;
+        // Negatif momentum dip yapıp yükseliyor = düşüş zayıflıyor (LONG dönüş ipucu)
+        const bearZayifliyor = h2<0 && h1<0 && h1<h2 && h0>h1 && h0<0;
+        // Sıfır kesişimi = momentum yön değiştirdi (güçlü)
+        const bullKesti = h1<=0 && h0>0;
+        const bearKesti = h1>=0 && h0<0;
+        if (bullKesti) return 'momentum YUKARI döndü (MACD hist sıfırı yukarı kesti — yükseliş başlıyor olabilir)';
+        if (bearKesti) return 'momentum AŞAĞI döndü (MACD hist sıfırı aşağı kesti — düşüş başlıyor olabilir)';
+        if (bullZayifliyor) return 'YÜKSELİŞ momentumu ZAYIFLIYOR (MACD hist tepe yapıp düşüyor — yükselen trende LONG geç olabilir, SHORT dönüş izle)';
+        if (bearZayifliyor) return 'DÜŞÜŞ momentumu ZAYIFLIYOR (MACD hist dip yapıp yükseliyor — düşen trende SHORT geç olabilir, LONG dönüş izle)';
+        return null;
+      } catch(_){ return null; }
+    })();
+
+    // ═══ R321C: INVERTED FVG (IFVG Sniper dersi — kullanılmış FVG ters S/R olur) ═══
+    // Mantık: bir bull FVG (low>high[2]) oluşur; fiyat onu AŞAĞI deler (gövde altına kapanır) → o FVG artık DİRENÇ.
+    // ICT tekniği: doldurulmuş/delinmiş FVG ters yönde S/R görevi görür. Sahte kırılım ayıklamaya yarar.
+    const r321InvertedFVG = (function(){
+      try {
+        const win = k5m.slice(-30);
+        if (win.length < 10) return null;
+        const o=i=>parseFloat(win[i][1]), h=i=>parseFloat(win[i][2]), l=i=>parseFloat(win[i][3]), c=i=>parseFloat(win[i][4]);
+        const atrApprox = (h(win.length-1)-l(win.length-1)) || lastPrice*0.005;
+        const buf = atrApprox * 0.05;
+        // Son 30 mumda FVG'leri bul, sonra inversion oldu mu bak
+        for (let i=win.length-3; i>=2; i--){
+          // bull FVG: i-2'nin high < i'nin low (boşluk yukarı)
+          if (l(i) > h(i-2) + buf){
+            const fvgTop=l(i), fvgBot=h(i-2);
+            // sonradan fiyat bu FVG'yi aşağı deldi mi? (gövde kapanışı fvgBot altında)
+            for (let j=i+1; j<win.length; j++){
+              if (c(j) < fvgBot - buf){
+                // şimdi fiyat o seviyenin altında mı? → ters direnç aktif
+                if (lastPrice < fvgBot && lastPrice > fvgBot*0.985)
+                  return `inverted FVG DİRENÇ yakın (${fvgBot.toFixed(6)} — eski bull FVG aşağı delindi, şimdi direnç; LONG zorlanabilir)`;
+                break;
+              }
+            }
+          }
+          // bear FVG: i-2'nin low > i'nin high (boşluk aşağı)
+          if (h(i) < l(i-2) - buf){
+            const fvgTop=l(i-2), fvgBot=h(i);
+            for (let j=i+1; j<win.length; j++){
+              if (c(j) > fvgTop + buf){
+                if (lastPrice > fvgTop && lastPrice < fvgTop*1.015)
+                  return `inverted FVG DESTEK yakın (${fvgTop.toFixed(6)} — eski bear FVG yukarı delindi, şimdi destek; SHORT zorlanabilir)`;
+                break;
+              }
+            }
+          }
+        }
+        return null;
+      } catch(_){ return null; }
+    })();
+
 
     // R29: BTC göreli güç bağlamı. R153: artık Promise.allSettled içinde paralel çekildi (rBtc5m).
     let btc5mCtx = { ok:false, change15m:0, change60m:0, dropping:false, bouncing:false, redCandles:0 };
@@ -9866,6 +9970,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const brk1h    = detectBreakerBlocks(k1h);
     const brk4h    = detectBreakerBlocks(k4h);
     const rsiDiv1h = detectRSIDivergence(k1h);
+    const rsiDiv5m = detectRSIDivergence(k5m); // R320B: 5m divergence (ANA TF — fiyat-RSI uyumsuzluğu, pro trader dönüş sinyali)
     const rsiDiv4h = detectRSIDivergence(k4h);
     const mtfBias  = calcMTFBias(rsi4h,rsi1h,rsi15m,rsi5m,ema20_4h,ema50_4h,ema200_4h,ema20_1h,ema50_1h);
     const liqVoids1h = detectLiquidityVoids(k1h.slice(-30));
@@ -13208,7 +13313,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         const pats = (_chart?.patterns || []).filter(p => /^(DoubleTop|DoubleBottom|HeadShoulders|InvHeadShoulders)$/.test(p.name));
         if (!pats.length) return null;
         const map = { DoubleTop:'ÇİFT TEPE (M, düşüş dönüşü → SHORT)', DoubleBottom:'ÇİFT DİP (W, yükseliş dönüşü → LONG)', HeadShoulders:'BAŞ-OMUZ (düşüş dönüşü → SHORT)', InvHeadShoulders:'TERS BAŞ-OMUZ (yükseliş dönüşü → LONG)' };
-        return pats.map(p => map[p.name]).join(' · ') + ' (1h teyitli formasyon)';
+        return pats.map(p => map[p.name] + (Number.isFinite(p.target) ? ` [ölçülü hedef ≈${p.target}]` : '')).join(' · ') + ' (1h teyitli formasyon)';
       } catch(_) { return null; }
     })();
 
@@ -13257,7 +13362,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       equalLevels: { '1h':eqLvl1h, '4h':eqLvl4h },
       rvol: { '5m':rvol5m, '1h':rvol1h, '4h':rvol4h },
       breakerBlocks: { '1h':brk1h, '4h':brk4h },
-      rsiDivergence: { '1h':rsiDiv1h, '4h':rsiDiv4h },
+      rsiDivergence: { '5m':rsiDiv5m, '1h':rsiDiv1h, '4h':rsiDiv4h },
+      bb5m: { ...bb5m, pos:bb5mPos, durum:bb5mDurum }, // R320B: 5m Bollinger konumu (pro trader gözü)
+      momentumZayiflama: r321MomentumZayiflama, // R321B: MACD momentum dönüşü/zayıflama (dev kayıp panzehiri)
+      invertedFVG: r321InvertedFVG, // R321C: kullanılmış FVG ters S/R (sahte kırılım ayıklama)
       mtfBias,
       liquidityVoids: liqVoids1h,
       // ── R15 YENİ MODÜLLER ──────────────────────────────────────────────────
@@ -17279,8 +17387,30 @@ async function runAutoScan(prioritySymbol=null) {
                   if (!bits.length) return null;
                   return bits.join(' · ') + ' · NOT: bu MM ölçümüdür, YÖN DEĞİL — trendCizgisi + delta + sweep ile ÇAPRAZ DOĞRULA, tek başına SHORT/LONG sebebi sayma.';
                 })(),
-                // ═══ R316D: KLASİK GRAFİK FORMASYONU (1h teyitli — çift tepe/dip, baş-omuz) ═══
-                grafikFormasyon: analysis?.r316ChartPat || null,
+                // ═══ R320B: GÖSTERGE KONUMU (Bollinger + divergence — pro trader gözü, BİLGİ amaçlı, blok DEĞİL) ═══
+                // Kullanıcı: AI bir pro trader gibi tüm göstergeleri görsün ama bağımlı kalmasın. Bunlar İPUCU, tek başına yön değil.
+                gostergeKonumu: (function(){
+                  const bb = analysis?.bb5m;
+                  if (!bb || !bb.durum) return null;
+                  return `5m Bollinger: ${bb.durum} | bant genişlik %${bb.width} (dar=sıkışma/patlama yakın, geniş=trend aktif). NOT: Bollinger tek başına yön değil — trendCizgisi+sweep ile çapraz oku; üst bant aşımı trend YUKARIYSA devam olabilir, dönüş garantisi değil.`;
+                })(),
+                divergence: (function(){
+                  const d5 = analysis?.rsiDivergence?.['5m'];
+                  const d1 = analysis?.rsiDivergence?.['1h'];
+                  const bits = [];
+                  if (d5?.bullDiv) bits.push('5m BULLISH divergence (fiyat↓ ama RSI↑ = düşüş zayıflıyor, LONG dönüş İHTİMALİ)');
+                  if (d5?.bearDiv) bits.push('5m BEARISH divergence (fiyat↑ ama RSI↓ = yükseliş zayıflıyor, SHORT dönüş İHTİMALİ)');
+                  if (d5?.hiddenBull) bits.push('5m gizli bull divergence (trend DEVAM sinyali, LONG)');
+                  if (d5?.hiddenBear) bits.push('5m gizli bear divergence (trend DEVAM sinyali, SHORT)');
+                  if (d1?.bullDiv) bits.push('1h bullish divergence (HTF dönüş zemini, LONG)');
+                  if (d1?.bearDiv) bits.push('1h bearish divergence (HTF dönüş zemini, SHORT)');
+                  if (!bits.length) return null;
+                  return bits.join(' · ') + ' · NOT: divergence dönüş İPUCUDUR, tetik DEĞİL — sweep+reclaim veya trend kırılımı ile teyit et, tek başına girme.';
+                })(),
+                // ═══ R321B: MOMENTUM ZAYIFLAMA (MACD histogram dönüşü — dev kayıpların panzehiri, BİLGİ) ═══
+                momentumDurum: analysis?.momentumZayiflama || null,
+                // ═══ R321C: INVERTED FVG (kullanılmış FVG ters S/R — sahte kırılım ayıklama, BİLGİ) ═══
+                invertedFVG: analysis?.invertedFVG || null,
                 // ═══ R316: LEDGER HAFIZA — bu coindeki kendi geçmiş işlem sonuçların ═══
                 buCoinGecmis: r311zCoinGecmisOzeti(coin.fullSymbol || (coin.symbol ? coin.symbol + 'USDT' : ''))
               },
@@ -17420,6 +17550,27 @@ async function runAutoScan(prioritySymbol=null) {
                       if (ai.side === 'SHORT' && r1h <= 22) {
                         logAuto(`🛑 ${coin.symbol} R318 HTF-RSI ENGEL: 1hRSI ${r1h.toFixed(0)} aşırı SATIM + sweep'siz SHORT = HTF desteğine karşı tepe-short — AÇILMADI`);
                         markAutoSkip(coin.symbol, `R318: HTF aşırı satımda sweep'siz SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      }
+                    }
+                    // ENGEL 5: KANALA KARŞI ZAMANLAMA — düşen kanalın DİBİNDEN SHORT / yükselen kanalın TEPESİNDEN LONG (sweep yok)
+                    // Kullanıcı kıstası: aynı kanal, yanlış yerden = kayıp. AIN -17.76 dersi (düşen kanal dibinde SHORT, fiyat üst banda döndü).
+                    const tr3 = analysis?.r316Trend;
+                    if (tr3 && tr3.ok && Number.isFinite(tr3.kanalKonum)) {
+                      const kp = tr3.kanalKonum; // %0=alt bant, %100=üst bant
+                      // düşen kanal + SHORT + dipte (%30-) = geç/dönüş riski → engelle
+                      if (tr3.slopeDown && ai.side === 'SHORT' && kp <= 30) {
+                        logAuto(`🛑 ${coin.symbol} R320 KANAL ENGEL: düşen kanal DİBİNDE (%${kp}) sweep'siz SHORT = geç giriş/dönüş riski (AIN dersi) — AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R320: düşen kanal dibinde SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      }
+                      // yükselen kanal + LONG + tepede (%70+) = geç/tepe riski → engelle
+                      if (tr3.slopeUp && ai.side === 'LONG' && kp >= 70) {
+                        logAuto(`🛑 ${coin.symbol} R320 KANAL ENGEL: yükselen kanal TEPESİNDE (%${kp}) sweep'siz LONG = geç giriş/tepe riski — AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R320: yükselen kanal tepesinde LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      }
+                      // düşen kanal + LONG (kanala karşı, herhangi konum) = bıçak → sadece kanal ortası/dibinde engelle (üstte dönüş olabilir)
+                      if (tr3.slopeDown && ai.side === 'LONG' && kp <= 50) {
+                        logAuto(`🛑 ${coin.symbol} R320 KANAL ENGEL: düşen kanalda (%${kp}) sweep'siz LONG = kanala karşı bıçak — AÇILMADI`);
+                        markAutoSkip(coin.symbol, `R320: düşen kanalda LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
                       }
                     }
                   }
