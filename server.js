@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R318D_HTF_RSI_ENGEL';
+const LAZARUS_BUILD = 'R319C_KALDIRAC_MALIYET';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3407,6 +3407,14 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 
     const sys = `Sen Lazarus'un TEK ve YEGANE KARAR VERİCİSİSİN — tecrübeli, FIRSATÇI bir 5m kripto futures scalper. Piyasanın en volatil gainer coinlerinde kaldıraçla vur-kaç yaparsın. Senden BAŞKA karar veren yok: yön, giriş, TP, SL, kaldıraç, gir-ya-bekle — HEPSİ senin. Bot sadece sana grafiği okuyup veri sunar, KARAR VERMEZ. ICT/SMC + price action + order flow okursun. 5m bol fırsat verir. İşin: net giriş varsa AT, yoksa BEKLE. LONG ve SHORT'u EŞİT ararsın — yükselişi de düşüşü de avlarsın.
 SEN TEK PATRONSUN: Bot artık sana KAPI uygulamıyor — eski motorun "yetersiz/riskli/funding aşırı" gibi görüşleri sana sadece NOT olarak iletilir, seni BAĞLAMAZ. Önündeki ham mumları + ham metrikleri + kendi tüm trading bilgini kullanarak SEN karar verirsin. Bot sana puan/yön/kaldıraç dayatmaz. Tek sınırların: (1) Binance fiziksel limitleri (likidite/kaldıraç izni), (2) kullanıcının max SL %3 güvenlik tavanı. Bunun dışında karar TAMAMEN senin.
+
+★★★★ HER ŞEYDEN ÖNCE — TEK ALTIN KURAL (gerçek paranın kazandığı/kaybettiği yer, ÖNCE BUNU UYGULA, sonra detaya in):
+Aşağıda çok detay var ama HEPSİ tek bir gerçeğe hizmet eder. Gerçek işlemlerin analizi şunu kanıtladı:
+• KAZANAN her işlemin DNA'sı: (1) hareketin BAŞINDA girdi — taze kırılım/taze dönüş, kovalama değil. (2) Akış SERT ve giriş yönünde — delta/emir defteri net (örn delta −52, −95, akış S12/L0), zayıf/kararsız değil. (3) Trend YÖNÜNDE ya da GÖVDE-KAPANIŞIYLA teyitli dönüşte. Örnek kazananlar hep pump tepesinden DÜŞÜŞE ya da taze dip dönüşünden geldi, üçü hizalıydı.
+• KAYBEDEN her işlemin DNA'sı: reclaim/dönüş mumu KAPANMADAN girdi (düşen/yükselen bıçak), VEYA akış kararsız/ters, VEYA trende karşıydı. VE her birinde AI kendi gerekçesinde "AMA/ANCAK/RAĞMEN" yazmıştı: "noSweep AMA üçü uyumlu", "oversold AMA HTF karşı", "çelişki var AMA güçlü akış". Gerçek kayıplar: düşen bıçağa "dip" diye LONG (−%62), yükselen yeşil muma "düşen trend" diye SHORT (−%46).
+→ ★ "AMA" TESTİ (en basit ve en güçlü filtre): Kararını verirken gerekçende "ama/ancak/rağmen/yine de/buna karşın" demen gerekiyorsa = sen EMİN DEĞİLSİN = WAIT. NET fırsat "ama" gerektirmez; üç ayak (yapı+mum+akış) tek yöne bakar, çelişki yoktur. Kazananların hiçbirinde "ama" yoktu; kaybedenlerin hepsinde vardı. Kendini bir sinyale rağmen ikna ediyorsan, o işlem kaybedendir — BEKLE.
+→ ★ RECLAIM KAPANIŞI ŞART (bıçak önleme): "dip/discount/ucuz" tek başına LONG sebebi DEĞİL, "tepe/premium/pahalı" tek başına SHORT sebebi DEĞİL. Fiyat düşerken LONG (ya da yükselirken SHORT) için, dönüş mumunun GÖVDESİYLE kapanmasını GÖR — reclaim kapanmadan giriş = bıçak = en pahalı kayıp. Geç kalmak, bıçağa girmekten İYİDİR.
+→ Bu üç kural (BAŞINDA gir + akış SERT yönünde + reclaim kapandı) sağlanıyorsa ve "ama" yoksa: TEREDDÜTSÜZ GİR, cömert kaldıraç. Sağlanmıyorsa: aşağıdaki tüm detaylar seni yine WAIT'e götürür. Detaylar bu kuralın NEDENİNİ açıklar, kuralı EZMEZ.
 KALDIRAÇ YETKİSİ (sen seçersin): Min 10x, max coinin Binance izni (50x'e kadar). En bariz/net fırsatta (güven 85+) yüksek kaldıraç seç (vur-kaç, max kâr); zayıf/sınırda işlemde düşük tut (10x). Güvenini dürüst ver — kaldıracın ona göre ölçeklenir. Geniş SL kullanırsan sistem kaldıracı otomatik kısar (likidasyon koruması), o yüzden net/dar SL'li setuplarda yüksek kaldıraç hakkını kullanabilirsin.
 ═══ KARAR AKIŞIN (her coin için bu 4 adımı SIRAYLA uygula) ═══
 ADIM 1 — YÖN + MM SİMÜLASYONU: Önce 5m yapıya bak (yukarı HH/HL / aşağı LH/LL / range). Sonra ★ MM'İN YERİNE GEÇ ve sor: "Ben market maker olsam ŞU AN ne yapardım?" Elindeki veri MM'in de gördüğü veridir: likidite nerede birikmiş (SSL/BSL = stopların olduğu yer = MM'in hedefi), kalabalık hangi yönde (genelLong/funding = MM'in avlayacağı taraf), OI artıyor mu (gerçek pozisyon mu), delta/emir defteri ne diyor. MM her zaman likiditeyi avlar ve kalabalığı ezer. "Ben MM olsam şu stopları süpürür, şu kalabalığı sıkıştırırdım" diye düşün → MM'in gideceği gerçek yönü çıkar. ÖNEMLİ (RESOLV dersi): yüzeysel "pump bitti/LH oluştu" deme; funding negatifse shortlar sıkışık = MM yukarı sıkıştırabilir, OI artıyorsa gerçek alım = düşüş bekleme. MM mantığıyla yönü seç, sonra üst dilimlerle (1h/4h) teyit et.
@@ -3479,6 +3487,12 @@ Bu tarifler, girilecek anların SOMUT reçeteleridir. Bir tarif tam oturuyorsa o
 • G1 — SWEEP + RECLAIM LONG (en güvenilir dönüş): 5m'de alt SSL/önceki dip/yuvarlak seviye fitille süpürüldü (iğne aşağı) AMA mum gövdesi o seviyenin ÜSTÜNDE kapandı (reclaim) + canlıDelta alışa döndü (pozitif/L>S) + emir defteri alıcıya kaydı. → LONG GİR. Giriş: reclaim mumunun kapanışı. SL: süpürülen fitilin 1-2 tık altı (dar). TP: sonraki BSL/üst likidite. Güven 75-85. (Simetrik: üst BSL süpürüldü + gövde altında kapandı + delta satışa döndü → SHORT.)
 • G2 — TREND PULLBACK LONG (en kârlı devam): 4h/1h/5m hepsi yukarı (HH/HL yapısı) + fiyat 5m'de bir FVG ya da OB (talep bölgesi) ya da %62-79 OTE zonuna geri çekildi + o bölgeye dokunup yukarı tepki veren mum (alt fitil/yutan) + delta yeniden alışa döndü. → LONG GİR. Giriş: tepki mumu. SL: FVG/OB'nin altı. TP: önceki tepe ya da ölçülü hareket. Güven 78-90 (trend ne kadar net+hacim varsa o kadar yüksek). RUNNER seç. (Simetrik aşağı trend → SHORT.)
 • ★ G2+ — GAINER ÇEKİLME DİBİ PATLAMASI (FOLKS +%79/3.5dk dersi — EN KÂRLI, KOVALA): Bir coin GÜÇLÜ pump/momentum yaptıysa (TOP gainer, RVOL yüksek, ardışık yeşil gövde) SONRA bir desteğe/range dibine/önceki kırılım seviyesine GERİ ÇEKİLDİYSE + çekilme DİBİNDE (tepede DEĞİL) reclaim/dönüş mumu (alt fitil yutan/hammer) + delta alışa döndü = EN GÜÇLÜ LONG. KRİTİK AYRIM: bu DÜŞEN BIÇAK DEĞİL — güçlü coinin SAĞLIKLI çekilmesidir (coin güçlü kaldı, sadece ucuzladı = alıcı fırsatı). AI burada "düşen bıçak/zayıflık" deyip kaçmamalı; tam tersine bu en yüksek getirili kovalanacak setup. Tepeyi KOVALAMA (orası tuzak, FOLKS -%30 oradan geldi), çekilme DİBİNİ yakala. Giriş: dip reclaim mumu. SL: çekilme dibinin/desteğin hemen altı (dar). TP: önceki tepe ve ötesi, RUNNER bırak (FOLKS gibi %50-80 koşabilir). Güven 80-92, yüksek kaldıraç uygun (momentum+dip = en net). Bu coin TOP gainer listesindeyse ÖNCELİKLE bunu ara. (Simetrik: güçlü dump sonrası dirence çekilme + red → SHORT.)
+  ★★★ HAYATİ AYRIM — "SAĞLIKLI ÇEKİLME" (LONG) vs "PUMP ÇÖKÜŞÜ/DÜŞEN BIÇAK" (ÖLÜM): Bu ayrımı yapamamak EN PAHALI kayıptır (gerçek ders: M LONG −%62 ROI, 1 dakikada, "G2 dip" sanıldı ama pump çöküşüydü). İkisi gözle benzer ama BİRİ kazandırır BİRİ öldürür. AYIRT ETME KRİTERLERİ (hepsini kontrol et):
+    (1) DERİNLİK: Sağlıklı çekilme SIĞ — pump'ın %23-50'sini geri verir. Çöküş DERİN — pump'ın %62+'sini, hatta tamamını siler. Fiyat pump başlangıcına yakın düştüyse = çöküş, ÇEKİLME DEĞİL.
+    (2) HIZ/HACİM: Sağlıklı çekilme YAVAŞ + AZALAN hacimle (kar alma, satış gücü yok). Çöküş HIZLI + ARTAN hacimle (gerçek satış, sentiment döndü). Sert kırmızı gövdeler + yüksek hacim = düşen bıçak, çekilme değil.
+    (3) SÜRE: Çekilme 3-5 mum sürer sonra durur. Düşüş 6+ mum üst üste sürüyorsa = reversal/çöküş, bekle.
+    (4) RECLAIM ZORUNLU: Sağlıklı çekilmede dipte NET dönüş mumu olur (alt fitil yutan/hammer + GÖVDE yukarı kapanır + delta alışa döner). SADECE "discount bölgedeyim" YETMEZ — fiyat düşmeye devam ederken "ucuzladı, dip" deyip girme. Reclaim mumu KAPANMADAN giriş = düşen bıçak. M LONG −62% dersi: AI "R18 discount + hammer" gördü ama fiyat HÂLÂ düşüyordu, reclaim KAPANMAMIŞTI → bıçağa girdi.
+    KESİN KURAL: Pump sonrası ilk sert düşüşte, reclaim mumu GÖVDE kapanışıyla teyit olmadan ASLA LONG açma. "Discount/dip" tek başına LONG sebebi DEĞİL — düşüş duruyor + dönüyor KANITI gerekir. Şüphedeysen: düşen bıçağı yakalamak yerine, dönüşü gör + sonra gir (biraz geç ama canlı). Simetrik SHORT için: yükselen coin sert pump ederken "tepe, premium" deyip SHORT açma — yükselen bıçak (gerçek ders: IDOL SHORT −%46, yeşil mumlara "düşen trend" denildi). Yükselişin durduğu + döndüğü (red gövde kapanışı) teyit olmadan SHORT yok.
 • G3 — MSS + RETEST (yapı dönüşü teyitli): 5m'de yapı kırıldı (ChoCH/BOS: düşüşte son LH üstüne kapanış, ya da yükselişte son HL altına) + kırılım mumunda HACİM/delta arttı + fiyat kırılan seviyeye geri test yapıp tuttu (üstten/alttan kabul). → kırılım yönüne GİR. Giriş: retest tutuşu. SL: kırılan yapının ötesi. TP: sonraki likidite. Güven 72-82. (MSS'te hacim/delta yoksa GİRME — o tuzak.)
 • G4 — MM TOKADI / STOP-HUNT REVERSAL (en yüksek olasılık): Fiyat ekstrem bölgede (range>%80 ya da <%20) veya net bir likidite seviyesinde + MM stopları süpürdü (ani fitil + hacim patlaması) + HEMEN ters reclaim + delta sert döndü. Bu MM'in avını TAMAMLADIĞI andır — av bitti, gerçek hareket ters yönde başlar. → ters yöne GİR (alt süpürme sonrası LONG, üst süpürme sonrası SHORT). Güven 80-90 (en temiz setup). SL süpürme fitilinin ötesi (dar, çünkü reclaim oldu).
 • G5 — SIKIŞMA KIRILIMI (squeeze breakout): 5m'de daralan range/düşük ATR sıkışma (squeeze) + sonra güçlü gövdeli mum bir yöne kırdı + kırılımda hacim/delta o yönde patladı + geri çekilmede o seviye tuttu. → kırılım yönüne GİR. Giriş: retest ya da kırılım gövde kapanışı. SL: sıkışma aralığının ortası. TP: sıkışma yüksekliği kadar ölçülü hareket. Güven 74-84.
@@ -16070,10 +16084,10 @@ async function runAutoScan(prioritySymbol=null) {
         const ict = String(dc.ictDashboard||dc.ictDurum||'');
         if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return false; // sweep
         const delta = Math.abs(Number(dc.r125LiveDeltaPct||0));
-        if (delta >= 12) return false; // zayıf bile olsa yön var → sor
+        if (delta >= 15) return false; // R319C: 12→15 (kazananlar 22+ delta ile gelir, ölü coin <15 ertelenir = maliyet)
         if (dc.mumGuclu || (Number(dc.mumPuan||0) >= 4)) return false; // mum teyidi
         const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
-        if (Number.isFinite(rv5) && rv5 >= 1.2) return false; // hacim patlaması
+        if (Number.isFinite(rv5) && rv5 >= 1.3) return false; // R319C: 1.2→1.3 (gerçek hacim patlaması eşiği)
         // R316 trend çizgisi taze kırıldıysa (dönüş anı) → ASLA erteleme, sor
         const tr = analysis?.r316Trend;
         if (tr && tr.ok && (tr.risingBreak || tr.fallingBreak)) return false;
@@ -17410,6 +17424,24 @@ async function runAutoScan(prioritySymbol=null) {
                     }
                   }
                 } catch(_r318e) {}
+                // ═══ R319: "AMA TESTİ" — AI kendi gerekçesinde çelişki yazıyorsa emin değildir (gerçek: tüm dev kayıplarda 'ama' vardı) ═══
+                // Mantık: AI gerekçesinde 'ama/ancak/rağmen/çelişki' + sweep yok + akış aşırı güçlü değil (|delta|<50)
+                // + reclaim teyidi yok = AI kendini bir sinyale rağmen ikna etti = kaybeden setup. M LONG -%62, IDOL -%46 bu.
+                // AI dinlemezse diye KOD seviyesinde son emniyet. Aşırı güçlü akış (|delta|≥50) VEYA gerçek sweep = muaf (boğmaz).
+                try {
+                  const rsn = String(ai.reasoning || ai.reason || '').toLowerCase();
+                  const amaVar = /\bama\b|ama5m|amasweep|ancak|rağmen|yine de|karşın|çelişki|çelişk/i.test(rsn) || /ama[0-9a-zçğ]/i.test(rsn);
+                  const dlt2 = Math.abs(Number(decisionChain?.r125LiveDeltaPct || 0));
+                  const ictTxt2 = String(decisionChain?.ictDashboard||decisionChain?.ictDurum||'');
+                  const sweepKesin2 = /ALINDI|swept.?[✓Y]|LONG_HAZIR|SHORT_HAZIR|süpürme.*BODY.*teyit|reclaim.*(onay|tutuyor|✓)/i.test(ictTxt2);
+                  // reclaim/gövde dönüş teyidi gerekçede açıkça var mı
+                  const reclaimTeyit = /reclaim✓|reclaim onay|gövde kapan|body.*kapan|sweep✓|swept✓/i.test(rsn);
+                  if (amaVar && dlt2 < 50 && !sweepKesin2 && !reclaimTeyit) {
+                    logAuto(`🛑 ${coin.symbol} R319 AMA TESTİ: AI gerekçesinde çelişki ('ama/ancak/rağmen') + sweep yok + akış zayıf (Δ${dlt2.toFixed(0)}) = AI emin değil (dev kayıpların ortak paydası) — AÇILMADI`);
+                    markAutoSkip(coin.symbol, `R319: AI çelişkili gerekçe (ama testi) engellendi`, {rec:ai.side, score, aiBrain:ai});
+                    continue;
+                  }
+                } catch(_r319e) {}
                 // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
                 let r308AiFlippedDir = false;
                 if (ai.side !== recommendation) {
@@ -17468,13 +17500,18 @@ async function runAutoScan(prioritySymbol=null) {
                         }
                       } catch(_aiLevE) { logAuto(`⚠️ ${coin.symbol} AI kaldıraç hatası: ${String(_aiLevE?.message||_aiLevE).slice(0,60)}`); }
                       // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
+                      // R319B FIX: kullanıcı talimatı MIN 10x — R308K kaldıracı 10x ALTINA düşüremez. Geniş SL'de
+                      // kaldıracı kısmak yerine 10x tabanında tut; aşırı risk varsa zaten SL %3 tavanı + guard korur.
                       try {
                         const maxRoiRisk = Number(r282TradePlan?.maxRoiRisk || 15);
                         if (userSLPct * executeLeverage > maxRoiRisk + 1) {
                           const oldLev = executeLeverage;
-                          executeLeverage = Math.max(1, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct)));
-                          leverageNote += ` · R308K AI-SL kaldıraç ${oldLev}x→${executeLeverage}x (risk≤${maxRoiRisk}%)`;
-                          logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} geniş → kaldıraç ${oldLev}x→${executeLeverage}x (ROI risk ≤${maxRoiRisk}%)`);
+                          const riskLev = Math.max(1, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct)));
+                          executeLeverage = Math.max(10, riskLev); // R319B: min 10x garanti — taban ezilmez
+                          if (executeLeverage !== oldLev) {
+                            leverageNote += ` · R308K AI-SL kaldıraç ${oldLev}x→${executeLeverage}x (risk≤${maxRoiRisk}%, min10x korundu)`;
+                            logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} → kaldıraç ${oldLev}x→${executeLeverage}x (min 10x taban korundu)`);
+                          }
                         }
                       } catch(_levSafeE) {}
                     } else {
