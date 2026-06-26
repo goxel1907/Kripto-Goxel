@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R319C_KALDIRAC_MALIYET';
+const LAZARUS_BUILD = 'R319D_AMA_REGEX_FIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -17430,7 +17430,9 @@ async function runAutoScan(prioritySymbol=null) {
                 // AI dinlemezse diye KOD seviyesinde son emniyet. Aşırı güçlü akış (|delta|≥50) VEYA gerçek sweep = muaf (boğmaz).
                 try {
                   const rsn = String(ai.reasoning || ai.reason || '').toLowerCase();
-                  const amaVar = /\bama\b|ama5m|amasweep|ancak|rağmen|yine de|karşın|çelişki|çelişk/i.test(rsn) || /ama[0-9a-zçğ]/i.test(rsn);
+                  // R319B regex fix: 'ama'yı ayraçla çevrili her bağlamda yakala (bitişik ama5m, alt çizgili _ama_),
+                  // AMA masum kelimeleri (toplama/kapama/yapamaz/tamamlandı) KAÇIR. AIN SHORT -17.46 'noSweep_ama_akış' dersi.
+                  const amaVar = /(^|[\s_|↓+\-,])ama([\s_|0-9]|$)/i.test(rsn) || /ancak|rağmen|yine de|karşın|çelişk/i.test(rsn);
                   const dlt2 = Math.abs(Number(decisionChain?.r125LiveDeltaPct || 0));
                   const ictTxt2 = String(decisionChain?.ictDashboard||decisionChain?.ictDurum||'');
                   const sweepKesin2 = /ALINDI|swept.?[✓Y]|LONG_HAZIR|SHORT_HAZIR|süpürme.*BODY.*teyit|reclaim.*(onay|tutuyor|✓)/i.test(ictTxt2);
