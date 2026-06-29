@@ -80,6 +80,47 @@ async function cached(key, ttl, fn) {
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
 const LAZARUS_BUILD = 'R323_OPUS_SWEEP_PUMP';
+// ═══ R310v: GELİŞMİŞ TASARRUF FİLTRESİ (AI_SAVER_MODE için) ═══
+function r310vCanliMi(dc, analysis) {
+  try {
+    if (!dc) return false;
+
+    // 1. Bot zaten TRADE kararı vermişse
+    if (String(dc.brainAction || '').toUpperCase() === 'TRADE') return true;
+
+    // 2. Sweep+Reclaim (en güvenilir)
+    const ict = String(dc.ictDashboard || dc.ictDurum || '');
+    if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return true;
+
+    // 3. Botun kendi skor/edge/priority'si yüksekse
+    const score = Number(dc.score || 0);
+    const edge = Number(dc.brainConfidence || 0);
+    const priority = Number(dc.priorityScore || 0);
+    if (score > 75 && edge > 65) return true;
+    if (priority > 70) return true;
+
+    // 4. Güçlü akış veya hacim
+    const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
+    if (delta >= 20) return true;
+
+    const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
+    if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
+
+    // 5. Güçlü mum formasyonu
+    if (dc.mumGuclu || Number(dc.mumPuan || 0) >= 6) return true;
+
+    // 6. R316 trend çizgisi kırıldıysa
+    const tr = analysis?.r316Trend;
+    if (tr && tr.ok && (tr.risingBreak || tr.fallingBreak)) return true;
+
+    // 7. R274 entry ok
+    if (dc.r274Signal && dc.r274Signal.entryOk) return true;
+
+    return false;
+  } catch(_e) {
+    return false;
+  }
+}
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
