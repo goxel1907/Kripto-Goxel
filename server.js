@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R322_INDIKATOR_TEKNIK';
+const LAZARUS_BUILD = 'R323_OPUS_SWEEP_PUMP';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -1058,10 +1058,17 @@ function r140PumpPhase(k5m, atrPct) {
   }
   const atr8  = calcAtr(rows.slice(-8));
   const atr20 = calcAtr(rows.slice(-20));
+  // R323: FLAT/sıfır-volatilite koruması — atr20=0 iken atr8/atr20 = NaN olup AI'a sızıyordu (no-silent-NaN)
+  const _atRatio = (atr20 > 1e-9) ? +(atr8/atr20).toFixed(2) : 1.0;
   const lp = rows.at(-1).c;
   const volAvg = rows.slice(-20,-1).reduce((s,r)=>s+r.v,0)/19;
   const lastVol = rows.at(-1).v;
   const volRatio = volAvg > 0 ? lastVol/volAvg : 1;
+  // R323: PUMP MOMENTUM — son 6 mumdaki fiyat hızı (% değişim). EXPANSION'ı sadece "son mum hacmi"yle
+  // ölçmek pump'ı kaçırıyordu (pump dalgalı gelir, ara mum hacmi düşebilir). Gerçek pump = hızlı fiyat artışı.
+  const mom6 = rows.length>=7 ? (lp - rows.at(-7).c)/rows.at(-7).c*100 : 0; // son 30dk % hareket
+  const vol6Avg = rows.slice(-6).reduce((s,r)=>s+r.v,0)/6; // son 6 mum ort hacim
+  const vol6Ratio = volAvg>0 ? vol6Avg/volAvg : 1; // son 6 mum hacmi 20-mum ortalamasına göre
 
   // Trend: ardışık yükselen düşükler
   let bullSeq = 0, bearSeq = 0;
@@ -1076,15 +1083,25 @@ function r140PumpPhase(k5m, atrPct) {
 
   // Faz kararı
   if (atr8 < atr20*0.65 && bullSeq < 2 && bearSeq < 2) {
-    return { phase:'ACCUMULATION', score:1, label:'sıkışma·birikim', atRatio:+(atr8/atr20).toFixed(2), bullSeq, bearSeq, volRatio:+volRatio.toFixed(2) };
+    return { phase:'ACCUMULATION', score:1, label:'sıkışma·birikim', atRatio:_atRatio, bullSeq, bearSeq, volRatio:+volRatio.toFixed(2) };
   }
   if (bullSeq >= 4 && volRatio < 0.7 && wickGrowing) {
-    return { phase:'DISTRIBUTION', score:-2, label:'dağıtım·sahte pump', atRatio:+(atr8/atr20).toFixed(2), bullSeq, wickGrowing, volRatio:+volRatio.toFixed(2) };
+    return { phase:'DISTRIBUTION', score:-2, label:'dağıtım·sahte pump', atRatio:_atRatio, bullSeq, wickGrowing, volRatio:+volRatio.toFixed(2) };
   }
-  if (bullSeq >= 3 && atr8 > atr20*1.2 && volRatio >= 1.2) {
-    return { phase:'EXPANSION', score:2, label:'trend·genişleme', atRatio:+(atr8/atr20).toFixed(2), bullSeq, volRatio:+volRatio.toFixed(2) };
+  // R323: EXPANSION — eski katı yol (son mum hacmi) KORUNDU + yeni momentum yolu eklendi.
+  // Pump genelde dalgalı: ara mum hacmi düşse de son 6 mumda fiyat hızlı yükseliyorsa = EXPANSION.
+  const expandClassic = bullSeq >= 3 && atr8 > atr20*1.2 && volRatio >= 1.2;
+  // R323: mom6 güçlüyse bullSeq şartı gevşer — sert pump'ta ardışık bull dizisi kırılır (arada kırmızı düzeltme),
+  // ama +%5 hareket zaten EXPANSION'dır. Orta momentumda (+%2-5) bullSeq>=2 iste; güçlüde (+%5) iz şartı düşük.
+  const expandMomentum = (mom6 >= 5.0 && atr8 > atr20*1.1) || (mom6 >= 2.0 && atr8 > atr20*1.1 && vol6Ratio >= 1.0 && bullSeq >= 2);
+  if (expandClassic || expandMomentum) {
+    return { phase:'EXPANSION', score:2, label:'trend·genişleme'+(expandMomentum&&!expandClassic?' (momentum)':''), atRatio:_atRatio, bullSeq, mom6:+mom6.toFixed(1), volRatio:+volRatio.toFixed(2), vol6Ratio:+vol6Ratio.toFixed(2) };
   }
-  return { phase:'TRANSITION', score:0, label:'geçiş·nötr', atRatio:+(atr8/atr20).toFixed(2), bullSeq, bearSeq, volRatio:+volRatio.toFixed(2) };
+  // R323: DÜŞÜŞ-EXPANSION (simetri) — sert düşüş de genişlemedir (SHORT için kritik). Güçlüde bearSeq şartı gevşer.
+  if ((mom6 <= -5.0 && atr8 > atr20*1.1) || (mom6 <= -2.0 && atr8 > atr20*1.1 && vol6Ratio >= 1.0 && bearSeq >= 2)) {
+    return { phase:'EXPANSION_DOWN', score:-2, label:'düşüş·genişleme (SHORT momentum)', atRatio:_atRatio, bearSeq, mom6:+mom6.toFixed(1), vol6Ratio:+vol6Ratio.toFixed(2) };
+  }
+  return { phase:'TRANSITION', score:0, label:'geçiş·nötr', atRatio:_atRatio, bullSeq, bearSeq, mom6:+mom6.toFixed(1), volRatio:+volRatio.toFixed(2) };
 }
 
 // Equal Highs / Lows Tuzak Dedektörü
@@ -1184,8 +1201,17 @@ function r316TrendlineBreak(k5m) {
       const bandLow = Math.min(lowProj, highProj), bandHigh = Math.max(lowProj, highProj);
       const bandRange = bandHigh - bandLow;
       if (bandRange > 0) {
-        const pos = (lp - bandLow) / bandRange; // 0=alt bant, 1=üst bant
-        out.kanalKonum = +(pos*100).toFixed(0); // %0-100 kanal içi konum
+        const rawPos = (lp - bandLow) / bandRange; // 0=alt bant, 1=üst bant
+        const pos = Math.max(0, Math.min(1, rawPos)); // R323: 0-1 sınırla — kırılımda taşma engellenir
+        out.kanalKonum = +(pos*100).toFixed(0); // %0-100 kanal içi konum (clamp'li)
+        // R323 BUG FIX: kırılım gerçekleştiyse fiyat bandı zaten TERK ETTİ.
+        // O anda "kanal içi zamanlama" tavsiyesi vermek çelişki yaratır
+        // (örn. aşağı kırılımda "LONG için doğru zamanlama" derdi). Kırılımda kanal-içi yorumu BASTIR.
+        if (out.risingBreak || out.fallingBreak) {
+          out.kanalNote = `fiyat kanalı KIRDI (bant dışına taştı, kanal-içi zamanlama artık geçersiz) — yön için kırılım notunu kullan`;
+          out.note += ' | ' + out.kanalNote;
+          return out;
+        }
         const ust = pos >= 0.70, alt = pos <= 0.30, orta = !ust && !alt;
         out.kanalNote = '';
         if (out.slopeDown) { // düşen kanal
@@ -3395,6 +3421,17 @@ function r281ProTraderMap(side='LONG', ctx={}) {
 async function r308AiProTraderBrain(symbol, data = {}) {
   if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY) return null;
   try {
+    // R323: MALİYET-TASARRUF KAPISI — sadece AI_SAVER_MODE açıkken aktif (varsayılan kapalı).
+    // Backtest (9 coin, out-of-sample): sweep'siz girişler WR%37/negatif = zaten kaybediyordu.
+    // Tasarruf modunda bunları AI'a HİÇ gönderme → Opus çağrı maliyeti düşer, frekans korunur
+    // (elenen = zaten kaybedecek işlem). Sweep teyidi (alt VEYA üst) varsa normal devam eder.
+    if (AI_SAVER_MODE) {
+      const sweepVar = !!(data.altSupurmeYapildi || data.ustSupurmeYapildi);
+      if (!sweepVar) {
+        try { logAuto(`💰 ${symbol} tasarruf modu: sweep yok → AI'a gönderilmedi (maliyet korundu, backtest WR%37 desen)`); } catch(_) {}
+        return { ok:false, skipped:true, reason:'tasarruf modu: sweep teyidi yok (düşük olasılık, AI çağrısı yapılmadı)' };
+      }
+    }
     const spendGate = r308ReserveAiSpend(symbol, data.aiSource || 'R308', data.fingerprint || '');
     if (!spendGate.ok) {
       try { logAuto(`🧊 ${symbol} AI maliyet freni: ${spendGate.reason}`); } catch(_) {}
@@ -3450,6 +3487,7 @@ Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse
 ★★ TREND YÖNÜ HER ŞEYDEN ÖNCE GELİR (en pahalı kayıpların kök sebebi — MUTLAKA OKU): Bir işlem açmadan önce TEK soru: "5m trend yönü ne, ben trend YÖNÜNDE mi KARŞISINDA mı gireceğim?" botOkumasi.trendCizgisi sana bunu söyler: "YÜKSELEN TREND DEVAM" = trend YUKARI (burada SHORT = yükselen bıçak, ÇOK TEHLİKELİ, sadece NET trend KIRILIMI + delta dönüşü + sweep varsa düşün). "DÜŞEN TREND DEVAM" = trend AŞAĞI (burada LONG = düşen bıçak, aynı tehlike). "YÜKSELEN TREND KIRILDI↓" = trend YUKARIYDI ama AŞAĞI döndü = artık SHORT bölgesi (dönüş onaylandı). "DÜŞEN TREND KIRILDI↑" = trend AŞAĞIYDI ama YUKARI döndü = artık LONG bölgesi. KURAL: trend yönünde işlem KOLAY para, trende karşı işlem SADECE net kırılım+dönüş onayıyla. Trende karşı "üst avlandı / dağıtım" gibi tek sinyalle GİRME — o sinyal trend devam ederken seni yükselen bıçağa sokar.
 ★★ KANAL İÇİ KONUM = DOĞRU ZAMANLAMA (kullanıcının kıstası — kazanç burada): trendCizgisi sana fiyatın kanal içi konumunu da söyler (%0=alt bant, %100=üst bant). Bu, "doğru zamanlamanın" kalbidir — aynı kanal, doğru yerden girilirse kazanç, yanlış yerden kayıp. DÜŞEN kanalda: SADECE ÜST banttan (%70+) SHORT aç (tepeden düşüşe = doğru zamanlama); alt bandda (%30-) SHORT açma (geç kaldın, dönüş gelir), LONG hiç açma (kanala karşı bıçak). YÜKSELEN kanalda: SADECE ALT banttan (%30-) LONG aç (dipten yükselişe); üst bandda (%70+) LONG açma (geç/tepe), SHORT açma (kanala karşı). Kanal ORTASINDA (%30-70): net zamanlama yok, banda çekilmeyi BEKLE. Gerçek ders: aynı düşen kanalda üst banttan SHORT +kazanç, ama dipten/ortadan giriş kayıp (AIN −17.76: düşen kanalın DİBİNDE SHORT açıldı, fiyat üst banda döndü, patladı). Kanal konumu trendCizgisi+premium/discount ile ÇAPRAZ çalışır — üçü aynı yeri gösteriyorsa en net giriş.
 
+★★ BOT TEZİ — ONAYLA VEYA ÇÜRÜT (kullanıcının kredi-tasarruf + sağlam-karar yöntemi): botOkumasi.botTezi botun ham verilerden kurduğu net öneridir ("ben olsam LONG açardım çünkü trend yukarı + kanal dibi + delta alıcı"). Bu bir KOMUT DEĞİL, bir TEZ. Senin işin: (1) botun saydığı kanıtlar GERÇEKTEN o yöne işaret ediyor mu kendi ham mum okumanla doğrula; (2) bot bir tuzağı kaçırmış olabilir mi (örn sweep yok ama bot trend gördü) kontrol et; (3) hemfikirsen ve kendi okuman da aynı yönü doğruluyorsa GİR; (4) bot tezi ile kendi okuman ÇELİŞİYORSA kendi okuman kazanır — WAIT veya ters yön. Bot "BEKLERDİM" diyorsa ve sen de net bir şey görmüyorsan boşuna işlem açma. Botun tezini körü körüne onaylamak EN BÜYÜK HATA — bot sadece kanıt sayar, sen kalite ve tuzak görürsün. Tez = başlangıç noktası, son söz SENİN.
 ★★ PRO TRADER GÖZÜ — TÜM GÖSTERGELERİ OKU AMA BAĞIMLI KALMA (kullanıcının kuralı): Bir profesyonel trader grafiğe baktığında kanalı, Bollinger bantlarını, divergence'ı, momentumu, sweep'i, pattern'i HEPSİNİ görür — ama hiçbirine kör bağımlı değildir, bir BÜTÜN olarak okur. Sen de öyle yap. gostergeKonumu (5m Bollinger): üst bant dışı = aşırı uzama (ama trend yukarıysa devam edebilir, dönüş garantisi değil); alt bant dışı = aşırı satım tepki; SIKIŞMA = patlama yakıtı, yön bekle. divergence: fiyat tepe ama RSI düşük tepe (bearish) = yükseliş zayıflıyor; tersi (bullish) = düşüş zayıflıyor — DÖNÜŞ İPUCUDUR, tek başına emir değil. ★momentumDurum (ÇOK ÖNEMLİ, en pahalı kayıpların önlenmesi): MACD momentumu trend yönünde ZAYIFLIYORSA, o trende geç girmek BÜYÜK risktir — "yükseliş momentumu zayıflıyor" görürsen yükselen trende LONG açma (geç kaldın, dönüş gelebilir); "düşüş momentumu zayıflıyor" görürsen düşen trende SHORT açma. Momentum SIFIRI ters kesti = yön değişimi başlıyor olabilir, dönüş işlemi için teyit ara. invertedFVG: kullanılmış bir FVG ters S/R'a döner — "inverted FVG direnç yakın" varsa LONG zorlanır, "destek yakın" varsa SHORT zorlanır; bu gizli seviyeleri TP/SL koyarken hesaba kat. KRİTİK: bu göstergeler trendCizgisi + kanal konumu + sweep ile AYNI yöne işaret ediyorsa = güçlü teyit, gir. Çelişiyorsa = belirsizlik, BEKLE. Hiçbir göstergeyi tek başına "yön sebebi" yapma — bir pro trader gibi 3-4 şeyin hizalanmasını ara. Gösterge yokluğu (null) = o veri yok demek, olumsuz sinyal değil.
 ★★ "mmDurum" ALANINI DOĞRU OKU (denge için, ama SAPLANTI yapma): mmDurum botun MM ölçümüdür — DAĞITIM/ÜST-tuzak/SAHTE-PUMP gibi işaretler SHORT İHTİMALİ doğurur, TOPLAMA/ALT-tuzak LONG ihtimali. AMA bu işaretler TEK BAŞINA YÖN DEĞİLDİR. KRİTİK: "DAĞITIM" veya "üst tuzak" gördüğünde, ÖNCE trendCizgisi'ne bak — eğer trend HÂLÂ YUKARIYSA (yükselen trend devam), o "dağıtım" işareti büyük olasılıkla sadece sağlıklı bir geri çekilmedir, GERÇEK dağıtım değil; oraya SHORT açarsan yükselen bıçağı tutarsın (bu hatayı 24 saatte 11 SHORT'la yaşadık, -46$). GERÇEK SHORT için ŞART: trend YUKARI değil + (trend çizgisi aşağı kırıldı VEYA düşen trend zaten devam ediyor) + üst sweep+RED + delta SATIŞA döndü. Üçü birden yoksa SHORT AÇMA, bekle. mmDurum'u yön sebebi DEĞİL, trend+delta+sweep ile çapraz doğrulanacak bir İPUCU olarak kullan.
 
@@ -3457,7 +3495,7 @@ Bu akış seni hem fırsatçı tutar (setup varsa gir) hem güvende (tuzak netse
 
 
 ★ BOTUN OKUMASI ("botOkumasi" alanı): Bot, grafiği profesyonel araçlarla okuyup sana SUNUYOR. Alanlar: mumFormasyonu (teyitli mum: Engulfing/Hammer/Tweezer/Star/ThreeOutside veya "formasyon yok"), ictDurum (SSL/BSL likidite seviyeleri + sweep+reclaim oldu mu + OB SUPPLY/DEMAND + FVG — hepsi bu metinde), htfTeshis (HTF yapı HH/HL mi LH/LL mi + karşı-baskı/bıçak uyarısı), yapiOkumasi5m (5m PRICE ACTION: yapı kırılımı BOS, erken trend-devamı mı geç-tuzak mı, range konumu %0-100, sıkışma/yakıt, son3mum — BU SENİN ANA KARAR GRAFİĞİN 5mİN YAPISI), botAnalizOzeti (botun TAM okuması: mum + akış yönü "L12/S0" gibi alıcı/satıcı dengesi + kanıt durumu + tuzak/edge). Bot PUAN/YÖN DAYATMAZ — bu nötr analizi kendi ham mum okumanla ÇAPRAZ DOĞRULA. Kodlar: "L12/S0"=12 alıcı 0 satıcı (güçlü LONG akış), "kanıt yetersiz"=net sweep/reclaim yok (dikkat), "Tuzak dönüşü"=tuzak sezildi, "SSL_ALINDI_CHOCH_BEKLENIYOR"=alt süpürüldü reclaim bekleniyor, "DEMAND_OB"=destek. Bot+sen aynı yön=en güçlü teyit; çelişki=WAIT. Boş alan/null=veri yok, uydurma.
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, ★trendCizgisi[EĞİK trend yönü+kırılımı — TREND YÖNÜ İÇİN ÖNCE BUNU OKU], ★mmDurum[MM faz+tuzak ipucu — trendCizgisi ile ÇAPRAZ oku, tek başına yön sayma], grafikFormasyon[1h teyitli klasik formasyon: çift tepe/dip, baş-omuz — HTF dönüş sinyali, varsa güçlü], ★gostergeKonumu[5m Bollinger bant konumu+sıkışma — bir pro trader gibi oku, BİLGİ amaçlı tek başına yön değil], ★divergence[fiyat-RSI uyumsuzluğu 5m/1h — dönüş İPUCU, tetik değil], ★momentumDurum[MACD momentum dönüşü/zayıflama — yükseliş/düşüş gücü bitiyor mu, geç giriş uyarısı], ★invertedFVG[kullanılmış FVG ters S/R — gizli direnç/destek], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların — aynı hataya düşme], botAnalizOzeti).
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ = en güncel. 5m(60)+15m(12)+1h(12)+4h(8)+btc5m(5). Ayrıca rsi(4tf), funding, oiDegisim, canliDelta(+alıcı/−satıcı), emirDefteriDengesizlik, likiditeSeviyeleri(üst/alt), atrYuzde, rvol5m(5m göreceli hacim: >1.5 hacim patlaması/güçlü hareket, <0.6 kuru/zayıf), botOkumasi(botun grafik analizi: mumFormasyonu, ictDurum, htfTeshis, yapiOkumasi5m, ★trendCizgisi[EĞİK trend yönü+kırılımı — TREND YÖNÜ İÇİN ÖNCE BUNU OKU], ★mmDurum[MM faz+tuzak ipucu — trendCizgisi ile ÇAPRAZ oku, tek başına yön sayma], grafikFormasyon[1h teyitli klasik formasyon: çift tepe/dip, baş-omuz — HTF dönüş sinyali, varsa güçlü], ★gostergeKonumu[5m Bollinger bant konumu+sıkışma — bir pro trader gibi oku, BİLGİ amaçlı tek başına yön değil], ★divergence[fiyat-RSI uyumsuzluğu 5m/1h — dönüş İPUCU, tetik değil], ★momentumDurum[MACD momentum dönüşü/zayıflama — yükseliş/düşüş gücü bitiyor mu, geç giriş uyarısı], ★invertedFVG[kullanılmış FVG ters S/R — gizli direnç/destek], ★botTezi[botun net önerisi "ben olsam şöyle açardım çünkü..." — bunu ONAYLA veya ÇÜRÜT, körü körüne kabul etme], buCoinGecmis[bu coindeki kendi geçmiş işlem sonuçların — aynı hataya düşme], botAnalizOzeti).
 
 ═══ ZAMAN DİLİMİ ═══
 5m = ANA KARAR GRAFİĞİN (yön, giriş, tetik buradan). 15m/1h/4h = bağlam/danışman: büyük resim destekliyor mu, önünde engel (yakın güçlü direnç/destek, HTF likidite duvarı) var mı? Üst dilimler 5m'i güçlendirir veya tehlikeyi gösterir ama TEK BAŞINA giriş yaptırmaz. Tetik hep 5m'de taze olmalı.
@@ -3557,7 +3595,7 @@ WAIT ise tp/sl null, plan'da nedenini tek cümleyle yaz.`;
     let resp = null;
     const r311tReqBody = JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 280, // R311W: 200→280 — HEI'de reasoning uzunsa JSON kesiliyordu, işlem kaçıyordu. 280 JSON'u tamamlar.
+      max_tokens: AI_MAX_TOKENS, // R323: model-bazlı (Opus thinking için 2000, Sonnet 280). Eski sabit 280 Opus'ta thinking'i kesip işlemi kaçırıyordu.
       system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
       messages: [{ role: 'user', content: JSON.stringify(brief) }]
     });
@@ -4201,7 +4239,17 @@ function r287ReverseThesisTrader(blockedSide='LONG', blockedD={}, oppD={}, opt={
 // ─────────────────────────────────────────────────────────────────────────────
 const r289ChartState = new Map(); // symbol -> son 5m playbook fazı/radar
 function r289Rows(kl, limit=120) {
-  return (Array.isArray(kl)?kl:[]).slice(-limit).map(k=>({
+  const arr = Array.isArray(kl) ? kl : [];
+  // R323: idempotent — girdi ZATEN {o,h,l,c} obje dizisiyse tekrar dönüştürme.
+  // (r290CandleState/r290LiquidityMap vb. içeride r289Rows'u tekrar çağırıyordu →
+  //  çift-dönüşüm k[1]=undefined→NaN→filtre hepsini eler→boş {} → c5.p3.toFixed() ÇÖKER.)
+  const first = arr.find(x => x != null);
+  if (first && !Array.isArray(first) && typeof first === 'object') {
+    return arr.slice(-limit)
+      .map(x => ({ t:Number(x.t||0), o:Number(x.o), h:Number(x.h), l:Number(x.l), c:Number(x.c), v:Number(x.v||0) }))
+      .filter(x=>Number.isFinite(x.o)&&Number.isFinite(x.h)&&Number.isFinite(x.l)&&Number.isFinite(x.c)&&x.h>0&&x.l>0&&x.h>=x.l);
+  }
+  return arr.slice(-limit).map(k=>({
     t:Number(k[0]||0), o:Number(k[1]), h:Number(k[2]), l:Number(k[3]), c:Number(k[4]), v:Number(k[5]||0)
   })).filter(x=>Number.isFinite(x.o)&&Number.isFinite(x.h)&&Number.isFinite(x.l)&&Number.isFinite(x.c)&&x.h>0&&x.l>0&&x.h>=x.l);
 }
@@ -4222,7 +4270,7 @@ function r289LastSwing(rows) {
   const hs=p.highs.slice(-3), ls=p.lows.slice(-3);
   const lastH=hs.at(-1), prevH=hs.at(-2), lastL=ls.at(-1), prevL=ls.at(-2);
   return {
-    lastHigh:lastH, prevHigh:prevH, lastLow:lastL, prevLow:prevL,
+    lastHigh:lastH||null, prevHigh:prevH||null, lastLow:lastL||null, prevLow:prevL||null,
     hhhl:!!(lastH&&prevH&&lastL&&prevL&&lastH.price>prevH.price&&lastL.price>prevL.price),
     lhll:!!(lastH&&prevH&&lastL&&prevL&&lastH.price<prevH.price&&lastL.price<prevL.price),
     highs:hs, lows:ls
@@ -5319,13 +5367,23 @@ const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 // R308B: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || '').trim();
-const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-sonnet-4-6').trim(); // .trim(): env'e kaçan boşluk 404 yapıyordu
+const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-sonnet-4-6').trim(); // R323: Sonnet (maliyet/frekans dengesi — Opus bu işlem hacminde token maliyetini çıkarmıyor). env ile Opus'a alınabilir. .trim(): env boşluğu 404 yapıyordu
+// R323: Opus 4.8 ADAPTIVE THINKING kullanır — model cevaptan önce düşünür ve thinking token'ları da
+// max_tokens'a sayılır. Eski 280 (Sonnet için) Opus'ta thinking ortasında kesilir → JSON bozulur → işlem KAÇAR.
+// Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
+const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 280;
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
 const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
 const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '420', 10) || 420) * 1000); // R310V: 900→300 varsayılan (aynı coine 5dk içinde 2. AI çağrısı = boşa para). Railway env AI_BRAIN_REVIEW_GAP_SEC=300 yap.
 const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '500', 10) || 500); // R310V: 200→500 varsayılan (bütçe gün ortası dolmasın). Railway env AI_BRAIN_MAX_DAILY_CALLS=500 yap.
+// R323: MALİYET-TASARRUF MODU (Opus pahalı — frekansı BOZMADAN çağrı maliyetini düşürür).
+// AÇIKKEN: AI'a aday gönderilmeden önce SWEEP zorunlu kılınır. Backtest kanıtı (9 coin, out-of-sample):
+// sweep'siz girişler WR%37/negatif = zaten kaybediyordu. Onları AI'a HİÇ göndermemek → çağrı↓ maliyet↓
+// ve frekans KORUNUR (elenen = zaten kaybedecek işlem, kâr kaybı değil). Railway env: AI_SAVER_MODE=1.
+// KAPALI (varsayılan): mevcut davranış — tüm adaylar AI'a gider, AI kendi eler.
+let AI_SAVER_MODE = process.env.AI_SAVER_MODE === '1' || process.env.AI_SAVER_MODE === 'true';
 // ═══ R309F2: GÜVEN TABANI = 64 (tasarım kararı: 64 tabanı, üstü AI'nın kararına bırakılır) ═══
 // Gerçek emir kapısı r308AiPlanQuality içinde conf<64 ile uygulanır (tek gerçek kapı).
 // ESKİ SESSİZ HATA: AI_BRAIN_MIN_CONF env'den 74 okunup panelde gösteriliyordu ama emir kapısında
@@ -6159,7 +6217,7 @@ function normalizeR54ScanMode(v) {
   if (raw === '6' || raw === 'FAST' || raw === 'FAST6' || raw === 'TOP3_PLUS3') return 'FAST6';
   if (raw === '10' || raw === 'TOP10') return 'TOP10';
   if (raw === '24' || raw === 'TOP24' || raw === 'FULL24') return 'TOP24';
-  return 'FAST6';
+  return 'TOP24'; // R323: varsayılan TOP24 (kullanıcı isteği). Açık FAST6/TOP10 seçimi yukarıda korunur.
 }
 function r54ScanLimitForMode(mode, fallback=6) {
   const m = normalizeR54ScanMode(mode || fallback);
@@ -6216,12 +6274,29 @@ function r33TopGainersFromTickers(data=[], n=R33_TOP_GAINER_LOCK_COUNT) {
       const edgeProximity = Math.abs(posInRange - 0.5) * 2;   // 0=tam orta (ölü), 1=uçta (taze hareket)
       // Durağan coin cezası: ortadaysa skoru kırp, uçtaysa koru/ödüllendir.
       const freshnessMult = 0.55 + (edgeProximity * 0.45);    // 0.55x (ölü) → 1.0x (taze)
+      // ═══ R323: ZAMANLAMA AĞIRLIĞI — "yanlış zamanlama" düzeltmesi (canlı log dersi) ═══
+      // GÖZLEM (26-28 Haz logu): taranan coinler hep TEPEDE (posInRange≈1, RSI 76-96, premium) →
+      // AI haklı olarak hepsine BEKLE dedi → 20/20 BEKLE, sıfır işlem. Eski freshnessMult tepe(1) ile
+      // dip(0) coine AYNI puanı veriyordu, ama tepe coin AI'ın giremeyeceği (premium) coindir.
+      // ÇÖZÜM (Göksel kıstası G2+): pump SONRASI çekilme DİBİ = en kârlı setup. Yön-farkında çarpan:
+      //  • posInRange>0.85 (tepeye yapışmış, pump zirvesi) → CEZA (AI giremez, premium)
+      //  • posInRange 0.12-0.42 + coin yükselmiş (change24h>0) → BONUS (G2+ çekilme dibi, AI girebilir)
+      //  • posInRange<0.12 (dipte+düşüyor) → nötr (düşen bıçak riski, ödül verme)
+      let timingMult = 1.0;
+      if (posInRange > 0.85) {
+        timingMult = 0.70;                                    // tepe: AI premium der, geç indir
+      } else if (posInRange >= 0.12 && posInRange <= 0.42 && c.change24h > 0) {
+        timingMult = 1.35;                                    // pump sonrası çekilme dibi: G2+ fırsatı, öne çıkar
+      } else if (posInRange < 0.12 && c.change24h < 0) {
+        timingMult = 0.50;                                    // dipte+güçlü düşen: DÜŞEN BIÇAK (-%62 dersi), sert kır
+      }
       const base = (c.rangePct * 1.6) + (Math.abs(c.change24h) * 0.8) +
                    (Math.log10(Math.max(1, c.volume)) * 2) + (Math.log10(Math.max(1, c.trades)) * 1.5);
       return {
         ...c,
         r308PosInRange: +posInRange.toFixed(2),
-        r308VolScore: base * freshnessMult
+        r308TimingMult: +timingMult.toFixed(2),
+        r308VolScore: base * freshnessMult * timingMult
       };
     })
     .sort((a,b) => (b.r308VolScore - a.r308VolScore))
@@ -7278,6 +7353,7 @@ function r120SingleBrainDecision(side, raw={}, sideScore=0, minAutoScore=72) {
     (d.r125Flow?.r126?.deltaImprint?.coiled && (squeeze || flowScalp) ? 3 : 0) + r126PlaybookAdj(primaryMode) +
     // R141: R140 sinyalleri yön-duyarlı. R142 bunları bir de geçmiş sonuç/late-chase ile kalibre eder.
     (d.r140Phase?.phase==='EXPANSION' ? (side==='LONG' ? 8 : -5)
+      : d.r140Phase?.phase==='EXPANSION_DOWN' ? (side==='SHORT' ? 8 : -5)
       : d.r140Phase?.phase==='DISTRIBUTION' ? (side==='LONG' ? -15 : 10)
       : d.r140Phase?.phase==='ACCUMULATION' ? 4 : 0) +
     (side==='LONG' ? Math.min(20, Number(d.r140BtcDiv?.score||0))
@@ -8531,8 +8607,8 @@ function r37MoveTiming(klines5m, klines15m, lastPrice, atrPct=1, vpvr1h=null, li
   const firstBearImpulse = chg3 < -Math.max(0.35, atr*0.35) && chg5 > -Math.max(1.6, atr*1.4) && volBoost && emaStackBear;
   const bullExtended = chg5 > Math.max(1.15, atr*1.15) || chg8 > Math.max(1.8, atr*1.65) || bullSeq >= 4;
   const bearExtended = chg5 < -Math.max(1.15, atr*1.15) || chg8 < -Math.max(1.8, atr*1.65) || bearSeq >= 4;
-  const nearUpperTarget = distHigh < Math.max(0.28, atr*0.28) || rangePos > 0.86 || (vpvr1h?.vah && Math.abs(lp-Number(vpvr1h.vah))/lp*100 < Math.max(0.35, atr*0.35));
-  const nearLowerTarget = distLow  < Math.max(0.28, atr*0.28) || rangePos < 0.14 || (vpvr1h?.val && Math.abs(lp-Number(vpvr1h.val))/lp*100 < Math.max(0.35, atr*0.35));
+  const nearUpperTarget = !!(distHigh < Math.max(0.28, atr*0.28) || rangePos > 0.86 || (vpvr1h?.vah && Math.abs(lp-Number(vpvr1h.vah))/lp*100 < Math.max(0.35, atr*0.35)));
+  const nearLowerTarget = !!(distLow  < Math.max(0.28, atr*0.28) || rangePos < 0.14 || (vpvr1h?.val && Math.abs(lp-Number(vpvr1h.val))/lp*100 < Math.max(0.35, atr*0.35)));
   const k15Rows = k15.map(c=>({o:Number(c[1]), h:Number(c[2]), l:Number(c[3]), c:Number(c[4])})).filter(c=>[c.o,c.h,c.l,c.c].every(Number.isFinite));
   const k15Last = k15Rows.at(-1) || null;
   const k15Bull = !!(k15Last && k15Last.c > k15Last.o);
@@ -8711,7 +8787,7 @@ async function r309Add12hChange(coins) {
   return coins;
 }
 
-async function getUnifiedScanCandidates(limit=6, mode='FAST6') {
+async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
   // R54: Pro scalper tarama modu. FAST6 = Top Gainers ilk 10 içinden en volatil 3 + top10'a girmeye aday 3.
   // TOP10 = Binance Futures Top Gainers ilk 10. TOP24 = eski geniş havuz.
   const scanMode = normalizeR54ScanMode(mode || limit);
@@ -15845,24 +15921,29 @@ app.get('/api/health', (_req, res) => {
 app.post('/api/auto/config', (req, res) => {
   autoConfig = { ...(req.body||{}) };
   autoConfig.maxPositions = normalizeUserMaxPositions(autoConfig.maxPositions, 3);
+  // R323: MALİYET-TASARRUF MODU dashboard toggle — sweep yoksa AI'a gönderme (frekans korunur, maliyet düşer).
+  if (typeof req.body?.saverMode !== 'undefined') {
+    AI_SAVER_MODE = (req.body.saverMode === true || req.body.saverMode === 1 || req.body.saverMode === '1');
+    logAuto(`💰 AI tasarruf modu: ${AI_SAVER_MODE ? 'AÇIK (sweep şart, maliyet↓)' : 'KAPALI (tüm adaylar AI\'a)'}`);
+  }
   // R282: Panelde seçilen tarama modu server tarafında da amir olsun.
   // Eski/local kayıt TOP24 taşıyorsa veya scanLimit=24 gelmişse normalize edip görünür log basar.
-  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'FAST6'); // R311D: TOP6 (FAST6) varsayılan — en volatil 6 coin, maliyet ~$12/gün
+  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP24'); // R323: TOP24 varsayılan (kullanıcı isteği — volatilite-bazlı, yön-bağımsız, günde ~77 işlem hedefi). Maliyet ~$40-50/gün (Sonnet). Tasarruf modu + sweep şartı maliyeti kısar.
   autoConfig.scanLimit = r54ScanLimitForMode(autoConfig.scanMode, autoConfig.scanLimit);
   logAuto(`⚙️ R282 auto ayar: tarama modu ${autoConfig.scanMode}/${autoConfig.scanLimit}, max poz:${autoConfig.maxPositions}, min skor:${autoConfig.minScore}`);
   if (autoConfig.enabled) {
     startAutoTrader();
-    res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:autoConfig });
+    res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:autoConfig, saverMode:AI_SAVER_MODE });
   } else {
     stopAutoTrader();
-    res.json({ ok:true, message:'Otomatik işlem durduruldu' });
+    res.json({ ok:true, message:'Otomatik işlem durduruldu', saverMode:AI_SAVER_MODE });
   }
 });
 
 app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
     config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
-    cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(),
+    cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(), saverMode: AI_SAVER_MODE,
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
       sonIslem: toTurkishText(autoScanState?.lastAction || ''),
@@ -16199,7 +16280,15 @@ async function runAutoScan(prioritySymbol=null) {
         // R316 trend çizgisi taze kırıldıysa (dönüş anı) → ASLA erteleme, sor
         const tr = analysis?.r316Trend;
         if (tr && tr.ok && (tr.risingBreak || tr.fallingBreak)) return false;
-        // Buraya geldiyse: sweep yok + delta<12 + mum yok + kırılım yok + RVOL düşük = AŞİKAR BOŞ
+        // R322B: yeni göstergeler GERÇEK tetikse ertelEME (momentum dönüşü/divergence = kaliteli fırsat ipucu)
+        const mom = String(analysis?.momentumZayiflama||'');
+        if (/döndü|sıfırı/i.test(mom)) return false; // momentum YÖN DEĞİŞTİRDİ = dönüş anı, sor
+        const d5 = analysis?.rsiDivergence?.['5m'];
+        if (d5 && (d5.bullDiv || d5.bearDiv)) return false; // 5m divergence = dönüş ipucu, sor
+        // R322B: Bollinger bant DIŞI (aşırı uzama, dönüş/tepki bölgesi) = sor, ertelEME
+        const bbP = Number(analysis?.bb5m?.pos);
+        if (Number.isFinite(bbP) && (bbP >= 100 || bbP <= 0)) return false;
+        // Buraya geldiyse: sweep yok + delta<15 + mum yok + kırılım yok + RVOL düşük + momentum/divergence/BB nötr = AŞİKAR BOŞ
         return true; // ertele — AI'ya sorma, bir sonraki taramada tekrar bak
       } catch(_e) { return false; } // hata olursa erteleme (güvenli taraf: sor)
     };
@@ -17328,6 +17417,17 @@ async function runAutoScan(prioritySymbol=null) {
               // HAM LİKİDİTE SEVİYELERİ (mumda yok, AI hedef/stop için kullanır)
               liqLevels: analysis?.liquidityLevels || null,
               atrPct: analysis?.leverage?.atrPct,
+              // R323: ATR-BAZLI SL TABAN REFERANSI (4 gün/11 coin backtest dersi — kural DEĞİL, AI için zemin).
+              // BULGU: pump/volatil coinde (yüksek ATR) sabit dar SL (%0.5) gürültüde süpürülüyordu →
+              // SHORT sabit -%8.7 / ATR-bazlı +%8.9; LONG sabit -%3.1 / ATR-bazlı +%5.4 (SYN/BICO/RARE/RE).
+              // AI yine kendi SL'ini SEÇER (karar senin), ama bu volatilitede bundan DAR SL'in gürültüde
+              // vurulma riskini bilerek koysun. Taban ≈ ATR×1.2 (gürültü-altı), %3 güvenlik tavanıyla sınırlı.
+              slTabanOneri: (function(){
+                const a = analysis?.leverage?.atrPct;
+                if (!a || !Number.isFinite(a)) return null;
+                const min = Math.min(3, +(a*1.2).toFixed(2));   // ATR×1.2, max %3 tavan
+                return `bu coinin ATR'si %${a.toFixed(2)} — gürültü-altı SL için ~%${min} ve üzeri öneri (daha dar SL bu volatilitede tek ters mumda süpürülebilir; SL'i sweep/yapı ötesine koy). Kararı sen ver.`;
+              })(),
               rvol5m: analysis?.rvol?.['5m']?.rvol ?? null,  // R310S: 5m göreceli hacim (>1.5 patlama, <0.6 kuru) — 5m belirleyici
               // ═══ R309Y: BOTUN ZENGİN OKUMASI AI'ya YÜKLENİYOR ═══
               // Bot 60+ sinyal + 30+ mum formasyonu hesaplıyor ama AI bunları görmüyordu (sadece ham mum).
@@ -17338,7 +17438,75 @@ async function runAutoScan(prioritySymbol=null) {
                 mumFormasyonu: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || null,  // teyitli mum formasyonları (Engulfing/Hammer/Tweezer/Star vb.)
                 ictDurum: decisionChain?.ictDashboard || null,                                     // SSL/BSL seviyeleri + sweep+reclaim + OB(SUPPLY/DEMAND) + FVG — hepsi bunun içinde
                 htfTeshis: decisionChain?.htfTani || null,                                         // HTF yapı (HH/HL veya LH/LL) + faz + bıçak/karşı-baskı uyarıları
-                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/\bR\d+\b\s*/g,'').replace(/\s+·\s+/g,' · ').slice(0, 550) || null, // botun TAM okuması: mum + akış(L/S) + kanıt + tuzak + edge — R-etiketi temizli, içerik korunur
+                // ═══ R322C: BOTUN NET TEZİ ("ben olsam..." — kullanıcı fikri: bot öneri sunar, AI onaylar/çürütür) ═══
+                // Amaç: AI'ya net bir çapraz-kontrol noktası ver. Bot HAM verilerden bir tez kurar; AI bunu kabul/ret eder.
+                // Bu YÖN DAYATMASI DEĞİL — AI bağımsız. Sadece "şu kanıtlar şu yöne işaret ediyor, sen de bak" der.
+                botTezi: (function(){
+                  try {
+                    const tr = analysis?.r316Trend;
+                    const d5 = analysis?.rsiDivergence?.['5m'];
+                    const mom = String(analysis?.momentumZayiflama||'');
+                    const bbP = Number(analysis?.bb5m?.pos);
+                    const dlt = Number(decisionChain?.r125LiveDeltaPct||0);
+                    const ict = String(decisionChain?.ictDashboard||'');
+                    const sweep = /ALINDI|reclaim|geri.?kazan/i.test(ict);
+                    let lehLong=0, lehShort=0; const seb=[];
+                    // trend yönü
+                    if (tr?.slopeUp && !tr?.risingBreak){ lehLong++; seb.push('trend yukarı'); }
+                    if (tr?.slopeDown && !tr?.fallingBreak){ lehShort++; seb.push('trend aşağı'); }
+                    if (tr?.fallingBreak){ lehLong++; seb.push('düşen trend yukarı kırıldı'); }
+                    if (tr?.risingBreak){ lehShort++; seb.push('yükselen trend aşağı kırıldı'); }
+                    // kanal konumu
+                    if (Number.isFinite(tr?.kanalKonum)){
+                      if (tr.slopeUp && tr.kanalKonum<=30){ lehLong++; seb.push('yükselen kanal dibi'); }
+                      if (tr.slopeDown && tr.kanalKonum>=70){ lehShort++; seb.push('düşen kanal tepesi'); }
+                    }
+                    // delta
+                    if (dlt>=20){ lehLong++; seb.push('delta alıcı +'+dlt.toFixed(0)); }
+                    if (dlt<=-20){ lehShort++; seb.push('delta satıcı '+dlt.toFixed(0)); }
+                    // divergence
+                    if (d5?.bullDiv){ lehLong++; seb.push('5m bull divergence'); }
+                    if (d5?.bearDiv){ lehShort++; seb.push('5m bear divergence'); }
+                    // momentum
+                    if (/YUKARI döndü/i.test(mom)){ lehLong++; seb.push('momentum yukarı döndü'); }
+                    if (/AŞAĞI döndü/i.test(mom)){ lehShort++; seb.push('momentum aşağı döndü'); }
+                    // sweep — R323: BACKTEST KANITI (9 coin, out-of-sample doğrulandı): sweep VAR → WR%64 avgR+0.51,
+                    // sweep YOK → WR%37 avgR-0.20. Sweep tek oy DEĞİL, en güçlü ayırt edici faktör. Ağır tart.
+                    if (sweep){ const s=lehLong>=lehShort?'LONG':'SHORT'; if(s==='LONG')lehLong+=2; else lehShort+=2; seb.push('★sweep+reclaim VAR (en güçlü teyit — WR%64)'); }
+                    else { seb.push('⚠sweep YOK (backtest: sweepsiz girişler WR%37/negatif — net trend+delta+yapı yoksa BEKLE daha güvenli)'); }
+                    // bollinger aşırı
+                    if (Number.isFinite(bbP)){
+                      if (bbP<=0){ lehLong++; seb.push('BB alt bant dışı (tepki)'); }
+                      if (bbP>=100){ lehShort++; seb.push('BB üst bant dışı (tepki)'); }
+                    }
+                    // ═══ R323: PUMP-TEPE TEZİ (4gün/11coin backtest dersi) ═══
+                    // BULGU: pump etmiş coinde TEPEDE LONG = tuzak (-%20 SYN/RARE); SHORT tepeden + momentum
+                    // zayıflama + geniş SL = en kârlı (+%8.7). Bu kanıtları teze EKLE (komut değil, AI tartar).
+                    const atrP = Number(analysis?.leverage?.atrPct||0);
+                    // R323 FIX: doğru alan decisionChain.r140Phase (analysis.r140PumpPhase YANLIŞ alandı = sessiz boş).
+                    const r140ph = String(decisionChain?.r140Phase?.phase || '').toUpperCase();
+                    const pumped = atrP >= 3 || /EXPANSION/.test(r140ph);
+                    const dusenGenisleme = r140ph === 'EXPANSION_DOWN'; // sert düşüş momentumu = SHORT lehine
+                    const momZayif = /AŞAĞI döndü|zayıfl|tükendi|peak|tepe/i.test(mom);
+                    if (dusenGenisleme){ lehShort++; seb.push('düşüş genişlemesi (EXPANSION_DOWN — SHORT momentum)'); }
+                    if (pumped && Number.isFinite(tr?.kanalKonum)){
+                      if (tr.kanalKonum>=75){ // pump + tepe bölgesi
+                        lehLong = Math.max(0, lehLong-1); // pump tepesinde LONG kanıtını ZAYIFLAT (tuzak riski)
+                        seb.push('⚠pump+TEPE: LONG tuzak riski (kovalama)');
+                        if (momZayif){ lehShort++; seb.push('pump tepesi+momentum zayıfladı → SHORT fırsatı (geniş SL şart)'); }
+                      }
+                      if (tr.kanalKonum<=35 && tr.slopeUp){ // pump + çekilme dibi = G2+
+                        lehLong++; seb.push('pump SONRASI çekilme dibi (G2+ en kârlı LONG)');
+                      }
+                    }
+                    const net = lehLong - lehShort;
+                    if (lehLong+lehShort === 0) return 'Bot tezi: net kanıt yok, ben olsam BEKLERDİM (sen de teyit et).';
+                    if (Math.abs(net) <= 1) return `Bot tezi: kanıtlar KARIŞIK (L:${lehLong}/S:${lehShort} — ${seb.join(', ')}). Ben olsam net taraf görene dek BEKLERDİM. Sen karar ver komutanım.`;
+                    const yon = net>0 ? 'LONG' : 'SHORT';
+                    return `Bot tezi: ben olsam ${yon} açardım (${net>0?lehLong:lehShort} kanıt: ${seb.join(', ')}). AMA sen bağımsız bak — bu kanıtlar gerçekten hizalı mı, yoksa tuzak mı? Sen karar ver.`;
+                  } catch(_){ return null; }
+                })(),
+                botAnalizOzeti: (decisionChain?.brainSummary || '').replace(/\bR\d+\b\s*/g,'').replace(/\s+·\s+/g,' · ').slice(0, 480) || null, // botun TAM okuması: mum + akış(L/S) + kanıt + tuzak + edge — R-etiketi temizli (R322: 550→480 hafif kısaltma)
                 // ═══ R310T: 5m YAPI OKUMASI (mum formasyonunun ÖTESİ — tüm 5m price action) ═══
                 // Kullanıcı: AI'ya sadece mum formasyonu değil, 5m'in TÜM yapısı gitmeli — trend yönü (HH/HL/LH/LL),
                 // trend kırılımı (BOS/ChoCH), range, momentum/erken-devam, tuzak riski. Bot bunları r190/r194'te
@@ -17366,8 +17534,10 @@ async function runAutoScan(prioritySymbol=null) {
                 // Kaynak: r316TrendlineBreak (linear regresyon, son 24×5m). Trend DÖNÜŞÜ ve trend YÖNÜ bilgisi.
                 trendCizgisi: (function(){
                   const t = analysis?.r316Trend;
-                  if (!t || !t.ok) return null;
-                  return t.note || null;
+                  // R323: motor null dönerse (mum<12 ya da net diagonal yok) SESSİZ null GİTMESİN —
+                  // AI trend bilgisini hiç görmemektense "veri yetersiz" görmeli (no-silent-null ilkesi).
+                  if (!t || !t.ok) return 'trend çizgisi okunamadı (5m geçmiş yetersiz <12 mum ya da net diagonal yok) — trend yönü TEYİTSİZ, dikkatli';
+                  return t.note || 'trend çizgisi nötr';
                 })(),
                 // ═══ R316: MM DURUMU (faz + stop-hunt) — DENGELI, trend yönüyle ÇAPRAZ ═══
                 // ÖNEMLİ: mmDurum tek başına yön DAYATMAZ. "ÜST AVLANDI"/"DAĞITIM" = SHORT İHTİMALİ doğar
@@ -17380,6 +17550,8 @@ async function runAutoScan(prioritySymbol=null) {
                   const bits = [];
                   if (ph === 'DISTRIBUTION') bits.push('FAZ:DAĞITIM (MM tepede satıyor olabilir — SHORT İHTİMALİ, ama trend yukarıysa erken)');
                   else if (ph === 'ACCUMULATION') bits.push('FAZ:TOPLAMA (MM dipte biriktiriyor olabilir — LONG İHTİMALİ)');
+                  else if (ph === 'EXPANSION') bits.push('FAZ:GENİŞLEME (pump/güçlü yukarı momentum AKTİF — trend yönü güçlü, tepede LONG-kovalama riski; çekilme dibi LONG fırsatı)');
+                  else if (ph === 'EXPANSION_DOWN') bits.push('FAZ:DÜŞÜŞ-GENİŞLEME (sert aşağı momentum AKTİF — SHORT yönü güçlü, dipte SHORT-kovalama riski; sıçrama tepesi SHORT fırsatı)');
                   else if (ph === 'EXPANSION') bits.push('FAZ:GENİŞLEME (trend güçlü, trend yönünde devam)');
                   if (fake) bits.push('SAHTE PUMP işareti (fiyat yukarı ama gerçek alım zayıf — LONG tuzağı olabilir)');
                   if (eqHigh) bits.push('eşit-tepe tuzağı yakın (üst likidite mıknatısı)');
