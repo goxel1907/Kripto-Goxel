@@ -96,12 +96,12 @@ function r310vCanliMi(dc, analysis) {
     const score = Number(dc.score || 0);
     const edge = Number(dc.brainConfidence || 0);
     const priority = Number(dc.priorityScore || 0);
-    if (score > 75 && edge > 65) return true;
-    if (priority > 70) return true;
+    if (score > 85 && edge > 75) return true;
+    if (priority > 80) return true;
 
     // 4. Güçlü akış veya hacim
     const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
-    if (delta >= 20) return true;
+    if (delta >= 30) return true;
 
     const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
     if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
@@ -5418,11 +5418,11 @@ const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || '';
 // R308B: AI Pro Trader Beyni — Claude API. Anahtar Railway env'den gelir.
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || '').trim();
-const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-sonnet-4-6').trim(); // R323: Sonnet (maliyet/frekans dengesi — Opus bu işlem hacminde token maliyetini çıkarmıyor). env ile Opus'a alınabilir. .trim(): env boşluğu 404 yapıyordu
+const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_BRAIN_MODEL || 'claude-haiku-4-5').trim(); // R323: Sonnet (maliyet/frekans dengesi — Opus bu işlem hacminde token maliyetini çıkarmıyor). env ile Opus'a alınabilir. .trim(): env boşluğu 404 yapıyordu
 // R323: Opus 4.8 ADAPTIVE THINKING kullanır — model cevaptan önce düşünür ve thinking token'ları da
 // max_tokens'a sayılır. Eski 280 (Sonnet için) Opus'ta thinking ortasında kesilir → JSON bozulur → işlem KAÇAR.
 // Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
-const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 280;
+const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 150;
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
@@ -16294,12 +16294,12 @@ function r310vCanliMi(dc, analysis) {
     const score = Number(dc.score || 0);
     const edge = Number(dc.brainConfidence || 0);
     const priority = Number(dc.priorityScore || 0);
-    if (score > 75 && edge > 65) return true;
-    if (priority > 70) return true;
+    if (score > 85 && edge > 75) return true;
+    if (priority > 80) return true;
 
     // 4. Güçlü akış veya hacim (sağlıklı hareket)
     const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
-    if (delta >= 20) return true;
+    if (delta >= 30) return true;
     
     const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
     if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
@@ -16337,12 +16337,12 @@ function r310vCanliMi(dc, analysis) {
     const score = Number(dc.score || 0);
     const edge = Number(dc.brainConfidence || 0);
     const priority = Number(dc.priorityScore || 0);
-    if (score > 75 && edge > 65) return true;
-    if (priority > 70) return true;
+    if (score > 85 && edge > 75) return true;
+    if (priority > 80) return true;
 
     // 4. Güçlü akış veya hacim
     const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
-    if (delta >= 20) return true;
+    if (delta >= 30) return true;
 
     const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
     if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
@@ -16376,10 +16376,10 @@ function r310vCanliMi(dc, analysis) {
     const score = Number(dc.score || 0);
     const edge = Number(dc.brainConfidence || 0);
     const priority = Number(dc.priorityScore || 0);
-    if (score > 75 && edge > 65) return true;
-    if (priority > 70) return true;
+    if (score > 85 && edge > 75) return true;
+    if (priority > 80) return true;
     const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
-    if (delta >= 20) return true;
+    if (delta >= 30) return true;
     const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
     if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
     if (dc.mumGuclu || Number(dc.mumPuan || 0) >= 6) return true;
