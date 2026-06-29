@@ -17642,11 +17642,11 @@ function r310vCanliMi(dc, analysis) {
                 let txt = btcBit ? btcBit[0].trim() : '';
                 if (div?.label) txt += (txt?' · ':'') + div.label;
                 return txt || 'BTC ham mumlari candles.btc5m icinde';
-              })()
+              })(),
                // ⬇️⬇️⬇️ İŞTE BURAYA EKLEYİN ⬇️⬇️⬇️
-  _decisionChain: decisionChain,
-  _analysis: analysis,
-};
+              _decisionChain: decisionChain,
+              _analysis: analysis,
+              };
              r309eAiSentCount++; // R309E: bu coin AI'ya gidiyor — bütçe sayacı (tarama başına max 2)
             logAuto(`🧠 ${coin.symbol} AI PRO TRADER'a gönderiliyor (${r309eAiSentCount}/${R309E_MAX_AI_PER_SCAN} bu taramada)`);
             const ai = await r308AiProTraderBrain(coin.symbol, aiData);
