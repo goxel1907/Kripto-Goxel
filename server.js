@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R324C_ACTIVE';
+const LAZARUS_BUILD = 'R324D_JSONFIX';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3513,8 +3513,16 @@ Sen aktif bir scalper'sın, izleyici değil. 5m gainer evreninde fırsat SÜREKL
 • Sadece "daha iyi setup gelebilir" ya da "sweep yok" hissiyle WAIT DEME — eldeki tablo 2-3 teyit veriyorsa değerlendir.
 ÖZ-KONTROL: Bir coine WAIT diyorsan, kendine sor: "Gerçekten çelişki mi var, yoksa sadece mükemmeli mi bekliyorum?" Mükemmeli bekliyorsan = fırsat kaçırıyorsun = GİR. Ardı ardına 5+ coine WAIT diyorsan, çıtanı fazla yükseltmişsindir — gevşet, eldeki en iyi 2-konfluanslı fırsatı al. Unutma: küçük pozisyonla denemek, hiç işlem açmamaktan iyidir; sermayeni büyütmek için işlem AÇMAN gerekir.
 
-★ ÇIKTI (SADECE JSON, başka hiçbir şey yazma):
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter — neden bu karar","plan":"max 70 karakter — giriş planı"}`;
+★★★ ÇIKTI FORMATI — MUTLAK KURAL (İHLAL = İŞLEM KAYBI):
+Cevabının İLK KARAKTERİ "{" olmalı. Markdown YAZMA. Başlık YAZMA. "## ANALİZ", "Kanıtlar:", "Looking at..." gibi HİÇBİR açıklama metni YAZMA. SADECE ve SADECE tek satır JSON döndür. Tüm analizini "reasoning" alanının içine 90 karaktere sığdır. JSON DIŞINDA tek kelime bile yazarsan işlem KAYBOLUR.
+
+DOĞRU (tam olarak böyle):
+{"side":"LONG","entry":0.45,"tp":0.48,"sl":0.44,"confidence":74,"karKosma":"NORMAL","reasoning":"3 konfluans: kanal dibi+delta+pump çekilmesi","plan":"dip giriş, TP likiditeye, trailing"}
+
+YANLIŞ (ASLA böyle yapma): "## KARAR ANALİZİ" ya da "Kanıtlar:" ya da herhangi bir markdown/açıklama ile başlama.
+
+ÇIKTI ŞEMASI:
+{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter","plan":"max 70 karakter"}`;
 
     // R311T: 529 (overloaded) / 429 (rate limit) / 5xx geçici hatalarında RETRY.
     // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
@@ -3605,8 +3613,21 @@ Sen aktif bir scalper'sın, izleyici değil. 5m gainer evreninde fırsat SÜREKL
             throw new Error('side bulunamadı');
           }
         } catch(_e3) {
-          logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`);
-          return null;
+          // R324C: AI markdown/düz metin yazdı (JSON yok). En azından YÖNÜ metinden çıkar — işlem "parse hatası"
+          // diye sessizce kaybolmasın. Çelişki/net-taraf-yok ifadeleri = WAIT. Açık LONG/SHORT ifadesi varsa onu al.
+          try {
+            const low = clean.toLowerCase();
+            const waitHints = /çelişki|net taraf yok|conflict|no clear|wait|bekle|karışık|belirsiz/i.test(clean);
+            const longHints = /\b(long|yükseliş|al\b|buy)\b/i.test(low) && !/short|düşüş|sat\b|sell/i.test(low);
+            const shortHints = /\b(short|düşüş|sat\b|sell)\b/i.test(low) && !/long|yükseliş|al\b|buy/i.test(low);
+            let sideGuess = waitHints ? 'WAIT' : (longHints ? 'LONG' : (shortHints ? 'SHORT' : 'WAIT'));
+            decision = { side: sideGuess, entry:null, tp:null, sl:null, confidence: 0, karKosma:'NORMAL',
+              reasoning: 'AI markdown döndü, yön metinden çıkarıldı: '+sideGuess, plan:'' };
+            logAuto(`🔧 AI JSON yerine metin döndü → yön metinden kurtarıldı: ${sideGuess} (güven 0, emir açılmaz ama karar net loglandı)`);
+          } catch(_e4) {
+            logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`);
+            return null;
+          }
         }
       }
     }
@@ -5297,7 +5318,7 @@ const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_B
 // R323: Opus 4.8 ADAPTIVE THINKING kullanır — model cevaptan önce düşünür ve thinking token'ları da
 // max_tokens'a sayılır. Eski 280 (Sonnet için) Opus'ta thinking ortasında kesilir → JSON bozulur → işlem KAÇAR.
 // Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
-const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 400;
+const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 600;
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
