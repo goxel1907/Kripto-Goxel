@@ -16279,29 +16279,30 @@ function r310vCanliMi(dc, analysis) {
     // Bu ELEME DEĞİL — AI hâlâ gelen adayda yön/giriş/WAIT'e karar verir. Sadece "ölü coin" AI'ya gitmez (para).
     // NOT: "bot her şeyi devretti" bayrağı (r309eFromWait/r300SoftReject) ARTIK aday sayılmaz — o herkese
     // basılıyordu, maliyet kaçağıydı. Gerçek fiziksel işaret aranır:
-    const r310vCanliMi = (dc, analysis) => {
-      try {
-        if (!dc) return false; // veri yok → aday değil (R310J: belirsizi sorma, para koru)
-        // 1) Bot gerçek TRADE sinyali gördü (en güçlü aday)
-        const ba = String(dc.brainAction||'').toUpperCase();
-        if (ba === 'TRADE' || dc.r284WaitUpgradeOk) return true;
-        // 2) Sweep/reclaim olmuş (G1/G4 tarifi — en yüksek olasılık setup)
-        const ict = String(dc.ictDashboard||dc.ictDurum||'');
-        if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return true;
-        // 3) 5m yapı kırılımı/momentum var (G3/G5 tarifi)
-        if (dc.r190Edge?.ok) return true;
-        // 4) Güçlü delta akışı (gerçek alıcı/satıcı baskısı)
-        const delta = Math.abs(Number(dc.r125LiveDeltaPct||0));
-        if (delta >= 20) return true;
-        // 5) Hacim patlaması (RVOL yüksek = gerçek hareket)
-        const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
-        if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
-        // 6) Güçlü mum formasyonu teyidi (Engulfing/Tweezer/Hammer puanı yüksek)
-        if (dc.mumGuclu || (Number(dc.mumPuan||0) >= 6)) return true;
-        // Hiçbir fiziksel setup işareti yok → ölü coin, AI'ya sorma (R310J: para koru). TOP2 yine muaf (aşağıda).
-        return false;
-      } catch(_e) { return false; }
-    };
+    function r310vCanliMi(dc, analysis) {
+  try {
+    if (!dc) return false;
+    if (String(dc.brainAction || '').toUpperCase() === 'TRADE') return true;
+    const ict = String(dc.ictDashboard || dc.ictDurum || '');
+    if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return true;
+    const score = Number(dc.score || 0);
+    const edge = Number(dc.brainConfidence || 0);
+    const priority = Number(dc.priorityScore || 0);
+    if (score > 75 && edge > 65) return true;
+    if (priority > 70) return true;
+    const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
+    if (delta >= 20) return true;
+    const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
+    if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
+    if (dc.mumGuclu || Number(dc.mumPuan || 0) >= 6) return true;
+    const tr = analysis?.r316Trend;
+    if (tr && tr.ok && (tr.risingBreak || tr.fallingBreak)) return true;
+    if (dc.r274Signal && dc.r274Signal.entryOk) return true;
+    return false;
+  } catch(_e) {
+    return false;
+  }
+}
     // ═══ R317B: HASSAS ERTELEME (maliyet ↓, fırsat kaçırma = 0 hedef) ═══
     // Göksel fikri: bot coini takip etsin, SADECE gerçek tetik anında AI'ya sorsun.
     // KURAL: AI'ya sormayı ERTELE yalnızca AŞİKAR BOŞ durumda (3'ü BİRDEN):
