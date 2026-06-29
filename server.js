@@ -3425,13 +3425,17 @@ async function r308AiProTraderBrain(symbol, data = {}) {
     // Backtest (9 coin, out-of-sample): sweep'siz girişler WR%37/negatif = zaten kaybediyordu.
     // Tasarruf modunda bunları AI'a HİÇ gönderme → Opus çağrı maliyeti düşer, frekans korunur
     // (elenen = zaten kaybedecek işlem). Sweep teyidi (alt VEYA üst) varsa normal devam eder.
-    if (AI_SAVER_MODE) {
-      const sweepVar = !!(data.altSupurmeYapildi || data.ustSupurmeYapildi);
-      if (!sweepVar) {
-        try { logAuto(`💰 ${symbol} tasarruf modu: sweep yok → AI'a gönderilmedi (maliyet korundu, backtest WR%37 desen)`); } catch(_) {}
-        return { ok:false, skipped:true, reason:'tasarruf modu: sweep teyidi yok (düşük olasılık, AI çağrısı yapılmadı)' };
-      }
-    }
+   if (AI_SAVER_MODE) {
+  const dc = data._decisionChain || {};
+  const analysis = data._analysis || {};
+  const hasSweep = !!(data.altSupurmeYapildi || data.ustSupurmeYapildi);
+  const isQuality = r310vCanliMi(dc, analysis);
+
+  if (!hasSweep && !isQuality) {
+    try { logAuto(`💰 ${symbol} tasarruf modu: sweep yok ve bot kalite eşiğini geçmedi → AI'a gönderilmedi (maliyet korundu)`); } catch(_) {}
+    return { ok:false, skipped:true, reason:'tasarruf modu: sweep yok ve bot kalite eşiği düşük' };
+  }
+}
     const spendGate = r308ReserveAiSpend(symbol, data.aiSource || 'R308', data.fingerprint || '');
     if (!spendGate.ok) {
       try { logAuto(`🧊 ${symbol} AI maliyet freni: ${spendGate.reason}`); } catch(_) {}
@@ -16226,6 +16230,49 @@ async function runAutoScan(prioritySymbol=null) {
     // AI'ya sunardı, AI o adaylar arasında TEK KARAR VERİCİYDİ. Ben R311C-J'de kapıları "hepsini AI'ya devret"
     // yapınca 24 coinin çoğu AI'ya gitti = $121/gün. ÇÖZÜM: R310J'ye dön. Bot KARAR VERMEZ (yön/giriş AI'nın),
     // sadece "AI'ya kimi soracağını" seçer = MALİYET ÖN-FİLTRESİ. Ölü/sinyalsiz coini AI'ya sormak boşa para.
+    // ═══ R310v: GELİŞMİŞ TASARRUF FİLTRESİ — sadece sweep değil, botun kaliteli gördüğü fırsatları da AI'ya gönder ═══
+function r310vCanliMi(dc, analysis) {
+  try {
+    if (!dc) return false;
+
+    // 1. Bot zaten TRADE kararı vermişse (en güçlü sinyal)
+    const brainAction = String(dc.brainAction || '').toUpperCase();
+    if (brainAction === 'TRADE') return true;
+
+    // 2. Sweep+Reclaim (mevcut mantık, en güvenilir)
+    const ict = String(dc.ictDashboard || dc.ictDurum || '');
+    if (/ALINDI|reclaim|geri.?kazan|süpürme.*BODY|LONG_HAZIR|SHORT_HAZIR/i.test(ict)) return true;
+
+    // 3. Botun kendi skor ve edge'i yüksekse (net fırsat)
+    const score = Number(dc.score || 0);
+    const edge = Number(dc.brainConfidence || 0);
+    const priority = Number(dc.priorityScore || 0);
+    if (score > 75 && edge > 65) return true;
+    if (priority > 70) return true;
+
+    // 4. Güçlü akış veya hacim (sağlıklı hareket)
+    const delta = Math.abs(Number(dc.r125LiveDeltaPct || 0));
+    if (delta >= 20) return true;
+    
+    const rv5 = Number(analysis?.rvol?.['5m']?.rvol);
+    if (Number.isFinite(rv5) && rv5 >= 1.2) return true;
+
+    // 5. Güçlü mum formasyonu
+    if (dc.mumGuclu || (Number(dc.mumPuan || 0) >= 6)) return true;
+
+    // 6. R316 trend çizgisi taze kırıldıysa (dönüş anı)
+    const tr = analysis?.r316Trend;
+    if (tr && tr.ok && (tr.risingBreak || tr.fallingBreak)) return true;
+
+    // 7. R274 C20/L20 RSI-ratio FVG entry (kaliteli timing sinyali)
+    if (dc.r274Signal && dc.r274Signal.entryOk) return true;
+
+    // Hiçbir koşul sağlanmazsa, bu coin AI'ya gönderilmez (tasarruf).
+    return false;
+  } catch(_e) {
+    return false;
+  }
+}
     const r310IsTop2 = (idx) => (typeof idx === 'number' && idx <= 1);
     const r309eAiBudgetLeft = (idx, dc) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
     // GERÇEK ADAY FİLTRESİ (R310J ruhu): Bir coin AI'ya SUNULUR eğer FİZİKSEL bir setup/canlılık işareti varsa.
@@ -17595,8 +17642,11 @@ async function runAutoScan(prioritySymbol=null) {
                 if (div?.label) txt += (txt?' · ':'') + div.label;
                 return txt || 'BTC ham mumlari candles.btc5m icinde';
               })()
-            };
-            r309eAiSentCount++; // R309E: bu coin AI'ya gidiyor — bütçe sayacı (tarama başına max 2)
+               // ⬇️⬇️⬇️ İŞTE BURAYA EKLEYİN ⬇️⬇️⬇️
+  _decisionChain: decisionChain,
+  _analysis: analysis,
+};
+             r309eAiSentCount++; // R309E: bu coin AI'ya gidiyor — bütçe sayacı (tarama başına max 2)
             logAuto(`🧠 ${coin.symbol} AI PRO TRADER'a gönderiliyor (${r309eAiSentCount}/${R309E_MAX_AI_PER_SCAN} bu taramada)`);
             const ai = await r308AiProTraderBrain(coin.symbol, aiData);
             if (ai && ai.ok) {
