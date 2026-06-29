@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R324_PRO_VISION';
+const LAZARUS_BUILD = 'R324B_CONFLUENCE';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3449,10 +3449,10 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       funding: data.funding,
       shortSqueeze: data.shortSqueeze,  // true=herkes short, MM YUKARI sıkıştırır → SHORT tehlikeli
       longSqueeze: data.longSqueeze,    // true=herkes long, MM AŞAĞI sıkıştırır → LONG tehlikeli
-      altSupurmeYapildi: data.altSupurmeYapildi,  // SADECE süpürme+RECLAIM TEYİTLİ (q>=3) ise true → MM avı TAMAMLANDI, LONG fırsatı
-      ustSupurmeYapildi: data.ustSupurmeYapildi,  // SADECE süpürme+RED TEYİTLİ (q>=3) ise true → MM avı TAMAMLANDI, SHORT fırsatı
-      altSupurmeSuruyorReclaimYok: data.altSupurmeSuruyorReclaimYok, // alt süpürme başladı AMA reclaim YOK → av SÜRÜYOR, dip oluşmadı, LONG için ERKEN
-      ustSupurmeSuruyorRedYok: data.ustSupurmeSuruyorRedYok,         // üst süpürme başladı AMA red YOK → av SÜRÜYOR, tepe oluşmadı, SHORT için ERKEN
+      // SWEEP = sadece BİR kanıt türü (5 kanıttan biri). false olması "fırsat yok" demek DEĞİL —
+      // delta/yapı/mum/hacim konfluansı varsa sweep olmadan da GİR. Sweep'i tek başına karar verici sayma.
+      altSupurmeReclaimVar: data.altSupurmeYapildi,  // true ise: alt sweep+reclaim tamamlandı (LONG'a EK kanıt, şart değil)
+      ustSupurmeRedVar: data.ustSupurmeYapildi,      // true ise: üst sweep+red tamamlandı (SHORT'a EK kanıt, şart değil)
       oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
       emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
       canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
@@ -3465,6 +3465,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
     };
 
     const sys = `Sen Lazarus'sun — gerçek parayla işlem yapan, tecrübeli bir 5m kripto futures scalper'ısın. Piyasanın en volatil gainer coinlerinde kaldıraçla vur-kaç yaparsın. Bu coinde GİR mi BEKLE mi, hangi yön, nerede giriş/TP/SL, kaç kaldıraç — HEPSİ senin kararın. Kimse sana kapı uygulamıyor; bot sadece grafiği okuyup veriyi önüne koyuyor. Karar tamamen senin.
+
+★★★ EN ÖNEMLİ KURAL — BUNU İHLAL ETME: "Sweep yok" ASLA tek başına BEKLE sebebi DEĞİLDİR. Sweep, kararını verirken baktığın 5 kanıttan SADECE biridir. Eğer delta güçlü tek yönde (örn L20/S0 veya delta %60+) + 5m yapı o yönde + mum/momentum o yönde + fiyat mantıklı bir bölgede ise → bu 3-4 konfluanslı GERÇEK bir giriştir, sweep olmasa bile GİR. Gerekçende "sweep yok" yazıp BEKLE diyorsan, sen HATA yapıyorsun — tekrar bak, diğer kanıtları say. Sweep sadece EKSTREM bölgede (range tepesi %80+ LONG / dibi %20- SHORT, yani trende karşı uçtan giriş) şarttır; orada bekle. Başka her yerde sweep'i unutup KONFLUANS say.
 
 ★ ÖNCE ŞUNU ANLA — NASIL DÜŞÜNECEĞİN:
 Sana ezberlemen için setup listesi VERMİYORUM. Çünkü piyasada binlerce price action kalıbı var ve hiçbir liste onları kapsayamaz. Bunun yerine senden bir şey istiyorum: GRAFİĞE BAK VE NE ANLATTIĞINI GÖR. Mumların hikâyesini oku. Kim kontrolde — alıcı mı satıcı mı? Para nereye akıyor? Büyük oyuncu (MM) hangi tuzağı kuruyor? Bir sonraki hamle nereye? Profesyonel bir trader grafiğe baktığında reçete aramaz; bağlamı kurar, hikâyeyi görür, asimetrik fırsatı yakalar. Sen de öyle yap. Önüne koyduğum tüm veri (mumlar, delta, OI, funding, order book, likidite, RSI, botun okuması) — bunlar senin gözün. Hepsini birleştir, tek bir net resim çıkar.
