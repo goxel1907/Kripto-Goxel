@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R327_LONG_LIQ';
+const LAZARUS_BUILD = 'R328B_PATLAMA_WORKER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3461,6 +3461,16 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       likiditeSeviyeleri: data.liqLevels,                 // üst/alt likidite (TP/SL hedefi için)
       atrYuzde: data.atrPct,
       botOkumasi: null,   // R326: bot ön-okuması AI'dan GİZLENDİ (kullanıcı kararı: bot AI'ı yanıltabilir, AI sadece ham veri görür)
+      patlamaUyarisi: (() => {  // R328: patlama worker bayrağı — bu coinde patlama başladıysa AI'a bildir
+        try {
+          const base = String(symbol||'').replace('USDT','');
+          const flag = __r328PatlamaFlags[base];
+          if (flag && flag.detected && (Date.now()-flag.ts < 5*60*1000)) {
+            return `🚀 PATLAMA BAŞLADI: hacim ${flag.volSurge}x arttı + güçlü yeşil mum (%${flag.body}) + alıcı baskısı (${flag.delta}). Momentum yukarı patlıyor — HTF uyumluysa bu erken bir LONG fırsatı olabilir, kaçırma.`;
+          }
+        } catch(_) {}
+        return null;
+      })(),
       piyasaNotu: data.marketCtx || null
     };
 
@@ -3485,7 +3495,9 @@ KURALIN (sırayla kontrol et):
 - TP: GENİŞ tut. Bir üstteki likidite seviyesine / yapı hedefine (~3-4 ATR). Kazançları büyüt, kayıpları kısa kes — bu stratejinin matematiği buna dayanır (WR ~%48 ama kazananlar büyük).
 - Kaldıraç: güven 64-69→10x, 70-77→15x, 78-84→20x, 85+→25x. TAVAN 25x (küçük bakiye koruması), AŞMA.
 
-★ KARARLILIK: Sen bugün TEK coine odaklı uzmansın. Sana 150 mum 5m + HTF veriliyor — bu coinin tüm günlük hikâyesini gör. Kurala uyan net bir LONG fırsatı (HTF yukarı + sweep + reclaim) oluştuğunda TEREDDÜTSÜZ GİR. Kural oturmuyorsa (1h aşağı, ya da sweep yok, ya da reclaim yok) BEKLE. Zorla işlem açma; kurala uy. Kalite > sıklık.
+★ KARARLILIK: Sen en volatil 2 coine (TOP2) odaklı uzmansın. 🚀 işaretli coin 'patlama adayı' — yükseliyor ama henüz parabolik değil, ekstra dikkat et, erken yakala. Sana 150 mum 5m + HTF veriliyor. Kurala uyan net LONG fırsatı (HTF yukarı + sweep + reclaim) oluştuğunda TEREDDÜTSÜZ GİR. Kural oturmuyorsa BEKLE. Zorla açma; kalite > sıklık.
+
+★ KAZANANI KOŞTUR (erken kapatma!): LONG açtıktan sonra fiyat lehine giderse ACELE KAPATMA. Bu yükselen coinler koşar — küçük kârla erken çıkmak en büyük hatadır (kazançlar büyük olmalı, çünkü WR ~%48). karKosma:RUNNER seç, TP'yi üst likiditede tut, fikir bozulmadıkça (sweep dibi kırılmadıkça) pozisyonda kal. Trend devam ettikçe taşı.
 
 VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 5m(150 mum, ANA grafik — likidite seviyelerini ve sweep'i burada gör) + 15m(40) + 1h(30, HTF YÖN burada) + 4h(20) + btc5m. Ayrıca: canlı delta (alıcı/satıcı %), OI değişimi, funding, order book dengesizliği, büyük trader long%, likidite seviyeleri, ATR%. Sana botun hiçbir yorumu/skoru VERİLMİYOR — kararı tamamen kendi okumanla ver. RSI verilse bile ona güvenme, fiyat-yapı-likidite kazanır.
 
@@ -8829,44 +8841,37 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
   }
 }
 
-// ═══ R326: TEK COİN KİLİT MOTORU ═══
-// Volatilite-tabanlı (B modu): en volatil coini seç, kilitle, ölene kadar tut.
-let __r326LockedCoin = null; // { fullSymbol, lockedAt, refRange, refChange12h }
+// ═══ R327: TOP2 + PATLAMA POTANSİYELİ MOTORU ═══
+// Tek coin yerine en iyi 2 coini izle. Biri sıralamada düşerse otomatik diğerine kay.
+// Ayrıca "patlama potansiyeli" (sıkışma sonrası hacimli yükseliş başlangıcı) gösteren coini öne al.
+function r327PatlamaScore(c) {
+  // Patlama adayı: yükseliyor ama henüz parabolik değil (erken yakala) + volatil + işlem canlı
+  // Mevcut alanlar: change24h, change12h(varsa), rangePct, volume, trades
+  const ch = Number(c.change12h ?? c.change24h ?? 0);
+  const range = Number(c.rangePct || 0);
+  const trades = Number(c.trades || 0);
+  let score = 0;
+  if (ch > 5 && ch < 35) score += 2;   // yükseliyor ama henüz aşırı uzamamış = erken/patlama öncesi
+  if (range >= 10) score += 1;          // yüksek volatilite (hareket var)
+  if (range >= 20) score += 1;          // çok volatil
+  if (trades > 50000) score += 1;       // işlem hacmi canlı (ilgi var)
+  return score;
+}
 function r326ApplySingleCoinLock(orderedList) {
   if (!Array.isArray(orderedList) || orderedList.length === 0) return orderedList;
-  const now = Date.now();
-  const top = orderedList[0]; // en volatil+yükselen aday
-
-  // Kilitli coin var mı ve hâlâ listede mi?
-  if (__r326LockedCoin) {
-    const still = orderedList.find(c => c.fullSymbol === __r326LockedCoin.fullSymbol);
-    if (still) {
-      // Coin hâlâ canlı mı? ÖLÜM kriterleri:
-      const ch12 = Number(still.change12h ?? still.change24h ?? 0);
-      const range = Number(still.rangePct || 0);
-      const refRange = Number(__r326LockedCoin.refRange || 0);
-      const momentumDead = ch12 <= 0;                          // (b) 12h momentum negatife döndü
-      const volDead = refRange > 0 && range < refRange * 0.5;  // (c) volatilite yarıya düştü
-      const minHold = (now - __r326LockedCoin.lockedAt) > 20*60*1000; // en az 20dk tut (sürekli coin değiştirme)
-      if (!((momentumDead || volDead) && minHold)) {
-        // Coin hâlâ canlı → SADECE onu döndür (tek coin odağı). refRange'i güncel zirveyle tut.
-        if (range > refRange) __r326LockedCoin.refRange = range;
-        return [{ ...still, r326Locked: true, r326LockAgeMin: Math.round((now-__r326LockedCoin.lockedAt)/60000) }];
-      }
-      // else: coin öldü → aşağıda yeni coine geç
-    }
-    // Kilitli coin listeden düştü VEYA öldü → yeni TOP1'e geç
-  }
-
-  // Yeni coin kilitle (ilk kez ya da eski öldü)
-  __r326LockedCoin = {
-    fullSymbol: top.fullSymbol,
-    lockedAt: now,
-    refRange: Number(top.rangePct || 0),
-    refChange12h: Number(top.change12h ?? top.change24h ?? 0)
-  };
-  logAuto(`🔒 R326 TEK COİN KİLİT: ${String(top.fullSymbol||'').replace('USDT','')} seçildi (12h ${(top.change12h??top.change24h??0).toFixed?.(1)||'?'}% · range ${Number(top.rangePct||0).toFixed(1)}%) — volatilite/momentum ölene kadar SADECE bu coin işlenir`);
-  return [{ ...top, r326Locked: true, r326LockAgeMin: 0 }];
+  // TOP2: en iyi 2 coini al (12h sıralı zaten). Patlama potansiyeli yüksekse sırayı ayarla.
+  const top2 = orderedList.slice(0, 2);
+  // Patlama skoruna göre ikincil sıralama (yüksek patlama adayı öne)
+  top2.sort((a,b) => r327PatlamaScore(b) - r327PatlamaScore(a));
+  // İşaretle: AI'a hangisinin patlama adayı olduğunu bildir
+  const tagged = top2.map((c,idx) => {
+    const ps = r327PatlamaScore(c);
+    return { ...c, r327Top2: true, r327Rank: idx+1, r327PatlamaScore: ps,
+             r327Patlama: ps >= 3 };  // 3+ = güçlü patlama adayı
+  });
+  const names = tagged.map(c => `${String(c.fullSymbol||'').replace('USDT','')}${c.r327Patlama?'🚀':''}`).join(', ');
+  logAuto(`🎯 R327 TOP2 izleniyor: ${names} (patlama adayı 🚀 ile işaretli)`);
+  return tagged;
 }
 
 app.get('/api/scan-candidates', async (req, res) => {
@@ -15299,6 +15304,46 @@ let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
 const AUTO_SCAN_INTERVAL_MS = 180 * 1000; // R325C: 360→180sn (3dk) — scalp HIZ. 5m mumda fırsat kaçırmamak için sık tarama. Opus maliyeti ~$8.8/gün ($11 sınırı içinde). review_gap 420sn aynı coine tekrar çağrıyı önler (boşa para yok).
+
+// ═══ R328: PATLAMA TESPİT WORKER ═══
+// TOP2 coinleri hızlı (45sn) izler, AI ÇAĞIRMADAN (bedava) patlama başlangıcını tespit eder.
+// Patlama = hacim surge (2x+) + güçlü yeşil mum + alıcı baskısı. Backtest: PF 1.93-2.13.
+// Tespit edince bayrak koyar → sonraki tarama o coine "patlama!" notuyla öncelikli gider.
+let __r328PatlamaFlags = {}; // { COIN: { ts, volSurge, body, detected } }
+async function r328PatlamaWorker() {
+  try {
+    if (!autoConfig?.enabled) return;
+    const coins = (autoScanState.scanList || []).slice(0, 2); // TOP2
+    for (const base of coins) {
+      const full = base.endsWith('USDT') ? base : base + 'USDT';
+      try {
+        const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=12`);
+        if (!Array.isArray(kl) || kl.length < 10) continue;
+        const bars = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]||0}));
+        const last = bars[bars.length-1];
+        const vRecent = bars.slice(-3).reduce((s,b)=>s+b.v,0)/3;
+        const vPrev = bars.slice(-10,-3).reduce((s,b)=>s+b.v,0)/7;
+        const volSurge = vPrev>0 ? vRecent/vPrev : 1;
+        const body = (last.c-last.o)/last.o*100;
+        const tv = bars.slice(-3).reduce((s,b)=>s+b.v,0);
+        const tbv = bars.slice(-3).reduce((s,b)=>s+b.tbv,0);
+        const delta = tv>0 ? (tbv/tv*2-1)*100 : 0;
+        // Patlama imzası (backtest kanıtlı): hacim 2x+ + güçlü yeşil mum + alıcı
+        if (volSurge >= 2.0 && body >= 0.5 && last.c > last.o && delta > 0) {
+          const wasNew = !__r328PatlamaFlags[base] || (Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000);
+          __r328PatlamaFlags[base] = { ts: Date.now(), volSurge:+volSurge.toFixed(1), body:+body.toFixed(2), delta:+delta.toFixed(0), detected:true };
+          if (wasNew) logAuto(`🚀 PATLAMA TESPİT: ${base} — hacim ${volSurge.toFixed(1)}x + yeşil mum %${body.toFixed(1)} + alıcı ${delta.toFixed(0)} — AI'a öncelikli bildirilecek`);
+        } else {
+          // Patlama söndü → bayrağı eskit (5dk sonra temizlenir)
+          if (__r328PatlamaFlags[base] && Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000) {
+            delete __r328PatlamaFlags[base];
+          }
+        }
+      } catch(_) {}
+    }
+  } catch(_) {}
+}
+setInterval(r328PatlamaWorker, 45*1000); // 45sn'de bir, bedava (AI çağırmaz)
 const autoLog = []; // Son 50 otomatik işlem logu
 
 // ── CANLI TARAMA TELEMETRİSİ ────────────────────────────────────────────────
