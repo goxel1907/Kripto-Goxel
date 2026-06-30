@@ -79,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R325E_LEV25';
+const LAZARUS_BUILD = 'R327_LONG_LIQ';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3460,36 +3460,37 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       genelLongYuzde: data.globalLongPct,
       likiditeSeviyeleri: data.liqLevels,                 // üst/alt likidite (TP/SL hedefi için)
       atrYuzde: data.atrPct,
-      botOkumasi: data.botOkumasi || null,   // R309Y: botun zengin grafik/formasyon/ICT okuması — AI çapraz doğrular
+      botOkumasi: null,   // R326: bot ön-okuması AI'dan GİZLENDİ (kullanıcı kararı: bot AI'ı yanıltabilir, AI sadece ham veri görür)
       piyasaNotu: data.marketCtx || null
     };
 
-    const sys = `Sen profesyonel bir kripto futures scalper'ısın — 5m zaman diliminde, yüksek volatiliteli gainer coinlerde kaldıraçla işlem yapan, yılların tecrübesine sahip bir trader. Lazarus'un TEK karar vericisisin. Bu coinde ne yapacağına SEN karar verirsin: LONG, SHORT ya da BEKLE — giriş, TP, SL, kaldıraç hepsi senin.
+    const sys = `Sen profesyonel bir kripto futures scalper'ısın — yüksek volatiliteli, YÜKSELEN gainer coinlerde çalışan, saf price action + likidite okuyan bir trader. Lazarus'un TEK karar vericisisin. Bu coinde ne yapacağına SEN karar verirsin.
 
-SENİN BİLGİN:
-Sen zaten binlerce price action kalıbını, mum formasyonunu, ICT/SMC kavramını, order flow okumasını ve scalp stratejisini biliyorsun. Sweep & reclaim, order block, FVG, OTE, BOS/ChoCH, likidite avı, trend pullback, kanal kırılımı, range dönüşü, VWAP sapması, momentum breakout, başarısız kırılım, Wyckoff, engulfing, pin bar, üçlü dönüş, divergence — bunların hepsi senin cephanende. Sana bunları ÖĞRETMİYORUM; zaten biliyorsun. KRİTİK: sana hazır "şu formasyon var" bilgisi VERİLMİYOR — sana HAM MUMLAR (OHLCV dizisi) veriliyor. Bir pro trader gibi bu ham mumlara bakıp formasyonu/setup'ı KENDİN tespit edeceksin: swing high/low'ları kendin bul, trendi kendin çiz, FVG boşluğunu kendin gör (mum1 yüksek < mum3 düşük), order block'u kendin işaretle (son düşüş/yükseliş öncesi mum), likidite seviyelerini kendin oku (eşit tepe/dipler), engulfing/pin/doji'yi kendin tanı, divergence'ı kendin hesapla (fiyat HH ama RSI LH). Sayıların arkasındaki grafiği zihninde canlandır. Yapmanı istediğim: bu ham veriye gerçek bir trader gözüyle bak, hangi setup oluşuyorsa KENDİN gör, ve uygula.
+★★★ KANITLANMIŞ STRATEJİN (gerçek veride test edildi, kârlı) ★★★
+Bu coinler YÜKSELEN gainer'lar. Gerçek 1 haftalık backtest şunu KANITLADI: bu coinlerde SHORT ve dönüş-avı SÜREKLİ kaybeder; momentum yönünde (LONG) likidite-sweep girişleri kazanır. Senin işin tek bir şey: HTF yukarı yönünde, likidite süpürmesi sonrası LONG yakalamak.
 
-NASIL DÜŞÜN:
-Grafiğe baktığında sor: Kim kontrolde — alıcı mı satıcı mı? Trend ne yönde? Fiyat anlamlı bir yerde mi (destek/direnç/likidite/değerli bölge)? Para nereye akıyor (delta, hacim, order book)? Büyük oyuncu hangi tuzağı kuruyor, likiditeyi nereye sürüklüyor? Bir sonraki olası hareket ne? Bu soruların cevapları net bir hikâye anlatıyorsa ve birden fazla kanıt aynı yönü gösteriyorsa — o işlemdir, GİR. Hikâye karışıksa, kanıtlar çelişiyorsa — BEKLE.
+KURALIN (sırayla kontrol et):
+1. HTF YÖN: 1h grafiği yukarı mı? (son saatler yükseliyor, yapı HH/HL). 1h aşağıysa → BEKLE, işlem YOK.
+2. LİKİDİTE SÜPÜRMESİ: Fiyat bir alt likidite seviyesine (önceki swing low / eşit dipler / belirgin destek) indi mi? MM oraya zayıf stopları avlamaya iner.
+3. RECLAIM (dönüş teyidi): Süpürme sonrası fiyat o seviyenin ÜSTÜNE geri kapandı mı? (mum dibi seviyenin altına sarktı AMA kapanış üstünde = başarısız süpürme = dönüş). Bu, girişinin tetiğidir.
+4. → Üçü de varsa LONG. Yoksa BEKLE.
 
-DİSİPLİN:
-- Birden fazla bağımsız kanıt aynı yönü göstermeli (tek sebep yeterli değil; "bir sebep kumar, üç sebep trade"). Ama bunu mekanik sayma — bir pro olarak setup'ın gerçekten "oturup oturmadığını" hisset.
-- Hareketin BAŞINDA gir, kovalama. Pump'ın tepesini, dump'ın dibini kovalamak en sık kayıp sebebidir. Taze kırılım/dönüş > geç giriş.
-- Dönüş işlemlerinde dönüşün GERÇEKLEŞTİĞİNİ gör (gövde kapanışı, akış dönüşü) — düşen/yükselen bıçağı yakalama.
-- Doğru yön + yanlış an = zarar. "Düşecek" diye düşünüp delta hâlâ alıcıyken short'a girme; önce akışın döndüğünü gör.
-- LONG ve SHORT eşit — düşüş de yükseliş kadar kazandırır.
-- Her işlemin "yanılırsam nerede çıkarım" noktası olmalı (SL yapının/sweep'in ötesinde, gürültü-altı ama mantıklı). Yüksek ATR'de SL'e nefes ver.
+★ SHORT YASAK (veride kanıtlandı): Bu yükselen coinlerde SHORT sistematik kaybeder. "Tepe geldi, düşer" diye SHORT AÇMA — bu coinler tepede göründüğü an bir bacak daha yükselip seni avlar. Sadece LONG, sadece HTF yukarı yönünde. SHORT'u tamamen unut.
 
-VERİ:
-"mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 5m(100 mum, ANA grafik — geniş yapı/trend gör) + 15m(20) + 1h(20) + 4h(12) + btc5m. Bu derinlik sana gerçek trend yapısını, çoklu swing'i, daha büyük formasyonları okuma imkânı verir. Ayrıca: 4 TF RSI, funding, OI değişimi, canlı delta (alıcı/satıcı %), order book dengesizliği, büyük trader vs genel long%, likidite seviyeleri, ATR%. HTF'ler bağlam (büyük resim destekliyor mu, önünde engel var mı). Botun bir ön-okuması da var (botOkumasi) — onu bir asistan görüşü gibi dikkate al ama kendi okuman kazanır; bot "100 skor" dese de sen tuzak görüyorsan BEKLE, bot tereddütlü olsa da sen net fırsat görüyorsan GİR.
+★ RSI'A VE İNDİKATÖRLERE TAKILMA: RSI, MACD, stokastik gecikmeli ve yanıltıcıdır — "RSI 80 aşırı alım" deyip yükselen trende karşı durma, bu en sık kayıp sebebidir. Sen HAM MUMLARA ve FİYATIN YAPIYA TEPKİSİNE bak: swing'leri kendin bul, likidite seviyelerini kendin işaretle, fiyatın o seviyelere nasıl tepki verdiğini gör. İndikatör değil, price action + likidite + HTF yön.
 
-KARARLILIK (SCALP — HIZ ÖNEMLİ):
-Sen aktif bir scalper'sın, izleyici değil. 5m gainer evreninde fırsatlar sürekli akar ve HIZLI geçer — tereddüt edersen kaçar. BEKLE'yi güvenli liman yapma. Bu sana gelen coin TOP24 gainer arasından seçilmiş, yani zaten hareketli. Önüne gelen her coinde gerçek bir fırsat ARA — net bir setup (sweep dönüşü, FVG retest, kanal dibi, kırılım, range ucu reddi, momentum, trend pullback...) görürsen TEREDDÜTSÜZ GİR. Sadece tablo gerçekten çelişkiliyse (yapı bir yön, akış güçlü ters yön) BEKLE. "Daha iyisini bekleyeyim" tuzağına düşme — scalp'te mükemmeli beklemek fırsatı kaçırmaktır. Net setup = hızlı karar = giriş. Senin işin sermayeyi BÜYÜTMEK; bunun için nitelikli ama SIK işlem açman gerekir.
+★ GİRİŞ/ÇIKIŞ:
+- Giriş: reclaim mumunda ya da hemen sonrasında (sweep dibinin hemen üstü).
+- SL: süpürülen likidite seviyesinin biraz altı (dar tut, ~1-1.5 ATR — süpürme başarısızsa fikir çabuk bozulur).
+- TP: GENİŞ tut. Bir üstteki likidite seviyesine / yapı hedefine (~3-4 ATR). Kazançları büyüt, kayıpları kısa kes — bu stratejinin matematiği buna dayanır (WR ~%48 ama kazananlar büyük).
+- Kaldıraç: güven 64-69→10x, 70-77→15x, 78-84→20x, 85+→25x. TAVAN 25x (küçük bakiye koruması), AŞMA.
 
-KALDIRAÇ (güven = kaldıraç, TAVAN 25x — küçük bakiye likidasyon koruması): <64 BEKLE. 64-69→10x. 70-77→15x. 78-84→20x. 85+→25x (en net setup). Setup ne kadar net + çok kanıtlıysa o kadar cömert kaldıraç ama 25x'i AŞMA. Şüphedeysen düşük güven ya da BEKLE. Sistem geniş SL'de kaldıracı otomatik kısar.
+★ KARARLILIK: Sen bugün TEK coine odaklı uzmansın. Sana 150 mum 5m + HTF veriliyor — bu coinin tüm günlük hikâyesini gör. Kurala uyan net bir LONG fırsatı (HTF yukarı + sweep + reclaim) oluştuğunda TEREDDÜTSÜZ GİR. Kural oturmuyorsa (1h aşağı, ya da sweep yok, ya da reclaim yok) BEKLE. Zorla işlem açma; kurala uy. Kalite > sıklık.
 
-ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı. Markdown, başlık, açıklama YAZMA. SADECE tek satır JSON. Tüm analizini "reasoning" içine 90 karaktere sığdır. JSON dışında tek kelime = işlem kaybı.
-{"side":"LONG|SHORT|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter","plan":"max 70 karakter"}`;
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 5m(150 mum, ANA grafik — likidite seviyelerini ve sweep'i burada gör) + 15m(40) + 1h(30, HTF YÖN burada) + 4h(20) + btc5m. Ayrıca: canlı delta (alıcı/satıcı %), OI değişimi, funding, order book dengesizliği, büyük trader long%, likidite seviyeleri, ATR%. Sana botun hiçbir yorumu/skoru VERİLMİYOR — kararı tamamen kendi okumanla ver. RSI verilse bile ona güvenme, fiyat-yapı-likidite kazanır.
+
+★★★ ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı. Markdown/başlık/açıklama YAZMA. SADECE tek satır JSON. Tüm analizini "reasoning" içine 90 karaktere sığdır. JSON dışında tek kelime = işlem kaybı.
+{"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter","plan":"max 70 karakter"}`;
 
     // R311T: 529 (overloaded) / 429 (rate limit) / 5xx geçici hatalarında RETRY.
     // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
@@ -8820,10 +8821,52 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
         .sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h)); // en az düşen önce
       for (const c of yedek) { if (out.length >= 3) break; out.push(c); }
     }
-    return out;
+    // R326: VOLATİLİTE-TABANLI TEK COİN KİLİT (kullanıcı kararı: tek coine kurt gibi odaklan)
+    // out[0] = o an en volatil+yükselen coin. Onu KİLİTLE, gün boyu tut. Sadece coin "ölünce" değiştir.
+    return r326ApplySingleCoinLock(out);
   } catch (_) {
     return ordered; // 12h hesabı patlarsa eski sırayla devam (fail-soft)
   }
+}
+
+// ═══ R326: TEK COİN KİLİT MOTORU ═══
+// Volatilite-tabanlı (B modu): en volatil coini seç, kilitle, ölene kadar tut.
+let __r326LockedCoin = null; // { fullSymbol, lockedAt, refRange, refChange12h }
+function r326ApplySingleCoinLock(orderedList) {
+  if (!Array.isArray(orderedList) || orderedList.length === 0) return orderedList;
+  const now = Date.now();
+  const top = orderedList[0]; // en volatil+yükselen aday
+
+  // Kilitli coin var mı ve hâlâ listede mi?
+  if (__r326LockedCoin) {
+    const still = orderedList.find(c => c.fullSymbol === __r326LockedCoin.fullSymbol);
+    if (still) {
+      // Coin hâlâ canlı mı? ÖLÜM kriterleri:
+      const ch12 = Number(still.change12h ?? still.change24h ?? 0);
+      const range = Number(still.rangePct || 0);
+      const refRange = Number(__r326LockedCoin.refRange || 0);
+      const momentumDead = ch12 <= 0;                          // (b) 12h momentum negatife döndü
+      const volDead = refRange > 0 && range < refRange * 0.5;  // (c) volatilite yarıya düştü
+      const minHold = (now - __r326LockedCoin.lockedAt) > 20*60*1000; // en az 20dk tut (sürekli coin değiştirme)
+      if (!((momentumDead || volDead) && minHold)) {
+        // Coin hâlâ canlı → SADECE onu döndür (tek coin odağı). refRange'i güncel zirveyle tut.
+        if (range > refRange) __r326LockedCoin.refRange = range;
+        return [{ ...still, r326Locked: true, r326LockAgeMin: Math.round((now-__r326LockedCoin.lockedAt)/60000) }];
+      }
+      // else: coin öldü → aşağıda yeni coine geç
+    }
+    // Kilitli coin listeden düştü VEYA öldü → yeni TOP1'e geç
+  }
+
+  // Yeni coin kilitle (ilk kez ya da eski öldü)
+  __r326LockedCoin = {
+    fullSymbol: top.fullSymbol,
+    lockedAt: now,
+    refRange: Number(top.rangePct || 0),
+    refChange12h: Number(top.change12h ?? top.change24h ?? 0)
+  };
+  logAuto(`🔒 R326 TEK COİN KİLİT: ${String(top.fullSymbol||'').replace('USDT','')} seçildi (12h ${(top.change12h??top.change24h??0).toFixed?.(1)||'?'}% · range ${Number(top.rangePct||0).toFixed(1)}%) — volatilite/momentum ölene kadar SADECE bu coin işlenir`);
+  return [{ ...top, r326Locked: true, r326LockAgeMin: 0 }];
 }
 
 app.get('/api/scan-candidates', async (req, res) => {
@@ -8871,7 +8914,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         cached(`k4h_${full}`,  60*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)), // R318B: 30dk→60dk (4h mum 4 saatte değişir, 418 fix)
         cached(`k1h_${full}`,   15*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)), // R318B: 5dk→15dk (1h mum saatte değişir, 418 fix)
         cached(`k15m_${full}`, 90*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=15m&limit=200`)),
-        cached(`k5m_${full}`,  45*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=5m&limit=100`)),
+        cached(`k5m_${full}`,  45*1000, ()=>bPub(`/fapi/v1/klines`,`symbol=${full}&interval=5m&limit=200`)),
         cached(`fund_${full}`, 30*60*1000, ()=>bPub('/fapi/v1/fundingRate',`symbol=${full}&limit=10`)),
         cached(`oih_${full}`,  15*60*1000, ()=>bPub('/futures/data/openInterestHist',`symbol=${full}&period=1h&limit=24`)),
         cached(`lsg_${full}`,  15*60*1000, ()=>bPub('/futures/data/globalLongShortAccountRatio',`symbol=${full}&period=1h&limit=12`)),
@@ -13290,10 +13333,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     const r308RawCandles = {
       not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda (guncel). En eski en solda.',
-      '5m':  r308PackKlines(k5m, 100),
-      '15m': r308PackKlines(k15m, 20),
-      '1h':  r308PackKlines(k1h, 20),
-      '4h':  r308PackKlines(k4h, 12),
+      '5m':  r308PackKlines(k5m, 150),
+      '15m': r308PackKlines(k15m, 40),
+      '1h':  r308PackKlines(k1h, 30),
+      '4h':  r308PackKlines(k4h, 20),
       btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6)
     };
     const r316Trend = r316TrendlineBreak(k5m); // R316: eğik trend çizgisi (diagonal) kırılımı — AI'ya VERİ
@@ -15600,9 +15643,9 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
 
         const cfg = autoConfig || {};
         const allowLong = cfg.allowLong !== false;
-        const allowShort = cfg.allowShort !== false;
+        const allowShort = false; // R327: SHORT STRATEJİ GEREĞİ KAPALI — backtest kanıtı: yükselen gainer'larda SHORT sistematik kaybeder. Sadece LONG.
+        if (ai.side === 'SHORT') { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'R327: SHORT kapalı (sadece LONG stratejisi)'}); logAuto(`⛔ ${sym} AI SHORT dedi ama R327 stratejisi SADECE LONG — reddedildi`); continue; }
         if (ai.side === 'LONG' && !allowLong) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Panel LONG kapalı'}); logAuto(`⛔ ${sym} AI LONG dedi ama panel LONG kapalı`); continue; }
-        if (ai.side === 'SHORT' && !allowShort) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Panel SHORT kapalı'}); logAuto(`⛔ ${sym} AI SHORT dedi ama panel SHORT kapalı`); continue; }
         if (!cfg.apiKey || !cfg.apiSecret) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'API key/secret autoConfig içinde yok'}); logAuto(`⛔ ${sym} AI canlı emir yok: API key/secret autoConfig içinde yok`); continue; }
         if (isOnCooldown(fullSym, ai.side, { aiBrain:ai, tier:r.tier, score:r.score })) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Cooldown aktif'}); logAuto(`⛔ ${sym} AI canlı emir yok: cooldown aktif`); continue; }
 
@@ -17820,7 +17863,7 @@ async function runAutoScan(prioritySymbol=null) {
         if (decisionChain.r300SoftReject) {
           const aiSideUp = String(decisionChain.aiBrain?.side || '').toUpperCase();
           const aiApproved = decisionChain.aiBrain && decisionChain.aiBrain.ok &&
-                             (aiSideUp === 'LONG' || aiSideUp === 'SHORT') &&
+                             (aiSideUp === 'LONG') && /* R327: sadece LONG, SHORT kapalı */
                              !AI_BRAIN_SHADOW;
           if (!aiApproved) {
             logAuto(`⛔ ${coin.symbol} TEK KAPI: R300 yumuşak red (${decisionChain.r300SoftReject}) + AI net onay yok — emir AÇILMADI`);
@@ -17836,7 +17879,7 @@ async function runAutoScan(prioritySymbol=null) {
         {
           const aiSideUp = String(decisionChain.aiBrain?.side || '').toUpperCase();
           const aiApproved = decisionChain.aiBrain && decisionChain.aiBrain.ok &&
-                             (aiSideUp === 'LONG' || aiSideUp === 'SHORT') &&
+                             (aiSideUp === 'LONG') && /* R327: sadece LONG, SHORT kapalı */
                              !AI_BRAIN_SHADOW;
           if (!aiApproved) {
             const why = !AI_BRAIN_ENABLED ? 'AI kapalı' :
