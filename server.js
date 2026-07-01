@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R333_MM_MINDSET'
+const LAZARUS_BUILD = 'R334_SL_FREE'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15705,10 +15705,11 @@ function r308AiPlanQuality(ai) {
     if (!(risk > 0 && reward > 0)) return { ok:false, reason:'AI risk/ödül sıfır' };
     const rr = reward / risk;
     const slPct = risk / entry * 100;
-    // R328C: SL limiti %3→%6'ya çıkarıldı. Bu coinlerin ATR'si %6-9, %3 SL çok dardı ve iyi sweep+reclaim
-    // setuplarını (sweep dibi altı SL doğal olarak geniş) reddediyordu. Backtest'te kârlı SL'ler %4-8 aralığındaydı.
-    // GÜVENLİK: geniş SL'de likidasyon riski var → kaldıraç emir açılışında otomatik kısılır (executeLeverage SL'e göre düşer).
-    if (slPct > AI_BRAIN_MAX_SL_PCT) return { ok:false, reason:`AI SL aşırı geniş ${slPct.toFixed(2)}% > ${AI_BRAIN_MAX_SL_PCT}% (güvenlik)` };
+    // R334: SL LİMİTİ KALDIRILDI (kullanıcı kararı) — AI ne derse o. Volatil gainer coinlerde sweep dibi doğal olarak
+    // geniş SL gerektirir (%9 gibi); dar limit iyi işlemleri reddediyordu (TLM tipi kaçan işlemler). AI kendi SL'ini seçer.
+    // GÜVENLİK: geniş SL'de likidasyon riskini kaldıraç dengeler — executeLeverage SL%'ye göre otomatik düşürülür (aşağıda).
+    // (Eski %3/%6 red kaldırıldı; AI'ın yargısı esas.)
+    if (!(slPct > 0)) return { ok:false, reason:'AI SL geçersiz (0 ya da negatif)' };
     // NOT (R310O): R310N min R/R zorlaması KALDIRILDI — AI bazen düşük R/R'lı ama yüksek-olasılıklı scalp
     // setup görür (yakın TP, kesin kâr). Katı R/R dayatmak AI'nın yargısını ezer = boğma. R/R bilgi olarak
     // hesaplanıp gösterilir; AI kendi değerlendirir. Sadece SL aşırı genişliği (güvenlik) ve güven tabanı kalır.
@@ -17901,14 +17902,18 @@ async function runAutoScan(prioritySymbol=null) {
                       // R319B FIX: kullanıcı talimatı MIN 10x — R308K kaldıracı 10x ALTINA düşüremez. Geniş SL'de
                       // kaldıracı kısmak yerine 10x tabanında tut; aşırı risk varsa zaten SL %3 tavanı + guard korur.
                       try {
-                        const maxRoiRisk = Number(r282TradePlan?.maxRoiRisk || 15);
-                        if (userSLPct * executeLeverage > maxRoiRisk + 1) {
+                        // R334: SL limiti kaldırıldı → geniş SL'de kaldıraç GERÇEKTEN düşmeli (likidasyon koruması).
+                        // Eski R319B "min 10x" kuralı geniş SL'de tehlikeliydi (%9 SL × 10x = %90 risk = likidasyon).
+                        // Yeni mantık: SL × kaldıraç ≤ %40 marjin riski. Dar SL'de yüksek kaldıraç (25x'e kadar),
+                        // geniş SL'de düşük kaldıraç (min 3x). Risk sabit kalır, AI istediği SL'i kullanabilir.
+                        const maxRoiRisk = 40; // max %40 marjin riski (likidasyondan güvenli mesafe)
+                        if (userSLPct * executeLeverage > maxRoiRisk) {
                           const oldLev = executeLeverage;
-                          const riskLev = Math.max(1, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct)));
-                          executeLeverage = Math.max(10, riskLev); // R319B: min 10x garanti — taban ezilmez
+                          const riskLev = Math.max(3, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct))); // min 3x taban
+                          executeLeverage = Math.min(executeLeverage, riskLev);
                           if (executeLeverage !== oldLev) {
-                            leverageNote += ` · R308K AI-SL kaldıraç ${oldLev}x→${executeLeverage}x (risk≤${maxRoiRisk}%, min10x korundu)`;
-                            logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} → kaldıraç ${oldLev}x→${executeLeverage}x (min 10x taban korundu)`);
+                            leverageNote += ` · R334 SL×Lev güvenlik ${oldLev}x→${executeLeverage}x (SL%${userSLPct}×lev≤%40, likidasyon koruması)`;
+                            logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} geniş → kaldıraç ${oldLev}x→${executeLeverage}x (risk %${(userSLPct*executeLeverage).toFixed(0)}, likidasyon güvenli)`);
                           }
                         }
                       } catch(_levSafeE) {}
