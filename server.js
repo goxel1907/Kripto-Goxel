@@ -39,6 +39,7 @@ function saveAutoStats(obj) {
 }
 const autoPersistentStats = loadAutoStats();
 
+
 // ── KRİTİK HATA GÖSTERİM MERKEZİ ─────────────────────────────────────────────
 // Amaç: analiz motoru kırıldığında sessizce WAIT/boş ekran üretmemek.
 // Dashboard /api/diagnostics/status üzerinden bunları gösterir.
@@ -78,7 +79,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R330_15M'
+const LAZARUS_BUILD = 'R328B_PATLAMA_WORKER';
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -331,6 +332,8 @@ async function verifyAlgoSLTPVisible(apiKey, apiSecret, symbol, expectedSL, expe
   }
 }
 
+
+
 // ── PRICE TICK NORMALIZER — SL/TP precision (-1111) koruması ────────────────
 // Binance bazı coinlerde BEAT gibi 4 decimal, bazı coinlerde 5/6 decimal kabul eder.
 // SL/TP kurtarma veya trailing tarafında .toFixed(8) ile ham fiyat gönderilirse
@@ -411,6 +414,7 @@ async function getSymbolMaxInitialLeverage(apiKey, apiSecret, symbol, targetNoti
     return null;
   }
 }
+
 
 // ── R137: Binance sembol kaldıraç sınırı / -4028 fallback ───────────────────
 function normalizeRequestedLeverage(v, fallback=1) {
@@ -719,32 +723,11 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   };
   const finalUrl = isGet ? `${url}?${fullQs}` : url;
   if (!isGet) options.body = fullQs;
-  // R331: 'Premature close' / socket kopma düzeltmesi.
-  // Sorun: büyük yanıtlı endpointler (v2/v3 account/balance) Railway/node-fetch altında
-  // yanıt gövdesi tamamlanmadan kopabiliyor (positionRisk küçük olduğu için geçiyordu).
-  // Geçici ağ hatalarında (Premature close / ECONNRESET / socket hang up / fetch failed / timeout)
-  // aynı imzayla en fazla 2 kez daha, artan beklemeyle tekrar dene. İmza/kimlik hatası DEĞİL—retry güvenli.
-  let res, text;
-  const _r331Transient = (msg) => /premature close|econnreset|socket hang up|network|fetch failed|ETIMEDOUT|EPIPE|aborted|The operation was aborted|terminated/i.test(String(msg||''));
-  for (let _r331try = 0; _r331try < 3; _r331try++) {
-    try {
-      res = await fetch(finalUrl, { ...options, signal: AbortSignal.timeout(timeout) });
-      if (res.status === 429 || res.status === 418) {
-        registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
-      }
-      text = await res.text();
-      break; // gövde tam okundu → çık
-    } catch (fe) {
-      const feMsg = String(fe && (fe.message || fe) || '');
-      // Backoff fırlatıldıysa (429/418) retry etme, yukarı taşı
-      if (fe && fe.code === 'BINANCE_BACKOFF_ACTIVE') throw fe;
-      if (_r331Transient(feMsg) && _r331try < 2) {
-        await sleep(400 * (_r331try + 1)); // 400ms, 800ms artan bekleme
-        continue;
-      }
-      throw new Error(`${path}: ${feMsg.slice(0,120)}`);
-    }
+  const res = await fetch(finalUrl, options);
+  if (res.status === 429 || res.status === 418) {
+    registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
   }
+  const text = await res.text();
   let data;
   try { data = JSON.parse(text); }
   catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
@@ -943,6 +926,7 @@ const positionRiskState = {
   get lastSource() { return posRiskCache.lastSource; },
 };
 
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. WEBSOCKET CVD — Sürekli bağlı, gerçek zamanlı Cumulative Volume Delta
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1037,6 +1021,7 @@ function getLiqData(symbol) {
   };
 }
 
+
 // ── R125: 5m ORDERFLOW ÖNCELİK BEYNİ ───────────────────────────────────────
 // Amaç: bot veriyi toplamakla kalmasın; depth@100ms/aggTrade/forceOrder akışını
 // tek beyin edge formülüne canlı olarak taşısın. Yeni REST yükü bindirmez.
@@ -1044,6 +1029,7 @@ const r125BookHistory = new Map();       // symbol → [{ts, imb, spread, bid, a
 const r125PriorityWake = new Map();      // symbol → {ts, reason, score}
 let r310yLastTop2Wake = 0;               // R310Y: son TOP2 hızlı-takip uyandırma zamanı (90sn cooldown için)
 let r125FastWakeTimer = null;
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // R140: Pump Cycle Dedektörü + Equal H/L Tuzak + OI Velocity + BTC Diverjans
@@ -1706,6 +1692,7 @@ function r126OrderflowExtras(symbol, lastPrice, book={}, tickData={}) {
   return { bidAbsorb, askAbsorb, forecast, imprint, aggressionTrend:aggr, summary };
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R130 — COMBINED AGGTRADE FLOW ENGINE FIX
 // Sorun: R129'da panelde bütün coinlerde tr:0 / delta:0 kalabiliyordu. Sebep,
@@ -2150,6 +2137,7 @@ function updateSwingLevels(det, klines5m) {
   det.lookback   = lookback; // debug için
 }
 
+
 // ── R94: 5m CANLI MERDİVEN + DÖNÜŞ RADARI ─────────────────────────────────
 // Ek Binance çağrısı yapmaz. Mevcut 5m mumları kullanır.
 // Amaç: Top Gainers merdiven hareketini EMA kilidine takmadan yakalamak;
@@ -2487,6 +2475,7 @@ function r192DeepOfiFromBook(book={}, side='LONG') {
   };
 }
 
+
 // ── R194: 5m Swing Break / Structure Shift detector ───────────────────────
 // Amaç: grafikteki yeşil/kırmızı okların gösterdiği ilk yapı kırılımını 5m hareketin
 // başında yakalamak. Tek başına kör emir açtırmaz; R190/R191 terazisine ERKEN KANIT verir.
@@ -2552,6 +2541,8 @@ function r194SwingBreakDetector(side='LONG', ctx={}) {
     label:`R194Swing ${side} ${ok?'BOS✅':'bekle'} br:${breakPct.toFixed(2)}% vol:${volRatio.toFixed(2)}x seq:${seq}`
   };
 }
+
+
 
 // ── R196: Günlük range lokasyonu + pump exhaustion grafiği ─────────────────
 // Amaç: botun "grafikte nerede olduğunu" bilmesi. TOP24 pump coinlerinde en büyük hata,
@@ -2652,6 +2643,7 @@ function r196Context(side='LONG', ctx={}) {
         : `R196 range temiz: ${sideTxt} loc ${Number.isFinite(loc24)?loc24.toFixed(0):'?'}%`
   };
 }
+
 
 // ── R197: Range lokasyonu tek yönlü blok değil, ters-yön scout üretir ─────────
 // R196 tepedeki LONG'u veya dipteki SHORT'u keser. R197 aynı bağlamı ters tarafta
@@ -2875,6 +2867,7 @@ function r190Analyze5mEarlyEdge(side='LONG', ctx={}) {
     summary:`R190/R192/R194 ${side} ${earlyContinuation?'ERKEN':'izle'} fuel:${r192FuelScore.toFixed(1)} score:${score} p3:${price3.toFixed(2)}% seq:${seq} rvol:${rvol.toFixed(2)} taker:${takerRatio} ${oi.label} ${vpin?`VPIN:${vpin.vpin}/${vpinToxic}/${vpinDir}`:'VPIN:yok'} ${r192Footprint.label} ${r192DeepOfi.label} ${r194SwingBreak.label} spread:${spreadPct.toFixed(4)}%`
   };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // R114: 5M SHIFT / MM TUZAK KORUMASI
@@ -3403,6 +3396,7 @@ function r281ProTraderMap(side='LONG', ctx={}) {
   };
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R283: TECRÜBELİ 5M TRADER RECIPE — parçaları tek yemeğe çeviren son yorum
 // Amaç: yeni sensör yığmak değil. Fable/Opus'un ürettiği r110/r160/r190/r281
@@ -3423,77 +3417,6 @@ function r281ProTraderMap(side='LONG', ctx={}) {
 // R308C: Eski kapılar AI'yı susturmasın; scan sonrası en iyi 1 aday Claude'a gider.
 // AI_BRAIN_SHADOW=false ise AI son karar olur ve güvenli planla gerçek emir açabilir.
 // Dönüş: { ok, side, entry, tp, sl, confidence, reasoning } | null
-// ═══ R329: FİBONACCİ + LİKİDİTE HARİTASI ═══
-// AI'a MM oyununu okuması için ham seviyeler verir: Fib geri-çekilme/uzantı, OTE zonu, likidite havuzları.
-// Yorum AI'ın — bu sadece hesaplanmış ham veri (bot karar vermez, AI seviyeleri kendi değerlendirir).
-function r329FibLiqMap(candles, lastPrice, liqLevels) {
-  try {
-    // R330: 15m ana grafik oldu — Fib/likidite haritası 15m'den hesaplanır (daha anlamlı seviyeler, az gürültü)
-    const anaTF = (candles['15m'] && Array.isArray(candles['15m'])) ? '15m' : '5m';
-    if (!candles || !candles[anaTF] || !Array.isArray(candles[anaTF])) return null;
-    const m5 = candles[anaTF];
-    const price = Number(lastPrice) || Number(m5[m5.length-1][3]);
-    if (!price) return null;
-    const recent = m5.slice(-60);
-    let hi = -Infinity, lo = Infinity, hiIdx = 0, loIdx = 0;
-    recent.forEach((c, idx) => {
-      const h = Number(c[1]), l = Number(c[2]);
-      if (h > hi) { hi = h; hiIdx = idx; }
-      if (l < lo) { lo = l; loIdx = idx; }
-    });
-    const range = hi - lo;
-    if (range <= 0) return null;
-    const yukariImpuls = loIdx < hiIdx;
-    const fib = (r) => yukariImpuls ? +(hi - range * r).toFixed(8) : +(lo + range * r).toFixed(8);
-    const fibSeviyeleri = {
-      '0.382': fib(0.382), '0.5': fib(0.5), '0.618': fib(0.618),
-      '0.705': fib(0.705), '0.786': fib(0.786)
-    };
-    const oteZonu = yukariImpuls
-      ? { alt: fib(0.786), ust: fib(0.618), aciklama: 'LONG OTE: fiyat bu zona çekilirse yüksek olasılıklı giriş' }
-      : { alt: fib(0.618), ust: fib(0.786), aciklama: 'SHORT OTE (strateji LONG-only)' };
-    const fibHedef = yukariImpuls
-      ? { '1.272': +(lo + range*1.272).toFixed(8), '1.618': +(lo + range*1.618).toFixed(8) }
-      : { '1.272': +(hi - range*1.272).toFixed(8), '1.618': +(hi - range*1.618).toFixed(8) };
-    function swingPoints(bars, type) {
-      const pts = [];
-      for (let j = 2; j < bars.length-2; j++) {
-        const v = type==='high' ? Number(bars[j][1]) : Number(bars[j][2]);
-        const isSwing = type==='high'
-          ? v >= Math.max(Number(bars[j-2][1]),Number(bars[j-1][1]),Number(bars[j+1][1]),Number(bars[j+2][1]))
-          : v <= Math.min(Number(bars[j-2][2]),Number(bars[j-1][2]),Number(bars[j+1][2]),Number(bars[j+2][2]));
-        if (isSwing) pts.push(v);
-      }
-      return pts;
-    }
-    const highs = swingPoints(m5, 'high');
-    const lows = swingPoints(m5, 'low');
-    function cluster(points) {
-      const clusters = [];
-      points.sort((a,b)=>a-b);
-      for (const p of points) {
-        const last = clusters[clusters.length-1];
-        if (last && Math.abs(p-last.merkez)/last.merkez < 0.005) {
-          last.sayi++; last.merkez = (last.merkez*(last.sayi-1)+p)/last.sayi;
-        } else clusters.push({ merkez:+p.toFixed(8), sayi:1 });
-      }
-      return clusters.filter(c=>c.sayi>=2).sort((a,b)=>b.sayi-a.sayi).slice(0,4);
-    }
-    const ustLikiditeHavuzlari = cluster(highs).filter(c=>c.merkez>price);
-    const altLikiditeHavuzlari = cluster(lows).filter(c=>c.merkez<price);
-    return {
-      aciklama: 'Ham hesaplanmış seviyeler — yorumu SEN yap. MM bu likidite havuzlarını avlar, Fib seviyeleri tepki noktalarıdır.',
-      sonImpuls: { tepe:+hi.toFixed(8), dip:+lo.toFixed(8), yon: yukariImpuls?'YUKARI':'AŞAĞI' },
-      fibGeriCekilme: fibSeviyeleri,
-      oteZonu,
-      fibHedef,
-      ustLikiditeHavuzlari,
-      altLikiditeHavuzlari,
-      not: 'üstLikidite: fiyatın çekilebileceği yer (TP/mıknatıs). altLikidite: stopların avlanabileceği yer (sweep sonrası reclaim = LONG fırsatı). sayi=o seviyedeki stop yoğunluğu.'
-    };
-  } catch(_) { return null; }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 async function r308AiProTraderBrain(symbol, data = {}) {
   if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY) return null;
@@ -3502,9 +3425,13 @@ async function r308AiProTraderBrain(symbol, data = {}) {
     // Backtest (9 coin, out-of-sample): sweep'siz girişler WR%37/negatif = zaten kaybediyordu.
     // Tasarruf modunda bunları AI'a HİÇ gönderme → Opus çağrı maliyeti düşer, frekans korunur
     // (elenen = zaten kaybedecek işlem). Sweep teyidi (alt VEYA üst) varsa normal devam eder.
-    // R328D: Mekanik ön-filtre KALDIRILDI. Bot AI'a "şu coin sweep'siz, gönderme" diyemez — bu, botun AI yerine
-    // ön-karar vermesiydi (kullanıcı felsefesine aykırı: AI ham veriye kendi bakıp kendi karar verir, bot yönlendirmez).
-    // Kredi tasarrufu AYRI yolla çözülür: AI çağrısı sayısını tarama/coin seviyesinde sınırla (aşağıda), AI'ın NE göreceğini değil.
+    if (AI_SAVER_MODE) {
+      const sweepVar = !!(data.altSupurmeYapildi || data.ustSupurmeYapildi);
+      if (!sweepVar) {
+        try { logAuto(`💰 ${symbol} tasarruf modu: sweep yok → AI'a gönderilmedi (maliyet korundu, backtest WR%37 desen)`); } catch(_) {}
+        return { ok:false, skipped:true, reason:'tasarruf modu: sweep teyidi yok (düşük olasılık, AI çağrısı yapılmadı)' };
+      }
+    }
     const spendGate = r308ReserveAiSpend(symbol, data.aiSource || 'R308', data.fingerprint || '');
     if (!spendGate.ok) {
       try { logAuto(`🧊 ${symbol} AI maliyet freni: ${spendGate.reason}`); } catch(_) {}
@@ -3544,8 +3471,6 @@ async function r308AiProTraderBrain(symbol, data = {}) {
         } catch(_) {}
         return null;
       })(),
-      // R329: FİBONACCİ + LİKİDİTE HARİTASI — MM oyununu, likidite havuzlarını, geri-çekilme/hedef seviyelerini AI'a ham ver (yorum AI'ın)
-      fibLikiditeHaritasi: r329FibLiqMap(data.candles, data.lastPrice, data.liqLevels),
       piyasaNotu: data.marketCtx || null
     };
 
@@ -3554,16 +3479,11 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 ★★★ KANITLANMIŞ STRATEJİN (gerçek veride test edildi, kârlı) ★★★
 Bu coinler YÜKSELEN gainer'lar. Gerçek 1 haftalık backtest şunu KANITLADI: bu coinlerde SHORT ve dönüş-avı SÜREKLİ kaybeder; momentum yönünde (LONG) likidite-sweep girişleri kazanır. Senin işin tek bir şey: HTF yukarı yönünde, likidite süpürmesi sonrası LONG yakalamak.
 
-ÖN ŞART — HTF YÖN: 1h VE 4h yukarı olmalı (yükseliyor, HH/HL). HTF aşağıysa BEKLE. Ana grafiğin 15m — kararını 15m yapısına göre ver, 5m sadece giriş anını ince ayarlar. Bu coin zaten en çok yükselen 2 coinden biri (TOP2), boğa tarafındasın; işin trendle birlikte LONG yakalamak. NOT: 15m mumlar 5m'den daha güvenilir — sahte kırılım/gürültü az, yapı gerçek. Sabırlı ol, 15m mum kapanışını bekle.
-
-SEN BİR USTASIN, KALIP YOK: Sana "şu 3 yolu kullan" demiyorum — sen zaten TÜM price action setuplarını, scalp stratejilerini, formasyonları biliyorsun: likidite sweep+reclaim, order block, FVG, OTE/Fibonacci, BOS/ChoCH, engulfing, hammer, pin bar, higher-low pullback, breakout+retest, momentum patlaması, Wyckoff spring, divergence, VWAP tepkisi ve daha yüzlercesi. HAM MUMLARA + Fib/likidite haritasına + günlük yapıya bak, hangi setup GERÇEKTEN oturuyorsa onu uygula. Bir kurt trader gibi: her gördüğüne atlama, ama gerçek bir fırsatı da kaçırma.
-
-NASIL USTA GİBİ DAVRAN:
-- Trendi oku: Bu coin nerede — impulsun başında mı (gir), ortasında pullback mı (dip topla), yoksa parabolik tükeniş mi (bekle/dikkat)? Trendin evresini bil.
-- Konfluans: Tek sebep kumar, birkaç sebep birleşince trade. Ama mekanik sayma — usta gibi "bu tablo oturuyor mu" hisset.
-- Giriş zamanı: Doğru yön + yanlış an = zarar. Hareketin başında/pullback dibinde gir, tepesini kovalama.
-- ERKEN ÇIKMA = EN BÜYÜK KÂR KATİLİ (15m'de HAYATİ): 15m modunda işlem başına isabetin yüksek (~%75 doğru yön) AMA kazançlar küçük kalırsa strateji zar zor kâr eder. Sırrı: kazananı SONUNA KADAR KOŞTUR. 15m mumlar uzun trend taşır — %1-2 kârla panikleyip çıkarsan +%10'luk hareketleri kaçırırsın (backtest'te kaçan +%11'ler tam buydu). RUNNER modu ZORUNLU: TP'yi bir sonraki büyük üst likiditeye/Fib uzantısına (1.272-1.618) koy, 15m yapısı kırılmadıkça (HL bozulmadıkça) POZİSYONDA KAL. Trailing ile taşı. Az işlem aç ama her kazananı büyüt — 15m'nin matematiği budur.
-- Fırsat yoksa BEKLE: tablo karışıksa, trend belirsizse, setup zorlamaysa — girme. Ama gerçek net bir setup varsa TEREDDÜTSÜZ gir. Kaliteli VE aktif ol.
+KURALIN (sırayla kontrol et):
+1. HTF YÖN: 1h grafiği yukarı mı? (son saatler yükseliyor, yapı HH/HL). 1h aşağıysa → BEKLE, işlem YOK.
+2. LİKİDİTE SÜPÜRMESİ: Fiyat bir alt likidite seviyesine (önceki swing low / eşit dipler / belirgin destek) indi mi? MM oraya zayıf stopları avlamaya iner.
+3. RECLAIM (dönüş teyidi): Süpürme sonrası fiyat o seviyenin ÜSTÜNE geri kapandı mı? (mum dibi seviyenin altına sarktı AMA kapanış üstünde = başarısız süpürme = dönüş). Bu, girişinin tetiğidir.
+4. → Üçü de varsa LONG. Yoksa BEKLE.
 
 ★ SHORT YASAK (veride kanıtlandı): Bu yükselen coinlerde SHORT sistematik kaybeder. "Tepe geldi, düşer" diye SHORT AÇMA — bu coinler tepede göründüğü an bir bacak daha yükselip seni avlar. Sadece LONG, sadece HTF yukarı yönünde. SHORT'u tamamen unut.
 
@@ -3575,14 +3495,11 @@ NASIL USTA GİBİ DAVRAN:
 - TP: GENİŞ tut. Bir üstteki likidite seviyesine / yapı hedefine (~3-4 ATR). Kazançları büyüt, kayıpları kısa kes — bu stratejinin matematiği buna dayanır (WR ~%48 ama kazananlar büyük).
 - Kaldıraç: güven 64-69→10x, 70-77→15x, 78-84→20x, 85+→25x. TAVAN 25x (küçük bakiye koruması), AŞMA.
 
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 1d(30, aylık büyük resim) + 4h(30) + 1h(40, HTF trend) + 15m(150, ANA GRAFİK — kararını burada ver, 37 saatlik hikaye) + 5m(50, sadece giriş zamanlaması için ince ayar) + btc5m.
+★ KARARLILIK: Sen en volatil 2 coine (TOP2) odaklı uzmansın. 🚀 işaretli coin 'patlama adayı' — yükseliyor ama henüz parabolik değil, ekstra dikkat et, erken yakala. Sana 150 mum 5m + HTF veriliyor. Kurala uyan net LONG fırsatı (HTF yukarı + sweep + reclaim) oluştuğunda TEREDDÜTSÜZ GİR. Kural oturmuyorsa BEKLE. Zorla açma; kalite > sıklık.
 
-★ MM OYUNUNU OKU (en önemli beceri): Bu piyasada büyük oyuncular (market maker, Binance balinaları) likiditeyi avlar. Sana "fibLikiditeHaritasi" veriliyor — bunu bir HARİTA gibi kullan:
-- altLikiditeHavuzlari: buralarda perakende STOP'ları birikmiş. MM fiyatı oraya İTER (sweep), stopları avlar, sonra ters döner. "sayi" yüksekse o havuz büyük bir mıknatıs. Fiyat oraya inip GERİ DÖNERSE (reclaim) = en yüksek olasılıklı LONG.
-- üstLikiditeHavuzlari: fiyatın çekileceği yer (TP hedefi). MM fiyatı oraya doğru sürükler. LONG TP'ni buraya koy.
-- fibGeriCekilme + oteZonu: fiyat impuls sonrası buralara çekilir. OTE zonu (%62-78.6) MM'in tekrar topladığı, en iyi LONG giriş bölgesidir. Fiyat OTE'ye çekilip dönerse güçlü sinyal.
-- fibHedef (1.272/1.618): fiyatın gidebileceği uzantı hedefleri.
-DÜŞÜN: MM şu an ne yapıyor? Fiyatı hangi likiditeye doğru sürüklüyor? Stoplar nerede birikmiş, oraya inip avlayacak mı? Avladıktan sonra nereye kadar yükseltir? Bu hikayeyi günlük + HTF + 5m birlikte oku, sonra gir. Ayrıca: canlı delta (alıcı/satıcı %), OI değişimi, funding, order book dengesizliği, büyük trader long%, likidite seviyeleri, ATR%. Sana botun hiçbir yorumu/skoru VERİLMİYOR — kararı tamamen kendi okumanla ver. RSI verilse bile ona güvenme, fiyat-yapı-likidite kazanır.
+★ KAZANANI KOŞTUR (erken kapatma!): LONG açtıktan sonra fiyat lehine giderse ACELE KAPATMA. Bu yükselen coinler koşar — küçük kârla erken çıkmak en büyük hatadır (kazançlar büyük olmalı, çünkü WR ~%48). karKosma:RUNNER seç, TP'yi üst likiditede tut, fikir bozulmadıkça (sweep dibi kırılmadıkça) pozisyonda kal. Trend devam ettikçe taşı.
+
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 5m(150 mum, ANA grafik — likidite seviyelerini ve sweep'i burada gör) + 15m(40) + 1h(30, HTF YÖN burada) + 4h(20) + btc5m. Ayrıca: canlı delta (alıcı/satıcı %), OI değişimi, funding, order book dengesizliği, büyük trader long%, likidite seviyeleri, ATR%. Sana botun hiçbir yorumu/skoru VERİLMİYOR — kararı tamamen kendi okumanla ver. RSI verilse bile ona güvenme, fiyat-yapı-likidite kazanır.
 
 ★★★ ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı. Markdown/başlık/açıklama YAZMA. SADECE tek satır JSON. Tüm analizini "reasoning" içine 90 karaktere sığdır. JSON dışında tek kelime = işlem kaybı.
 {"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter","plan":"max 70 karakter"}`;
@@ -3930,6 +3847,7 @@ function r283TradeRecipe(side='LONG', d={}, opt={}) {
   return { ok:true, tradeOk, mode, runner, quality:+quality.toFixed(1), hardNo, chartFuel, real5mTrigger, fvgOteOk, continuationFuel, flowAligned, flowAgainst, weakCandle, htfAgainst, r160NeutralStructureTrap, r288FastBypassNoRecipe, mapFav, mapRisk, mapNet, notes:notes.slice(0,8), summary:`R283 ${mode} q:${quality.toFixed(1)} ${tradeOk?'ONAY':'BEKLE'} · ${notes.slice(0,5).join(' · ')}` };
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R284: PRO TRADER WAIT-UPGRADE — final mutfağa hiç gelmeyen temiz 5m setup'ı yakala
 // R283 doğru yemeği finalde kontrol ediyordu ama WAIT kararları o aşamaya ulaşmıyordu.
@@ -4001,6 +3919,7 @@ function r284ProTraderWaitUpgrade(side='LONG', d={}, opt={}) {
   if(htfWallAgainst) notes.push('yakın HTF duvarı');
   return { ok, mode, side, score, edge, priorityScore:pri, chartSetup, sweptReclaim, wickReject, fvgOte, mssReclaim, flowAligned, flowAgainst, hardNo, notes:notes.slice(0,8), summary:`R284 ${ok?'WAIT→TRADE':'WAIT'} ${side} ${mode} · ${notes.slice(0,5).join(' · ')}` };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // R285: TECRÜBELİ 5M TRADER COOK — analiz motorunun içinde LONG/SHORT tarafı seçer
@@ -4153,6 +4072,7 @@ function r285Pro5mTraderCook(side='LONG', d={}, opt={}) {
     summary:`R285 ${ok?'TRADE':'WAIT'} ${side} ${setup} q:${quality.toFixed(1)} · ${notes.slice(0,6).join(' · ')}` };
 }
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R287: REVERSE THESIS TRADER — yanlış yöne kabul yoksa karşı yönü RADAR/TRADE yap
 // EDEN örneği: LONG, üst hedef/BEAR_OB %0.44 yakın + range pos 0.92 + p3/seq koşmuş + mum yok.
@@ -4235,6 +4155,7 @@ function r287ReverseThesisTrader(blockedSide='LONG', blockedD={}, oppD={}, opt={
   if(!trigger) notes.push('reverse tetik bekle');
   return { ok, armed, side, fromBlockedSide:bSide, mode, quality:+quality.toFixed(1), score, edge, priorityScore:pri, levelReason, extendedIntoLevel, oiTrap, rejectionCandle, fvgOteOpp, flowFlip, flowStillAgainst, hardNo, notes:notes.slice(0,10), summary:`R287 ${ok?'REVERSE TRADE':'REVERSE RADAR'} ${side} ${mode} q:${quality.toFixed(1)} · ${notes.slice(0,7).join(' · ')}` };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // R289: EVA-TİPİ 5M PLAYBOOK STATE — grafiğin anlattığı hikâyeyi saf mumdan oku
@@ -4380,6 +4301,9 @@ function r289FiveMinutePlaybook(symbol, k5m=[], k15m=[], k1h=[], k4h=[], lastPri
   return { ok:true, long, short, summary:`R289 5m playbook: L ${long.setup}/${long.quality} S ${short.setup}/${short.quality} · range ${rangePos.toFixed(2)} p3 ${p3.toFixed(2)} nearUp ${nearUp.toFixed(2)} nearDn ${nearDn.toFixed(2)}` };
 }
 
+
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R290: OPEN-SOURCE SMC 5M CALIBRATOR
 // Web/open-source tarama özeti:
@@ -4499,6 +4423,7 @@ function r290OpenSourceSmc5mCalibrator(symbol, k5m=[], k15m=[], k1h=[], k4h=[], 
   const long=sideEval('LONG',longD||{}), short=sideEval('SHORT',shortD||{});
   return {ok:true,long,short,summary:`R290 SMC 5m: L ${long.setup}/${long.capacity} S ${short.setup}/${short.capacity} · range ${rangePos.toFixed(2)} ATR ${atr.toFixed(2)} liqUp ${liq5.upDist.toFixed(2)} liqDn ${liq5.downDist.toFixed(2)}`};
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // R291: SMC + LIQUIDITY CONFLUENCE GOVERNOR
@@ -5394,7 +5319,7 @@ let AI_SAVER_MODE = process.env.AI_SAVER_MODE === '1' || process.env.AI_SAVER_MO
 const AI_BRAIN_CONF_FLOOR = 64; // değiştirme: tasarım kararı. Üstü AI'ya bırakılır, leverage güvenle ölçeklenir.
 const AI_BRAIN_MIN_CONF = AI_BRAIN_CONF_FLOOR; // panel göstergesi = gerçek kapı (artık tutarlı)
 const AI_BRAIN_MIN_RR = Math.max(0.8, Number(process.env.AI_BRAIN_MIN_RR || 1.5) || 1.5);
-const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 6.0) || 6.0); // R328C: 3→6, volatil coinlerde dar SL iyi setupları reddediyordu
+const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 3.0) || 3.0);
 // R308E: CANLI modda eski motor AI onayı olmadan emir açamaz.
 const AI_BRAIN_STRICT_GATE = process.env.AI_BRAIN_STRICT_GATE !== '0';
 let r308AiSpendDay = new Date().toISOString().slice(0,10);
@@ -5722,6 +5647,7 @@ async function r181TradeCloseCard(row={}, state={}, cls={}) {
   }
 }
 
+
 function tgPerfSummaryLines() {
   try {
     const obj = r170PerfMode();
@@ -5744,6 +5670,8 @@ function tgPerfSummaryLines() {
     return [`🎯 <b>HESAP WR HEDEFİ</b>: veri hazırlanıyor`];
   }
 }
+
+
 
 // ── R168d: TELEGRAM EVENT HOOK — emir açılış/kapanış bildirimi ledger olayından gider ──
 // R168c'de başlangıç/backup çalışıyor ama scan-loop içindeki tgTradeOpen çağrısı bazı yollarda kaçabiliyordu.
@@ -5815,6 +5743,7 @@ function tgNotifyTradeCloseOnce(row={}, state={}, cls={}) {
     try { console.log('[telegram sessiz başarısız] TELEGRAM_CLOSE_NOTIFY_FAIL:', String(e?.message||e)); } catch(_) {}
   }
 }
+
 
 const tradeLedgerPath = './trade_ledger_live.json';
 let tradeLedger = [];
@@ -5989,6 +5918,7 @@ async function r171MaintenanceTick() {
     try { console.log('[telegram sessiz başarısız] R180_MAINT_TELEGRAM_POLL_FAIL:', String(e?.message||e)); } catch(_) {}
   }
 }
+
 
 // ── R26: LAST-KNOWN POSITIONS — Railway restart/state kaybında kapanış tespiti ──
 const lastKnownPositionsPath = './last_known_positions.json';
@@ -6201,6 +6131,7 @@ function recentLossPatternGuard(symbolOrSide, sideMaybe, decisionChain={}, lookb
   return { block:false, key, count:rows.length, scope:'NONE' };
 }
 
+
 // R33: Binance Top Gainers kilidi — bot artık sadece özel interest sırasına değil,
 // Binance Futures 24h değişim listesindeki ilk hareketli coinlere de zorunlu bakar.
 // Ek endpoint yok: zaten kullanılan /fapi/v1/ticker/24hr verisinden hesaplanır.
@@ -6406,6 +6337,7 @@ function r152FilterAndExtendGainers(data=[], onboardMap=new Map(), n=R33_TOP_GAI
   return out;
 }
 
+
 async function scanVolatility() {
   try {
 
@@ -6520,6 +6452,7 @@ app.get('/api/killzone', (req, res) => {
   res.json({ ok:true, ...getKillZone(), time: trTime(), timeUTC: new Date().toUTCString() });
 });
 
+
 // ── R21 ORTAK TARAMA LİSTESİ ────────────────────────────────────────────────
 // Long/Short ekranı ile Canlı Auto aynı coin havuzunu kullanır.
 // Böylece panelde A-Tier görünen RENDER/ZEC/ALGO gibi coinler auto scanner dışında kalmaz.
@@ -6586,6 +6519,7 @@ function normalizeTickerToCoin(t={}) {
     volScore: Number(t.volScore || 0),
   };
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // R22 — HASSAS TERAZİ KATMANI
@@ -6740,6 +6674,7 @@ function r25DetectWickTrapMap(k1h=[], k4h=[], price=0, ctx={}) {
     nearestUpper, nearestLower, nearPct:+nearPct.toFixed(2), notes
   };
 }
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // R32: GRAFİK OKUMA KATMANLARI — pure JS, ekstra Binance API yok
@@ -6983,6 +6918,7 @@ function renkoSignal(klines, lastPrice, atrVal) {
   return { signal, spikeTrap, ranging, trend, brickCount:bricks.length, consecutive, bulls, bears, brickSize:+brickSize.toFixed(8) };
 }
 
+
 // ── R118: HTF bölgeye özel 5m mum formasyon playbook'u ─────────────────────
 // Amaç: 1H/4H BSL/SSL bölgesinde kör ters işlem açmak değil; 5m mumun gerçekten
 // reddettiğini/geri aldığını görmek. Bu motor gösterge değil, sadece OHLC gövde-fitil
@@ -7093,6 +7029,7 @@ function r118AnalyzeCandlePlaybook(klines, dir='LONG', level=null) {
   return out;
 }
 
+
 // ── R86: FORMASYON ADI TÜRKÇELEŞTİRME ───────────────────────────────────────
 // R32 formasyon motoruna dokunmaz; sadece karar/ekran dilini Türkçeleştirir.
 function trPatternName(name='') {
@@ -7122,6 +7059,8 @@ function trPatternName(name='') {
 function trPatternList(arr) {
   return (Array.isArray(arr) ? arr : []).map(x => trPatternName(x?.name || x)).filter(Boolean).slice(0,3).join(' + ');
 }
+
+
 
 // ── R128: ANALYZE JSON CIRCULAR-SAFE ÇIKTI ─────────────────────────────────
 // R127'de WATCH tarafını taşımak için decisionChain.sideDecisions = {LONG,SHORT}
@@ -8520,6 +8459,7 @@ function r278LiquidityHunter(d, side){
   }
 }
 
+
 // ── R37: EARLY MOVE CAPTURE + NO LATE CHASE ────────────────────────────────
 // Amaç: 5m hareket bitmeye yaklaşırken market emir kovalamayı engellemek,
 // fakat ilk kırılım / ilk retest / taze impuls geldiğinde botu kurallarla kör etmemek.
@@ -8613,6 +8553,7 @@ function r37MoveTiming(klines5m, klines15m, lastPrice, atrPct=1, vpvr1h=null, li
     short:{ lateChase:shortLateChase, retestOnly:shortRetestOnly, retestOk:retestShort, earlyImpulse:firstBearImpulse, earlyScore:shortEarlyScore, targetNear:nearLowerTarget, extended:bearExtended, reason:`5m chg5 ${chg5.toFixed(2)}%, mum:${bearSeq}, hedefUzak:${distLow.toFixed(2)}%` }
   };
 }
+
 
 // ── R39: 5M S/R + DAILY PIVOT + PDH/PDL KURUMSAL SCALP KATMANI ─────────────
 // Amaç: 5m market girişinde fiyatın hedefe çok yakın olup olmadığını anlamak.
@@ -8973,7 +8914,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     startIcebergStream(full);
     // tickStream analyze'da await ile çağrılıyor
 
-    const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m,r1d] =
+    const [r4h,r1h,r15m,r5m,rFunding,rOIHist,rLS_global,rLS_top,rDepth,rTaker,rOIHist5m,rOINow,rBtc5m] =
       await Promise.allSettled([
         cached(`k4h_${full}`,  60*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=4h&limit=200`)), // R318B: 30dk→60dk (4h mum 4 saatte değişir, 418 fix)
         cached(`k1h_${full}`,   15*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1h&limit=200`)), // R318B: 5dk→15dk (1h mum saatte değişir, 418 fix)
@@ -8989,11 +8930,9 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         cached(`oin_${full}`,  60*1000, ()=>bPub('/fapi/v1/openInterest',`symbol=${full}`)),
         // R153: btc5m paralel çekilir — seri await kaldırıldı
         cached('btc5m_r29_ctx', 45*1000, () => bPub('/fapi/v1/klines', `symbol=BTCUSDT&interval=5m&limit=24`)),
-        cached(`k1d_${full}`, 4*60*60*1000, ()=>bPub('/fapi/v1/klines',`symbol=${full}&interval=1d&limit=30`)), // R329: günlük mum (MM büyük resim, likidite havuzları, Fib seviyeleri için)
       ]);
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
-    const k1d  = r1d.status==='fulfilled'&&Array.isArray(r1d.value)   ?r1d.value  :[]; // R329: günlük mum
     const k1h  = r1h.status==='fulfilled'&&Array.isArray(r1h.value)   ?r1h.value  :[];
     const k15m = r15m.status==='fulfilled'&&Array.isArray(r15m.value) ?r15m.value :[];
     const k5m  = r5m.status==='fulfilled'&&Array.isArray(r5m.value)   ?r5m.value  :[];
@@ -9151,6 +9090,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         return null;
       } catch(_){ return null; }
     })();
+
 
     // R29: BTC göreli güç bağlamı. R153: artık Promise.allSettled içinde paralel çekildi (rBtc5m).
     let btc5mCtx = { ok:false, change15m:0, change60m:0, dropping:false, bouncing:false, redCandles:0 };
@@ -9438,6 +9378,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const sweep15m = detectSweepAndConfirm(k15m, {buyLiq:liq1h.buyLiq,  sellLiq:liq1h.sellLiq},  10);
     const hunt1h   = detectStopHunt(k1h, 15);
     const hunt15m  = detectStopHunt(k15m, 8);
+
 
     // ── R22 SİNYAL YAŞI / İLK TEST ÖLÇÜMÜ ──────────────────────────────────
     // Bu fonksiyonlar yeni REST çağrısı yapmaz. Var olan sweep/tick/AMD bilgisinin
@@ -9825,6 +9766,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     if (liqQual.ok && liqQual.spread > 0) updateSpreadHistory(full, liqQual.spread);
     refreshBtcChange5m().catch(()=>{});
     const fundMom=calcFundingMomentum(fundArr);
+
+
 
     // ── 1. VOLUME PROFILE (VPVR) ──────────────────────────────────────────────
     // POC = en çok volume olan seviye → kurumlar buradan order koyar
@@ -10448,6 +10391,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       longScore=Math.round(longScore*0.85);shortScore=Math.round(shortScore*0.85);
       signals.long.push(`⚠️ ATR %${atrPct.toFixed(1)} yüksek — giriş dikkatli`);
     }
+
 
     if(vpvr1h) {
       const distPOC=Math.abs(lastPrice-vpvr1h.poc)/lastPrice*100;
@@ -11106,6 +11050,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         if (_bs < -0.48) addRisk('LONG', 16, `Piyasa geneli ayı (${marketBreadthStore.bear}↓/${marketBreadthStore.bull}↑)`);
         if (_bs >  0.48) addRisk('SHORT',16, `Piyasa geneli boğa (${marketBreadthStore.bull}↑/${marketBreadthStore.bear}↓)`);
       }
+
 
       // R197: Range riski side-specific okunur; tepedeki LONG riski varsa doğrulanmış SHORT scout,
       // dipteki SHORT riski varsa doğrulanmış LONG scout üretilir. Bu ters yön tek başına emir açtırmaz,
@@ -13252,6 +13197,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         }
       } catch(_r285e) { try { console.warn('R285 trader cook error', _r285e?.message || _r285e); } catch(_){} }
 
+
       // R291: R285 hâlâ WAIT bıraktıysa ama SMC+liquidity aynı hikâyeyi söylüyorsa emir yoluna al.
       try {
         if (recommendation === 'WAIT') {
@@ -13279,6 +13225,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           }
         }
       } catch(_r291upE) { try { console.warn('R291 wait-upgrade error', _r291upE?.message || _r291upE); } catch(_){} }
+
 
       // R287: Eğer bir taraf R286 ile "hedef/iğne yakın + 5m kabul yok" diye reddedildiyse,
       // tecrübeli trader gibi karşı yön senaryosunu dene. Canlı akış hâlâ sert tersse kör reverse yapma;
@@ -13391,11 +13338,10 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     const r308RawCandles = {
       not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda (guncel). En eski en solda.',
-      '1d':  r308PackKlines(k1d, 30),
-      '4h':  r308PackKlines(k4h, 30),
-      '1h':  r308PackKlines(k1h, 40),
-      '15m': r308PackKlines(k15m, 150),
-      '5m':  r308PackKlines(k5m, 50),
+      '5m':  r308PackKlines(k5m, 150),
+      '15m': r308PackKlines(k15m, 40),
+      '1h':  r308PackKlines(k1h, 30),
+      '4h':  r308PackKlines(k4h, 20),
       btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6)
     };
     const r316Trend = r316TrendlineBreak(k5m); // R316: eğik trend çizgisi (diagonal) kırılımı — AI'ya VERİ
@@ -13657,36 +13603,26 @@ app.post('/api/account', async (req, res) => {
   }
 
   try {
-    // R331B: ÖNCE HAFİF BALANCE. Büyük yanıtlı account endpointleri (v2/v3 account) Railway/node-fetch
-    // altında 'Premature close' verebiliyordu. Çözüm: küçük /fapi/v2/balance ve /fapi/v3/balance
-    // önce denenir; bakiye buradan gelirse ağır account endpointlerine HİÇ gidilmez (retry ile birlikte
-    // bakiye okuma dayanıklı olur). Pozisyonlar hafif positionRisk cache'ten alınır.
+    // Çalışan hatasız sürüme en yakın sıra: önce balance/account, sonra positionRisk.
+    const bal3 = await trySigned('v3/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance'));
+    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
+
+    const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
+    if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
+
+    const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
+    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+
     const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
     if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
 
-    if (!balanceSources.length) {
-      const bal3 = await trySigned('v3/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance'));
-      if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
-    }
+    const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
+    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
 
-    // Pozisyonlar: hafif positionRisk cache (büyük account endpointine gerek yok).
+    // R18: /api/account içinde de positionRisk cache kullanılır; API sekmesi açıkken
+    // aynı endpoint'i tekrar tekrar dövüp -1003 üretmez. Balance/account okuma sırası R14 gibi kalır.
     const pr = await trySigned('positionRisk/cache', () => getPositionRiskCached(apiKey, apiSecret));
     if (pr) setPositions(pr, positionRiskState.lastSource || 'positionRisk/cache');
-
-    // Fallback: hafif balance endpointleri bakiye veremediyse (nadir), ağır account endpointlerine düş.
-    // bReq retry'ı (R331) 'Premature close' gibi geçici kopmaları zaten telafi eder.
-    if (!balanceSources.length) {
-      const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
-      if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
-    }
-    if (!balanceSources.length) {
-      const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
-      if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
-    }
-    if (!balanceSources.length) {
-      const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
-      if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
-    }
 
     if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
     if (!Number.isFinite(u)) u = 0;
@@ -14232,6 +14168,7 @@ async function safeMarketClosePosition(apiKey, apiSecret, symbol, opts={}) {
   }
 }
 
+
 // R157: Ardışık kayıp tespiti — aynı coin+yönde son 4 saatte 2+ kayıp → 4 saat cooldown
 // FOLKS 5 kez işlem, 3 zarar analizi: cooldown bitince tekrar giriyor ve tekrar kaybediyor.
 function r157GetConsecutiveLosses(symbol, side, lookbackMs = 4*60*60*1000) {
@@ -14306,6 +14243,7 @@ function getCooldownList() {
   }
   return list.sort((a,b) => b.remainMs - a.remainMs).slice(0, 15);
 }
+
 
 function calcFallbackTP(entryPrice, isLong, tpPct) {
   const pct = Math.max(0.05, parseFloat(tpPct || 10));
@@ -15365,7 +15303,7 @@ app.post('/api/close', async (req, res) => {
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
-const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // R330: 15m moduna geçiş — 7.5dk tarama (15m mumun ortası+kapanışı yakalanır). Backtest: 15m PF 2.25 vs 5m 1.73.
+const AUTO_SCAN_INTERVAL_MS = 180 * 1000; // R325C: 360→180sn (3dk) — scalp HIZ. 5m mumda fırsat kaçırmamak için sık tarama. Opus maliyeti ~$8.8/gün ($11 sınırı içinde). review_gap 420sn aynı coine tekrar çağrıyı önler (boşa para yok).
 
 // ═══ R328: PATLAMA TESPİT WORKER ═══
 // TOP2 coinleri hızlı (45sn) izler, AI ÇAĞIRMADAN (bedava) patlama başlangıcını tespit eder.
@@ -15391,7 +15329,7 @@ async function r328PatlamaWorker() {
         const tbv = bars.slice(-3).reduce((s,b)=>s+b.tbv,0);
         const delta = tv>0 ? (tbv/tv*2-1)*100 : 0;
         // Patlama imzası (backtest kanıtlı): hacim 2x+ + güçlü yeşil mum + alıcı
-        if (volSurge >= 1.8 && body >= 0.4 && last.c > last.o && delta > 0) {  // R328C: eşik biraz gevşetildi (canlı gürültü)
+        if (volSurge >= 2.0 && body >= 0.5 && last.c > last.o && delta > 0) {
           const wasNew = !__r328PatlamaFlags[base] || (Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000);
           __r328PatlamaFlags[base] = { ts: Date.now(), volSurge:+volSurge.toFixed(1), body:+body.toFixed(2), delta:+delta.toFixed(0), detected:true };
           if (wasNew) logAuto(`🚀 PATLAMA TESPİT: ${base} — hacim ${volSurge.toFixed(1)}x + yeşil mum %${body.toFixed(1)} + alıcı ${delta.toFixed(0)} — AI'a öncelikli bildirilecek`);
@@ -15700,9 +15638,6 @@ function r308AiPlanQuality(ai) {
     if (!(risk > 0 && reward > 0)) return { ok:false, reason:'AI risk/ödül sıfır' };
     const rr = reward / risk;
     const slPct = risk / entry * 100;
-    // R328C: SL limiti %3→%6'ya çıkarıldı. Bu coinlerin ATR'si %6-9, %3 SL çok dardı ve iyi sweep+reclaim
-    // setuplarını (sweep dibi altı SL doğal olarak geniş) reddediyordu. Backtest'te kârlı SL'ler %4-8 aralığındaydı.
-    // GÜVENLİK: geniş SL'de likidasyon riski var → kaldıraç emir açılışında otomatik kısılır (executeLeverage SL'e göre düşer).
     if (slPct > AI_BRAIN_MAX_SL_PCT) return { ok:false, reason:`AI SL aşırı geniş ${slPct.toFixed(2)}% > ${AI_BRAIN_MAX_SL_PCT}% (güvenlik)` };
     // NOT (R310O): R310N min R/R zorlaması KALDIRILDI — AI bazen düşük R/R'lı ama yüksek-olasılıklı scalp
     // setup görür (yakın TP, kesin kâr). Katı R/R dayatmak AI'nın yargısını ezer = boğma. R/R bilgi olarak
@@ -15849,6 +15784,8 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
   }
 }
 
+
+
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
 app.get('/api/diagnostics/status', (_req, res) => {
   const lastCritical = criticalEvents[criticalEvents.length - 1] || null;
@@ -15885,6 +15822,8 @@ app.post('/api/diagnostics/clear', (_req, res) => {
   criticalEvents.length = 0;
   res.json({ ok:true, message:'Kritik hata ekran kayıtları temizlendi' });
 });
+
+
 
 // ── R46B HEALTH + SWEEP DEBUG ENDPOINT ───────────────────────────────────────
 // Amaç: 1-2 saat beklemeden gerçek server ayarını görmek.
@@ -16040,6 +15979,7 @@ function stopAutoTrader(silent=false) {
     resetAutoScanState({running:false, currentSymbol:null});
   }
 }
+
 
 function normalizeUserMaxPositions(v, def=3) {
   const n = Math.floor(Number(v));
@@ -16446,6 +16386,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
         // R308B: B şıkkı için bu coinin zengin analiz özetini sakla; eski kapılar elese bile scan sonunda AI görecek.
         r308RememberAiContext(coin.symbol, coin, analysis, decisionChain, recommendation, score);
+
 
         // R284: WAIT içinde kalan ama normal 5m traderın alacağı temiz setup'ı emir yoluna yükselt.
         // Önceki sürümlerde bütün sensörler raporda görünüyordu ama recommendation=WAIT ise final trader mutfağına hiç gelmiyordu.
@@ -17203,6 +17144,7 @@ async function runAutoScan(prioritySymbol=null) {
             }
           }
         } catch(_e167b) {}
+
 
         // R188: nihai emir logu artık tüm hafıza/risk/SLTP düzeltmeleri geçtikten sonra yazılır.
         // R168b: Telegram açılış bildirimi emir gerçekten açıldıktan sonra gönderilir.
@@ -18272,6 +18214,7 @@ function startAutoTrader() {
   fastManageOpenPositions();
 }
 
+
 // ── KAPANIŞ SEBEBİ SINIFLANDIRMA ────────────────────────────────────────────
 // Binance positionRisk'te pozisyon kaybolduğunda eski sürüm bunu genel olarak
 // "manuel/SL/TP" yazıyordu. Bu kafa karıştırıyordu. Burada best-effort şekilde
@@ -18723,6 +18666,8 @@ async function tgRestoreLedgerBackup() {
   } catch(_e) { return false; }
 }
 
+
+
 // R183: Hesap geneli günlük/haftalık/aylık performans endpoint'i geri eklendi.
 // R182'de index /api/performance-target çağırıyordu ama server endpoint'i kaybolmuştu.
 // Netlify/yanlış host HTML döndürünce panelde Unexpected token '<' çıkıyordu.
@@ -18781,6 +18726,7 @@ app.get('/api/telegram-test', async (_req, res) => {
   ].join('\n'), false);
   res.json({ ok: !!r?.ok, telegram: r, enabled: tgEnabled(), build: LAZARUS_BUILD });
 });
+
 
 // R179: Tam işlem kartı testi — gerçek emir açmadan direkt açılış/kapanış kartı gönderir.
 app.get('/api/telegram-trade-test', async (_req, res) => {
@@ -18885,6 +18831,7 @@ app.get('/api/reconcile-trade-ledger', async (_req, res) => {
     res.json({ok:true, build:LAZARUS_BUILD, reconcile:rec});
   } catch(e) { res.status(500).json({ok:false,error:String(e?.message||e),build:LAZARUS_BUILD}); }
 });
+
 
 // ── R177: BAŞLANGIŞTA BİNANCE 48 SAATLİK GEÇMİŞ ──────────────────────────
 // Railway yeniden başlayınca ledger boş kalıyor → WR hesabı bozuluyor
