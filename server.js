@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R330D_NATIVE_FETCH'
+const LAZARUS_BUILD = 'R330E_FINALURL_FIX'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -721,6 +721,8 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
     },
     signal: AbortSignal.timeout(timeout)
   };
+  const finalUrl = isGet ? `${url}?${fullQs}` : url;
+  if (!isGet) options.body = fullQs;
   // R330C: Ağ + gövde-okuma hatası (Premature close / Invalid response body / ECONNRESET) için retry.
   // Binance CM-UM entegrasyon geçişinde balance/account gövdesi yarıda kesilebiliyor. fetch VE res.text() birlikte retry.
   let text, netErr;
