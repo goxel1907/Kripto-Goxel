@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R334_SL_FREE'
+const LAZARUS_BUILD = 'R335_GATES_OPEN'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16965,7 +16965,13 @@ async function runAutoScan(prioritySymbol=null) {
             Number(score||0) >= Number(effectiveMinScore||0) &&
             !decisionChain?.poorLiquidity && !decisionChain?.rvolVeryLow
           );
-          const atrExtreme = coinAtrPct > Math.max(11, userSLPct * 6.0);  // R296/R310Z: gerçek aşırı volatilite (düşen bıçak) — bu blok KALIR
+          // R335: TOP2 gainer coinler doğal olarak yüksek ATR'li (%15-20 normal). Eski %11 eşiği bu coinleri
+          // AI'a GÖSTERMEDEN kesiyordu (NFP %18, TAIKO %16 → 4 saat 0 işlem, TAIKO %115→%400 kaçtı).
+          // Strateji tam bu volatil gainer'ları hedefliyor. AI zaten düşen bıçağı kendi ayırt ediyor ("parabolik
+          // tükeniş, reclaim yok" der). TOP2 için ATR kapısı KALDIRILDI — sadece gerçek uç volatilite (%30+) kesilir.
+          const isTop2Coin = r310IsTop2(scanIdx);
+          const atrHardCap = isTop2Coin ? 30 : Math.max(11, userSLPct * 6.0); // TOP2: %30, diğer: eski eşik
+          const atrExtreme = coinAtrPct > atrHardCap;
           const atrLossGap = coinAtrPct > userSLPct * 6.0 &&  // R310Z: 5.0→6.0 — TOP gainer'a daha geniş alan
             String(decisionChain?.entryPermissionReason||'').includes('R135_FAST_EDGE_PASS') &&
             !(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r118CandleOk) &&
@@ -16973,7 +16979,7 @@ async function runAutoScan(prioritySymbol=null) {
           const atrBridgeAllowedFinal = atrBridgeAllowed || (r162BrainBypassActive && !atrExtreme && !atrLossGap);
           // R310Z (kullanıcı madde1): ATR yüksek ama AŞIRI değilse (atrExtreme yok), AI bütçesi varsa coini KESME —
           // AI'ya DEVRET, son kararı AI versin. ATR bilgisi zaten AI'ya gidiyor; tepede/aşırı volatil görürse WAIT der.
-          // Bot AI'dan ÖNCE TOP gainer'ı kesmesin. Sadece gerçek %11+ düşen-bıçak (atrExtreme) kesilir.
+          // Bot AI'dan ÖNCE TOP gainer'ı kesmesin. Sadece gerçek uç volatilite (TOP2 %30+) kesilir.
           const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
           if (atrExtreme || (!atrBridgeAllowedFinal && !atrAiDevret)) {
             logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — ${atrExtreme?'aşırı volatilite (düşen bıçak)':'volatilite riski'} yüksek, atlandı`);
@@ -16993,14 +16999,17 @@ async function runAutoScan(prioritySymbol=null) {
         // ÇÖZÜM: gerçek kayma (spread > %0.12) → SERT KES. Dar spread + sadece ince depth → AI'ya DEVRET.
         if (analysis.r15?.liquidityQuality?.quality === 'POOR') {
           const lqSpread = Number(analysis.r15?.liquidityQuality?.spread || 0);
-          const gercekKayma = lqSpread > 0.12; // %0.12 üstü = gerçek geniş makas = gerçek kayma riski
+          // R335: TOP2 gainer'da spread doğal olarak geniş olabilir; küçük emir ($12) için %0.25'e kadar sorun değil.
+          // TLM %0.1361 spread ile kesiliyordu (4 saat 0 işlem sebeplerinden). TOP2 için eşik %0.12→%0.25.
+          const spreadCap = r310IsTop2(scanIdx) ? 0.25 : 0.12;
+          const gercekKayma = lqSpread > spreadCap; // TOP2: %0.25, diğer: %0.12 üstü = gerçek geniş makas
           const poorAiDevret = !gercekKayma && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
           if (gercekKayma || !poorAiDevret) {
             logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — ${gercekKayma?'gerçek geniş makas kayma riski':'AI bütçe/aday değil'}, atlandı`);
             markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
             continue;
           }
-          logAuto(`🔀 ${coin.symbol} POOR ama spread düşük (%${analysis.r15.liquidityQuality.spread}) — gerçek kayma YOK, R316C AI'ya devrediyor (ince defteri AI kendi tartar)`);
+          logAuto(`🔀 ${coin.symbol} POOR ama spread kabul (%${analysis.r15.liquidityQuality.spread}) — gerçek kayma YOK, R335 AI'ya devrediyor (ince defteri AI kendi tartar)`);
         }
         const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
 
