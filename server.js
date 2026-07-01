@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R330E_FINALURL_FIX'
+const LAZARUS_BUILD = 'R331_CANDLE_SYNC'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -16018,7 +16018,7 @@ function logAuto(msg) {
 }
 
 function stopAutoTrader(silent=false) {
-  if (autoTimer) { clearInterval(autoTimer); autoTimer=null; }
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer=null; }
   if (r125FastWakeTimer) { clearInterval(r125FastWakeTimer); r125FastWakeTimer=null; }
   if (positionSyncTimer) { clearInterval(positionSyncTimer); positionSyncTimer=null; }
   if (fastManagerTimer) { clearInterval(fastManagerTimer); fastManagerTimer=null; }
@@ -18214,8 +18214,33 @@ async function getNewPosCount() {
 
 function startAutoTrader() {
   logAuto('Otomatik işlem başlatıldı');
-  // R34: Ana tarama 30sn kalır; R125 sadece canlı orderflow spike gelirse güvenli 5sn uyandırma yapar.
-  autoTimer = setInterval(runAutoScan, AUTO_SCAN_INTERVAL_MS);
+  // R331: Tarama 15m MUM KAPANIŞINA senkronize. Eski setInterval botun başlangıcına göre sayıyordu
+  // (örn 19:23.5'te bakıp yarım muma karar veriyordu). Artık :00/:15/:30/:45 mum kapanışında (+8sn mum otursun)
+  // ve isteğe bağlı mum ortasında (+7.5dk) tarar → AI hep KAPANMIŞ mumu görür, yarım mum sahte sinyali önlenir.
+  function scheduleNextScan() {
+    const now = Date.now();
+    const d = new Date(now);
+    const min = d.getUTCMinutes();
+    const sec = d.getUTCSeconds();
+    // 15m sınırları: 0,15,30,45. Ayrıca ortaları: 7.5,22.5,37.5,52.5 (mum ortası kontrolü)
+    const marks = [0, 7.5, 15, 22.5, 30, 37.5, 45, 52.5];
+    const nowMin = min + sec/60;
+    // bir sonraki mark'ı bul
+    let nextMark = marks.find(m => m > nowMin + 0.05);
+    let waitMin;
+    if (nextMark === undefined) { nextMark = 60; waitMin = 60 - nowMin; }
+    else waitMin = nextMark - nowMin;
+    // mum kapanış sınırlarında (0,15,30,45) +8sn ekle (mum tam kapansın, Binance verisi otursun)
+    const isCandleClose = (nextMark % 15 === 0);
+    const waitMs = waitMin*60*1000 + (isCandleClose ? 8000 : 0);
+    autoScanState.nextScanDue = now + waitMs;
+    if (autoTimer) clearTimeout(autoTimer);
+    autoTimer = setTimeout(async () => {
+      try { await runAutoScan(); } catch(_) {}
+      scheduleNextScan(); // bir sonraki tarama için tekrar zamanla
+    }, waitMs);
+  }
+  scheduleNextScan();
   if (!r125FastWakeTimer) {
     r125FastWakeTimer = setInterval(() => {
       try {
