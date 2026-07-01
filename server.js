@@ -719,11 +719,32 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   };
   const finalUrl = isGet ? `${url}?${fullQs}` : url;
   if (!isGet) options.body = fullQs;
-  const res = await fetch(finalUrl, options);
-  if (res.status === 429 || res.status === 418) {
-    registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
+  // R331: 'Premature close' / socket kopma düzeltmesi.
+  // Sorun: büyük yanıtlı endpointler (v2/v3 account/balance) Railway/node-fetch altında
+  // yanıt gövdesi tamamlanmadan kopabiliyor (positionRisk küçük olduğu için geçiyordu).
+  // Geçici ağ hatalarında (Premature close / ECONNRESET / socket hang up / fetch failed / timeout)
+  // aynı imzayla en fazla 2 kez daha, artan beklemeyle tekrar dene. İmza/kimlik hatası DEĞİL—retry güvenli.
+  let res, text;
+  const _r331Transient = (msg) => /premature close|econnreset|socket hang up|network|fetch failed|ETIMEDOUT|EPIPE|aborted|The operation was aborted|terminated/i.test(String(msg||''));
+  for (let _r331try = 0; _r331try < 3; _r331try++) {
+    try {
+      res = await fetch(finalUrl, { ...options, signal: AbortSignal.timeout(timeout) });
+      if (res.status === 429 || res.status === 418) {
+        registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
+      }
+      text = await res.text();
+      break; // gövde tam okundu → çık
+    } catch (fe) {
+      const feMsg = String(fe && (fe.message || fe) || '');
+      // Backoff fırlatıldıysa (429/418) retry etme, yukarı taşı
+      if (fe && fe.code === 'BINANCE_BACKOFF_ACTIVE') throw fe;
+      if (_r331Transient(feMsg) && _r331try < 2) {
+        await sleep(400 * (_r331try + 1)); // 400ms, 800ms artan bekleme
+        continue;
+      }
+      throw new Error(`${path}: ${feMsg.slice(0,120)}`);
+    }
   }
-  const text = await res.text();
   let data;
   try { data = JSON.parse(text); }
   catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
@@ -13636,26 +13657,36 @@ app.post('/api/account', async (req, res) => {
   }
 
   try {
-    // Çalışan hatasız sürüme en yakın sıra: önce balance/account, sonra positionRisk.
-    const bal3 = await trySigned('v3/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance'));
-    if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
-
-    const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
-    if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
-
-    const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
-    if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
-
+    // R331B: ÖNCE HAFİF BALANCE. Büyük yanıtlı account endpointleri (v2/v3 account) Railway/node-fetch
+    // altında 'Premature close' verebiliyordu. Çözüm: küçük /fapi/v2/balance ve /fapi/v3/balance
+    // önce denenir; bakiye buradan gelirse ağır account endpointlerine HİÇ gidilmez (retry ile birlikte
+    // bakiye okuma dayanıklı olur). Pozisyonlar hafif positionRisk cache'ten alınır.
     const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
     if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
 
-    const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
-    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
+    if (!balanceSources.length) {
+      const bal3 = await trySigned('v3/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/balance'));
+      if (Array.isArray(bal3) && !setBalanceArray(bal3, 'v3/balance')) errors.push('v3/balance: USDT/stable satırı yok');
+    }
 
-    // R18: /api/account içinde de positionRisk cache kullanılır; API sekmesi açıkken
-    // aynı endpoint'i tekrar tekrar dövüp -1003 üretmez. Balance/account okuma sırası R14 gibi kalır.
+    // Pozisyonlar: hafif positionRisk cache (büyük account endpointine gerek yok).
     const pr = await trySigned('positionRisk/cache', () => getPositionRiskCached(apiKey, apiSecret));
     if (pr) setPositions(pr, positionRiskState.lastSource || 'positionRisk/cache');
+
+    // Fallback: hafif balance endpointleri bakiye veremediyse (nadir), ağır account endpointlerine düş.
+    // bReq retry'ı (R331) 'Premature close' gibi geçici kopmaları zaten telafi eder.
+    if (!balanceSources.length) {
+      const acc3 = await trySigned('v3/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v3/account'));
+      if (acc3) { setAccount(acc3, 'v3/account'); setPositions(acc3.positions || [], 'v3/account.positions'); }
+    }
+    if (!balanceSources.length) {
+      const acc2 = await trySigned('v2/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/account'));
+      if (acc2) { setAccount(acc2, 'v2/account'); setPositions(acc2.positions || [], 'v2/account.positions'); }
+    }
+    if (!balanceSources.length) {
+      const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
+      if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
+    }
 
     if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
     if (!Number.isFinite(u)) u = 0;
