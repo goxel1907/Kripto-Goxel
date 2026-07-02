@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R335_GATES_OPEN'
+const LAZARUS_BUILD = 'R337_ADAY_TAKIP'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -13406,11 +13406,11 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     }
     const r308RawCandles = {
       not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda (guncel). En eski en solda.',
-      '1d':  r308PackKlines(k1d, 30),
-      '4h':  r308PackKlines(k4h, 30),
-      '1h':  r308PackKlines(k1h, 40),
-      '15m': r308PackKlines(k15m, 150),
-      '5m':  r308PackKlines(k5m, 50),
+      '1d':  r308PackKlines(k1d, 20),
+      '4h':  r308PackKlines(k4h, 18),
+      '1h':  r308PackKlines(k1h, 24),
+      '15m': r308PackKlines(k15m, 96),
+      '5m':  r308PackKlines(k5m, 24),
       btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6)
     };
     const r316Trend = r316TrendlineBreak(k5m); // R316: eğik trend çizgisi (diagonal) kırılımı — AI'ya VERİ
@@ -15380,7 +15380,7 @@ let __r328PatlamaFlags = {}; // { COIN: { ts, volSurge, body, detected } }
 async function r328PatlamaWorker() {
   try {
     if (!autoConfig?.enabled) return;
-    const coins = (autoScanState.scanList || []).slice(0, 2); // TOP2
+    const coins = (autoScanState.scanList || []).slice(0, 6); // R337: TOP2 + TOP2'ye aday 4 coin — patlama adayı da izlenir
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
@@ -16294,7 +16294,18 @@ async function runAutoScan(prioritySymbol=null) {
     // AI'ya sunardı, AI o adaylar arasında TEK KARAR VERİCİYDİ. Ben R311C-J'de kapıları "hepsini AI'ya devret"
     // yapınca 24 coinin çoğu AI'ya gitti = $121/gün. ÇÖZÜM: R310J'ye dön. Bot KARAR VERMEZ (yön/giriş AI'nın),
     // sadece "AI'ya kimi soracağını" seçer = MALİYET ÖN-FİLTRESİ. Ölü/sinyalsiz coini AI'ya sormak boşa para.
-    const r310IsTop2 = (idx) => (typeof idx === 'number' && idx <= 1);
+    const r310IsTop2 = (idx) => {
+      if (typeof idx !== 'number') return false;
+      if (idx <= 1) return true; // TOP1 + TOP2
+      // R337: patlama bayraklı ADAY coin de TOP2 gibi muamele görür (kullanıcı: TOP2'ye aday en ideal coin
+      // worker'la takip edilir, bayrak alınca ham+koşulsuz AI'a gider, tüm muafiyetlerden yararlanır).
+      try {
+        const c = scanList?.[idx];
+        const base = String(c?.symbol || c?.fullSymbol || '').replace('USDT','');
+        const f = __r328PatlamaFlags[base];
+        return !!(f && f.detected && (Date.now() - f.ts < 5*60*1000));
+      } catch(_) { return false; }
+    };
     const r309eAiBudgetLeft = (idx, dc) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
     // GERÇEK ADAY FİLTRESİ (R310J ruhu): Bir coin AI'ya SUNULUR eğer FİZİKSEL bir setup/canlılık işareti varsa.
     // Bu ELEME DEĞİL — AI hâlâ gelen adayda yön/giriş/WAIT'e karar verir. Sadece "ölü coin" AI'ya gitmez (para).
@@ -16909,7 +16920,7 @@ async function runAutoScan(prioritySymbol=null) {
         // Sadece EXTREME durumda ve coin top-mover değilse ya da karar zinciri zayıfsa durdurur.
         const r38AutoTopMover = !!(coin.topGainerLocked || Math.abs(Number(coin.change24h||0)) >= 6 || Number(coin.volume||0) >= 100000000 || decisionChain?.r38TopMoverStrong);
         const r38FngStrongDecision = r162BrainBypassActive || (Number(decisionChain?.priorityScore||0) >= 76 && (decisionChain?.r37EarlyOk || decisionChain?.scalperBridge || decisionChain?.r38RetestBridgeOk));
-        if (fgSignal==='EXTREME_GREED' && isLong && !(r38AutoTopMover && r38FngStrongDecision) && !r309uDevirBypass(decisionChain, scanIdx))  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
+        if (fgSignal==='EXTREME_GREED' && isLong && !(r38AutoTopMover && r38FngStrongDecision) && !r309uDevirBypass(decisionChain, scanIdx) && !r310IsTop2(scanIdx) /* R336: TOP2 muaf — AI karar verir */)  { logAuto(`${coin.symbol} Extreme Greed — long atlandı`); markAutoSkip(coin.symbol, 'Extreme Greed long veto', {rec:recommendation, score}); continue; }
         if (fgSignal==='EXTREME_FEAR'  && isShort && !(r38AutoTopMover && r38FngStrongDecision) && !r309uDevirBypass(decisionChain, scanIdx)) { logAuto(`${coin.symbol} Extreme Fear — short atlandı`); markAutoSkip(coin.symbol, 'Extreme Fear short veto', {rec:recommendation, score}); continue; }
         if ((fgSignal==='EXTREME_GREED' && isLong) || (fgSignal==='EXTREME_FEAR' && isShort)) logAuto(`🟡 ${coin.symbol} F&G soft geçildi: top-mover + güçlü 5m karar zinciri`);
 
@@ -16919,7 +16930,7 @@ async function runAutoScan(prioritySymbol=null) {
           const adverseCascade = isLong
             ? liq.cascade.direction==='LONG_CASCADE'
             : liq.cascade.direction==='SHORT_CASCADE';
-          if (adverseCascade) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); markAutoSkip(coin.symbol, `Adverse cascade ${liq.cascade.direction}`, {rec:recommendation, score}); continue; }
+          if (adverseCascade && !r310IsTop2(scanIdx) /* R336: TOP2 muaf — cascade bilgisi AI'a gidiyor, kararı o verir */) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); markAutoSkip(coin.symbol, `Adverse cascade ${liq.cascade.direction}`, {rec:recommendation, score}); continue; }
         }
 
         // ── R97 VUR-KAÇ PİYASA GÜVENLİĞİ ─────────────────────────────────────
@@ -16948,7 +16959,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R310S: 5m BELİRLEYİCİ (kullanıcı stratejisi: 5m asıl scalp zaman dilimi). Önce 5m RVOL'a bak,
         // yoksa 1h'e düş. 5m scalp botu 1h hacmine göre karar vermemeli — 5m'de patlama başlamışsa hemen yakala.
         const rvolNum = Number(analysis?.rvol?.['5m']?.rvol || analysis?.rvol?.['1h']?.rvol || analysis?.rvol?.rvol || analysis?.r15?.rvol?.rvol || 0);
-        if (rvolNum > 0 && rvolNum < 0.08) {
+        if (rvolNum > 0 && rvolNum < 0.08 && !r310IsTop2(scanIdx) /* R336: TOP2 muaf */) {
           logAuto(`⛔ ${coin.symbol} RVOL çok düşük (${rvolNum.toFixed(2)}x) — likidite yetersiz, otomatik atlandı`);
           markAutoSkip(coin.symbol, `RVOL çok düşük ${rvolNum.toFixed(2)}x`, {rec:recommendation, tier:decisionChain?.tier, score});
           continue;
@@ -17013,7 +17024,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
         const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
 
-        if (userRR < minRR) {
+        if (userRR < minRR && !r310IsTop2(scanIdx) /* R336: TOP2 muaf — AI kendi TP/SL'ini belirler, panel RR onu bağlamaz */) {
           logAuto(`${coin.symbol} panel R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
           markAutoSkip(coin.symbol, `Panel RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
           continue;
@@ -17027,7 +17038,7 @@ async function runAutoScan(prioritySymbol=null) {
         }
 
         const lossGuard = recentLossPatternGuard(coin.fullSymbol || coin.symbol, recommendation, decisionChain);
-        if (lossGuard.block) {
+        if (lossGuard.block && !r310IsTop2(scanIdx) /* R336: TOP2 muaf — kayıp deseni freni AI'ı kesmesin, karar AI'ın */) {
           logAuto(`🧠 ${coin.symbol} öğrenme freni: ${lossGuard.reason}`);
           markAutoSkip(coin.symbol, lossGuard.reason, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore});
           continue;
@@ -17437,10 +17448,16 @@ async function runAutoScan(prioritySymbol=null) {
             // gerçek tehlikedir → AI'ya bile sorulmaz, kesilir. Diğer "yetersiz/İZLE" redleri ise AI'ya gider,
             // nihai kararı AI verir. Böylece hiçbir şey AI'sız açılmaz AMA AI güçlü adayı da değerlendirir.
             const isSafetyBlock = /R300-0 GÜVENLİK/i.test(String(r300Gate.reason||''));
-            if (isSafetyBlock) {
+            // R336: TOP2 için R300-0 güvenlik redleri de AI'ya DEVREDİLİR (kesilmez). Sebep: bu "tehlike" sinyalleri
+            // (sahte pump, ATR, spread, tuzak) TOP2 gainer'ın DOĞAL halidir; bilgi zaten AI'a gidiyor, kararı AI verir.
+            // TAIKO %115→%400 kaçarken bu kapıda "AI'ya sorulmaz" kesiliyordu — kullanıcı: TOP2 ham AI'a gitsin.
+            if (isSafetyBlock && !r310IsTop2(scanIdx)) {
               logAuto(`⛔ ${coin.symbol} R300 GÜVENLİK RED (AI'ya sorulmaz): ${r300Gate.reason} — emir AÇILMADI`);
               markAutoSkip(coin.symbol, `R300 güvenlik: ${r300Gate.reason}`, {rec:recommendation, score, brainMode:decisionChain?.brainMode, brainSummary:decisionChain?.brainSummary});
               continue;
+            }
+            if (isSafetyBlock) {
+              logAuto(`🔀 ${coin.symbol} R300-0 güvenlik uyarısı (${r300Gate.reason}) ama TOP2 — R336 AI'ya devrediliyor, kararı AI verecek`);
             }
             // Yumuşak red: AI'ya devret. Bayrak koy, aşağıdaki AI gate kesin kararı versin.
             logAuto(`🔍 ${coin.symbol} R300 yumuşak red (${r300Gate.reason}) — AI PRO TRADER'a devrediliyor, son kararı AI verecek`);
@@ -18295,9 +18312,13 @@ function startAutoTrader() {
           const scanGapOk = now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS;
           if (Number(ev.score||0) >= wakeThreshold && scanGapOk && (!isTop2Sym || lastWakeOk) && !isBinanceBackoffActive()) {
             if (isTop2Sym) r310yLastTop2Wake = now;
-            autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 hızlı-takip':'R151 canlı orderflow'} uyandırdı: ${sym.replace('USDT','')} ${ev.reason}`;
+            // R336: KREDİ KATİLİ DÜZELTMESİ — FastWake artık runAutoScan TETİKLEMEZ.
+            // Eski davranış: volatil TOP2'de orderflow spike sürekli → tarama ~30sn'de dönüyordu → 335 AI çağrısı/gün
+            // → $10.5 kredi 1 günde bitti. Tarama SADECE R331 mum-senkron zamanlayıcıda döner (7.5dk: kapanış+orta).
+            // Spike bilgisi patlama-worker bayrağıyla zaten AI'a gidiyor; ekstra tarama = ekstra maliyet, kazanç yok.
+            autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 spike (not edildi, mum-senkron tarama bekleniyor)':'R151 orderflow spike (not)'}: ${sym.replace('USDT','')} ${ev.reason}`;
             r125PriorityWake.delete(sym);
-            runAutoScan(sym);
+            // runAutoScan(sym); ← R336: KAPALI — mum-senkron dışı tarama yok
             break;
           }
         }
