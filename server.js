@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R340_SL_SIKISTIRMA_FIX'
+const LAZARUS_BUILD = 'R342_AI_AYAR_YETKISI'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3565,7 +3565,14 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       })(),
       // R329: FİBONACCİ + LİKİDİTE HARİTASI — MM oyununu, likidite havuzlarını, geri-çekilme/hedef seviyelerini AI'a ham ver (yorum AI'ın)
       fibLikiditeHaritasi: r329FibLiqMap(data.candles, data.lastPrice, data.liqLevels),
-      piyasaNotu: data.marketCtx || null
+      piyasaNotu: data.marketCtx || null,
+      // R342: mevcut panel ayarları — AI bunları "ayar" alanıyla değiştirebilir (marj hariç)
+      panelAyarlar: (()=>{ try { const c=autoConfig||{}; return {
+        leverage:Number(c.leverage)||null, maxPositions:Number(c.maxPositions)||null, minScore:Number(c.minScore)||null,
+        scanMode:c.scanMode||null, trailingPct:Number(c.trailingPct)||null, trailStep:Number(c.trailStep)||null,
+        breakEvenPct:Number(c.breakEvenPct)||null, slPct:Number(c.slPct)||null, tpPct:Number(c.tpPct)||null,
+        minRR:Number(c.minRR)||null, aiBE:Number(c.aiBE)||null, aiKT1:Number(c.aiKT1)||null, aiKT2:Number(c.aiKT2)||null, aiKT3:Number(c.aiKT3)||null
+      }; } catch(_) { return null; } })()
     };
 
     const sys = `Sen profesyonel bir kripto futures scalper'ısın — yüksek volatiliteli, YÜKSELEN gainer coinlerde çalışan, saf price action + likidite okuyan bir trader. Lazarus'un TEK karar vericisisin. Bu coinde ne yapacağına SEN karar verirsin.
@@ -3625,7 +3632,7 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
 ÖZET ZİHNİYET: Bu coinde varsayılan yön YUKARI'dır, aksi kanıtlanana kadar. "Çok yükselmiş" bir SATIŞ/SHORT sebebi DEĞİL — MM'in short avladığı ortamdır, sürüyle "döner" deme. AMA kritik nüans (gerçek veriyle doğrulandı): tam parabolik TEPE FİTİLİNDEN girme de — o noktada fiyat kısa vadede %60+ ihtimalle önce biraz geri çekilir (MM son alıcıları da toplar). Yani: TREND yukarı → LONG tarafındasın, ASLA short/ters düşünme. AMA giriş noktası olarak tam dikey tepe mumunu değil, şunları seç: sığ pullback'in dibi, kırılım-retest, konsolidasyon kırılımı, devam impulsunun başı. Trenle git ama vagona tepe fitilinden değil, bir sonraki sağlıklı devam noktasından bin. Tek gerçek "bekle": parabolik tükeniş + reclaim yok. Onun dışında bu tren yukarı gider — sadece binme anını akıllı seç.
 
 ★★★ ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı. Markdown/başlık/açıklama YAZMA. SADECE tek satır JSON. Tüm analizini "reasoning" içine 90 karaktere sığdır. JSON dışında tek kelime = işlem kaybı.
-{"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter","plan":"max 70 karakter"}`;
+{"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 90 karakter","plan":"max 70 karakter","ayar":{OPSİYONEL}}\n\n- AYAR YETKİN (R342): "panelAyarlar" sana mevcut bot ayarlarını gösterir. Piyasa koşulu gerektiriyorsa karara "ayar" objesi ekleyerek DEĞİŞTİREBİLİRSİN: leverage(3-25), maxPositions(1-3), minScore(40-90), scanMode("FAST6"|"TOP10"|"TOP24"), trailingPct(0.8-8), trailStep(0.2-3), breakEvenPct(0.3-4), slPct(0.8-9), tpPct(1.5-15), minRR(0.8-2.5), aiBE(0.3-4, BE tabanı), aiKT1/2/3(kâr taşıma tetik tabanları). Kurallar: SADECE gerçek gerekçe varsa değiştir (ör. aşırı volatil coinde trailingPct genişlet, sakin piyasada daralt), küçük adımlarla oyna, her taramada değiştirip durma. MARJ (usdtAmount) ve SHORT izni SENİN yetkinde DEĞİL. Değişiklik gerekmiyorsa "ayar" alanını HİÇ yazma (token tasarrufu).`;
 
     // R311T: 529 (overloaded) / 429 (rate limit) / 5xx geçici hatalarında RETRY.
     // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
@@ -3751,9 +3758,12 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
       if (u === 'DÜŞÜŞ' || u === 'DUSUS' || u === 'SHORT' || u === 'SAT') return 'SHORT';
       return u; // zaten LONG/SHORT/WAIT ise korunur
     };
+    // R342: AI ayar isteğini uygula (side'dan bağımsız; WAIT kararında da ayar değiştirebilir)
+    try { r342ApplyAiPanelAyar(decision.ayar, data?.symbol || data?.coin || ''); } catch(_) {}
     return {
       ok: true,
       side: r311uNormSide(decision.side),
+      ayar: (decision.ayar && typeof decision.ayar === 'object') ? decision.ayar : null,
       entry: Number(decision.entry) || data.lastPrice,
       tp: Number(decision.tp) || null,
       sl: Number(decision.sl) || null,
@@ -5966,11 +5976,11 @@ async function r179BootstrapLedger48h(apiKey, apiSecret, lookbackMs=48*60*60*100
           const gs = String(g.symbol||'').replace('USDT','');
           const rt = Number(r.closedAt || r.openedAt || 0);
           const gt = Number(g.last || g.first || 0);
-          return rs === gs && String(r.side||'UNKNOWN').toUpperCase() !== 'UNKNOWN' && rt > 0 && gt > 0 && Math.abs(rt-gt) <= 4*60*1000;
+          return rs === gs && String(r.side||'UNKNOWN').toUpperCase() !== 'UNKNOWN' && rt > 0 && gt > 0 && Math.abs(rt-gt) <= 10*60*1000;  // R341: 4→10dk (aynı saniyede açılıp kapanan hayalet satır fix)
         } catch(_) { return false; }
       });
       if (realNearby) {
-        if (Math.abs(Number(realNearby.pnlUSDT||0)) < 0.000001) {
+        if (Math.abs(Number(realNearby.pnlUSDT||0)) < 0.05) {  // R341: 0'a yakın (fee payı) kayıtlar da gerçek satıra işlensin, kopya üretme
           realNearby.pnlUSDT = safeNum(g.pnlUSDT,4);
           const m = Number(realNearby.marginUSDT || autoConfig?.usdtAmount || 0);
           realNearby.roiPct = safeNum((m>0 ? g.pnlUSDT/m*100 : Number(realNearby.roiPct||0)),2);
@@ -14612,10 +14622,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   const trailStep     = safe(cfg.trailStep,    0.25);
   // R310H: KÂR TAŞIMA PANELDEN BAĞIMSIZ — kullanıcı isteği: panel değerlerini EZ, kod karar versin.
   // Panel "1/2/3.5" gibi erken kilit yazsa bile YOK SAYILIR. Kâr koşsun diye geç kademe sabit.
-  const breakEvenAt   = 0.8;   // BE %0.8 (panel ezildi) — kâr nefes alsın, erken BE yok
-  const karTasima1    = 1.5;   // ilk kilit %1.5 (panel ezildi) — eskiden %0.5 çok erken kapatıyordu
-  const karTasima2    = 3.0;   // güçlü kilit %3
-  const karTasima3    = 5.5;   // maksimum kilit %5.5 — kâr buraya kadar koşar
+  // R342: sabitler artık AI tarafından ayarlanabilir taban (aiBE/aiKT1-3); yoksa eski sabitler.
+  const breakEvenAt   = Number(cfg.aiBE)  > 0 ? Number(cfg.aiBE)  : 0.8;
+  const karTasima1    = Number(cfg.aiKT1) > 0 ? Number(cfg.aiKT1) : 1.5;
+  const karTasima2    = Number(cfg.aiKT2) > 0 ? Number(cfg.aiKT2) : 3.0;
+  const karTasima3    = Number(cfg.aiKT3) > 0 ? Number(cfg.aiKT3) : 5.5;
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
@@ -14843,7 +14854,8 @@ async function managePosition(apiKey, apiSecret, pos) {
   // %80 ROI'da CVD flip → kapatma değil, SL sıkıştır
   // Düşük ROI'da (<5%) hızlı çıkış, yüksek ROI'da (>20%) sadece SL taşı
   const cvdFlipMinProfit = pnlPct >= 40 ? 2.0 : pnlPct >= 20 ? 1.0 : pnlPct >= 10 ? 0.5 : 0.2;
-  if ((cvdFlip.flip || tickFlip || exhaustExit || trappedExit) && realProfitPct > cvdFlipMinProfit) {
+  const r341FlipMin = r339AiManaged ? Math.max(1.2, Number(state.slPct || slPct) * 0.6) : cvdFlipMinProfit;  // R341: AI işleminde flip gürültüsü +%0.2'de kesemez
+  if ((cvdFlip.flip || tickFlip || exhaustExit || trappedExit) && realProfitPct > r341FlipMin) {
     if (tickFlip)    cvdFlip.reason = `Tick delta flip: ${tickSnap?.deltaFlip}`;
     if (exhaustExit) cvdFlip.reason = `Exhaustion: momentum bitti`;
     if (trappedExit) cvdFlip.reason = `Trapped trader: hızlı ters dönüş bekleniyor`;
@@ -14861,7 +14873,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   let cascade = null;
   if (!action) {
     cascade = detectAdverseCascade(sym, side);
-    if (cascade.adverse && realProfitPct > 0) { // Kârdayken cascade gelirse koru
+    if (cascade.adverse && realProfitPct > (r339AiManaged ? Math.max(0.8, Number(state.slPct || slPct) * 0.4) : 0)) { // Kârdayken cascade gelirse koru (R341: AI'da anlamlı kâr eşiği)
       action = { type:'EMERGENCY_EXIT', ...cascade };
     }
   }
@@ -14955,7 +14967,7 @@ async function managePosition(apiKey, apiSecret, pos) {
       const lockSL = r91LockPriceFromPct(lockRealPct);
       const currentSLNum = Number(state.currentSL || 0);
       const betterLock = isLong ? (!currentSLNum || lockSL > currentSLNum) : (!currentSLNum || lockSL < currentSLNum);
-      if (betterLock) {
+      if (betterLock && !r339AiManaged) {  // R341: AI işleminde kilitler geo-ölçekli kâr taşıma + r91'e ait
         action = {
           type:'R165_KAR_KILIDI', urgency: r165PeakRoi >= 35 ? 'MEDIUM' : 'LOW', newSL:lockSL,
           reason:`R165 kâr kilidi: zirve ROI %${r165PeakRoi.toFixed(1)}, mevcut %${Number(pnlPct||0).toFixed(1)}, geri verme %${r165GivebackRoi.toFixed(1)} → SL entry +%${lockRealPct.toFixed(2)} gerçek kâr bölgesine`,
@@ -14968,7 +14980,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   // +ROI görmüş işlem tekrar zarara gömülmesin. Büyük zirveden sonra runner gücü yoksa
   // market reduce-only kapatır; bu WR garantisi değildir, fakat +80 ROI → eksi kapanış
   // tipindeki ana sapmayı kesmek için tasarlandı.
-  const r165WinnerNeverLoserExit = !!(!action && r165PeakRoi >= 20 && !r91Brain.devamGucu && (
+  const r165WinnerNeverLoserExit = !!(!action && !r339AiManaged && r165PeakRoi >= 20 && !r91Brain.devamGucu && (
     (r165PeakRoi >= 70 && pnlPct <= Math.max(12, r165PeakRoi * 0.30)) ||
     (r165PeakRoi >= 40 && pnlPct <= Math.max(8,  r165PeakRoi * 0.25)) ||
     (r165PeakRoi >= 20 && pnlPct <= Math.max(4,  r165PeakRoi * 0.18))
@@ -14988,7 +15000,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r149GivebackRoi = Math.max(0, r149PeakRoi - Number(pnlPct || 0));
   const r149EntryTxt = [state.openReason, state.brainMode, state.entryPermissionReason, state.entryReason?.reason].filter(Boolean).join(' ').toLowerCase();
   const r149ScalpLike = /mikro|scalp|vur-kaç|vurkac|flow|momentum|tuzak dönüşü|counter_trap|hızlı edge|fast edge/.test(r149EntryTxt);
-  const r149ShouldLock = !!(!action && r149PeakRoi >= 8 && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= 16));
+  const r149ShouldLock = !!(!action && !r339AiManaged && r149PeakRoi >= 8 && pnlPct > 2 && realProfitPct > 0.10 && (r149GivebackRoi >= 4 || Number(r91Brain.exitScore||0) >= 2 || r149PeakRoi >= 16));
   if (r149ShouldLock) {
     let keepRealPct = r149PeakReal * (r149ScalpLike ? 0.58 : 0.48);
     if (r149PeakRoi >= 20) keepRealPct = Math.max(keepRealPct, r149PeakReal * 0.64);
@@ -15009,7 +15021,7 @@ async function managePosition(apiKey, apiSecret, pos) {
 
   // +ROI görmüş işlem tekrar sıfıra/zarara gömülmesin. Devam gücü varsa dokunmaz;
   // sadece kârı ciddi geri verip akış zayıfladığında market reduce-only kapatır.
-  const r149WinnerGivebackExit = !!(!action && r149PeakRoi >= 12 && r149GivebackRoi >= Math.max(8, r149PeakRoi * 0.55) && pnlPct <= Math.max(1.5, r149PeakRoi * 0.18) && !r91Brain.devamGucu);
+  const r149WinnerGivebackExit = !!(!action && !r339AiManaged && r149PeakRoi >= 12 && r149GivebackRoi >= Math.max(8, r149PeakRoi * 0.55) && pnlPct <= Math.max(1.5, r149PeakRoi * 0.18) && !r91Brain.devamGucu);
   if (r149WinnerGivebackExit) {
     action = {
       type:'R149_PROFIT_GIVEBACK_KAPAT', urgency:'HIGH',
@@ -15163,9 +15175,12 @@ async function managePosition(apiKey, apiSecret, pos) {
     // ilk salınım stopluyordu (TLM 1dk -%0.18, BIRB 3dk -%0.24 tam bu kalıptı). AI işleminde
     // divergence sıkıştırması ancak ANLAMLI yol alındıysa (SL mesafesinin yarısı, min %1) çalışır
     // ve sıkıştırma mesafesi işlem geometrisiyle ölçeklenir.
-    const r340DivMinProfit = r339AiManaged ? Math.max(1.0, Number(state.slPct || slPct) * 0.5) : 0.3;
-    const r340DivGapPct = r339AiManaged ? Math.max(trailPct * 0.5, Number(state.slPct || slPct) * 0.55) : (trailPct * 0.5);
-    if (realProfitPct > r340DivMinProfit) {
+    // R341: R340 eşiği dar-SL işlemde yetersizdi (TLM 21:37 -%0.21'de yine kesildi).
+    // AI pozisyonunda divergence sıkıştırması TAMAMEN kapalı — kâr koruması r91 RUNNER/NORMAL
+    // kapıları + kâr taşıma + trailing'e aittir, 5m divergence gürültüsüne değil.
+    const r340DivMinProfit = 0.3;
+    const r340DivGapPct = trailPct * 0.5;
+    if (!r339AiManaged && realProfitPct > r340DivMinProfit) {
       action = { type:'TIGHTEN_SL', reason:divergence.reason, urgency:'MEDIUM',
         newSL: isLong
           ? +(curPrice * (1 - r340DivGapPct/100)).toFixed(8)
@@ -15436,13 +15451,47 @@ const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // R330: 15m moduna geçiş — 7.5dk 
 // TOP2 coinleri hızlı (45sn) izler, AI ÇAĞIRMADAN (bedava) patlama başlangıcını tespit eder.
 // Patlama = hacim surge (2x+) + güçlü yeşil mum + alıcı baskısı. Backtest: PF 1.93-2.13.
 // Tespit edince bayrak koyar → sonraki tarama o coine "patlama!" notuyla öncelikli gider.
+// ── R342: AI PANEL AYAR YETKİSİ ────────────────────────────────────────────
+// AI, karar JSON'una opsiyonel "ayar" objesi ekleyerek panel ayarlarını değiştirebilir.
+// Beyaz liste + sınır: marj (usdtAmount), API anahtarları, SHORT izni ve enabled ASLA değişmez.
+const R342_AYAR_LIMITS = {
+  leverage:      [3, 25],   maxPositions: [1, 3],    minScore: [40, 90],
+  trailingPct:   [0.8, 8],  trailStep:    [0.2, 3],  breakEvenPct: [0.3, 4],
+  slPct:         [0.8, 9],  tpPct:        [1.5, 15], minRR: [0.8, 2.5],
+  vurKacMaxLev:  [5, 50],   aiKT1: [0.4, 5], aiKT2: [1, 8], aiKT3: [2, 12], aiBE: [0.3, 4]
+};
+function r342ApplyAiPanelAyar(ayar, coinLabel) {
+  try {
+    if (!ayar || typeof ayar !== 'object' || !autoConfig) return;
+    const changes = [];
+    for (const [k, v] of Object.entries(ayar)) {
+      if (k === 'scanMode') {
+        const m = String(v || '').toUpperCase();
+        if (['FAST6','TOP10','TOP24'].includes(m) && autoConfig.scanMode !== m) {
+          changes.push(`taramaModu ${autoConfig.scanMode||'?'}→${m}`); autoConfig.scanMode = m;
+        }
+        continue;
+      }
+      const lim = R342_AYAR_LIMITS[k];
+      if (!lim) continue; // beyaz liste dışı (usdtAmount, apiKey, allowShort, enabled...) sessizce yok sayılır
+      const num = Number(v);
+      if (!Number.isFinite(num)) continue;
+      const clamped = Math.min(lim[1], Math.max(lim[0], num));
+      const cur = Number(autoConfig[k]);
+      if (Number.isFinite(cur) && Math.abs(cur - clamped) < 1e-9) continue;
+      changes.push(`${k} ${Number.isFinite(cur)?cur:'?'}→${clamped}`);
+      autoConfig[k] = clamped;
+    }
+    if (changes.length) logAuto(`🎛️ AI panel ayarı değiştirdi (${coinLabel||'karar'}): ${changes.join(' · ')} — marj sabit, sınırlar uygulandı`);
+  } catch(e) { console.log('r342 ayar hatası:', e?.message); }
+}
 let __r328PatlamaFlags = {}; // { COIN: { ts, volSurge, body, detected } }
 let __r328Potansiyel = { ts:0, list:[], lastLogTs:0, lastLeader:'' }; // R339: bedava TOP10 patlama-potansiyel sıralaması
 async function r328PatlamaWorker() {
   const __r328PotRows = []; // R339: bu turun potansiyel skorları
   try {
     if (!autoConfig?.enabled) return;
-    const coins = (autoScanState.scanList || []).slice(0, 10); // R339: TOP10 bedava izlenir (AI çağrısı yok, sadece public kline) — kullanıcı isteği: TOP3-10'daki fırsat da görünsün
+    const coins = (((autoScanState.genisListe||[]).length ? autoScanState.genisListe : (autoScanState.scanList||[]))).slice(0, 10); // R341: tarama listesi TOP2'ye daralsa bile radar GERÇEK ilk 10 gaineri izler
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
@@ -15484,10 +15533,13 @@ async function r328PatlamaWorker() {
       const top = __r328PotRows[0];
       const leaderChanged = top.coin !== __r328Potansiyel.lastLeader;
       const heartbeat = Date.now() - __r328Potansiyel.lastLogTs > 5*60*1000;
-      if (top.skor >= 40 && (leaderChanged || heartbeat)) {
+      if (top.skor >= 30 && (leaderChanged || heartbeat)) {
         logAuto(`🔮 PATLAMA POTANSİYELİ (TOP10 bedava izleme): ${__r328PotRows.slice(0,3).map((r,i)=>`${i+1}) ${r.coin} ${r.skor} (hacim ${r.vol}x·mum %${r.mum}·delta ${r.delta})`).join(' · ')} — en güçlü aday: ${top.coin}`);
         __r328Potansiyel.lastLogTs = Date.now();
         __r328Potansiyel.lastLeader = top.coin;
+      } else if (Date.now() - __r328Potansiyel.lastLogTs > 15*60*1000) {
+        logAuto(`🔮 Patlama radarı çalışıyor (${coins.length} coin izleniyor) — ortalık sakin, en yüksek: ${top.coin} skor ${top.skor}`);
+        __r328Potansiyel.lastLogTs = Date.now();
       }
       try { autoScanState.patlamaPotansiyel = __r328Potansiyel.list; } catch(_) {}
     }
@@ -16094,7 +16146,7 @@ app.post('/api/auto/config', (req, res) => {
 });
 
 app.get('/api/auto/status', (req, res) => {
-  res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning,
+  res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning, build:LAZARUS_BUILD,
     config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(), saverMode: AI_SAVER_MODE,
     turkceDurum:{
@@ -16295,8 +16347,13 @@ async function runAutoScan(prioritySymbol=null) {
         logAuto(`🧭 R282 ${pBase} canlı spike görüldü ama ${r54ScanMode} dışı — kullanıcı tarama modu korunuyor`);
       }
     }
+    // R341: patlama radarı için GENİŞ liste — TOP2 filtresi uygulanmadan önceki ilk 10 gainer.
+    try { autoScanState.genisListe = (scanList||[]).slice(0,10).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean); } catch(_) {}
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
+      // R341: patlama bayraklı coin TOP2 filtresinden düşmesin — bayrak "TOP2 muamelesi" demektir,
+      // ama coin taramaya giremezse bayrağın hükmü yoktu (radar yakalasa bile AI'a ulaşamıyordu).
+      try { for (const [b,f] of Object.entries(__r328PatlamaFlags)) { if (f && f.detected && Date.now()-f.ts < 5*60*1000) wanted.add(String(b).toUpperCase()); } } catch(_) {}
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
     }
     if (!scanList?.length) return;
