@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R342_AI_AYAR_YETKISI'
+const LAZARUS_BUILD = 'R343_VETO_YOK'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -15487,11 +15487,25 @@ function r342ApplyAiPanelAyar(ayar, coinLabel) {
 }
 let __r328PatlamaFlags = {}; // { COIN: { ts, volSurge, body, detected } }
 let __r328Potansiyel = { ts:0, list:[], lastLogTs:0, lastLeader:'' }; // R339: bedava TOP10 patlama-potansiyel sıralaması
+async function r343RadarUniverse() {
+  // R343: radar evreni — aday üretici (yeşil+min hareket filtresi) gece 1-2 coine düşebiliyor.
+  // Radar bundan bağımsız, Binance ham ticker'dan pozitif değişimli ilk 10 coini izler (5dk cache, bedava).
+  try {
+    const list = (autoScanState.genisListe || []).slice(0, 10);
+    if (list.length >= 10) return list;
+    const all = await cached('r343_ticker24', 5*60*1000, () => bPub('/fapi/v1/ticker/24hr', ''));
+    const top = (Array.isArray(all) ? all : [])
+      .filter(t => /USDT$/.test(String(t.symbol||'')) && Number(t.lastPrice) > 0 && Number(t.priceChangePercent) > 0)
+      .sort((a,b) => Number(b.priceChangePercent) - Number(a.priceChangePercent))
+      .slice(0, 12).map(t => String(t.symbol).replace('USDT',''));
+    return [...new Set([...list, ...top])].slice(0, 10);
+  } catch(_) { return (autoScanState.genisListe || autoScanState.scanList || []).slice(0, 10); }
+}
 async function r328PatlamaWorker() {
   const __r328PotRows = []; // R339: bu turun potansiyel skorları
   try {
     if (!autoConfig?.enabled) return;
-    const coins = (((autoScanState.genisListe||[]).length ? autoScanState.genisListe : (autoScanState.scanList||[]))).slice(0, 10); // R341: tarama listesi TOP2'ye daralsa bile radar GERÇEK ilk 10 gaineri izler
+    const coins = await r343RadarUniverse(); // R343: aday filtresinden bağımsız gerçek TOP10 gainer evreni
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
@@ -16355,6 +16369,15 @@ async function runAutoScan(prioritySymbol=null) {
       // ama coin taramaya giremezse bayrağın hükmü yoktu (radar yakalasa bile AI'a ulaşamıyordu).
       try { for (const [b,f] of Object.entries(__r328PatlamaFlags)) { if (f && f.detected && Date.now()-f.ts < 5*60*1000) wanted.add(String(b).toUpperCase()); } } catch(_) {}
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
+      // R343: bayraklı coin aday üreticide HİÇ yoksa (filtre dışı kaldıysa) taramaya öne enjekte et —
+      // radar TOP3-10 dışından patlama yakaladığında coin gerçekten AI'a ulaşsın.
+      try {
+        for (const [b,f] of Object.entries(__r328PatlamaFlags)) {
+          if (!(f && f.detected && Date.now()-f.ts < 5*60*1000)) continue;
+          const varMi = scanList.some(c => String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase() === String(b).toUpperCase());
+          if (!varMi) { scanList.unshift({ symbol:String(b).toUpperCase(), fullSymbol:String(b).toUpperCase()+'USDT', r54Bucket:'R343_PATLAMA_ADAY' }); logAuto(`🚀 R343: ${b} patlama bayrağıyla tarama listesine enjekte edildi — AI'a gidiyor`); }
+        }
+      } catch(_) {}
     }
     if (!scanList?.length) return;
     logAuto(`🔥 5m Fırsat Beyni ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
@@ -17886,15 +17909,11 @@ async function runAutoScan(prioritySymbol=null) {
                   if (tr && tr.ok) {
                     // yükselen trend devam (kırılım YOK) + AI SHORT istiyor = trende karşı SHORT → ENGELLE
                     if (tr.slopeUp && !tr.risingBreak && ai.side === 'SHORT') {
-                      logAuto(`🛑 ${coin.symbol} R317 TRENDE-KARŞI ENGEL: yükselen trend DEVAM ediyor, SHORT trende karşı (yükselen bıçak) — emir AÇILMADI. Trend kırılırsa serbest.`);
-                      markAutoSkip(coin.symbol, `R317: yükselen trende SHORT engellendi (trend kırılmadı)`, {rec:ai.side, score, aiBrain:ai});
-                      continue;
+                      logAuto(`⚠️ ${coin.symbol} R317 uyarı: yükselen trend devam ederken SHORT — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                     }
                     // düşen trend devam (kırılım YOK) + AI LONG istiyor = trende karşı LONG (düşen bıçak) → ENGELLE
                     if (tr.slopeDown && !tr.fallingBreak && ai.side === 'LONG') {
-                      logAuto(`🛑 ${coin.symbol} R317 TRENDE-KARŞI ENGEL: düşen trend DEVAM ediyor, LONG trende karşı (düşen bıçak) — emir AÇILMADI. Trend kırılırsa serbest.`);
-                      markAutoSkip(coin.symbol, `R317: düşen trende LONG engellendi (trend kırılmadı)`, {rec:ai.side, score, aiBrain:ai});
-                      continue;
+                      logAuto(`⚠️ ${coin.symbol} R317 uyarı: düşen trend devam ederken LONG — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                     }
                   }
                 } catch(_r317e) {}
@@ -17917,12 +17936,10 @@ async function runAutoScan(prioritySymbol=null) {
                     const obI = Number(analysis?.orderBook?.imbalance ?? decisionChain?.orderBookImbalance ?? NaN); // + alıcı, - satıcı
                     // ENGEL 1: P/D İHLALİ — dipte(<%30) SHORT veya tepede(>%70) LONG (sweep yok)
                     if (ai.side === 'SHORT' && rPos <= 0.30) {
-                      logAuto(`🛑 ${coin.symbol} R318 P/D ENGEL: DİPTE(%${(rPos*100).toFixed(0)}) sweep'siz SHORT = discount'ta short (TNSR/M dersi) — AÇILMADI`);
-                      markAutoSkip(coin.symbol, `R318: dipte sweep'siz SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      logAuto(`⚠️ ${coin.symbol} R318 uyarı: dipte sweep'siz SHORT (TNSR/M dersi) — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                     }
                     if (ai.side === 'LONG' && rPos >= 0.70) {
-                      logAuto(`🛑 ${coin.symbol} R318 P/D ENGEL: TEPEDE(%${(rPos*100).toFixed(0)}) sweep'siz LONG = premium'da long (G-42 dersi) — AÇILMADI`);
-                      markAutoSkip(coin.symbol, `R318: tepede sweep'siz LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      logAuto(`⚠️ ${coin.symbol} R318 uyarı: tepede(%${(rPos*100).toFixed(0)}) sweep'siz LONG (G-42 dersi) — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                     }
                     // ENGEL 2: AKIŞ TERS — (a) delta VE emir defteri İKİSİ ters, VEYA (b) biri TEK BAŞINA şiddetli(≥40) ters
                     // M LONG -3.85 dersi: delta+40 alıcı ama emirDef-49.5 şiddetli satıcı = çelişki, AI yine açtı.
@@ -17932,8 +17949,7 @@ async function runAutoScan(prioritySymbol=null) {
                     const obSiddetliTers  = obTers && Number.isFinite(obI) && Math.abs(obI) >= 40; // emirDef tek başına şiddetli ters
                     if ((dltTers && obTers) || dltSiddetliTers || obSiddetliTers) {
                       const tip = (dltTers && obTers) ? 'çift-ters' : (dltSiddetliTers ? `delta şiddetli(${dlt.toFixed(0)})` : `emirDef şiddetli(${obI.toFixed(0)})`);
-                      logAuto(`🛑 ${coin.symbol} R318 AKIŞ ENGEL: sweep yok + akış ${ai.side} yönüne TERS [${tip}] (M LONG dersi) — AÇILMADI`);
-                      markAutoSkip(coin.symbol, `R318: sweep yok + akış ters (${tip}) engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                      logAuto(`⚠️ ${coin.symbol} R318 uyarı: akış ${ai.side} yönüne ters [${tip}] (M LONG dersi) — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                     }
                     // ENGEL 3: DESTEKSİZ KIRILIM — 'trend kırıldı' diyor AMA akış/OI desteklemiyor (sweep yok)
                     // RESOLV/BAS dersi: motor kırılımı son-mum rengiyle teyit ediyor (gövde içeride), AMA
@@ -17949,8 +17965,7 @@ async function runAutoScan(prioritySymbol=null) {
                       // desteksiz = delta da desteklemiyor VE (OI çelişik VEYA delta giriş yönüne ters)
                       const deltaTersKirilimda = (ai.side === 'LONG' && dlt < -3) || (ai.side === 'SHORT' && dlt > 3);
                       if (!deltaDestek && (oiCelisik || deltaTersKirilimda)) {
-                        logAuto(`🛑 ${coin.symbol} R318 SAHTE KIRILIM ENGEL: kırılım var ama akış desteklemiyor (delta ${dlt.toFixed(1)}${oiCelisik?', OI '+oi1h.toFixed(1)+'%':''}, sweep yok) = desteksiz breakout (RESOLV/BAS dersi) — AÇILMADI`);
-                        markAutoSkip(coin.symbol, `R318: desteksiz kırılım engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                        logAuto(`⚠️ ${coin.symbol} R318 uyarı: kırılım akışsız (delta ${dlt.toFixed(1)}) (RESOLV/BAS dersi) — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                       }
                     }
                     // ENGEL 4: HTF AŞIRI RSI — 1h RSI ekstremde + giriş ters yönde (sweep yok). M LONG -5.87 dersi.
@@ -17959,12 +17974,10 @@ async function runAutoScan(prioritySymbol=null) {
                     const r1h = Number(decisionChain?.rsi1h ?? analysis?.timeframes?.['1h']?.rsi ?? NaN);
                     if (Number.isFinite(r1h)) {
                       if (ai.side === 'LONG' && r1h >= 78) {
-                        logAuto(`🛑 ${coin.symbol} R318 HTF-RSI ENGEL: 1hRSI ${r1h.toFixed(0)} aşırı ALIM + sweep'siz LONG = HTF direncine karşı dip-long (M LONG dersi) — AÇILMADI`);
-                        markAutoSkip(coin.symbol, `R318: HTF aşırı alımda sweep'siz LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                        logAuto(`⚠️ ${coin.symbol} R318 uyarı: 1hRSI ${r1h.toFixed(0)} aşırı alımda sweep'siz LONG — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                       }
                       if (ai.side === 'SHORT' && r1h <= 22) {
-                        logAuto(`🛑 ${coin.symbol} R318 HTF-RSI ENGEL: 1hRSI ${r1h.toFixed(0)} aşırı SATIM + sweep'siz SHORT = HTF desteğine karşı tepe-short — AÇILMADI`);
-                        markAutoSkip(coin.symbol, `R318: HTF aşırı satımda sweep'siz SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                        logAuto(`⚠️ ${coin.symbol} R318 uyarı: 1hRSI ${r1h.toFixed(0)} aşırı satımda sweep'siz SHORT — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                       }
                     }
                     // ENGEL 5: KANALA KARŞI ZAMANLAMA — düşen kanalın DİBİNDEN SHORT / yükselen kanalın TEPESİNDEN LONG (sweep yok)
@@ -17974,18 +17987,15 @@ async function runAutoScan(prioritySymbol=null) {
                       const kp = tr3.kanalKonum; // %0=alt bant, %100=üst bant
                       // düşen kanal + SHORT + dipte (%30-) = geç/dönüş riski → engelle
                       if (tr3.slopeDown && ai.side === 'SHORT' && kp <= 30) {
-                        logAuto(`🛑 ${coin.symbol} R320 KANAL ENGEL: düşen kanal DİBİNDE (%${kp}) sweep'siz SHORT = geç giriş/dönüş riski (AIN dersi) — AÇILMADI`);
-                        markAutoSkip(coin.symbol, `R320: düşen kanal dibinde SHORT engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                        logAuto(`⚠️ ${coin.symbol} R320 uyarı: düşen kanal dibinde SHORT (AIN dersi) — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                       }
                       // yükselen kanal + LONG + tepede (%70+) = geç/tepe riski → engelle
                       if (tr3.slopeUp && ai.side === 'LONG' && kp >= 70) {
-                        logAuto(`🛑 ${coin.symbol} R320 KANAL ENGEL: yükselen kanal TEPESİNDE (%${kp}) sweep'siz LONG = geç giriş/tepe riski — AÇILMADI`);
-                        markAutoSkip(coin.symbol, `R320: yükselen kanal tepesinde LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                        logAuto(`⚠️ ${coin.symbol} R320 uyarı: yükselen kanal tepesinde (%${kp}) sweep'siz LONG — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                       }
                       // düşen kanal + LONG (kanala karşı, herhangi konum) = bıçak → sadece kanal ortası/dibinde engelle (üstte dönüş olabilir)
                       if (tr3.slopeDown && ai.side === 'LONG' && kp <= 50) {
-                        logAuto(`🛑 ${coin.symbol} R320 KANAL ENGEL: düşen kanalda (%${kp}) sweep'siz LONG = kanala karşı bıçak — AÇILMADI`);
-                        markAutoSkip(coin.symbol, `R320: düşen kanalda LONG engellendi`, {rec:ai.side, score, aiBrain:ai}); continue;
+                        logAuto(`⚠️ ${coin.symbol} R320 uyarı: düşen kanalda (%${kp}) sweep'siz LONG — R343: AI kararı VETO EDİLMEZ — uyarı olarak loglandı, emir devam ediyor`);
                       }
                     }
                   }
