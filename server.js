@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R338_AI_YONETIM'
+const LAZARUS_BUILD = 'R340_SL_SIKISTIRMA_FIX'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3444,6 +3444,24 @@ function r329FibLiqMap(candles, lastPrice, liqLevels) {
     const range = hi - lo;
     if (range <= 0) return null;
     const yukariImpuls = loIdx < hiIdx;
+    // R339 FİB FIX: 15 saatlik MUTLAK uçlar yerine bir de SON BACAK hesaplanır.
+    // Yukarı impulsta tepeden geriye yürünüp bacağı başlatan anlamlı swing dibi (fraktal, derinlik ≥ makro range %30) bulunur.
+    // AI aritmetiği güvenilmez olduğu için tüm seviyeler HAZIR sayı olarak verilir, çapalar açıkça etiketlenir.
+    let legLo = lo, legHi = hi;
+    if (yukariImpuls && hiIdx >= 4) {
+      for (let j = hiIdx - 2; j >= 2; j--) {
+        const l = Number(recent[j][2]);
+        const isFr = l <= Math.min(Number(recent[j-1][2]), Number(recent[j-2][2]), Number(recent[j+1][2]), Number(recent[j+2][2]));
+        if (isFr && (hi - l) >= range * 0.30) { legLo = l; break; }
+      }
+    }
+    const legRange = legHi - legLo;
+    const legFib = (r) => +(legHi - legRange * r).toFixed(8);
+    const sonBacakFib = (yukariImpuls && legRange > 0 && legLo > lo) ? {
+      capa: { dip: +legLo.toFixed(8), tepe: +legHi.toFixed(8), not: 'Fib bu iki fiyat arasına çizildi (0=dip, 1=tepe)' },
+      geriCekilme: { '0.382': legFib(0.382), '0.5': legFib(0.5), '0.618': legFib(0.618) },
+      uzatmaHedef: { '1.272': +(legLo + legRange * 1.272).toFixed(8), '1.618': +(legLo + legRange * 1.618).toFixed(8), '2.0': +(legLo + legRange * 2.0).toFixed(8) }
+    } : null;
     const fib = (r) => yukariImpuls ? +(hi - range * r).toFixed(8) : +(lo + range * r).toFixed(8);
     const fibSeviyeleri = {
       '0.382': fib(0.382), '0.5': fib(0.5), '0.618': fib(0.618),
@@ -3482,8 +3500,9 @@ function r329FibLiqMap(candles, lastPrice, liqLevels) {
     const ustLikiditeHavuzlari = cluster(highs).filter(c=>c.merkez>price);
     const altLikiditeHavuzlari = cluster(lows).filter(c=>c.merkez<price);
     return {
-      aciklama: 'Ham hesaplanmış seviyeler — yorumu SEN yap. MM bu likidite havuzlarını avlar, Fib seviyeleri tepki noktalarıdır.',
-      sonImpuls: { tepe:+hi.toFixed(8), dip:+lo.toFixed(8), yon: yukariImpuls?'YUKARI':'AŞAĞI' },
+      aciklama: 'Ham hesaplanmış seviyeler — yorumu SEN yap ama SAYILARI AYNEN KULLAN, kendi fib aritmetiğini YAPMA (hesap hatası riski). Çapalar (dip/tepe) açıkça verildi. MM bu likidite havuzlarını avlar, Fib seviyeleri tepki noktalarıdır.',
+      sonImpuls: { tepe:+hi.toFixed(8), dip:+lo.toFixed(8), yon: yukariImpuls?'YUKARI':'AŞAĞI', not:'60x15m pencerenin mutlak uçları (makro)' },
+      sonBacakFib,
       fibGeriCekilme: fibSeviyeleri,
       oteZonu,
       fibHedef,
@@ -3564,6 +3583,9 @@ NASIL USTA GİBİ DAVRAN:
 - Giriş zamanı — DENGE (kritik nüans): İki tuzak var, ikisinden de kaçın. (a) Düşen bıçağı yakalama / parabolik tükenişin tepesinden girme (reclaim yoksa bekle). (b) AMA güçlü momentum treni kalkmışken "pullback bekleyeyim" deyip SONSUZA KADAR BEKLEME — bu gainer coinler çoğu zaman geri çekilmeden düz yukarı gider (NFP %250→%450 gibi), pullback beklersen tüm hareketi kaçırırsın. KURAL: HTF yukarı + momentum güçlü + coin aktif yükseliyorsa, PULLBACK GELMESE BİLE trend yönünde LONG gir (breakout, güçlü yeşil mum, ardışık yeşil, devam formasyonu = geçerli giriş). Pullback/OTE bir bonus, ŞART değil. Tek gerçek "bekle" sebebi: parabolik tükeniş + reclaim yok (düşen bıçak) ya da HTF aşağı. Aksi halde momentumla git — treni kaçırma.
 - GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL. Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve 15m RSI>80 + son mumlar dikeyse, yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, %64 ihtimalle kısa vadede geri çekilir.
 - ERKEN ÇIKMA = EN BÜYÜK KÂR KATİLİ (15m'de HAYATİ): 15m modunda işlem başına isabetin yüksek (~%75 doğru yön) AMA kazançlar küçük kalırsa strateji zar zor kâr eder. Sırrı: kazananı SONUNA KADAR KOŞTUR. 15m mumlar uzun trend taşır — %1-2 kârla panikleyip çıkarsan +%10'luk hareketleri kaçırırsın (backtest'te kaçan +%11'ler tam buydu). RUNNER modu ZORUNLU: TP'yi bir sonraki büyük üst likiditeye/Fib uzantısına (1.272-1.618) koy, 15m yapısı kırılmadıkça (HL bozulmadıkça) POZİSYONDA KAL. Trailing ile taşı. Az işlem aç ama her kazananı büyüt — 15m'nin matematiği budur.
+- FİB SAYILARINI AYNEN KULLAN: Sana verilen fib/likidite haritasındaki (fibGeriCekilme, fibHedef, sonBacakFib, likidite havuzları) sayılar HAZIR hesaplanmıştır — TP/SL/giriş seçerken bu sayıları BİREBİR kullan. Kendi fib aritmetiğini YAPMA; kafadan "fib 1.272 = X" hesaplama, geçmişte yanlış hesapladın. sonBacakFib en güncel impuls bacağıdır (çapaları yazılı), makro sonImpuls 15 saatlik uçlardır — hedef seçerken önce sonBacakFib.uzatmaHedef ve üst likidite havuzlarına bak.
+- MM AVCISI KESKİNLİĞİ: Binance botu gibi düşünme — MM İNSANDIR ve senden önce davranmaya çalışır. Onu hamlesinden ÖNCE avla: likidite nerede birikti (stoplar nerede kümelendi), MM oraya NEDEN gelecek, hangi seviyede tuzak kuracak? Sen o seviyeye MM gelmeden pusu kur: sweep bölgesinin hemen üstünde dönüş teyidiyle bin, MM'in hedeflediği karşı likiditeye kadar taşı. "Herkes ne görüyor"u değil "MM herkese ne göstermek istiyor"u oku.
+- KÂRDA ÜRKEKLİK YASAK: Pozisyon kârdayken lehine güçlü yeşil devam mumu geldiyse bu "kaç" sinyali DEĞİL "taşı" sinyalidir — "güzel mum geldi, kârı alayım" diye düşünme, "yakıt geldi, hedef yaklaşıyor" diye düşün. Geri çekilme 15m yapıyı (son HL'yi) kırmadıkça POZİSYON TUTULUR; max kâr zirveyi tahmin etmekle değil yapı kırılana kadar kalmakla yapılır. Küçük fırsatta (NORMAL) tam tersi: TP'ye/ilk dirence gelince kârı VUR-KAÇ al, oyalanma.
 - KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
 - SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
@@ -14607,7 +14629,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r283State = state.r283Recipe || {};
   // R310W: TREND-TAKİPLİ RUNNER — kullanıcı: "trend devam ediyorsa onunla devam et" (HOME/RESOLV kârı bırakma).
   // r310wTrendDevam aşağıda isCvdTrendHealthyForSide tanımından SONRA hesaplanır; burada placeholder.
-  const r282RunnerModeBase = !!(r281RunnerMode || r283State.runner || r283State.mode === 'RUNNER' || r282Plan.mode === 'RUNNER' || state.r190Edge?.r192FuelOk || state.r190Edge?.squeeze || state.r190Edge?.earlyContinuation);
+  const r282RunnerModeBase = !!(state.aiRunner || r281RunnerMode || r283State.runner || r283State.mode === 'RUNNER' || r282Plan.mode === 'RUNNER' || state.r190Edge?.r192FuelOk || state.r190Edge?.squeeze || state.r190Edge?.earlyContinuation);
   let r282RunnerMode = r282RunnerModeBase; // R310W ile aşağıda trend-devam eklenir
   const r282ProtectMode = !!(!r282RunnerModeBase && (r281ProtectMode || r282Plan.mode === 'PROTECT' || r282Plan.mode === 'TACTICAL' || r283State.mode === 'TACTICAL'));
 
@@ -14732,13 +14754,21 @@ async function managePosition(apiKey, apiSecret, pos) {
 
   let action = null; // { type, reason, urgency }
 
+  // R339: AI pozisyonu + GEOMETRİ ÖLÇEĞİ. Panel BE/kâr-taşıma/trailing yüzdeleri 5m-scalp (SL %1.7)
+  // için ayarlıydı; AI 15m işlemi SL %3-9 ile açıyor. Eşikler işlemin KENDİ SL'ine oranla ölçeklenir —
+  // M dersi (02.07): %0.9 harekette BE'ye alındı, BE avına takıldı, sonraki +%4'lük koşu kaçtı.
+  const r339AiManaged = !!(state.aiBrain || state.brainMode === 'R308C_AI_LIVE');
+  const r339GeoScale = r339AiManaged ? Math.min(3.0, Math.max(1.0, Number(state.slPct || slPct || 1.7) / 1.7)) : 1.0;
+
   // R24: 90dk+ açık kalan ve hâlâ BE bölgesine yaklaşmayan pozisyonu yormadan kapat.
+  // R339: AI 15m işlemi zaman ister — AI pozisyonunda 150dk, RUNNER'da 240dk.
   const openedTs = Number(state.openedAt || state.entryAt || 0);
   const openMinutes = openedTs > 0 ? (Date.now() - openedTs) / 60000 : 0;
-  if (openMinutes > 90 && realProfitPct < breakEvenAt * 0.5) {
+  const r339MaxSureDk = r339AiManaged ? (state.aiRunner ? 240 : 150) : 90;
+  if (openMinutes > r339MaxSureDk && realProfitPct < breakEvenAt * 0.5) {
     action = {
       type:'MAX_SURE_KAPAT', urgency:'HIGH',
-      reason:`90dk+ açık, kâr yok: hareket %${realProfitPct.toFixed(2)} < BE yarısı %${(breakEvenAt*0.5).toFixed(2)}`
+      reason:`${r339MaxSureDk}dk+ açık, kâr yok: hareket %${realProfitPct.toFixed(2)} < BE yarısı %${(breakEvenAt*0.5).toFixed(2)}`
     };
   }
 
@@ -14757,7 +14787,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   // R42: Mutlak hasar sigortası. CVD sağlıklı görünse bile yüksek kaldıraçta
   // belirli ROI hasarından sonra Binance SL'yi bekleme; bu AIGENSYN -40%/-46% tipini keser.
   const r42AbsoluteDamageRoiCap = -Math.min(28, Math.max(18, slPct * leverage * 0.65));
-  if (!action && openMinutes <= 45 && pnlPct <= r42AbsoluteDamageRoiCap) {
+  if (!action && !r339AiManaged && openMinutes <= 45 && pnlPct <= r42AbsoluteDamageRoiCap) {  // R339: AI pozisyonunda SL kararı AI'ın (R334 zaten SL×lev≤%40 boyutlar)
     action = {
       type:'EMERGENCY_EXIT', urgency:'CRITICAL',
       reason:`Mutlak hasar kes: ROI %${pnlPct.toFixed(1)} <= %${r42AbsoluteDamageRoiCap.toFixed(1)}; yüksek kaldıraçta SL sonunu bekleme`
@@ -14768,7 +14798,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   // AIGENSYN benzeri ters akışta tüm SL'yi beklemek yerine erken hasar kes.
   // Trend sağlığı hâlâ pozisyon yönündeyse dokunmaz; veri nötr/zayıfsa küçük SL'den önce kaçar.
   const r41EarlyDamageRoiCap = -Math.min(22, Math.max(14, slPct * leverage * 0.45));
-  if (!action && openMinutes <= 30 && pnlPct <= r41EarlyDamageRoiCap && !isCvdTrendHealthyForSide()) {
+  if (!action && !r339AiManaged && openMinutes <= 30 && pnlPct <= r41EarlyDamageRoiCap && !isCvdTrendHealthyForSide()) {  // R339: AI pozisyonunda çalışmaz
     action = {
       type:'EMERGENCY_EXIT', urgency:'HIGH',
       reason:`Erken hasar kes: ROI %${pnlPct.toFixed(1)} <= %${r41EarlyDamageRoiCap.toFixed(1)} ve CVD/tick trend sağlığı yok`
@@ -14778,7 +14808,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   // R283: Hasar tavanı erken küçük kâr için değil, yanlış yemeği erken çöpe atmak için.
   // Runner'a nefes verilir; taktik/normal işlemde fikir açıkça bozulursa SL sonu beklenmez.
   const r282MaxRoiRisk = Number(r282Plan.maxRoiRisk || (r282ProtectMode ? 11 : r282RunnerMode ? 24 : 15));
-  if (!action && openMinutes >= 0.8 && !r282RunnerMode && pnlPct <= -Math.abs(r282MaxRoiRisk)) {
+  if (!action && !r339AiManaged && openMinutes >= 0.8 && !r282RunnerMode && pnlPct <= -Math.abs(r282MaxRoiRisk)) {  // R339: AI pozisyonunda çalışmaz
     action = {
       type:'R282_ROI_HASAR_KAPAT', urgency:'HIGH',
       reason:`R283 hasar kes: ${r282Plan.mode||'NORMAL'} işlem ROI %${pnlPct.toFixed(1)} <= -%${Math.abs(r282MaxRoiRisk).toFixed(1)}; grafik fikri çalışmadı, SL sonu beklenmiyor`
@@ -14869,7 +14899,7 @@ async function managePosition(apiKey, apiSecret, pos) {
         newSL: +(entryPrice * (isLong ? (1 + beFeeSafePct/100) : (1 - beFeeSafePct/100))).toFixed(8),
         stateUpdates:{ breakEvenSet:true, beFeeSafePct, r283LateBE:true }
       };
-    } else if (!r282RunnerMode && openMinutes >= r282ScratchMin && r282Peak < 7 && pnlPct <= -4.8 && r282ExitScore >= (r282ProtectMode ? 2.4 : 3.0)) {
+    } else if (!r339AiManaged && !r282RunnerMode && openMinutes >= r282ScratchMin && r282Peak < 7 && pnlPct <= -4.8 && r282ExitScore >= (r282ProtectMode ? 2.4 : 3.0)) {  // R339: AI pozisyonunda SL kararı AI'ın
       action = {
         type:'R282_FIKIR_BOZULDU_KAPAT', urgency:'HIGH',
         reason:`R283 fikir bozuldu: ${openMinutes.toFixed(1)}dk içinde setup çalışmadı, ROI %${pnlPct.toFixed(1)}, çıkış puanı ${r282ExitScore}/10 — zararı büyütmeden çıkış`
@@ -15128,12 +15158,18 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 3. DELTA DİVERGENCE — TP Genişletme İptal, SL Sıkıştır ─────────────
   const divergence = detectDeltaDivergence(sym, side, entryPrice, curPrice);
   if (!action && divergence.divergence) {
-    // Kaldıraçsız kar varsa koru
-    if (realProfitPct > 0.3) {
+    // R340 FIX (02.07 TLM/BIRB dersi): bu blok +%0.3 "kâr"da SL'i fiyatın %1.25 altına çekiyordu.
+    // %10 ATR'li gainer'da +%0.3-1 spike gürültüdür → giriş dakikalarında SL girişin dibine iniyor,
+    // ilk salınım stopluyordu (TLM 1dk -%0.18, BIRB 3dk -%0.24 tam bu kalıptı). AI işleminde
+    // divergence sıkıştırması ancak ANLAMLI yol alındıysa (SL mesafesinin yarısı, min %1) çalışır
+    // ve sıkıştırma mesafesi işlem geometrisiyle ölçeklenir.
+    const r340DivMinProfit = r339AiManaged ? Math.max(1.0, Number(state.slPct || slPct) * 0.5) : 0.3;
+    const r340DivGapPct = r339AiManaged ? Math.max(trailPct * 0.5, Number(state.slPct || slPct) * 0.55) : (trailPct * 0.5);
+    if (realProfitPct > r340DivMinProfit) {
       action = { type:'TIGHTEN_SL', reason:divergence.reason, urgency:'MEDIUM',
         newSL: isLong
-          ? +(curPrice * (1 - trailPct*0.5/100)).toFixed(8)  // Normal trailing'in yarısı
-          : +(curPrice * (1 + trailPct*0.5/100)).toFixed(8)
+          ? +(curPrice * (1 - r340DivGapPct/100)).toFixed(8)
+          : +(curPrice * (1 + r340DivGapPct/100)).toFixed(8)
       };
     }
   }
@@ -15141,11 +15177,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 4. BREAK-EVEN ─────────────────────────────────────────────────────────
   // R283: BE küçük kârı boğmasın. Runner'da BE daha geç; normal/taktikte de sadece
   // yeterli yol alındıysa veya devam gücü zayıfladıysa çalışır.
-  const r283DynamicBE = r282RunnerMode
+  const r283DynamicBE = (r282RunnerMode
     ? Math.max(r192BreakEvenAt, 0.85)
     : r282ProtectMode
       ? Math.max(r192BreakEvenAt, 0.55)
-      : Math.max(r192BreakEvenAt, 0.65);
+      : Math.max(r192BreakEvenAt, 0.65)) * r339GeoScale;  // R339: AI işleminde BE, işlemin kendi SL geometrisine oranlanır
   const r283BEAllowed = !!(realProfitPct >= r283DynamicBE && (!r91Brain.devamGucu || openMinutes >= Number(r282Plan.minHoldWinMin||4) || pnlPct >= Number(r282Plan.earlyBEroi||11)));
   if (!action && !state.breakEvenSet && r283BEAllowed) {
     action = {
@@ -15163,13 +15199,13 @@ async function managePosition(apiKey, apiSecret, pos) {
     let stepSL = null, stepReason = null, stepUpdate = null;
     // R310H: AI "RUNNER" dediyse (güçlü setup), kâr taşıma eşiklerini İLERİ it — kâr daha çok koşsun, geç kilitle.
     const _runnerMult = state.aiRunner ? 1.8 : 1.0;  // RUNNER: %1.5/3/5.5 → %2.7/5.4/9.9 (kâr çok koşar)
-    const kT1 = karTasima1 * _runnerMult, kT2 = karTasima2 * _runnerMult, kT3 = karTasima3 * _runnerMult;
+    const kT1 = karTasima1 * _runnerMult * r339GeoScale, kT2 = karTasima2 * _runnerMult * r339GeoScale, kT3 = karTasima3 * _runnerMult * r339GeoScale;  // R339 geometri ölçeği
     if (realProfitPct >= kT3 && !state.step3Set) {
-      stepSL = isLong ? +(entryPrice*(1+0.015)).toFixed(8) : +(entryPrice*(1-0.015)).toFixed(8);
+      stepSL = isLong ? +(entryPrice*(1+0.015*r339GeoScale)).toFixed(8) : +(entryPrice*(1-0.015*r339GeoScale)).toFixed(8);
       stepReason = `Kâr taşıma 3${state.aiRunner?' (RUNNER)':''}: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
       stepUpdate = { step3Set:true };
     } else if (realProfitPct >= kT2 && !state.step2Set) {
-      stepSL = isLong ? +(entryPrice*(1+0.008)).toFixed(8) : +(entryPrice*(1-0.008)).toFixed(8);
+      stepSL = isLong ? +(entryPrice*(1+0.008*r339GeoScale)).toFixed(8) : +(entryPrice*(1-0.008*r339GeoScale)).toFixed(8);
       stepReason = `Kâr taşıma 2${state.aiRunner?' (RUNNER)':''}: %${realProfitPct.toFixed(2)} → SL kâr +%0.8`;
       stepUpdate = { step2Set:true };
     } else if (realProfitPct >= kT1 && !state.step1Set) {
@@ -15182,7 +15218,7 @@ async function managePosition(apiKey, apiSecret, pos) {
         trailingState.set(sym, state);
         logAuto(`⏳ ${sym} R136 kâr taşıma nefesi: step1 bekletildi [${state.r136KarTasimaBreath}/6] · kâr %${realProfitPct.toFixed(2)} · trend/flow devam`);
       } else {
-        stepSL = isLong ? +(entryPrice*(1+0.003)).toFixed(8) : +(entryPrice*(1-0.003)).toFixed(8);
+        stepSL = isLong ? +(entryPrice*(1+0.003*r339GeoScale)).toFixed(8) : +(entryPrice*(1-0.003*r339GeoScale)).toFixed(8);
         stepReason = `Kâr taşıma 1: %${realProfitPct.toFixed(2)} → SL giriş üstü +%0.3`;
         stepUpdate = { step1Set:true };
       }
@@ -15205,7 +15241,9 @@ async function managePosition(apiKey, apiSecret, pos) {
     if (movedPct >= trailStep) {
       const trendHealthy = isCvdTrendHealthyForSide();
       const pullbackPct = calcPullbackFromHighWaterPct(newHW);
-      const smallPullback = pullbackPct < (trailPct * 0.4);
+      // R339: AI işleminde trailing mesafesi işlemin SL geometrisine göre genişler (5m panel değeri 15m runner'ı boğmasın)
+      const trailPctEff = Math.min(trailPct * r339GeoScale, Math.max(trailPct, Number(state.slPct || slPct) * 1.1));
+      const smallPullback = pullbackPct < (trailPctEff * 0.4);
       state.trendHoldCount = Number(state.trendHoldCount || 0);
 
       // Trend hâlâ sağlıklıysa ve geri çekilme küçükse SL'yi hemen sıkıştırma.
@@ -15219,8 +15257,8 @@ async function managePosition(apiKey, apiSecret, pos) {
       }
 
       const newSL = isLong
-        ? +(newHW*(1-trailPct/100)).toFixed(8)
-        : +(newHW*(1+trailPct/100)).toFixed(8);
+        ? +(newHW*(1-trailPctEff/100)).toFixed(8)
+        : +(newHW*(1+trailPctEff/100)).toFixed(8);
       const better = isLong
         ? (!state.currentSL||newSL>state.currentSL)
         : (!state.currentSL||newSL<state.currentSL);
@@ -15399,10 +15437,12 @@ const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // R330: 15m moduna geçiş — 7.5dk 
 // Patlama = hacim surge (2x+) + güçlü yeşil mum + alıcı baskısı. Backtest: PF 1.93-2.13.
 // Tespit edince bayrak koyar → sonraki tarama o coine "patlama!" notuyla öncelikli gider.
 let __r328PatlamaFlags = {}; // { COIN: { ts, volSurge, body, detected } }
+let __r328Potansiyel = { ts:0, list:[], lastLogTs:0, lastLeader:'' }; // R339: bedava TOP10 patlama-potansiyel sıralaması
 async function r328PatlamaWorker() {
+  const __r328PotRows = []; // R339: bu turun potansiyel skorları
   try {
     if (!autoConfig?.enabled) return;
-    const coins = (autoScanState.scanList || []).slice(0, 6); // R337: TOP2 + TOP2'ye aday 4 coin — patlama adayı da izlenir
+    const coins = (autoScanState.scanList || []).slice(0, 10); // R339: TOP10 bedava izlenir (AI çağrısı yok, sadece public kline) — kullanıcı isteği: TOP3-10'daki fırsat da görünsün
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
@@ -15417,6 +15457,11 @@ async function r328PatlamaWorker() {
         const tv = bars.slice(-3).reduce((s,b)=>s+b.v,0);
         const tbv = bars.slice(-3).reduce((s,b)=>s+b.tbv,0);
         const delta = tv>0 ? (tbv/tv*2-1)*100 : 0;
+        // R339: patlama tetiklenmese bile her coin için potansiyel skoru tut (0-100)
+        try {
+          const potSkor = Math.max(0, Math.min(100, Math.round(volSurge * 22 + Math.max(0, body) * 14 + Math.max(0, delta) * 0.35)));
+          __r328PotRows.push({ coin: base, skor: potSkor, vol: +volSurge.toFixed(1), mum: +body.toFixed(2), delta: +delta.toFixed(0) });
+        } catch(_) {}
         // Patlama imzası (backtest kanıtlı): hacim 2x+ + güçlü yeşil mum + alıcı
         if (volSurge >= 1.8 && body >= 0.4 && last.c > last.o && delta > 0) {  // R328C: eşik biraz gevşetildi (canlı gürültü)
           const wasNew = !__r328PatlamaFlags[base] || (Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000);
@@ -15429,6 +15474,22 @@ async function r328PatlamaWorker() {
           }
         }
       } catch(_) {}
+    }
+    // R339: potansiyel sıralamasını güncelle ve panele (log kanalı) yaz.
+    // "Hangi coin patlayacak" sorusunun bedava cevabı: hacim ivmesi + mum gövdesi + taker delta bileşimi.
+    if (__r328PotRows.length) {
+      __r328PotRows.sort((a,b)=>b.skor-a.skor);
+      __r328Potansiyel.list = __r328PotRows.slice(0, 5);
+      __r328Potansiyel.ts = Date.now();
+      const top = __r328PotRows[0];
+      const leaderChanged = top.coin !== __r328Potansiyel.lastLeader;
+      const heartbeat = Date.now() - __r328Potansiyel.lastLogTs > 5*60*1000;
+      if (top.skor >= 40 && (leaderChanged || heartbeat)) {
+        logAuto(`🔮 PATLAMA POTANSİYELİ (TOP10 bedava izleme): ${__r328PotRows.slice(0,3).map((r,i)=>`${i+1}) ${r.coin} ${r.skor} (hacim ${r.vol}x·mum %${r.mum}·delta ${r.delta})`).join(' · ')} — en güçlü aday: ${top.coin}`);
+        __r328Potansiyel.lastLogTs = Date.now();
+        __r328Potansiyel.lastLeader = top.coin;
+      }
+      try { autoScanState.patlamaPotansiyel = __r328Potansiyel.list; } catch(_) {}
     }
   } catch(_) {}
 }
