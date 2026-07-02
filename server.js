@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R337_ADAY_TAKIP'
+const LAZARUS_BUILD = 'R338_AI_YONETIM'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3562,7 +3562,10 @@ NASIL USTA GİBİ DAVRAN:
 - Trendi oku: Bu coin nerede — impulsun başında mı (gir), ortasında pullback mı (dip topla), yoksa parabolik tükeniş mi (bekle/dikkat)? Trendin evresini bil.
 - Konfluans: Tek sebep kumar, birkaç sebep birleşince trade. Ama mekanik sayma — usta gibi "bu tablo oturuyor mu" hisset.
 - Giriş zamanı — DENGE (kritik nüans): İki tuzak var, ikisinden de kaçın. (a) Düşen bıçağı yakalama / parabolik tükenişin tepesinden girme (reclaim yoksa bekle). (b) AMA güçlü momentum treni kalkmışken "pullback bekleyeyim" deyip SONSUZA KADAR BEKLEME — bu gainer coinler çoğu zaman geri çekilmeden düz yukarı gider (NFP %250→%450 gibi), pullback beklersen tüm hareketi kaçırırsın. KURAL: HTF yukarı + momentum güçlü + coin aktif yükseliyorsa, PULLBACK GELMESE BİLE trend yönünde LONG gir (breakout, güçlü yeşil mum, ardışık yeşil, devam formasyonu = geçerli giriş). Pullback/OTE bir bonus, ŞART değil. Tek gerçek "bekle" sebebi: parabolik tükeniş + reclaim yok (düşen bıçak) ya da HTF aşağı. Aksi halde momentumla git — treni kaçırma.
+- GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL. Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve 15m RSI>80 + son mumlar dikeyse, yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, %64 ihtimalle kısa vadede geri çekilir.
 - ERKEN ÇIKMA = EN BÜYÜK KÂR KATİLİ (15m'de HAYATİ): 15m modunda işlem başına isabetin yüksek (~%75 doğru yön) AMA kazançlar küçük kalırsa strateji zar zor kâr eder. Sırrı: kazananı SONUNA KADAR KOŞTUR. 15m mumlar uzun trend taşır — %1-2 kârla panikleyip çıkarsan +%10'luk hareketleri kaçırırsın (backtest'te kaçan +%11'ler tam buydu). RUNNER modu ZORUNLU: TP'yi bir sonraki büyük üst likiditeye/Fib uzantısına (1.272-1.618) koy, 15m yapısı kırılmadıkça (HL bozulmadıkça) POZİSYONDA KAL. Trailing ile taşı. Az işlem aç ama her kazananı büyüt — 15m'nin matematiği budur.
+- KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
+- SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
 
 ★ SHORT YASAK (veride kanıtlandı): Bu yükselen coinlerde SHORT sistematik kaybeder. "Tepe geldi, düşer" diye SHORT AÇMA — bu coinler tepede göründüğü an bir bacak daha yükselip seni avlar. Sadece LONG, sadece HTF yukarı yönünde. SHORT'u tamamen unut.
@@ -6031,6 +6034,12 @@ function rememberOpenPositionForReentry(p, state={}) {
     targetTP:safeNum(state.targetTP || state.tpPrice || old.targetTP || old.tpPrice, 10),
     sltpVerified:!!(state.sltpVerified || old.sltpVerified),
     usdtAmount:safeNum(state.usdtAmount || autoConfig?.usdtAmount || old.usdtAmount, 2),
+    // R338: restart sonrası guard/yönetim doğru parametrelerle çalışsın diye AI işleminin
+    // gerçek SL yüzdesi, TP yüzdesi, RUNNER modu ve beyin tipi de kalıcı saklanır.
+    slPct:safeNum(state.slPct || old.slPct, 4),
+    tpPct:safeNum(state.tpPct || old.tpPct, 4),
+    aiRunner:!!(state.aiRunner || old.aiRunner),
+    brainMode: state.brainMode || old.brainMode || null,
     entryReason:state.openReason || old.entryReason || null, lastSeen:Date.now()
   };
 }
@@ -15018,7 +15027,19 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
 
     // 3) Gerçek vur-kaç: kâr var + hareket bozulduysa TP beklenmez, reduce-only market çıkar.
-    const r91ExitNow =
+    // R338: AI pozisyonu mu ve AI "RUNNER" mı dedi? Kullanıcı ilkesi: küçük fırsat → vur-kaç (NORMAL),
+    // gerçek trend devamı → sonuna kadar taşı, kârı zirveden koruyarak (RUNNER). Bot AI'ın seçimine uyar.
+    const r338AiManaged = !!(state.aiBrain || state.brainMode === 'R308C_AI_LIVE');
+    const r338Runner = !!state.aiRunner;
+    const r91ExitNow = r338Runner
+      ? (
+        // RUNNER: erken kâr-alma kapıları geriye itilir; sadece BÜYÜK kâr + gerçekten bozulan tablo
+        // ya da zirveden ciddi geri verme (kâr koruması) kapatır. 15m yapısı kırılana kadar taşınır.
+        (pnlPct >= 40 && r91Brain.exitScore >= 3.5) ||
+        (pnlPct >= 25 && r91Brain.exitScore >= 5.0) ||
+        (pnlPct >= 12 && r91Brain.givebackRoi >= Math.max(10, Number(state.peakPnl||0) * 0.45) && r91Brain.exitScore >= 4.0)
+      )
+      : (
       (pnlPct >= 25 && r91Brain.exitScore >= 2.5) ||
       (pnlPct >= 18 && r91Brain.exitScore >= 3.0) ||
       (pnlPct >= 12 && r91Brain.exitScore >= 4.0) ||
@@ -15026,7 +15047,8 @@ async function managePosition(apiKey, apiSecret, pos) {
       (pnlPct >= 8  && realProfitPct >= 0.55 && r91Brain.givebackRoi >= 9 && r91Brain.exitScore >= 4.0) ||
       // R309C ORTA KÂR BANDI (MITO dersi: +%6.57 zirve yapıp geri verdi, eski kapılar %8 altını kapsamıyordu).
       // %4-8 ROI arası kâr + zirveden ciddi geri verme + ters akış → kârı koru, kapat.
-      (pnlPct >= 4 && Number(state.peakPnl||0) >= 5 && r91Brain.givebackRoi >= (Number(state.peakPnl||0) * 0.30) && r91Brain.exitScore >= 3.0);
+      (pnlPct >= 4 && Number(state.peakPnl||0) >= 5 && r91Brain.givebackRoi >= (Number(state.peakPnl||0) * 0.30) && r91Brain.exitScore >= 3.0)
+      );
     if (!action && r91ExitNow) {
       action = {
         type:'R97_VUR_KAC_KAPAT', urgency:'HIGH',
@@ -15036,7 +15058,7 @@ async function managePosition(apiKey, apiSecret, pos) {
 
     // 4) İşlem fikri erken bozulursa SL sonunu bekleme; ama tek zayıf veriyle de kapatma.
     // R305: eşik 6→4 (kaybı küçükken kes), -%6→-%5 (daha erken). Kayıpları -%13/-%23'e taşımayı durdurur.
-    if (!action && openMinutes >= 2 && pnlPct <= -5 && r91Brain.exitScore >= 4 && !r91Brain.devamGucu) {
+    if (!action && !r338AiManaged && openMinutes >= 2 && pnlPct <= -5 && r91Brain.exitScore >= 4 && !r91Brain.devamGucu) {  // R338: AI pozisyonunda SL kararı AI'ın
       action = {
         type:'R97_FIKIR_BOZULDU_KAPAT', urgency:'HIGH',
         reason:`5m Fırsat Beyni fikir bozuldu: ROI %${pnlPct.toFixed(1)}, çıkış puanı ${r91Brain.exitScore}/10 — ${r91Brain.reasons.join(' + ')}`
@@ -15047,7 +15069,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     // tam SL'yi bekleme. 20x/10x 5m scalp'te ROI -6/-8 erken uyarıdır; amaç kaybı büyümeden kesmek,
     // kârlı runner'ı boğmak değildir. Devam gücü varsa çalışmaz.
     const r144DamageControlNow = !!(
-      !action && openMinutes >= 0.8 && pnlPct <= -4.5 && !r91Brain.devamGucu &&
+      !action && !r338AiManaged && openMinutes >= 0.8 && pnlPct <= -4.5 && !r91Brain.devamGucu &&  // R338: AI pozisyonunda çalışmaz
       (Number(r91Brain.exitScore||0) >= 4 || tickFlip || cvdAgainst || cvdFlip?.flip || trappedExit || exhaustExit)
     );
     if (r144DamageControlNow) {
@@ -15062,7 +15084,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     // exitScore düşük kalsa bile SL'nin tamamını beklemek küçük bakiyede gereksiz büyük ROI hasarı üretir.
     const r146EntryTxt = [state.openReason, state.brainMode, state.entryPermissionReason, state.entryReason?.reason].filter(Boolean).join(' ').toLowerCase();
     const r146FastEntry = /hızlı edge|fast edge|mikro-scalp|r135_fast|r144 hızlı/.test(r146EntryTxt);
-    const r146NoProfitFastFail = r146FastEntry && openMinutes >= 1.0 && openMinutes <= 12 && Number(state.peakPnl||0) < 6 && pnlPct <= -7.0;
+    const r146NoProfitFastFail = !r338AiManaged && r146FastEntry && openMinutes >= 1.0 && openMinutes <= 12 && Number(state.peakPnl||0) < 6 && pnlPct <= -7.0;
     if (!action && r146NoProfitFastFail) {
       action = {
         type:'R144_HASAR_KONTROL_KAPAT', urgency:'HIGH',
@@ -15075,7 +15097,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     // giriş anında zaten kötü kokan pozisyon ilk dakikalarda ROI -8/-10'a düşerse çalışır.
     const r147BadEntryTxt = /tuzak dönüşü|counter_trap|live-opposite|formasyon yok|mumtahmin:short|mumtahmin:düşüş|mumtahmin:long|mumtahmin:yükseliş|zemin:bozuk|r147/.test(r146EntryTxt);
     const r147DirectionForecastAgainst = (isLong && /mumtahmin:short|mumtahmin:düşüş/.test(r146EntryTxt)) || (!isLong && /mumtahmin:long|mumtahmin:yükseliş/.test(r146EntryTxt));
-    const r147NoProfitTrapFail = r147BadEntryTxt && (r147DirectionForecastAgainst || /live-opposite|formasyon yok|zemin:bozuk/.test(r146EntryTxt)) &&
+    const r147NoProfitTrapFail = !r338AiManaged && r147BadEntryTxt && (r147DirectionForecastAgainst || /live-opposite|formasyon yok|zemin:bozuk/.test(r146EntryTxt)) &&
       openMinutes >= 0.8 && openMinutes <= 10 && Number(state.peakPnl||0) < 5 && pnlPct <= -7.5;
     if (!action && r147NoProfitTrapFail) {
       action = {
@@ -15086,7 +15108,7 @@ async function managePosition(apiKey, apiSecret, pos) {
 
     // R281: PROTECT girişlerde amaç pozisyonu boğmak değil; MM iğne/FVG/likidite hassassa
     // ilk dakikalarda hiç kâr üretmeyip veri terse dönerse SL sonunu beklememek.
-    const r281ProtectFail = !!(r281ProtectMode && !r281RunnerMode && openMinutes >= 1.2 && openMinutes <= 10 && Number(state.peakPnl||0) < 5 && pnlPct <= -5.5 && Number(r91Brain.exitScore||0) >= 3.2);
+    const r281ProtectFail = !!(!r338AiManaged && r281ProtectMode && !r281RunnerMode && openMinutes >= 1.2 && openMinutes <= 10 && Number(state.peakPnl||0) < 5 && pnlPct <= -5.5 && Number(r91Brain.exitScore||0) >= 3.2);
     if (!action && r281ProtectFail) {
       action = {
         type:'R281_PROTECT_HASAR_KAPAT', urgency:'HIGH',
@@ -15095,7 +15117,7 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
 
     // 5) 5m vur-kaçta hareket yoksa ve veri tersleşmişse pozisyonu yorma.
-    if (!action && openMinutes >= 12 && pnlPct > -5 && pnlPct < 4 && r91Brain.exitScore >= 5 && !r91Brain.devamGucu) {
+    if (!action && !r338Runner && openMinutes >= 12 && pnlPct > -5 && pnlPct < 4 && r91Brain.exitScore >= 5 && !r91Brain.devamGucu) {  // R338: RUNNER 12dk'da yorulmaz, 15m işi zaman ister
       action = {
         type:'R97_VUR_KAC_KAPAT', urgency:'MEDIUM',
         reason:`5m Fırsat Beyni süre yönetimi: ${openMinutes.toFixed(0)}dk geçti, hareket zayıf, veri tersleşti — pozisyon yormadan kapatılıyor`
@@ -15820,6 +15842,7 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
           sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
           openedAt: Date.now(),
           aiBrain: ai,
+          aiRunner: (String(ai.karKosma || '').toUpperCase() === 'RUNNER'),  // R338: RUNNER bayrağı bu yolda hiç set edilmiyordu — kâr taşıma fiilen ölüydü
           brainMode: 'R308C_AI_LIVE',
           tier: r.tier || 'AI',
           score: Number(r.score || ai.confidence || 0),
@@ -18572,6 +18595,8 @@ async function syncPositions() {
           sltpVerified:  !!(lastKnown.sltpVerified || lastKnown.currentSL || lastKnown.targetTP),
           slPct:         Number(lastKnown.slPct || autoConfig?.slPct || 0),
           tpPct:         Number(lastKnown.tpPct || autoConfig?.tpPct || 0),
+          aiRunner:      !!(lastKnown.aiRunner),                    // R338: RUNNER modu restart'ta kaybolmasın
+          brainMode:     lastKnown.brainMode || null,               // R338: AI pozisyonu restart'ta AI pozisyonu kalsın
           openedAt:      lastKnown.openedAt || lastKnown.openTs || Date.now(),
           openTs:        lastKnown.openedAt || lastKnown.openTs || Date.now(),
           openReason:    lastKnown.entryReason || 'restart sonrası restore',
@@ -18590,10 +18615,20 @@ async function syncPositions() {
         const amt = parseFloat(p.positionAmt || 0);
         const ep  = parseFloat(p.entryPrice || 0);
         const mp  = parseFloat(p.markPrice || 0);
-        const lev = parseInt(p.leverage) || parseInt(autoConfig.leverage) || 1;
         const isLongGuard = amt > 0;
         const stGuard = trailingState.get(sym) || lastKnownPositions?.[sym] || {};
-        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || autoConfig.slPct || 2));
+        // R338 GUARD FIX-1: /fapi/v3/positionRisk cevabında `leverage` alanı YOK (v2'de vardı).
+        // p.leverage hep undefined → panel kaldıracına (15x) düşüyordu → ROI yanlış hesaplanıyordu
+        // (02.07 MUSDT: gerçek 8x iken roi -38.3 sanılıp AI SL'inden önce kesildi). Önce state'teki gerçek emir kaldıracı.
+        const lev = parseInt(stGuard.leverage) || parseInt(p.leverage) || parseInt(autoConfig.leverage) || 1;
+        // R338 GUARD FIX-2: restart-restore sonrası stGuard.slPct kayboluyordu (lastKnown slPct saklamıyordu)
+        // → panel varsayılanı %2'ye düşüp AI'ın geniş SL'inden ÖNCE kesiyordu ("bot AI'ı kesmesin" ihlali).
+        // En sağlam kaynak: gerçek SL fiyatından türet (currentSL restore'da korunuyor).
+        const slFromPriceGuard = (() => {
+          const slp = parseFloat(stGuard.currentSL || stGuard.slPrice || 0);
+          return (slp > 0 && ep > 0) ? Math.abs(ep - slp) / ep * 100 : 0;
+        })();
+        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || slFromPriceGuard || parseFloat(autoConfig.slPct || 2));
         const realMoveGuard = ep > 0 && mp > 0
           ? ((mp - ep) / ep * 100 * (isLongGuard ? 1 : -1))
           : 0;
