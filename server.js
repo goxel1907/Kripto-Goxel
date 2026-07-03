@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R343_VETO_YOK'
+const LAZARUS_BUILD = 'R346_KALIP_DEGIL_MERCEK'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3566,6 +3566,9 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       // R329: FİBONACCİ + LİKİDİTE HARİTASI — MM oyununu, likidite havuzlarını, geri-çekilme/hedef seviyelerini AI'a ham ver (yorum AI'ın)
       fibLikiditeHaritasi: r329FibLiqMap(data.candles, data.lastPrice, data.liqLevels),
       piyasaNotu: data.marketCtx || null,
+      // R345: ÖZ-SEZİ — botun (senin) son kapanan işlemleri. Aynı hatayı üst üste yapma, işleyen kalıbı sürdür.
+      sonIslemlerim: r345SonIslemler.slice(0, 8).map(x =>
+        `${x.t} ${x.coin} ${x.side} ${x.roi!=null?(x.roi>0?'+':'')+x.roi+'%':''} [${x.mod}] çıkış:${x.cikis} — ${x.neden}`),
       // R342: mevcut panel ayarları — AI bunları "ayar" alanıyla değiştirebilir (marj hariç)
       panelAyarlar: (()=>{ try { const c=autoConfig||{}; return {
         leverage:Number(c.leverage)||null, maxPositions:Number(c.maxPositions)||null, minScore:Number(c.minScore)||null,
@@ -3593,6 +3596,10 @@ NASIL USTA GİBİ DAVRAN:
 - FİB SAYILARINI AYNEN KULLAN: Sana verilen fib/likidite haritasındaki (fibGeriCekilme, fibHedef, sonBacakFib, likidite havuzları) sayılar HAZIR hesaplanmıştır — TP/SL/giriş seçerken bu sayıları BİREBİR kullan. Kendi fib aritmetiğini YAPMA; kafadan "fib 1.272 = X" hesaplama, geçmişte yanlış hesapladın. sonBacakFib en güncel impuls bacağıdır (çapaları yazılı), makro sonImpuls 15 saatlik uçlardır — hedef seçerken önce sonBacakFib.uzatmaHedef ve üst likidite havuzlarına bak.
 - MM AVCISI KESKİNLİĞİ: Binance botu gibi düşünme — MM İNSANDIR ve senden önce davranmaya çalışır. Onu hamlesinden ÖNCE avla: likidite nerede birikti (stoplar nerede kümelendi), MM oraya NEDEN gelecek, hangi seviyede tuzak kuracak? Sen o seviyeye MM gelmeden pusu kur: sweep bölgesinin hemen üstünde dönüş teyidiyle bin, MM'in hedeflediği karşı likiditeye kadar taşı. "Herkes ne görüyor"u değil "MM herkese ne göstermek istiyor"u oku.
 - KÂRDA ÜRKEKLİK YASAK: Pozisyon kârdayken lehine güçlü yeşil devam mumu geldiyse bu "kaç" sinyali DEĞİL "taşı" sinyalidir — "güzel mum geldi, kârı alayım" diye düşünme, "yakıt geldi, hedef yaklaşıyor" diye düşün. Geri çekilme 15m yapıyı (son HL'yi) kırmadıkça POZİSYON TUTULUR; max kâr zirveyi tahmin etmekle değil yapı kırılana kadar kalmakla yapılır. Küçük fırsatta (NORMAL) tam tersi: TP'ye/ilk dirence gelince kârı VUR-KAÇ al, oyalanma.
+- ALTIN İŞLEM ANATOMİSİ (hedeflediğin standart): büyük impuls → dar bant konsolidasyon sıkışması → sonBacakFib 0.618 tutmuş → OI/büyük trader yakıtı artıyor → sıkışma üstünden giriş, SL bandın altına DAR (yapıya göre, likidite havuzuna değil), TP sonBacakFib 1.272, RUNNER ile 15m HL kırılana dek taşı → 32 dakikada +%53 böyle geldi. Hızlı karar + dar yapısal SL + uzak fib hedefi + taşıma cesareti: max kâr formülü bu dörtlüdür.
+- MM ÖZ-SEZİ ÇERÇEVESİ (her kararda zihnen cevapla): (1) MM şu an hangi oyunda? Üç seçenekten birini seç ve kanıtla: [A] BİRİKİM/av hazırlığı — fiyatı likidite havuzuna çekiyor, henüz binme, havuzun süpürülmesini bekle; [B] İTKİ/dağıtım öncesi koşu — trend yakıtlı, momentum girişi serbest, karşı likiditeye kadar taşı; [C] DAĞITIM/tuzak — yukarı fitiller satılıyor, OI çözülüyor, delta fiyatla ayrışıyor → GİRME; [D] BAŞKA BİR OYUN — grafik bu üçe uymayan bir hikâye anlatıyorsa oyunun adını SEN koy ve kanıtla (çerçeve mercektir, kafes değil; usta kalıpların dışını da okur). (2) SENİN SL'in MM'in av havuzunda mı? Planladığın SL, verilen SSL bölgesinin z-aralığının İÇİNDEyse MM oraya gelir: SL'i havuzun belirgin ALTINA koy ya da sweep gerçekleşip dönünce gir. (3) Binance botları yuvarlak sayılara ve önceki tepe/dip likiditesine emir yığar — TP'yi tam yuvarlak seviyeye değil, 1 tık ÖNÜNE koy (0.60 hedefse 0.5985 gibi), botlardan önce dolmuş ol.
+- SON İŞLEMLERİNDEN DERS AL — AMA TEK KAYIPTAN KURAL ÇIKARMA: "sonIslemlerim" senin oturum hafızan; amacı kalıp YASAKLAMAK değil, "ne değişti?" sorusunu sordurmak. TEK kayıp gürültüdür, tezin yanlışlandığı anlamına GELMEZ — doğru tez kötü tetikle de kaybedebilir. Kanıtlanmış örnek: aynı tez iki kez SL yedikten sonra sweep tamamlanıp yapı yenilenince arka arkaya +%22 ve +%53 kazandırdı; kayıptan sonra tezi terk eden bu ikisini kaçırırdı. Kural: kayıptan sonra AYNI teze girerken neyin değiştiğini (sweep tamam mı, yapı yenilendi mi, yakıt geldi mi) gerekçende söyle ve gir; hiçbir şey değişmediyse bekle. Bir kalıbı ancak 3-4 kez ÜST ÜSTE, benzer koşullarda yenilirse sorgula. Kazanan kalıbı da tanı ve tereddütsüz sürdür.
+- GÜVEN = KALDIRAÇ AYARIDIR: Verdiğin güven skoru R325D ile kaldıraca çevrilir; bunu bilinçli kullan. Tez doğru ama tetik ERKEN ise (sweep/av bölgesi henüz süpürülmemiş, bant ortasından giriyorsun) güveni 64-67 bandında tut — kaldıraç düşük kalır, MM seni av bölgesine çekerse kayıp küçük olur. Sweep+reclaim TEYİTLİ veya tam yakıtlı impuls devamı girişinde 70-75 ver. (MAGMA dersi: 0.546'dan iki erken giriş SL yedi, sweep sonrası 0.539-0.541 girişleri kazandı — aynı tez, doğru tetik, iki kat fark.)
 - KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
 - SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
@@ -6111,6 +6118,7 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
   try { r181TradeOpenCard(row, state).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_OPEN_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_) {}
   return row;
 }
+let r345SonIslemler = []; // R345: oturum-içi ders hafızası (son 12 kapanış, AI'a son 8'i gider)
 function recordTradeClose(symbol, state={}, cls={}) {
   const sym = normalizeSymbol(symbol);
   const openedAt = Number(state?.openedAt||0);
@@ -6133,6 +6141,18 @@ function recordTradeClose(symbol, state={}, cls={}) {
     cooldownMin:cdMs>0?Math.ceil(cdMs/60000):null,
   });
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
+  // R345 ÖZ-SEZİ HAFIZASI: her kapanış tek satır derse damıtılır; AI sonraki HER kararda son 8'i görür.
+  // İnsan sezgisinin oturum-içi hâli: "az önce aynı tip giriş yendi/kazandı" bilgisi karara girer.
+  try {
+    const mod2 = state?.aiRunner ? 'RUNNER' : 'NORMAL';
+    const nedenKisa = String(row.entryReason || state?.openReason || '').replace(/\|.*$/,'').slice(0, 70);
+    r345SonIslemler.unshift({
+      t: trTime(closedAt), coin: sym.replace('USDT',''), side: normalizeSide(row.side)||'?',
+      roi: Number.isFinite(row.roiPct) ? row.roiPct : null, mod: mod2,
+      cikis: cls.label || cls.code || '?', neden: nedenKisa
+    });
+    if (r345SonIslemler.length > 12) r345SonIslemler.length = 12;
+  } catch(_) {}
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
   // R181: Kapanış bildirimi PnL 0/null olsa bile direkt gider; gerçek PnL sonra reconcile ile düzelir.
   try { r181TradeCloseCard(row, state, cls).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_CLOSE_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_tge) {}
@@ -15192,11 +15212,13 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 4. BREAK-EVEN ─────────────────────────────────────────────────────────
   // R283: BE küçük kârı boğmasın. Runner'da BE daha geç; normal/taktikte de sadece
   // yeterli yol alındıysa veya devam gücü zayıfladıysa çalışır.
-  const r283DynamicBE = (r282RunnerMode
-    ? Math.max(r192BreakEvenAt, 0.85)
-    : r282ProtectMode
-      ? Math.max(r192BreakEvenAt, 0.55)
-      : Math.max(r192BreakEvenAt, 0.65)) * r339GeoScale;  // R339: AI işleminde BE, işlemin kendi SL geometrisine oranlanır
+  // R344: RUNNER'da BE GECİKTİRİLİR — 03.07 THE/MAGMA dersi: +%2.5 pop'ta BE'ye alınan runner,
+  // normal geri çekilmede girişten atıldı (hedef +%21'di). RUNNER'da BE ancak SL mesafesinin
+  // %75'i kadar yol alınınca kurulur; o zamana dek pozisyon AI'ın SL'iyle yaşar (runner'ın bedeli budur).
+  const r344SlPctVal = Number(state.slPct || slPct || 1.7);
+  const r283DynamicBE = r282RunnerMode
+    ? Math.max(r192BreakEvenAt * r339GeoScale, 0.85 * r339GeoScale, (r339AiManaged ? r344SlPctVal * 0.75 : 0))
+    : ((r282ProtectMode ? Math.max(r192BreakEvenAt, 0.55) : Math.max(r192BreakEvenAt, 0.65)) * r339GeoScale);  // R339: geometri ölçeği
   const r283BEAllowed = !!(realProfitPct >= r283DynamicBE && (!r91Brain.devamGucu || openMinutes >= Number(r282Plan.minHoldWinMin||4) || pnlPct >= Number(r282Plan.earlyBEroi||11)));
   if (!action && !state.breakEvenSet && r283BEAllowed) {
     action = {
@@ -18658,10 +18680,26 @@ async function syncPositions() {
     autoScanState.livePositions = openMap.size;
     autoScanState.positionCount = openMap.size;
 
+    // R344: SAHTE-FLAT KORUMASI — CM-UM geçişinde positionRisk ara ara kesik/eksik dönebiliyor.
+    // 03.07 MAGMA dersi: 03:25'te 'SL ile kapandı' sanıldı, pozisyon 09:24'e dek Binance'te AÇIK kaldı,
+    // 6 saat yönetimsiz gezdi. Artık takipli sembol toplu listede yoksa TEK SEMBOL sorgusuyla teyit edilir;
+    // hâlâ açıksa state korunur. Şüphede pozisyon AÇIK sayılır (yanlış kapatmaktan iyidir).
+    const r344StillOpen = async (sym) => {
+      try {
+        const one = await getPositionRisk(autoConfig.apiKey, autoConfig.apiSecret, { symbol: sym });
+        const arr = Array.isArray(one) ? one : [];
+        return arr.some(x => Math.abs(parseFloat(x.positionAmt)) > 0);
+      } catch(_) { return true; }
+    };
     // trailingState'de kayıtlı ama Binance'te artık olmayan = kapanmış.
     // Eski log "manuel/SL/TP" diye geneldi; şimdi mümkünse BE/TP/SL ayrıştırılır.
     for (const [sym, state] of trailingState.entries()) {
       if (!openMap.has(sym)) {
+        if (await r344StillOpen(sym)) {
+          logAuto(`🛟 R344: ${sym} toplu pozisyon listesinde görünmedi ama tek-sembol sorguda AÇIK — sahte-flat engellendi, yönetim sürüyor`);
+          invalidatePositionRiskCache('R344_FALSE_FLAT');
+          continue;
+        }
         const cls = await classifyClosedPosition(autoConfig.apiKey, autoConfig.apiSecret, sym, state);
         const px = cls.closePrice ? ` fiyat:${cls.closePrice}` : '';
         const pnl = Number.isFinite(cls.realizedPnl) ? ` pnl:${cls.realizedPnl}` : '';
@@ -18685,6 +18723,7 @@ async function syncPositions() {
     const closedHandled = new Set([...trailingState.keys()]);
     for (const sym of Object.keys(lastKnownPositions || {})) {
       if (openMap.has(sym) || closedHandled.has(sym)) continue;
+      if (await r344StillOpen(sym)) { logAuto(`🛟 R344: ${sym} (last-known) tek-sembol sorguda AÇIK — sahte kapanış engellendi`); continue; }
       const st = lastKnownPositions[sym] || {};
       const cls = await classifyClosedPosition(autoConfig.apiKey, autoConfig.apiSecret, sym, st).catch(()=>({
         code:'EXTERNAL_OR_MANUAL', label:'Binance/manuel kapanış', emoji:'👁️', closePrice:null, realizedPnl:null
@@ -18748,7 +18787,8 @@ async function syncPositions() {
         // R338 GUARD FIX-1: /fapi/v3/positionRisk cevabında `leverage` alanı YOK (v2'de vardı).
         // p.leverage hep undefined → panel kaldıracına (15x) düşüyordu → ROI yanlış hesaplanıyordu
         // (02.07 MUSDT: gerçek 8x iken roi -38.3 sanılıp AI SL'inden önce kesildi). Önce state'teki gerçek emir kaldıracı.
-        const lev = parseInt(stGuard.leverage) || parseInt(p.leverage) || parseInt(autoConfig.leverage) || 1;
+        // R345: v3 positionRisk leverage döndürmediği için state'e 1 sızabiliyor — 1'den büyük ilk gerçek değer alınır.
+        const lev = [parseInt(stGuard.executeLeverage), parseInt(stGuard.leverage), parseInt(p.leverage), parseInt(autoConfig.leverage)].find(v => Number.isFinite(v) && v > 1) || 1;
         // R338 GUARD FIX-2: restart-restore sonrası stGuard.slPct kayboluyordu (lastKnown slPct saklamıyordu)
         // → panel varsayılanı %2'ye düşüp AI'ın geniş SL'inden ÖNCE kesiyordu ("bot AI'ı kesmesin" ihlali).
         // En sağlam kaynak: gerçek SL fiyatından türet (currentSL restore'da korunuyor).
@@ -18756,7 +18796,12 @@ async function syncPositions() {
           const slp = parseFloat(stGuard.currentSL || stGuard.slPrice || 0);
           return (slp > 0 && ep > 0) ? Math.abs(ep - slp) / ep * 100 : 0;
         })();
-        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || slFromPriceGuard || parseFloat(autoConfig.slPct || 2));
+        // R345: AI planındaki SL de kaynak — state alanları kaybolsa bile AI'ın gerçek SL mesafesi kullanılır.
+        const slFromAiGuard = (() => {
+          const s = parseFloat(stGuard.aiBrain?.sl || 0);
+          return (s > 0 && ep > 0) ? Math.abs(ep - s) / ep * 100 : 0;
+        })();
+        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || slFromPriceGuard || slFromAiGuard || parseFloat(autoConfig.slPct || 2));
         const realMoveGuard = ep > 0 && mp > 0
           ? ((mp - ep) / ep * 100 * (isLongGuard ? 1 : -1))
           : 0;
