@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R346_KALIP_DEGIL_MERCEK'
+const LAZARUS_BUILD = 'R349_HIZLI_KILIT_FIX'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3566,6 +3566,26 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       // R329: FİBONACCİ + LİKİDİTE HARİTASI — MM oyununu, likidite havuzlarını, geri-çekilme/hedef seviyelerini AI'a ham ver (yorum AI'ın)
       fibLikiditeHaritasi: r329FibLiqMap(data.candles, data.lastPrice, data.liqLevels),
       piyasaNotu: data.marketCtx || null,
+      // R348: rejim etiketi — 24h düşüşte olup 12h sıçrayan coin farklı oyundur, AI bilsin.
+      coinRejimi: (()=>{ try {
+        const cs = Array.isArray(data.candles) ? data.candles : [];
+        if (cs.length < 50) return null;
+        const cl = (b)=>Number(b[3]);
+        const last = cl(cs[cs.length-1]);
+        const ref24 = cs.length>=96 ? cl(cs[cs.length-96]) : null;
+        const ref12 = cs.length>=48 ? cl(cs[cs.length-48]) : null;
+        const c24 = (ref24>0) ? (last-ref24)/ref24*100 : null;
+        const c12 = (ref12>0) ? (last-ref12)/ref12*100 : null;
+        if (c24!=null && c24 < -3 && (c12==null || c12 > 0))
+          return `DİKKAT — TOPARLANMA SIÇRAMASI REJİMİ: coin 24h %${c24.toFixed(1)} DÜŞÜŞTE, 12h ${c12!=null?((c12>0?'+':'')+c12.toFixed(1)+'%'):'?'} tepki sıçramasında. Üstte düşüş boyunca birikmiş AĞIR ARZ var; MM sıçramayı DAĞITIM için kullanabilir. Bu rejimde: RUNNER'ı ancak düşüş bacağının fib 0.5+ seviyesi 15m kapanışla RECLAIM edildiyse seç; aksi halde NORMAL vur-kaç, TP yakın dirençte, tepki tepesini kovalama.`;
+        return null;
+      } catch(_) { return null; } })(),
+      // R347: pozisyon doluyken patlama değerlendirmesi — AI durumu bilsin.
+      pozisyonDurumu: (()=>{ try {
+        const mp = Number(autoConfig?.maxPositions)||1; const lp = Number(autoScanState?.livePositions)||0;
+        if (lp >= mp) return `DİKKAT: ${lp}/${mp} pozisyon DOLU. Bu coin sana patlama bayrağıyla geldi. LONG istiyorsan karara "ayar":{"maxPositions":${Math.min(3,mp+1)}} ekle — bakiye yeterse ikinci pozisyon açılır; bakiye yetmezse emir açılmaz (bunu sen göremezsin, güvenli). Mevcut pozisyonu bozacak bir yetkin YOK. Setup ikinci pozisyonu hak etmiyorsa WAIT de.`;
+        return null;
+      } catch(_) { return null; } })(),
       // R345: ÖZ-SEZİ — botun (senin) son kapanan işlemleri. Aynı hatayı üst üste yapma, işleyen kalıbı sürdür.
       sonIslemlerim: r345SonIslemler.slice(0, 8).map(x =>
         `${x.t} ${x.coin} ${x.side} ${x.roi!=null?(x.roi>0?'+':'')+x.roi+'%':''} [${x.mod}] çıkış:${x.cikis} — ${x.neden}`),
@@ -8959,7 +8979,16 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
     const restGrp   = ordered.filter(c => !isPinned(c))
       .filter(c => r311yYesil(c) && Number(c.change12h ?? c.change24h ?? 0) >= R309V_MIN_12H) // yeşil VE en az %5 yükselmiş
       .sort((a,b) => (b.change12h ?? b.change24h) - (a.change12h ?? a.change24h)); // yükselişe göre (en yeşil önde)
-    const out = [...pinnedGrp, ...restGrp];
+    let out = [...pinnedGrp, ...restGrp];
+    // R348 (GUA dersi): 24h -%35 düşmüş coin, 12h tepki sıçramasıyla TOP2 garantisine oturdu.
+    // Kullanıcı ilkesi "TOP2 = boğa filtresi": gerçek boğa (24h ≥ -3%) ÖNE, toparlanma sıçraması
+    // (24h belirgin negatif ama 12h yeşil) ARKAYA. Elenmez — normal yol/bayrakla AI'a yine gider,
+    // AI'a "toparlanma rejimi" etiketi eklenir — ama garanti TOP2 koltuğu gerçek gainerin hakkıdır.
+    try {
+      const r348Boga  = out.filter(c => Number(c.change24h ?? 0) >= -3);
+      const r348Tepki = out.filter(c => Number(c.change24h ?? 0) < -3);
+      if (r348Boga.length) out = [...r348Boga, ...r348Tepki];
+    } catch(_) {}
     // R311Y fail-soft: piyasa tamamen kırmızıysa yeşil coin bulunamayabilir → liste boş kalmasın.
     // En az 3 coin garantisi: yeşil yetmezse en AZ düşmüş (en az kırmızı) pinnedleri ekle, ama yeşiller hep önde.
     if (out.length < 3) {
@@ -15049,17 +15078,23 @@ async function managePosition(apiKey, apiSecret, pos) {
     };
   }
 
-  if (!action && r91VurKacAktif) {
+  // R349 (03.07 GUA dersi): r91 hızlı kâr kilitleri ROI tabanlı — 5x RUNNER'da +9 ROI = +%1.8 gerçek
+  // hareket, kilit SL'i girişe çekip R344'ün "BE ancak SL yolunun %75'inde" kuralını deliyordu.
+  // RUNNER'da bu kilitler TAMAMEN kapalı (BE/kâr-taşıma/trailing geo sistemi sahibi); NORMAL AI'da
+  // eşikler geometriyle ölçekli (vur-kaç karakteri korunur ama 15m nefesine uyar).
+  const r349LocksOff = r339AiManaged && !!state.aiRunner;
+  const r349LockScale = r339AiManaged ? r339GeoScale : 1.0;
+  if (!action && r91VurKacAktif && !r349LocksOff) {
     // 1) İlk kâr görünür görünmez BE'den önce küçük kâr kilidi.
     // R136: 5m kaldıraçlı TOP10'da çok erken SL sıkıştırmak, EPIC gibi işlemi
     // +0.06$ küçük kâra boğabiliyor. Akış hâlâ pozisyon yönündeyse ilk kilidi
     // birkaç döngü nefeslendir; ters teyit gelirse eski emniyet yine çalışır.
     const r136RunnerBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 2.5 && realProfitPct < 1.45);
-    if (!action && pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
+    if (!action && pnlPct >= 9 * r349LockScale && realProfitPct >= 0.45 * r349LockScale && !state.r91FirstLock && r136RunnerBreathOk && Number(state.r136FirstLockBreath||0) < 4) {
       state.r136FirstLockBreath = Number(state.r136FirstLockBreath||0) + 1;
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 kâr nefesi: erken ilk kâr kilidi bekletildi [${state.r136FirstLockBreath}/4] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
-    } else if (pnlPct >= 9 && realProfitPct >= 0.45 && !state.r91FirstLock) {
+    } else if (pnlPct >= 9 * r349LockScale && realProfitPct >= 0.45 * r349LockScale && !state.r91FirstLock) {
       const lockPct = Math.max(0.22, Math.min(0.55, realProfitPct * 0.45));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -15073,11 +15108,11 @@ async function managePosition(apiKey, apiSecret, pos) {
     // 2) Kâr büyüdüyse SL kâr bölgesine daha agresif taşınır.
     // R136: ikinci kilit de trend/flow sağlıklıysa %1.15 altında acele sıkışmasın.
     const r136SecondBreathOk = !!(r91Brain.devamGucu && Number(r91Brain.exitScore||0) < 3.0 && realProfitPct < 1.15);
-    if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
+    if (!action && pnlPct >= 14 * r349LockScale && realProfitPct >= 0.70 * r349LockScale && !state.r91SecondLock && r136SecondBreathOk && Number(state.r136SecondLockBreath||0) < 3) {
       state.r136SecondLockBreath = Number(state.r136SecondLockBreath||0) + 1;
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 ikinci kâr kilidi nefesi [${state.r136SecondLockBreath}/3] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
-    } else if (!action && pnlPct >= 14 && realProfitPct >= 0.70 && !state.r91SecondLock) {
+    } else if (!action && pnlPct >= 14 * r349LockScale && realProfitPct >= 0.70 * r349LockScale && !state.r91SecondLock) {
       const lockPct = Math.max(0.35, Math.min(0.85, realProfitPct * 0.55));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
@@ -16354,10 +16389,19 @@ async function runAutoScan(prioritySymbol=null) {
     }
 
     // Max pozisyon kontrolü
+    // R347: pozisyon doluyken TAZE PATLAMA BAYRAĞI varsa tarama yine de koşar — 03.07 dersi:
+    // THE hacim 9.8x ile skor 100 bayrak düşürdü ama MAX_POZİSYON_DOLU yüzünden AI'a hiç sorulamadı.
+    // AI'ın maxPositions'ı artırma yetkisi (R342) var ama danışılmayınca kullanamıyordu (kısır döngü).
+    // Bayraklı coin AI'a gider; AI isterse ayar.maxPositions ile yer açar (bakiye yetiyorsa emir geçer).
     if (openPos.length >= maxPositions) {
-      autoScanState.phase = 'MAX_POZİSYON_DOLU';
-      logAuto(`Max pozisyon (${maxPositions}) doldu, yeni sinyal taranmıyor`);
-      return;
+      let r347TazeBayrak = false;
+      try { r347TazeBayrak = Object.values(__r328PatlamaFlags||{}).some(f => f && f.detected && Date.now()-f.ts < 5*60*1000); } catch(_) {}
+      if (!r347TazeBayrak) {
+        autoScanState.phase = 'MAX_POZİSYON_DOLU';
+        logAuto(`Max pozisyon (${maxPositions}) doldu, yeni sinyal taranmıyor`);
+        return;
+      }
+      logAuto(`🚀 R347: max pozisyon dolu AMA taze patlama bayrağı var — bayraklı coin AI'a danışılacak (yer açmak AI'ın ayar yetkisinde)`);
     }
 
     // 2. Kill zone kaldırıldı — kripto 24/7, saat bazlı tarama seyreltilmez.
