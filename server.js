@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R358_SONNET5_HAZIR'
+const LAZARUS_BUILD = 'R359_SONNET5_PARSE_FIX'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3722,21 +3722,35 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
     }
     if (!resp || !resp.ok) return null;
     const j = await resp.json();
-    const text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
-    let clean = text.replace(/```json|```/g, '').trim();
+    // R359 SONNET5 FIX: Sonnet 5'te adaptive-thinking varsayılan AÇIK — content array'inde 'thinking'
+    // blokları 'text' bloklarıyla karışıyordu ve model JSON'u markdown/düşünceyle sarıyordu.
+    // Sadece 'text' tipi bloklar alınır (thinking hariç), sonra JSON agresif çıkarılır.
+    const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text || '').join('').trim();
+    let clean = text.replace(/```json/gi, '').replace(/```/g, '').trim();
     let decision;
+    // R359: "side" anahtarı içeren GERÇEK JSON bloğunu bul (düşünce metnindeki {...} parazitlerini atla).
+    const r359ExtractJson = (s) => {
+      // Önce "side" içeren en dıştaki dengeli {...} bloğunu ara
+      const sideIdx = s.search(/\{[^{}]*"side"/);
+      const start = sideIdx >= 0 ? s.lastIndexOf('{', sideIdx + 1) : s.indexOf('{');
+      if (start < 0) return null;
+      let depth = 0;
+      for (let i = start; i < s.length; i++) {
+        if (s[i] === '{') depth++;
+        else if (s[i] === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
+      }
+      // Denge kapanmadıysa son } 'a kadar al
+      const last = s.lastIndexOf('}');
+      return last > start ? s.slice(start, last + 1) : null;
+    };
     try {
       decision = JSON.parse(clean);
     } catch(_) {
-      // R311E: AI bazen JSON'dan önce düşünce metni yazıyor ("Looking at this data carefully:...").
-      // Düz parse patlayınca metin içindeki ilk {...} JSON bloğunu çıkarıp dene. İşlem reddedilmesin.
       try {
-        const firstBrace = clean.indexOf('{');
-        const lastBrace = clean.lastIndexOf('}');
-        if (firstBrace >= 0 && lastBrace > firstBrace) {
-          const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
+        const jsonSlice = r359ExtractJson(clean);
+        if (jsonSlice) {
           decision = JSON.parse(jsonSlice);
-          logAuto(`🔧 AI cevabı metinle başladı, JSON bloğu çıkarıldı (parse kurtarıldı)`);
+          logAuto(`🔧 Sonnet5: JSON markdown/düşünce içinden çıkarıldı (parse kurtarıldı)`);
         } else {
           throw new Error('JSON bloğu bulunamadı');
         }
