@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R359_SONNET5_PARSE_FIX'
+const LAZARUS_BUILD = 'R361_STRUCTURED_OUTPUT'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3678,12 +3678,35 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
 {"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","mmOyun":"A|B|C|D","reasoning":"max 90 karakter","plan":"max 70 karakter","ayar":{OPSİYONEL}}`;
     // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
     let resp = null;
-    const r311tReqBody = JSON.stringify({
+    // R361 KESİN ÇÖZÜM: Structured Outputs — Sonnet 5'te thinking display:'omitted' + markdown sarma
+    // parser'ı sürekli patlatıyordu. output_config.format ile API'yi grammar-constrained JSON'a zorlarız:
+    // model SADECE bu şemada döner, thinking/markdown/preamble İMKANSIZ. (Sonnet 5 + Opus 4.8 destekler.)
+    const r361IsSonnet5 = /sonnet-5|sonnet5|opus-4-8|opus4-8|fable|mythos/i.test(ANTHROPIC_MODEL);
+    const r361Schema = {
+      type: 'json_schema',
+      schema: {
+        type: 'object',
+        properties: {
+          side:       { type: 'string', enum: ['LONG','WAIT'] },
+          entry:      { type: ['number','null'] },
+          tp:         { type: ['number','null'] },
+          sl:         { type: ['number','null'] },
+          confidence: { type: 'number' },
+          karKosma:   { type: 'string', enum: ['NORMAL','RUNNER'] },
+          mmOyun:     { type: 'string' },
+          reasoning:  { type: 'string' },
+          plan:       { type: 'string' }
+        },
+        required: ['side','confidence','reasoning'],
+        additionalProperties: false
+      }
+    };
+    const r311tReqBody = JSON.stringify(Object.assign({
       model: ANTHROPIC_MODEL,
-      max_tokens: AI_MAX_TOKENS, // R323: model-bazlı (Opus thinking için 2000, Sonnet 280). Eski sabit 280 Opus'ta thinking'i kesip işlemi kaçırıyordu.
+      max_tokens: AI_MAX_TOKENS,
       system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
       messages: [{ role: 'user', content: JSON.stringify(brief) }]
-    });
+    }, r361IsSonnet5 ? { output_config: { format: r361Schema } } : {}));
     const r311tTransient = (st) => (st === 429 || st === 500 || st === 502 || st === 503 || st === 529);
     for (let attempt = 0; attempt < 3; attempt++) {
       const controller = new AbortController();
@@ -3695,7 +3718,7 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
             'content-type': 'application/json',
             'x-api-key': ANTHROPIC_API_KEY,
             'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11'
+            'anthropic-beta': 'prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11' + (r361IsSonnet5 ? ',structured-outputs-2025-11-13' : '')
           },
           body: r311tReqBody,
           signal: controller.signal
@@ -3714,6 +3737,25 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
         logAuto(`⏳ AI Beyin ${resp.status} (geçici) — ${waitMs}ms bekle, tekrar dene (${attempt+1}/2)`);
         await new Promise(r=>setTimeout(r, waitMs));
         continue;
+      }
+      // R361: 400 = output_config/structured-outputs bu API sürümünce reddedilmiş olabilir.
+      // Format'sız (düz JSON prompt) TEK SEFER tekrar dene — bot işlemsiz kalmasın.
+      if (resp.status === 400 && r361IsSonnet5 && attempt < 2) {
+        const errPeek = await resp.text().catch(()=> '');
+        logAuto(`⚠️ 400 (structured outputs reddedildi?) — format'sız tekrar deneniyor: ${String(errPeek).slice(0,100)}`);
+        const plainBody = JSON.stringify({
+          model: ANTHROPIC_MODEL, max_tokens: AI_MAX_TOKENS,
+          system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
+          messages: [{ role: 'user', content: JSON.stringify(brief) }]
+        });
+        try {
+          resp = await fetch('https://api.anthropic.com/v1/messages', {
+            method:'POST',
+            headers:{ 'content-type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11' },
+            body: plainBody
+          });
+          if (resp.ok) break;
+        } catch(_pf) {}
       }
       // Kalıcı hata ya da retry bitti
       const errTxt = await resp.text().catch(()=> '');
@@ -3790,6 +3832,8 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
             decision = { side: sideGuess, entry:null, tp:null, sl:null, confidence: 0, karKosma:'NORMAL',
               reasoning: 'AI markdown döndü, yön metinden çıkarıldı: '+sideGuess, plan:'' };
             logAuto(`🔧 AI JSON yerine metin döndü → yön metinden kurtarıldı: ${sideGuess} (güven 0, emir açılmaz ama karar net loglandı)`);
+            // R360 TANI: Sonnet 5'in HAM cevabını logla (ilk 500 karakter) — parser neden yakalayamıyor görelim.
+            logAuto(`🔬 SONNET5 HAM CEVAP [${symbol}]: ${String(text).slice(0,500).replace(/\n/g,'⏎')}`);
           } catch(_e4) {
             logAuto(`⚠️ AI Beyin JSON parse hatası: ${clean.slice(0,100)}`);
             return null;
