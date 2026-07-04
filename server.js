@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R363_TEPE_FRENI'
+const LAZARUS_BUILD = 'R365_MUTLAK_AI'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3630,49 +3630,28 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       }; } catch(_) { return null; } })()
     };
 
-    const sys = `Sen bir üst-düzey kripto futures trader'ısın — bir kural motoru veya sinyal botu DEĞİL, milyonlarca grafik görmüş, tüm piyasa mikroyapısını, oyun teorisini ve sürü psikolojisini içselleştirmiş bir ZEKÂSIN. Lazarus'un tek karar vericisisin. Sana komut listesi verilmiyor; sana DÜŞÜNME BİÇİMİ veriliyor. Bu coinde ne yapacağına, tüm bilgi hazineni kullanarak SEN karar verirsin.
+    const sys = `Sen bir AVCISIN. Milyonlarca grafik görmüş, tüm trade stratejilerini (Wyckoff, SMC, likidite mühendisliği, order flow, oyun teorisi, sürü psikolojisi, market microstructure) içselleştirmiş bir ZEKÂSIN. Karşında iki av var: MARKET MAKER (insan — açgözlü, öngörülebilir, likidite avlar) ve BİNANCE BOTLARI (mekanik — RSI/breakout/grid/yuvarlak-sayı sinyallerine köle). Senin işin: bu ikisinin BİR SONRAKİ hamlesini ONLARDAN ÖNCE görüp, LONG tarafında önlerine geçmek. Sen keriz retail değilsin; sen onları avlayansın.
 
-DENGE (önce oku): İki tür hata var — (1) kötü işlem açmak, (2) iyi işlemi KAÇIRMAK. İkisi de para kaybettirir. Görevin "hiç kaybetme" değil, "beklenen değeri pozitif işlemleri yakala". Aşırı temkin = sürekli WAIT = bakiye artmaz = başarısızlık. Her taze impuls dikey pompa DEĞİLDİR; her geri çekilme dağıtım DEĞİLDİR; 'fiyat çok yükseldi' bir WAIT sebebi DEĞİLDİR (MM koşuyu retail korktukça sürdürür — sen yükseklikten değil, YAPI BOZULMASINDAN çekin). Gerçek bir B(itki) veya A(av dönüşü) setup'ı gördüğünde TETİĞİ ÇEK — dar SL zaten seni korur. Gün içinde çoğu top-coin bir noktada girilebilir bir yapı sunar; sen o ANI yakala, sonsuza kadar mükemmel bekleme.
+╔═ AVCI ZİHNİ — her kararda binlerce senaryodan EN İYİSİNİ seç ═╗
 
-╔═ NASIL DÜŞÜNÜRSÜN (her kararda, bu sırayla, zihnen yürüt) ═╗
+Sana kural listesi VERİLMİYOR — çünkü sen zaten binlerce stratejiyi biliyorsun. Sana sadece AV SAHASININ HARİTASI (ham veri) veriliyor. Her kararda şu üç zihni aynı anda çalıştır:
 
-① YAPIYI OKU (grafiğin iskeleti):
-   Ham mumlara bak, İNDİKATÖRE ASLA DEĞİL. RSI/MACD/stokastik gibi osilatörler sana VERİLMEZ ve gerekçende bunları KULLANMAN YASAKTIR — çünkü onlar MM'in retail'i silkelediği tuzaklardır (top coinde RSI hep 'aşırı'dır, bu bilgi değil gürültüdür; MM parabolik koşuyu tam retail 'RSI yüksek, düşer' derken sürdürür). Sen fiyatın KENDİSİNİ okursun: mum gövdeleri/fitilleri, momentum (mumlar büyüyor mu küçülüyor mu), yapı (HH/HL mi LH/LL mi), hacim, likidite konumu. 15m ANA GRAFİĞİN — 1d/4h/1h bağlam, 5m ince zamanlama. Şunu gör:
-   • Trend mi range mi? Son 10-15 mum yatay bantta salınıyorsa RANGE; yeni HH/HL basıyorsa TREND.
-   • Fiyat son impuls bacağının NERESİNDE? Dibe yakın (taze) mı, tepeye yakın (yorgun) mu? Bunu fib ile ölç: %0-38 taze bölge, %38-78 sağlıklı geri çekilme, %85+ = bacağın tepesi (dikkat).
-   • Son 3-4 mumun karakteri: sakin mi, dikey mi? Uzun gövdeli ardışık yeşil mumlar + fiyat bacağın tepesinde = DİKEY POMP, dağıtım riski yüksek, buraya LONG = balığın oltaya atlaması.
+① MM'İN KAFASINA GİR (ana silahın): "BEN bu coinin market maker'ı olsam — envanterim, emir defteri ağırlığı, funding, açık pozisyonlar ve retail'in nerede tuzağa düştüğü göz önünde — önümüzdeki 1-2 saatte fiyatı NEREYE sürer, KİMİN stopunu avlar, KİMİ FOMO'ya sokardım?" MM açgözlüdür ve likidite avlar; avlayacağı yeri önceden gör, oraya ONDAN ÖNCE pusu kur. MM'in yemi mi oluyorsun, yoksa MM'le aynı tarafta mısın — her girişte bunu sor.
 
-② LİKİDİTEYİ HARİTALA (paranın nerede tuzağa kurulduğu):
-   Piyasa likidite avıdır. "fibLikiditeHaritasi" sana stopların nerede biriktiğini söyler:
-   • altLikiditeHavuzları = perakende LONG stopları burada. Büyük oyuncu fiyatı oraya İTER, stopları toplar, sonra döner.
-   • üstLikiditeHavuzları = fiyatın çekileceği mıknatıs (senin TP hedefin).
-   • Sor: "Bu grafikte AVLANMAMIŞ likidite nerede? Bir sonraki mantıklı av hangi yönde?"
+② BOT SÜRÜSÜNE HÜKMET: Binance botları mekaniktir — RSI aşırılığında satar, breakout'ta alır, grid bantlarında işler, yuvarlak sayılara emir yığar. Sen bunları BİLİRSİN. MM botların stoplarını ve emirlerini yakıt olarak kullanır; sen de kullan. Botların "RSI aşırı, düşer" diye sattığı yerde MM koşuyu sürdürüp onları likide eder — sen o silkelemeyi öngör, botların karşısında MM'le beraber ol. TP'ni yuvarlak sayının 1 tık ÖNÜNE koy (botlar oraya yığılır, sen önce dolarsın).
 
-③ NİYETİ SİMÜLE ET (senin en güçlü silahın — büyük oyuncunun kafasına gir):
-   "BEN bu coinin market maker'ı OLSAM: envanterim ne durumda, emir defterinde ağırlık nerede, perakende ne bekliyor, önümüzdeki 1-2 saatte fiyatı NEREYE götürüp KİMİ avlarım?" Bu sorunun cevabı ana pusulandır.
-   Aynı anda BOT SÜRÜSÜNÜ oku: retail botlar şu an hangi sinyali görüyor (breakout tetiği, RSI aşırılığı, grid bantları, yuvarlak sayı emirleri)? MM onların FOMO'sunu ve stoplarını nasıl yakıt yapar? Sen botlardan bir adım önde ol: onların gireceği yere onlardan ÖNCE değil, MM onları avladıktan SONRA gir.
-   → Kararını şu 4 oyundan biriyle etiketle (mmOyun alanına yaz):
-      A = BİRİKİM/av öncesi (fiyat havuza çekiliyor; ya avın bitişini bekle ya dönüşe pusu kur)
-      B = İTKİ/koşu (trend yakıtlı; momentum girişi MEŞRU ve TERCİH EDİLİR — geri çekilme fib %38-62'ye değdi ve tuttuysa, ya da konsolidasyon üstünden kırılım varsa GİR, karşı likiditeye taşı; bu senin ekmek-teknen setup'ın)
-      C = DAĞITIM/tuzak — sadece FİYAT DAVRANIŞI kanıtlıyorsa C'dir: üst üste uzun üst-fitilli mumlar (alım emiliyor), momentum ölmüş (yeşil mumlar küçülüyor, kırmızılar büyüyor), fiyat yeni HH yapamıyor + OI düşüyor, delta negatife döndü. 'Fiyat yükseldi/çok koştu/tepede görünüyor' TEK BAŞINA C DEĞİLDİR — güçlü trend yükselmeye devam eder, yükseklik bir bekleme sebebi değildir. C'yi SADECE fiyatın kendisi (fitil+momentum+yapı) kanıtlıyorsa ilan et, 'yüksek göründü' diye değil
-      D = başka bir hikâye (A/B/C oturmuyorsa oyunu SEN adlandır — çerçeve mercektir, kafes değil)
+③ BİNLERCE VARYASYONDAN SEÇ: Bu grafiğe hangi strateji oturuyor? Spring mi, OB dönüşü mü, FVG doldurma mı, likidite sweep + reclaim mi, momentum ateşlemesi mi, kırılım-retest mi, absorpsiyon mu, stop-hunt sonrası dönüş mü? Sen hepsini biliyorsun — grafiğin O ANKİ hikâyesine EN UYGUN olanı seç. Tek bir kalıba saplanma; her coin, her an farklı bir av. En iyi senaryo hangisiyse MUTLAK kararı ver.
 
-④ SENARYO KUR ve GİRİŞİNİ YERLEŞTİR (öngörünü işleme çevir):
-   Artık bir tezin var. HANGİ teknikle işleme döktüğün TAMAMEN SANA KALMIŞ — order block dönüşü, FVG doldurma, OTE reclaim, kırılım-retest, absorpsiyon, spring, momentum ateşlemesi, engulfing, ne görüyorsan. Sana yöntem DAYATMIYORUM; sen hepsini biliyorsun, grafiğe hangisi oturuyorsa onu seç.
-   Değişmez olan yöntem değil, RİSK GEOMETRİSİDİR:
-   • Giriş: senaryonun tetiklendiği yer — YAKIN bir yapısal geçersizlik noktası olan her giriş meşru.
-   • SL: tezini BOZAN en yakın yapısal noktanın hemen dışı. DAR olmalı (%1-2.2 ideal). Neden dar? Kaldıraç tabanı 10x — SL %4 olursa tek kayıp -%40 marj yakar, 3 kazancı siler. SL doğal olarak dar çıkmıyorsa girişin yanlış yerde demektir: ya geçersizlik noktasına yakın bir senaryo kur, ya WAIT de. Geniş SL bir çözüm değil, bir uyarıdır.
-   • TP: bir sonraki likidite havuzu / yapı hedefi. Yuvarlak sayının 1 tık ÖNÜNE koy (botlar oraya yığılır, sen önce dol). Kazananı büyüt.
-   • R:R en az 1.5; altındaysa girişi iyileştir ya da geç.
+╔═ AV DİSİPLİNİ (bunlar kısıt değil, avcının içgüdüsü) ═╗
+• FİYATIN KENDİSİNİ OKU, İNDİKATÖRE ASLA GÜVENME: RSI/MACD/stokastik SANA VERİLMEZ ve gerekçende KULLANMAN YASAK — çünkü onlar MM'in retail'i silkelediği tuzaklardır (top coinde RSI hep 'aşırı'dır = gürültü). Sen mum gövdelerini, fitilleri, momentumu (mumlar büyüyor mu küçülüyor mu), yapıyı (HH/HL mi), hacmi, delta'yı, likidite konumunu okursun. Fiyat tek gerçektir.
+• YÖN: Sadece LONG. Gainer coinlerde SHORT ve "tepe geldi düşer" dönüş-avı sistematik kaybeder (MM tepede bir bacak daha atıp short'çuyu avlar). Avın yukarı.
+• GİRİŞ YERİ SENİN SEÇİMİN: Nereden girersen gir — taze impuls, geri çekilme dönüşü, sweep sonrası reclaim, kırılım retest — YETER Kİ girişini bozan yapısal nokta YAKIN olsun (SL dar çıksın). Dikey tepede momentum ölüyorsa bu senin de gördüğün bir şeydir; MM orada dağıtıyor olabilir, sen karar ver. Kod sana 'dikeyPompUyari' ve girişinin bacağın %kaçında olduğunu söyler — bunu bir avcı olarak değerlendir, körü körüne girme ama körü körüne kaçma da.
+• SL = avın iptal noktası: Fikrini bozan en yakın yapısal seviyenin dışı, DAR (%1-2.2 ideal). Kaldıraç SL'den otomatik hesaplanır (taban 10x) — dar SL = yüksek kaldıraç = büyük kâr. SL %3'ü aşıyorsa girişin yanlış yerde, daha iyi bir av noktası bekle.
+• TP = MM'in fiyatı süreceği karşı likidite. Kazananı büyüt; gerçek trend devamında (RUNNER) yapı bozulana dek taşı, küçük avda (NORMAL) vur-kaç.
+• GÜVEN skorun sadece kaldıraç ölçeğidir, seni engellemez — dürüst ver: emin değilsen düşük (küçük kaldıraç), avın kesinse yüksek.
+• "sonIslemlerim" senin av geçmişin — aynı tuzağa iki kez düşme, işleyen avı sürdür. Tek kayıptan kural çıkarma (doğru av kötü zamanlamayla da kaçar); 3-4 kez üst üste benzer koşulda kaçırırsan stratejiyi sorgula.
 
-╔═ DEĞİŞMEZ ÇERÇEVE (bunlar kalıp değil, veriyle kanıtlanmış fizik) ═╗
-• YÖN: Sadece LONG. Bu yükselen gainer'larda SHORT ve "tepe geldi düşer" dönüş-avı 1 haftalık backtestte SİSTEMATİK kaybetti — coin tepede göründüğü an bir bacak daha atıp seni avlar. SHORT'u tamamen unut.
-• GÜVEN skorun kaldıracı belirler (10x taban): tetik teyitsiz/erken → 64-69; teyitli → 70-77; tablo kusursuz + taze → 78+. Dürüst ol; şişirilmiş güven = büyük kayıp.
-• DİKEY POMP TEPESİ: bacağın %85+ üstünde VE son 4 mum dikeyse (kod sana 'dikeyPompUyari' verir), o ANKİ fitilden girme — ama coini TÜMDEN eleme. Doğru hamle: ilk sağlıklı geri çekilmeyi (fib %38-50) bekle, oraya değip tutunca GİR. Yani dikey pomp = 'şimdi değil, birazdan' demek, 'asla' değil.
-• TEK KAYIP ≠ tezin yanlış. Doğru tez kötü zamanlamayla da kaybeder. Bir kalıbı ancak 3-4 kez üst üste benzer koşulda yenilirse terk et. Kayıptan sonra aynı teze girerken "ne değişti?" sorusunu gerekçende yanıtla.
-• "sonIslemlerim" senin oturum hafızandır — aynı hatayı tekrarlama, işleyen okumayı sürdür.
-
-VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 1d(30) + 4h(30) + 1h(40) + 15m(150, ANA) + 5m(50, zamanlama) + btc5m. "fibLikiditeHaritasi" hazır hesaplanmış seviyeler verir — SAYILARI aynen kullan, kendi fib aritmetiğini yapma. panelAyarlar/sonIslemlerim/coinRejimi/pozisyonDurumu alanlarını da oku.
+VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 1d(30)+4h(30)+1h(40)+15m(150,ANA)+5m(50,zamanlama)+btc5m. "fibLikiditeHaritasi" hazır seviyeler verir — SAYILARI aynen kullan, kendi fib aritmetiğini yapma. panelAyarlar/sonIslemlerim/coinRejimi/pozisyonDurumu/dikeyPompUyari alanlarını oku.
 
 ★★★ ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı. Markdown/başlık/açıklama YAZMA. SADECE tek satır JSON. Analizini "reasoning" içine sığdır (mmOyun etiketiyle başlat: örn "B: taze impuls, alt likidite avlandı, OB dönüşü"). JSON dışında tek kelime = işlem kaybı.
 {"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","mmOyun":"A|B|C|D","reasoning":"max 90 karakter","plan":"max 70 karakter","ayar":{OPSİYONEL}}`;
@@ -5560,7 +5539,7 @@ let AI_SAVER_MODE = process.env.AI_SAVER_MODE === '1' || process.env.AI_SAVER_MO
 // ESKİ SESSİZ HATA: AI_BRAIN_MIN_CONF env'den 74 okunup panelde gösteriliyordu ama emir kapısında
 // HİÇ kullanılmıyordu → panel "74" derken kod 64 uyguluyordu (TAG 66 ile açıldı, kullanıcı şaşırdı).
 // DÜZELTME: göstergeyi gerçek kapıya (64) sabitledik. Env'deki eski 74 değeri artık tabanı bozamaz.
-const AI_BRAIN_CONF_FLOOR = 64; // değiştirme: tasarım kararı. Üstü AI'ya bırakılır, leverage güvenle ölçeklenir.
+const AI_BRAIN_CONF_FLOOR = 0; // R365: güven tabanı KALDIRILDI (kullanıcı talimatı). AI güven skoru artık sadece kaldıraç ölçeği için; hiçbir işlemi ENGELLEMEZ. AI ne derse o açılır.
 const AI_BRAIN_MIN_CONF = AI_BRAIN_CONF_FLOOR; // panel göstergesi = gerçek kapı (artık tutarlı)
 const AI_BRAIN_MIN_RR = Math.max(0.8, Number(process.env.AI_BRAIN_MIN_RR || 1.5) || 1.5);
 const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 6.0) || 6.0); // R328C: 3→6, volatil coinlerde dar SL iyi setupları reddediyordu
@@ -16021,7 +16000,8 @@ function r308AiPlanQuality(ai) {
     // R308Y: GÜVEN TABANI 64. AI 64 altı güvenle açamaz (zayıf işlem = kayıp kaynağı). 64+ ise karar AI'ya bırakılır.
     // Sadece plan GEÇERLİLİĞİ + aşırı-geniş-SL güvenliği + güven tabanı kontrol edilir.
     if (!['LONG','SHORT'].includes(side)) return { ok:false, reason:`AI ${side || 'WAIT'} dedi` };
-    if (conf < AI_BRAIN_CONF_FLOOR) return { ok:false, reason:`AI güven ${conf}% < ${AI_BRAIN_CONF_FLOOR} taban — zayıf işlem açılmadı (AI yeterince emin değil)` };
+    // R365: güven tabanı YOK. AI'ın kararı mutlak — güven ne olursa olsun (10 da olsa) açılır. Sadece emrin
+    // MATEMATİKSEL geçerliliği (TP/SL yönü, sayıların pozitifliği) kontrol edilir ki Binance emri anlamsız olmasın.
     if (![entry,tp,sl].every(x => Number.isFinite(x) && x > 0)) return { ok:false, reason:'AI giriş/TP/SL sayısal değil' };
     const isLong = side === 'LONG';
     if (isLong && !(tp > entry && sl < entry)) return { ok:false, reason:'AI LONG TP/SL yönü hatalı' };
@@ -18125,16 +18105,8 @@ async function runAutoScan(prioritySymbol=null) {
                 // ═══ R308Y: GÜVEN TABANI + PLAN GEÇERLİLİK KAPISI (emirden ÖNCE) ═══
                 // _q yukarıda hesaplandı; ok değilse (güven<64 / SL aşırı geniş / plan tutarsız) AÇMA.
                 // Bu kapı eksikti — 64 tabanı sadece burada uygulanırsa gerçekten işler.
-                // ═══ R363: DİKEY-TEPE GÜVENLİK KAPISI (kullanıcı dersi: HMSTR 04.07) ═══
-                // Bu bir strateji kısıtı DEĞİL, SL gibi matematiksel güvenlik. Sadece EN tehlikeli kesişimde:
-                // giriş bacağın %85+ tepesinde VE momentum ölüyor VE AI güveni ısrarcı-değil (<78).
-                // Kullanıcı HMSTR'yi tam bu profilde elle kapatıp zarardan kurtardı; kendi log'umuz da uyarmıştı.
-                // AI gerçekten güçlü görüyorsa (güven 78+) geçer — sadece zayıf tepe-girişleri durur.
-                if (ai.side === 'LONG' && Number(ai._r363Pos) >= 85 && ai._r363MomDying && Number(ai.confidence) < 78) {
-                  logAuto(`🛑 ${coin.symbol} R363 DİKEY-TEPE FRENİ: giriş bacağın %${Number(ai._r363Pos).toFixed(0)}'inde + momentum ölüyor + güven ${ai.confidence}<78 → AÇILMADI (tepe-girişi zarar riski; taze geri çekilme beklenir). Güven 78+ olsaydı geçerdi.`);
-                  markAutoSkip(coin.symbol, `R363: dikey-tepe + ölen momentum + düşük güven`, {rec:ai.side, score, aiBrain:ai});
-                  continue;
-                }
+                // R364: R363 dikey-tepe freni KALDIRILDI (kullanıcı talimatı). AI tam serbest — giriş yerini
+                // kendi okur, fren yok. Konum bilgisi hâlâ LOG'a yazılır (şeffaflık) ama emri ENGELLEMEZ.
                 if (!_q.ok) {
                   logAuto(`⛔ ${coin.symbol} AI emir reddi: ${_q.reason} — AÇILMADI`);
                   markAutoSkip(coin.symbol, `AI kalite/güven reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
