@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R355_DENGE'
+const LAZARUS_BUILD = 'R358_SONNET5_HAZIR'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3539,7 +3539,11 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       gainerSira: data.gainerRank,   // R308R: TOP24 volatil-gainer sırası (1 = en güçlü/hareketli)
       fiyat: data.lastPrice,
       mumlar: data.candles || null,   // 100×5m + 20×15m + 20×1h + 12×4h + 6×btc5m ham OHLCV (R325: derinlik artırıldı)
-      rsi: { '5m': data.rsi5m, '15m': data.rsi15m, '1h': data.rsi1h, '4h': data.rsi4h },
+      // R357: RSI ve benzeri osilatörler AI'a HAM sayı olarak VERİLMEZ. Neden: top coinlerde RSI
+      // sürekli 80-97'dedir (sabit, bilgi değil), ve MM tam da retail 'RSI aşırı, düşer' derken
+      // parabolik koşuyu sürdürüp onları silkeler. AI'ı göstergeye bağlayınca keriz-trader oluyordu.
+      // AI artık YÖN/MOMENTUM'u ham mum yapısından okur (fiyatın kendisi tek gerçek).
+      // (rsi alanı bilinçli KALDIRILDI — data.rsi* değişkenleri log/panel için hâlâ mevcut ama AI görmez)
       funding: data.funding,
       shortSqueeze: data.shortSqueeze,  // true=herkes short, MM YUKARI sıkıştırır → SHORT tehlikeli
       longSqueeze: data.longSqueeze,    // true=herkes long, MM AŞAĞI sıkıştırır → LONG tehlikeli
@@ -3568,6 +3572,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       // R329: FİBONACCİ + LİKİDİTE HARİTASI — MM oyununu, likidite havuzlarını, geri-çekilme/hedef seviyelerini AI'a ham ver (yorum AI'ın)
       fibLikiditeHaritasi: r329FibLiqMap(data.candles, data.lastPrice, data.liqLevels),
       piyasaNotu: data.marketCtx || null,
+      // R357: (RSI kaldırıldı, yukarıda) — AI artık ham fiyat okur.
       // R354: DİKEY-POMP DEDEKTÖRÜ (kodla ölçülen ham sinyal — AI'ın en pahalı hatası buydu).
       // Son 4 mumun gövde toplamı ATR'ye oranlanır + fiyatın son bacaktaki fib konumu hesaplanır.
       // Dikeylik yüksek + fiyat bacak tepesinde = dağıtım riski. AI'a KARAR verilmez, VERİ verilir.
@@ -3627,12 +3632,12 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 
     const sys = `Sen bir üst-düzey kripto futures trader'ısın — bir kural motoru veya sinyal botu DEĞİL, milyonlarca grafik görmüş, tüm piyasa mikroyapısını, oyun teorisini ve sürü psikolojisini içselleştirmiş bir ZEKÂSIN. Lazarus'un tek karar vericisisin. Sana komut listesi verilmiyor; sana DÜŞÜNME BİÇİMİ veriliyor. Bu coinde ne yapacağına, tüm bilgi hazineni kullanarak SEN karar verirsin.
 
-DENGE (önce oku): İki tür hata var — (1) kötü işlem açmak, (2) iyi işlemi KAÇIRMAK. İkisi de para kaybettirir. Görevin "hiç kaybetme" değil, "beklenen değeri pozitif işlemleri yakala". Aşırı temkin = sürekli WAIT = bakiye artmaz = başarısızlık. Her taze impuls dikey pompa DEĞİLDİR; her geri çekilme dağıtım DEĞİLDİR. Gerçek bir B(itki) veya A(av dönüşü) setup'ı gördüğünde TETİĞİ ÇEK — dar SL zaten seni korur. Gün içinde çoğu top-coin bir noktada girilebilir bir yapı sunar; sen o ANI yakala, sonsuza kadar mükemmel bekleme.
+DENGE (önce oku): İki tür hata var — (1) kötü işlem açmak, (2) iyi işlemi KAÇIRMAK. İkisi de para kaybettirir. Görevin "hiç kaybetme" değil, "beklenen değeri pozitif işlemleri yakala". Aşırı temkin = sürekli WAIT = bakiye artmaz = başarısızlık. Her taze impuls dikey pompa DEĞİLDİR; her geri çekilme dağıtım DEĞİLDİR; 'fiyat çok yükseldi' bir WAIT sebebi DEĞİLDİR (MM koşuyu retail korktukça sürdürür — sen yükseklikten değil, YAPI BOZULMASINDAN çekin). Gerçek bir B(itki) veya A(av dönüşü) setup'ı gördüğünde TETİĞİ ÇEK — dar SL zaten seni korur. Gün içinde çoğu top-coin bir noktada girilebilir bir yapı sunar; sen o ANI yakala, sonsuza kadar mükemmel bekleme.
 
 ╔═ NASIL DÜŞÜNÜRSÜN (her kararda, bu sırayla, zihnen yürüt) ═╗
 
 ① YAPIYI OKU (grafiğin iskeleti):
-   Ham mumlara bak, indikatöre değil. 15m ANA GRAFİĞİN — 1d/4h/1h bağlam, 5m ince zamanlama. Şunu gör:
+   Ham mumlara bak, İNDİKATÖRE ASLA DEĞİL. RSI/MACD/stokastik gibi osilatörler sana VERİLMEZ ve gerekçende bunları KULLANMAN YASAKTIR — çünkü onlar MM'in retail'i silkelediği tuzaklardır (top coinde RSI hep 'aşırı'dır, bu bilgi değil gürültüdür; MM parabolik koşuyu tam retail 'RSI yüksek, düşer' derken sürdürür). Sen fiyatın KENDİSİNİ okursun: mum gövdeleri/fitilleri, momentum (mumlar büyüyor mu küçülüyor mu), yapı (HH/HL mi LH/LL mi), hacim, likidite konumu. 15m ANA GRAFİĞİN — 1d/4h/1h bağlam, 5m ince zamanlama. Şunu gör:
    • Trend mi range mi? Son 10-15 mum yatay bantta salınıyorsa RANGE; yeni HH/HL basıyorsa TREND.
    • Fiyat son impuls bacağının NERESİNDE? Dibe yakın (taze) mı, tepeye yakın (yorgun) mu? Bunu fib ile ölç: %0-38 taze bölge, %38-78 sağlıklı geri çekilme, %85+ = bacağın tepesi (dikkat).
    • Son 3-4 mumun karakteri: sakin mi, dikey mi? Uzun gövdeli ardışık yeşil mumlar + fiyat bacağın tepesinde = DİKEY POMP, dağıtım riski yüksek, buraya LONG = balığın oltaya atlaması.
@@ -3649,7 +3654,7 @@ DENGE (önce oku): İki tür hata var — (1) kötü işlem açmak, (2) iyi işl
    → Kararını şu 4 oyundan biriyle etiketle (mmOyun alanına yaz):
       A = BİRİKİM/av öncesi (fiyat havuza çekiliyor; ya avın bitişini bekle ya dönüşe pusu kur)
       B = İTKİ/koşu (trend yakıtlı; momentum girişi MEŞRU ve TERCİH EDİLİR — geri çekilme fib %38-62'ye değdi ve tuttuysa, ya da konsolidasyon üstünden kırılım varsa GİR, karşı likiditeye taşı; bu senin ekmek-teknen setup'ın)
-      C = DAĞITIM/tuzak — DİKKAT bunu abartma: sadece GERÇEK kanıt varsa C'dir (üst üste uzun üst-fitilli mumlar + OI düşerken fiyat yatay/düşüyor + delta negatife dönmüş). Tek başına 'RSI yüksek' veya 'biraz geri çekildi' C DEĞİLDİR — sağlıklı bir boğada RSI günlerce 70+ kalır ve geri çekilmeler alım fırsatıdır. C'de WAIT, ama C'yi kanıtsız ilan etme
+      C = DAĞITIM/tuzak — sadece FİYAT DAVRANIŞI kanıtlıyorsa C'dir: üst üste uzun üst-fitilli mumlar (alım emiliyor), momentum ölmüş (yeşil mumlar küçülüyor, kırmızılar büyüyor), fiyat yeni HH yapamıyor + OI düşüyor, delta negatife döndü. 'Fiyat yükseldi/çok koştu/tepede görünüyor' TEK BAŞINA C DEĞİLDİR — güçlü trend yükselmeye devam eder, yükseklik bir bekleme sebebi değildir. C'yi SADECE fiyatın kendisi (fitil+momentum+yapı) kanıtlıyorsa ilan et, 'yüksek göründü' diye değil
       D = başka bir hikâye (A/B/C oturmuyorsa oyunu SEN adlandır — çerçeve mercektir, kafes değil)
 
 ④ SENARYO KUR ve GİRİŞİNİ YERLEŞTİR (öngörünü işleme çevir):
@@ -5461,7 +5466,11 @@ const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_B
 // R323: Opus 4.8 ADAPTIVE THINKING kullanır — model cevaptan önce düşünür ve thinking token'ları da
 // max_tokens'a sayılır. Eski 280 (Sonnet için) Opus'ta thinking ortasında kesilir → JSON bozulur → işlem KAÇAR.
 // Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
-const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 600;
+// R358: model-bazlı max_tokens. Sonnet 5 adaptive-thinking varsayılan AÇIK + yeni tokenizer (~%30 fazla token)
+// → 600 yetersiz kalıp JSON'u kesebilir (işlem kaçar). Sonnet 5'e 1600 verilir (thinking + JSON için güvenli).
+const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000
+  : /sonnet-5|sonnet5/i.test(ANTHROPIC_MODEL) ? 1600
+  : 600;
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
@@ -15280,10 +15289,17 @@ async function managePosition(apiKey, apiSecret, pos) {
   // normal geri çekilmede girişten atıldı (hedef +%21'di). RUNNER'da BE ancak SL mesafesinin
   // %75'i kadar yol alınınca kurulur; o zamana dek pozisyon AI'ın SL'iyle yaşar (runner'ın bedeli budur).
   const r344SlPctVal = Number(state.slPct || slPct || 1.7);
-  const r283DynamicBE = r282RunnerMode
-    ? Math.max(r192BreakEvenAt * r339GeoScale, 0.85 * r339GeoScale, (r339AiManaged ? r344SlPctVal * 0.75 : 0))
-    : ((r282ProtectMode ? Math.max(r192BreakEvenAt, 0.55) : Math.max(r192BreakEvenAt, 0.65)) * r339GeoScale);  // R339: geometri ölçeği
-  const r283BEAllowed = !!(realProfitPct >= r283DynamicBE && (!r91Brain.devamGucu || openMinutes >= Number(r282Plan.minHoldWinMin||4) || pnlPct >= Number(r282Plan.earlyBEroi||11)));
+  // R356 KESİN FIX (log kanıtı: TLM 08:30 RUNNER'ı %0.86'da BE'ye alınıp +%7'de öldü, TP %8'di):
+  // RUNNER tespiti artık state.aiRunner'a bağlı (r282RunnerMode eski/senkronsuzdu). RUNNER'da BE
+  // KESİNLİKLE SL mesafesinin %75'inde kurulur (SL %3 → BE %2.25); ROI-tabanlı erken-BE baypası KAPALI.
+  const r356IsRunner = !!(state.aiRunner || r282RunnerMode);
+  const r283DynamicBE = r356IsRunner
+    ? Math.max(r344SlPctVal * 0.75, 1.2)                          // RUNNER: SL'in %75'i, min %1.2 — erken kilit YOK
+    : ((r282ProtectMode ? Math.max(r192BreakEvenAt, 0.55) : Math.max(r192BreakEvenAt, 0.65)) * r339GeoScale);
+  // RUNNER'da devamGucu/ROI baypası devre dışı: BE sadece gerçek hareket eşiğine bakar, erken tetiklenmez.
+  const r283BEAllowed = r356IsRunner
+    ? (realProfitPct >= r283DynamicBE)
+    : !!(realProfitPct >= r283DynamicBE && (!r91Brain.devamGucu || openMinutes >= Number(r282Plan.minHoldWinMin||4) || pnlPct >= Number(r282Plan.earlyBEroi||11)));
   if (!action && !state.breakEvenSet && r283BEAllowed) {
     action = {
       type:'BREAK_EVEN',
@@ -15299,8 +15315,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   if (!action && state.breakEvenSet) {
     let stepSL = null, stepReason = null, stepUpdate = null;
     // R310H: AI "RUNNER" dediyse (güçlü setup), kâr taşıma eşiklerini İLERİ it — kâr daha çok koşsun, geç kilitle.
-    const _runnerMult = state.aiRunner ? 1.8 : 1.0;  // RUNNER: %1.5/3/5.5 → %2.7/5.4/9.9 (kâr çok koşar)
-    const kT1 = karTasima1 * _runnerMult * r339GeoScale, kT2 = karTasima2 * _runnerMult * r339GeoScale, kT3 = karTasima3 * _runnerMult * r339GeoScale;  // R339 geometri ölçeği
+    // R356: RUNNER çarpanı r356IsRunner'a bağlı (state.aiRunner senkronsuz olabiliyordu — log kanıtı).
+    const _runnerMult = r356IsRunner ? 1.8 : 1.0;  // RUNNER: kâr taşıma eşikleri ileri itilir, kâr koşar
+    // RUNNER'da ilk kâr taşıma da BE ile aynı kapıda: SL'in %75'inden ÖNCE hiç taşıma yok (erken kilit sıfır).
+    const _kt1Floor = r356IsRunner ? Math.max(karTasima1 * _runnerMult * r339GeoScale, r344SlPctVal * 0.75) : karTasima1 * r339GeoScale;
+    const kT1 = _kt1Floor, kT2 = karTasima2 * _runnerMult * r339GeoScale, kT3 = karTasima3 * _runnerMult * r339GeoScale;
     if (realProfitPct >= kT3 && !state.step3Set) {
       stepSL = isLong ? +(entryPrice*(1+0.015*r339GeoScale)).toFixed(8) : +(entryPrice*(1-0.015*r339GeoScale)).toFixed(8);
       stepReason = `Kâr taşıma 3${state.aiRunner?' (RUNNER)':''}: %${realProfitPct.toFixed(2)} → SL kâr +%1.5`;
@@ -17739,8 +17758,11 @@ async function runAutoScan(prioritySymbol=null) {
               // HAM MUM DİZİLERİ (asıl grafik): 60×5m + 12×15m + 12×1h + 8×4h + 24×btc5m
               candles: analysis?.r308RawCandles || null,
               // HAM METRİKLER (mumda görünmeyen gerçekler — yorum değil, sayı)
-              rsi5m: analysis?.timeframes?.['5m']?.rsi, rsi15m: analysis?.timeframes?.['15m']?.rsi,
-              rsi1h: analysis?.timeframes?.['1h']?.rsi, rsi4h: analysis?.timeframes?.['4h']?.rsi,
+              // R357: RSI AI'a GÖNDERİLMİYOR (null). Top coinde RSI hep 'aşırı'dır = MM'in retail tuzağı;
+              // AI göstergeye bağlanınca keriz-trader oluyordu. AI yön/momentumu ham mumdan okur.
+              // (Ham değerler log/panel için _rsiLog altında saklanır — AI görmez.)
+              rsi5m: undefined, rsi15m: undefined, rsi1h: undefined, rsi4h: undefined,
+              _rsiLog: { '5m':analysis?.timeframes?.['5m']?.rsi, '15m':analysis?.timeframes?.['15m']?.rsi, '1h':analysis?.timeframes?.['1h']?.rsi, '4h':analysis?.timeframes?.['4h']?.rsi },
               funding: analysis?.funding?.current,
               // R308V: SQUEEZE sinyali (bot hesaplıyor, AI'dan saklanıyordu — BIO/TAG/MITO/ENA kayıplarının ortak sebebi)
               // shortSqueeze=herkes short→MM YUKARI sıkıştırır (SHORT tehlikeli). longSqueeze=herkes long→MM AŞAĞI sıkıştırır (LONG tehlikeli).
@@ -17953,6 +17975,45 @@ async function runAutoScan(prioritySymbol=null) {
             if (ai && ai.ok) {
               const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
               logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}${ai.plan?' · PLAN: '+ai.plan:''}`);
+              // R357 DETAYLI KARAR LOG'U (kullanıcı isteği: AI ne gördü, neye göre girdi — tam şeffaflık).
+              // Grafik görüntüsü çizilemez (bot headless/Railway) ama görüntünün TAŞIDIĞI tüm veri buraya yazılır.
+              try {
+                const c15 = (aiData?.candles && Array.isArray(aiData.candles['15m'])) ? aiData.candles['15m'] : [];
+                const nn = c15.length;
+                if (nn >= 6) {
+                  const O=k=>+c15[k][0],H=k=>+c15[k][1],L=k=>+c15[k][2],C=k=>+c15[k][3],V=k=>+c15[k][4];
+                  // son 5 mumun karakteri (yön + gövde/fitil)
+                  const son5 = [];
+                  for (let k=nn-5;k<nn;k++){
+                    const yon = C(k)>=O(k)?'▲':'▼';
+                    const govde = Math.abs(C(k)-O(k));
+                    const ustFitil = H(k)-Math.max(O(k),C(k));
+                    const menzil = H(k)-L(k) || 1e-9;
+                    const fitilPay = (ustFitil/menzil*100).toFixed(0);
+                    son5.push(`${yon}g${(govde/menzil*100).toFixed(0)}%üf${fitilPay}%`);
+                  }
+                  // momentum: son 3 gövde ort vs önceki 3
+                  const g=(a,b)=>{let s=0;for(let k=a;k<b;k++)s+=Math.abs(C(k)-O(k));return s/(b-a);};
+                  const momSon=g(nn-3,nn), momOnce=nn>=6?g(nn-6,nn-3):momSon;
+                  const momYon = momSon>momOnce*1.15?'ARTIYOR(hızlanan itki)':momSon<momOnce*0.75?'AZALIYOR(momentum ölüyor)':'stabil';
+                  // yapı: son 6 mumun HH/HL mi
+                  let hh=0,ll=0; for(let k=nn-5;k<nn;k++){ if(H(k)>H(k-1))hh++; if(L(k)<L(k-1))ll++; }
+                  const yapi = hh>=3?'HH/HL yükselen':ll>=3?'LH/LL düşen':'yatay/sıkışma';
+                  // hacim trendi
+                  const vSon=V(nn-1), vOrt=(V(nn-2)+V(nn-3)+V(nn-4))/3;
+                  const volTxt = vSon>vOrt*1.5?`son mum hacmi ${(vSon/vOrt).toFixed(1)}x (patlama)`:vSon<vOrt*0.6?'hacim sönük':'hacim normal';
+                  logAuto(`  📊 ${coin.symbol} AI-GÖRÜŞ [ham fiyat, indikatörsüz] · mmOyun:${ai.mmOyun||'?'} · yapı:${yapi} · momentum:${momYon} · ${volTxt}`);
+                  logAuto(`  🕯️ ${coin.symbol} son5×15m: ${son5.join(' ')} (g=gövde%, üf=üstfitil% — üstfitil yüksekse alım emiliyor=dağıtım işareti)`);
+                  // AI'ın gerçek girişi vs yapı: giriş fiyatı son bacağın neresinde?
+                  if (ai.side === 'LONG' && ai.entry) {
+                    const seg = c15.slice(Math.max(0,nn-40));
+                    let lo=Infinity,hi=-Infinity; for(const b of seg){lo=Math.min(lo,+b[2]);hi=Math.max(hi,+b[1]);}
+                    const rng=hi-lo, pos=rng>0?((+ai.entry-lo)/rng*100):50;
+                    const slMesafe = ai.sl?((Math.abs(+ai.entry-+ai.sl)/+ai.entry)*100).toFixed(2):'?';
+                    logAuto(`  🎯 ${coin.symbol} AI girişi bacağın %${pos.toFixed(0)}'inde (0=dip,100=tepe) · SL mesafesi %${slMesafe} · ${pos>85?'⚠️ tepe bölgesi':pos<40?'✓ taze bölge':'orta bölge'}`);
+                  }
+                }
+              } catch(_e) { /* log opsiyonel */ }
               decisionChain.aiBrain = ai;
               // R308J: AI kararını dashboard kartına yaz (B-mode kapandığı için buraya taşındı)
               const _q = r308AiPlanQuality(ai);  // R308Y: try dışına alındı — emir kapısı (aşağıda) bunu görmeli
