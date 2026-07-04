@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R361_STRUCTURED_OUTPUT'
+const LAZARUS_BUILD = 'R363_TEPE_FRENI'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3701,12 +3701,18 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
         additionalProperties: false
       }
     };
+    // R362 KESİN ÇÖZÜM (log kanıtı: çıktı:1600 = max_tokens'ın TAMAMI thinking'e gitti, JSON'a sıra kalmadı,
+    // text bloğu BOŞ döndü). Sonnet 5'te adaptive-thinking varsayılan AÇIK ve tüm token bütçesini yutuyor.
+    // Çözüm: thinking'i KAPAT (bu bir scalp kararı, uzun düşünme gereksiz) + Structured Outputs ile JSON garantile.
     const r311tReqBody = JSON.stringify(Object.assign({
       model: ANTHROPIC_MODEL,
       max_tokens: AI_MAX_TOKENS,
       system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
       messages: [{ role: 'user', content: JSON.stringify(brief) }]
-    }, r361IsSonnet5 ? { output_config: { format: r361Schema } } : {}));
+    },
+      r361IsSonnet5 ? { output_config: { format: r361Schema } } : {},
+      r361IsSonnet5 ? { thinking: { type: 'disabled' } } : {}
+    ));
     const r311tTransient = (st) => (st === 429 || st === 500 || st === 502 || st === 503 || st === 529);
     for (let attempt = 0; attempt < 3; attempt++) {
       const controller = new AbortController();
@@ -3743,6 +3749,8 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
       if (resp.status === 400 && r361IsSonnet5 && attempt < 2) {
         const errPeek = await resp.text().catch(()=> '');
         logAuto(`⚠️ 400 (structured outputs reddedildi?) — format'sız tekrar deneniyor: ${String(errPeek).slice(0,100)}`);
+        // R362: EN YALIN istek — ne output_config ne thinking. max_tokens 3000 yüksek olduğu için
+        // thinking token yese bile JSON'a yeterli token kalır. Bu, 400'e karşı en dayanıklı hal.
         const plainBody = JSON.stringify({
           model: ANTHROPIC_MODEL, max_tokens: AI_MAX_TOKENS,
           system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
@@ -3767,7 +3775,11 @@ VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ e
     // R359 SONNET5 FIX: Sonnet 5'te adaptive-thinking varsayılan AÇIK — content array'inde 'thinking'
     // blokları 'text' bloklarıyla karışıyordu ve model JSON'u markdown/düşünceyle sarıyordu.
     // Sadece 'text' tipi bloklar alınır (thinking hariç), sonra JSON agresif çıkarılır.
-    const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text || '').join('').trim();
+    // R362: önce text bloklarını al; boşsa (thinking her şeyi yediyse) TÜM blokların text alanını dene.
+    let text = (j.content || []).filter(b => b.type === 'text').map(b => b.text || '').join('').trim();
+    if (!text) text = (j.content || []).map(b => b.text || (typeof b === 'string' ? b : '')).join('').trim();
+    // R362: hâlâ boşsa stop_reason'ı logla (max_tokens mı, refusal mı — teşhis için)
+    if (!text) logAuto(`⚠️ Sonnet5 boş text! stop_reason:${j.stop_reason||'?'} content_types:${(j.content||[]).map(b=>b.type).join(',')||'yok'} out_tokens:${j.usage?.output_tokens||'?'}`);
     let clean = text.replace(/```json/gi, '').replace(/```/g, '').trim();
     let decision;
     // R359: "side" anahtarı içeren GERÇEK JSON bloğunu bul (düşünce metnindeki {...} parazitlerini atla).
@@ -5526,8 +5538,10 @@ const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_B
 // Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
 // R358: model-bazlı max_tokens. Sonnet 5 adaptive-thinking varsayılan AÇIK + yeni tokenizer (~%30 fazla token)
 // → 600 yetersiz kalıp JSON'u kesebilir (işlem kaçar). Sonnet 5'e 1600 verilir (thinking + JSON için güvenli).
+// R362: Sonnet 5 — thinking:disabled denenir AMA reddedilirse diye max_tokens YÜKSEK tutulur (3000):
+// thinking token yese bile JSON'a 1000+ token kalır. İki güvenlik bir arada (log kanıtı: 1600 hepsi thinking'e gitmişti).
 const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000
-  : /sonnet-5|sonnet5/i.test(ANTHROPIC_MODEL) ? 1600
+  : /sonnet-5|sonnet5/i.test(ANTHROPIC_MODEL) ? 3000
   : 600;
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
@@ -18069,6 +18083,9 @@ async function runAutoScan(prioritySymbol=null) {
                     const rng=hi-lo, pos=rng>0?((+ai.entry-lo)/rng*100):50;
                     const slMesafe = ai.sl?((Math.abs(+ai.entry-+ai.sl)/+ai.entry)*100).toFixed(2):'?';
                     logAuto(`  🎯 ${coin.symbol} AI girişi bacağın %${pos.toFixed(0)}'inde (0=dip,100=tepe) · SL mesafesi %${slMesafe} · ${pos>85?'⚠️ tepe bölgesi':pos<40?'✓ taze bölge':'orta bölge'}`);
+                    // R363: blocking kapısı için konum + momentum'u dışarı taşı
+                    ai._r363Pos = pos;
+                    ai._r363MomDying = (momYon.indexOf('AZALIYOR') >= 0 || momYon.indexOf('ölü') >= 0);
                   }
                 }
               } catch(_e) { /* log opsiyonel */ }
@@ -18108,6 +18125,16 @@ async function runAutoScan(prioritySymbol=null) {
                 // ═══ R308Y: GÜVEN TABANI + PLAN GEÇERLİLİK KAPISI (emirden ÖNCE) ═══
                 // _q yukarıda hesaplandı; ok değilse (güven<64 / SL aşırı geniş / plan tutarsız) AÇMA.
                 // Bu kapı eksikti — 64 tabanı sadece burada uygulanırsa gerçekten işler.
+                // ═══ R363: DİKEY-TEPE GÜVENLİK KAPISI (kullanıcı dersi: HMSTR 04.07) ═══
+                // Bu bir strateji kısıtı DEĞİL, SL gibi matematiksel güvenlik. Sadece EN tehlikeli kesişimde:
+                // giriş bacağın %85+ tepesinde VE momentum ölüyor VE AI güveni ısrarcı-değil (<78).
+                // Kullanıcı HMSTR'yi tam bu profilde elle kapatıp zarardan kurtardı; kendi log'umuz da uyarmıştı.
+                // AI gerçekten güçlü görüyorsa (güven 78+) geçer — sadece zayıf tepe-girişleri durur.
+                if (ai.side === 'LONG' && Number(ai._r363Pos) >= 85 && ai._r363MomDying && Number(ai.confidence) < 78) {
+                  logAuto(`🛑 ${coin.symbol} R363 DİKEY-TEPE FRENİ: giriş bacağın %${Number(ai._r363Pos).toFixed(0)}'inde + momentum ölüyor + güven ${ai.confidence}<78 → AÇILMADI (tepe-girişi zarar riski; taze geri çekilme beklenir). Güven 78+ olsaydı geçerdi.`);
+                  markAutoSkip(coin.symbol, `R363: dikey-tepe + ölen momentum + düşük güven`, {rec:ai.side, score, aiBrain:ai});
+                  continue;
+                }
                 if (!_q.ok) {
                   logAuto(`⛔ ${coin.symbol} AI emir reddi: ${_q.reason} — AÇILMADI`);
                   markAutoSkip(coin.symbol, `AI kalite/güven reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
