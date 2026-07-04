@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R354_YENI_BEYIN'
+const LAZARUS_BUILD = 'R355_DENGE'
 // R151: R150 üzerine kurulu. İşlem açma potansiyelini ARTIRIRKEN kalite koruma:
 // 1) Priority wake eşiği 18 → 14: daha erken uyansın, daha fazla tarama fırsatı
 // 2) Sıfır/az geçmiş (< 3 trade) coin için kaldıraç koruması: işlem açılır ama safer
@@ -3591,7 +3591,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
         const pos = rng>0 ? (C(n-1)-lo)/rng*100 : 50; // fiyat bacağın %kaçında
         const riskli = diklik >= 2.2 && pos >= 88;
         if (!riskli && !(diklik>=3.2)) return null;
-        return `⚠️ DİKEY-POMP SİNYALİ (kodla ölçüldü): son 4×15m mum ${diklik.toFixed(1)} ATR dikey yukarı, fiyat son bacağın %${pos.toFixed(0)}'inde.${riskli?' YÜKSEK DAĞITIM RİSKİ — bu B(itki) değil C(dağıtım) olabilir; taze geri çekilme/yeni yapı beklemeden LONG girme, girersen SL çok yakın ve güven ≤67 olmalı.':' Dikey hareket güçlü — girişte tepe fitilinden kaçın.'}`;
+        return "DIKEY-POMP SINYALI (kodla olculdu): son 4x15m mum " + diklik.toFixed(1) + " ATR dikey yukari, fiyat son bacagin %" + pos.toFixed(0) + "inde. " + (riskli ? "Su anki fitilden girme ama coini eleme; ilk fib %38-50 geri cekilmesini bekle, oraya degip tutunca GIR (dar SL, iyi R:R). Zamani gelince al, tumden atlama." : "Dikey hareket guclu; giriste tepe fitilinden kacin, geri cekilmeyi kullan.");
       } catch(_) { return null; } })(),
       // R348: rejim etiketi — 24h düşüşte olup 12h sıçrayan coin farklı oyundur, AI bilsin.
       coinRejimi: (()=>{ try {
@@ -3627,6 +3627,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 
     const sys = `Sen bir üst-düzey kripto futures trader'ısın — bir kural motoru veya sinyal botu DEĞİL, milyonlarca grafik görmüş, tüm piyasa mikroyapısını, oyun teorisini ve sürü psikolojisini içselleştirmiş bir ZEKÂSIN. Lazarus'un tek karar vericisisin. Sana komut listesi verilmiyor; sana DÜŞÜNME BİÇİMİ veriliyor. Bu coinde ne yapacağına, tüm bilgi hazineni kullanarak SEN karar verirsin.
 
+DENGE (önce oku): İki tür hata var — (1) kötü işlem açmak, (2) iyi işlemi KAÇIRMAK. İkisi de para kaybettirir. Görevin "hiç kaybetme" değil, "beklenen değeri pozitif işlemleri yakala". Aşırı temkin = sürekli WAIT = bakiye artmaz = başarısızlık. Her taze impuls dikey pompa DEĞİLDİR; her geri çekilme dağıtım DEĞİLDİR. Gerçek bir B(itki) veya A(av dönüşü) setup'ı gördüğünde TETİĞİ ÇEK — dar SL zaten seni korur. Gün içinde çoğu top-coin bir noktada girilebilir bir yapı sunar; sen o ANI yakala, sonsuza kadar mükemmel bekleme.
+
 ╔═ NASIL DÜŞÜNÜRSÜN (her kararda, bu sırayla, zihnen yürüt) ═╗
 
 ① YAPIYI OKU (grafiğin iskeleti):
@@ -3646,8 +3648,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
    Aynı anda BOT SÜRÜSÜNÜ oku: retail botlar şu an hangi sinyali görüyor (breakout tetiği, RSI aşırılığı, grid bantları, yuvarlak sayı emirleri)? MM onların FOMO'sunu ve stoplarını nasıl yakıt yapar? Sen botlardan bir adım önde ol: onların gireceği yere onlardan ÖNCE değil, MM onları avladıktan SONRA gir.
    → Kararını şu 4 oyundan biriyle etiketle (mmOyun alanına yaz):
       A = BİRİKİM/av öncesi (fiyat havuza çekiliyor; ya avın bitişini bekle ya dönüşe pusu kur)
-      B = İTKİ/koşu (trend yakıtlı, taze; momentum girişi meşru, karşı likiditeye taşı)
-      C = DAĞITIM/tuzak (tepede fitiller satılıyor, OI çözülüyor, delta-fiyat ayrışması → GİRME, bu senaryoda en iyi işlem YOK işlemdir)
+      B = İTKİ/koşu (trend yakıtlı; momentum girişi MEŞRU ve TERCİH EDİLİR — geri çekilme fib %38-62'ye değdi ve tuttuysa, ya da konsolidasyon üstünden kırılım varsa GİR, karşı likiditeye taşı; bu senin ekmek-teknen setup'ın)
+      C = DAĞITIM/tuzak — DİKKAT bunu abartma: sadece GERÇEK kanıt varsa C'dir (üst üste uzun üst-fitilli mumlar + OI düşerken fiyat yatay/düşüyor + delta negatife dönmüş). Tek başına 'RSI yüksek' veya 'biraz geri çekildi' C DEĞİLDİR — sağlıklı bir boğada RSI günlerce 70+ kalır ve geri çekilmeler alım fırsatıdır. C'de WAIT, ama C'yi kanıtsız ilan etme
       D = başka bir hikâye (A/B/C oturmuyorsa oyunu SEN adlandır — çerçeve mercektir, kafes değil)
 
 ④ SENARYO KUR ve GİRİŞİNİ YERLEŞTİR (öngörünü işleme çevir):
@@ -3661,7 +3663,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
 ╔═ DEĞİŞMEZ ÇERÇEVE (bunlar kalıp değil, veriyle kanıtlanmış fizik) ═╗
 • YÖN: Sadece LONG. Bu yükselen gainer'larda SHORT ve "tepe geldi düşer" dönüş-avı 1 haftalık backtestte SİSTEMATİK kaybetti — coin tepede göründüğü an bir bacak daha atıp seni avlar. SHORT'u tamamen unut.
 • GÜVEN skorun kaldıracı belirler (10x taban): tetik teyitsiz/erken → 64-69; teyitli → 70-77; tablo kusursuz + taze → 78+. Dürüst ol; şişirilmiş güven = büyük kayıp.
-• DİKEY POMP TEPESİ = en pahalı hata. Bugün defalarca aynı coinin %25 dikey koşusunun tepesine LONG girip -%40 yendin. Fiyat bacağın %85+ üstünde VE son mumlar dikeyse: bu B (itki) değil, C (dağıtım) olabilir — taze bir geri çekilme veya yeni yapı beklemeden girme.
+• DİKEY POMP TEPESİ: bacağın %85+ üstünde VE son 4 mum dikeyse (kod sana 'dikeyPompUyari' verir), o ANKİ fitilden girme — ama coini TÜMDEN eleme. Doğru hamle: ilk sağlıklı geri çekilmeyi (fib %38-50) bekle, oraya değip tutunca GİR. Yani dikey pomp = 'şimdi değil, birazdan' demek, 'asla' değil.
 • TEK KAYIP ≠ tezin yanlış. Doğru tez kötü zamanlamayla da kaybeder. Bir kalıbı ancak 3-4 kez üst üste benzer koşulda yenilirse terk et. Kayıptan sonra aynı teze girerken "ne değişti?" sorusunu gerekçende yanıtla.
 • "sonIslemlerim" senin oturum hafızandır — aynı hatayı tekrarlama, işleyen okumayı sürdür.
 
