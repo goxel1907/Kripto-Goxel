@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R369_LIKIDASYON_TEPE_FIX'
+const LAZARUS_BUILD = 'R369D_FIB_COIN_FIX'
 // R367 HİBRİT MİMARİ ÖZET:
 //  • R367 çöküş/tepe koruması (dikey-tepe+momentum-ölü+dağıtım+dikey-pomp) HER LONG'da aktif — AI'dan bağımsız, bedava.
 //    2+ risk sinyali → giriş ENGELLENİR (BIRB -%27 tipi). 1 sinyal → SL %40 daraltılır.
@@ -3497,25 +3497,27 @@ function r366ParabolicFib1m(k1m, lastPrice) {
     // Yukarı parabolikte tepeden geriye yürüyüp bacağı başlatan swing DİBİNİ (fraktal, derinlik ≥ makro %30) bul.
     // Aşağı parabolikte dipten geriye yürüyüp bacağı başlatan swing TEPESİNİ bul. Böylece güncel bacak çekilir, 1 saatlik komple uç değil.
     let legLo = lo, legHi = hi;
+    let legLoIdx = loIdx, legHiIdx = hiIdx; // R369-D FIX: fraktal indeksini de yakala (diklik hesabı için)
     if (yukari && hiIdx >= 4) {
       for (let j = hiIdx - 2; j >= 2; j--) {
         const l = bars[j].l;
         const isFr = l <= Math.min(bars[j-1].l, bars[j-2].l, bars[j+1].l, bars[j+2].l);
-        if (isFr && (hi - l) >= macroRange * 0.30) { legLo = l; break; }
+        if (isFr && (hi - l) >= macroRange * 0.30) { legLo = l; legLoIdx = j; break; }
       }
     } else if (!yukari && loIdx >= 4) {
       for (let j = loIdx - 2; j >= 2; j--) {
         const h = bars[j].h;
         const isFr = h >= Math.max(bars[j-1].h, bars[j-2].h, bars[j+1].h, bars[j+2].h);
-        if (isFr && (h - lo) >= macroRange * 0.30) { legHi = h; break; }
+        if (isFr && (h - lo) >= macroRange * 0.30) { legHi = h; legHiIdx = j; break; }
       }
     }
     const range = legHi - legLo;  // artık SON BACAK aralığı (Fable mantığı)
     if (range <= 0) return null;
 
-    // Parabolik güç: SON BACAĞIN kaç ATR olduğu + kaç mumda kat edildiği
-    const bacakBasIdx = yukari ? loIdx : hiIdx;  // yaklaşık bacak başı
-    const bacakMum = Math.max(1, Math.abs((yukari ? hiIdx : loIdx) - bacakBasIdx));
+    // R369-D FIX (kullanıcı tespiti — %93 örnekte tutarsızdı): diklik/bacakMum, MUTLAK uç yerine
+    // FRAKTAL bacak indekslerini kullanmalı. Önceden bacakMum mutlak dip→tepe (37 mum) sanılıyordu ama
+    // gerçek bacak fraktal dip→tepe (3 mum) idi → diklik yanlış düşük çıkıp parabolik hareketler kaçıyordu.
+    const bacakMum = Math.max(1, Math.abs(legHiIdx - legLoIdx));
     const bacakATR = range / atr;
     const diklik = bacakATR / bacakMum; // ATR/mum — yüksekse dikey/parabolik
     // Son 5 mumun hız ivmesi (parabolik ivmeleniyor mu)
@@ -6625,8 +6627,14 @@ function r152FilterAndExtendGainers(data=[], onboardMap=new Map(), n=R33_TOP_GAI
       const _range = Math.max(1e-12, c.high - c.low);
       const _pos = (c.price - c.low) / _range;
       const _fresh = 0.55 + (Math.abs(_pos - 0.5) * 2 * 0.45); // 0.55x (ölü orta) → 1.0x (taze uç)
-      const _score = ((c.rangePct * 1.6) + (Math.abs(c.change24h) * 0.8) +
-                      (Math.log10(Math.max(1, c.volume)) * 2) + (Math.log10(Math.max(1, c.trades)) * 1.5)) * _fresh;
+      // R369-D (kullanıcı tespiti): LONG-only stratejiyle TUTARLI seçim. Eski skor Math.abs(change24h) ile
+      // düşen coinleri de seçiyordu (SHORT içindi) → LONG-only'de düşen coine LONG açma riski.
+      // Şimdi: YÜKSELEN coin güçlü avantajlı, düşen coin ağır cezalı (ama tamamen elenmez — taban toparlanması olabilir).
+      const _yonCarpan = c.change24h >= 0 ? 1.0 : 0.35; // düşen coin skoru %65 kırpılır (LONG için uygun değil)
+      // change24h'ı işaretli kullan (pozitif katkı sadece yükselene), rangePct+hacim yön-bağımsız kalır
+      const _chgKatki = c.change24h >= 0 ? c.change24h * 1.2 : 0; // düşen coine change bonusu YOK
+      const _score = ((c.rangePct * 1.6) + _chgKatki +
+                      (Math.log10(Math.max(1, c.volume)) * 2) + (Math.log10(Math.max(1, c.trades)) * 1.5)) * _fresh * _yonCarpan;
       return { ...c, r152Score: _score };
     })
     .sort((a,b) => (b.r152Score - a.r152Score));
@@ -16220,7 +16228,8 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
         // Bu bir strateji dayatması değil, veriyle kanıtlanmış bir güvenlik (SL gibi).
         if (ai.side === 'SHORT') {
           const _htfAsagi = (()=>{ try {
-            const k1h = analysis?.r308RawCandles?.['1h']; const k4h = analysis?.r308RawCandles?.['4h'];
+            const _an = (typeof analysis !== 'undefined') ? analysis : null;
+            const k1h = _an?.r308RawCandles?.['1h']; const k4h = _an?.r308RawCandles?.['4h'];
             const yonAsagi = (arr) => {
               if (!Array.isArray(arr) || arr.length < 6) return false;
               const n = arr.length;
@@ -16303,7 +16312,7 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
           aiBrain: ai,
           aiRunner: (()=>{ // R368: AI "RUNNER" der VEYA bot uygun görür → RUNNER (varsayılan, uygun koşulda)
             const aiRunner = String(ai.karKosma || '').toUpperCase() === 'RUNNER';
-            const botDurum = r368BotRunnerUygunMu(analysis, coin);
+            const botDurum = (typeof analysis !== 'undefined' && analysis) ? r368BotRunnerUygunMu(analysis, coin) : { runner:false, sebep:'analiz-yok', puanSayi:0 };
             const runner = aiRunner || botDurum.runner;
             if (runner && !aiRunner) logAuto(`🏃 ${coin.symbol} R368 BOT-RUNNER: ${botDurum.sebep} (${botDurum.puanSayi} güç sinyali) — kâr TP'de kesilmez, trailing ile taşınır`);
             else if (runner && aiRunner) logAuto(`🏃 ${coin.symbol} RUNNER: AI önerdi${botDurum.runner?' + bot onayladı':''}`);
@@ -17717,7 +17726,7 @@ async function runAutoScan(prioritySymbol=null) {
           // Çok riskli (2+ sinyal) → girişi ENGELLE. Tek sinyal → SL'i daralt (yarıya), risk azalt.
           if (_koruma.riskSayi >= 2) {
             logAuto(`🛑 ${coin.symbol} R367 ÇÖKÜŞ KORUMASI: ${_koruma.risk} — LONG ENGELLENDİ (tepe-girişi, BIRB -%27 tipi risk). ${AI_BRAIN_ENABLED?'AI onayladı ama kod vetoladı':'saf kod koruması'}`);
-            markAutoSkip(coin.symbol, `R367 çöküş koruması: ${_koruma.risk}`, {rec:ai?.side||recommendation, score, aiBrain:ai});
+            markAutoSkip(coin.symbol, `R367 çöküş koruması: ${_koruma.risk}`, {rec:(decisionChain?.aiBrain?.side)||recommendation, score, aiBrain:(decisionChain?.aiBrain||null)});
             continue;
           } else if (_koruma.riskSayi === 1) {
             const _oldSL = userSLPct;
@@ -18496,14 +18505,19 @@ async function runAutoScan(prioritySymbol=null) {
                         // Eski R319B "min 10x" kuralı geniş SL'de tehlikeliydi (%9 SL × 10x = %90 risk = likidasyon).
                         // Yeni mantık: SL × kaldıraç ≤ %40 marjin riski. Dar SL'de yüksek kaldıraç (25x'e kadar),
                         // geniş SL'de düşük kaldıraç (min 3x). Risk sabit kalır, AI istediği SL'i kullanabilir.
-                        const maxRoiRisk = 40; // max %40 marjin riski (likidasyondan güvenli mesafe)
+                        // R369-B (canlı karne dersi): %40→%25. Gerçek zararlar -%22-50 marjdı (SL%2-4 × 10-13x).
+                        // Ortalama zarar -%35 vs ortalama kazanç +%13 = kayıplar 2.6x derin ('bir aşağı bir yukarı' sebebi).
+                        // %25 sınırı: her zarar en fazla -%25 marj. Kazançları etkilemez (BE/trailing korur), sadece kayıpları sığlaştırır.
+                        const maxRoiRisk = 25; // max %25 marjin riski (küçük bakiye — kayıp sığ olmalı)
                         if (userSLPct * executeLeverage > maxRoiRisk) {
                           const oldLev = executeLeverage;
-                          const riskLev = Math.max(3, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct))); // min 3x taban
+                          // Geniş SL'de kaldıraç düşer AMA çok düşükse (SL çok geniş) o işlem zaten riskli — min 6x'te tut,
+                          // altına inerse SL gerçekten fazla geniştir (AI daha dar SL seçmeli). 6x×%4SL=%24 hâlâ sınırda.
+                          const riskLev = Math.max(6, Math.floor(maxRoiRisk / Math.max(0.1, userSLPct)));
                           executeLeverage = Math.min(executeLeverage, riskLev);
                           if (executeLeverage !== oldLev) {
-                            leverageNote += ` · R334 SL×Lev güvenlik ${oldLev}x→${executeLeverage}x (SL%${userSLPct}×lev≤%40, likidasyon koruması)`;
-                            logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} geniş → kaldıraç ${oldLev}x→${executeLeverage}x (risk %${(userSLPct*executeLeverage).toFixed(0)}, likidasyon güvenli)`);
+                            leverageNote += ` · R369-B SL×Lev güvenlik ${oldLev}x→${executeLeverage}x (SL%${userSLPct}×lev≤%25, kayıp sığlaştırma)`;
+                            logAuto(`🛡️ ${coin.symbol} AI SL %${userSLPct} geniş → kaldıraç ${oldLev}x→${executeLeverage}x (risk %${(userSLPct*executeLeverage).toFixed(0)}, max %25)`);
                           }
                         }
                       } catch(_levSafeE) {}
@@ -19000,24 +19014,39 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   let realPnlFromIncome = null;
   if ((!wa.pnl || wa.pnl === 0) && apiKey && apiSecret) {
     try {
+      // R369-C FIX (panel PnL bug): TLM gibi aynı coinde kısa aralıkla çok işlem olunca,
+      // geniş zaman penceresi BİRDEN FAZLA işlemin income'ını topluyordu → bir işleme başkasının kârı yazılıyordu
+      // (TLM 21:07 panel +6.29$ ama gerçek -%97). Çözüm: pencereyi bu işlemin AÇILIŞ-KAPANIŞ aralığına SIKIŞTIR.
       const openTs = Number(state?.openTs || state?.openedAt || 0);
-      const incomeStart = openTs > 0 ? openTs - 5000 : Date.now() - 5*60*1000;
-      const incomeEnd = Date.now() + 2000;
+      const closeTs = Date.now();
+      // Pencere: açılıştan 3sn önce → kapanıştan 3sn sonra (SADECE bu işlemin ömrü). Başka işlemin income'ı girmez.
+      const incomeStart = openTs > 0 ? openTs - 3000 : closeTs - 90*1000; // openTs yoksa son 90sn (dar)
+      const incomeEnd = closeTs + 3000;
       const incomeData = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
         symbol, incomeType:'REALIZED_PNL', startTime:incomeStart, endTime:incomeEnd, limit:20
       });
       if (Array.isArray(incomeData) && incomeData.length > 0) {
-        realPnlFromIncome = incomeData.reduce((sum, x) => sum + parseFloat(x.income||0), 0);
-      }
-      if ((!Number.isFinite(realPnlFromIncome) || Math.abs(realPnlFromIncome) < 0.000001)) {
-        const wideIncome = await bReq(apiKey, apiSecret, 'GET', '/fapi/v1/income', {
-          symbol, incomeType:'REALIZED_PNL', startTime:Math.max(0, Date.now() - 2*60*60*1000), endTime:Date.now()+5000, limit:50
-        }).catch(()=>[]);
-        if (Array.isArray(wideIncome) && wideIncome.length > 0) {
-          // Tek pozisyon mantığında aynı sembolde en son kapanış gelirini al; 0.00 dashboard körlüğünü azaltır.
-          realPnlFromIncome = wideIncome.slice(-3).reduce((sum, x) => sum + parseFloat(x.income||0), 0);
+        // Bu dar pencerede birden fazla income varsa (nadir), miktar-fiyat ile en yakınını al; yoksa topla.
+        if (incomeData.length === 1) {
+          realPnlFromIncome = parseFloat(incomeData[0].income||0);
+        } else {
+          // Birden fazla: bu işlemin beklenen PnL'ine (approxPnlFromPrice benzeri) en yakın olanı seç
+          const ep = Number(state?.entryPrice || state?.entry || 0);
+          const cp = Number(closePrice || 0);
+          const qty = Math.abs(Number(state?.positionAmt || state?.qty || state?.quantity || 0));
+          const beklenen = (ep>0 && cp>0 && qty>0) ? (cp-ep)*qty*((normalizeSide(state?.side)==='SHORT')?-1:1) : null;
+          if (beklenen !== null) {
+            // beklenene en yakın income'ı seç (yanlış işlemin kârını alma)
+            let best=incomeData[0], bestDiff=Math.abs(parseFloat(incomeData[0].income||0)-beklenen);
+            for (const x of incomeData) { const d=Math.abs(parseFloat(x.income||0)-beklenen); if(d<bestDiff){bestDiff=d;best=x;} }
+            realPnlFromIncome = parseFloat(best.income||0);
+          } else {
+            realPnlFromIncome = incomeData.reduce((sum, x) => sum + parseFloat(x.income||0), 0);
+          }
         }
       }
+      // R369-C: GENİŞ fallback KALDIRILDI. Yanlış income (2 saatlik pencereden son 3) yazmaktansa,
+      // approxPnlFromPrice (giriş-çıkış-miktar hesabı) devreye girsin — o her zaman DOĞRU işleme ait.
     } catch(_e) {}
   }
   // R167/R169: income yoksa/0 geldiyse entry-close-qty ile gerçekçi PnL fallback.
