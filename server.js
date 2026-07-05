@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R368_BOT_RUNNER'
+const LAZARUS_BUILD = 'R369_LIKIDASYON_TEPE_FIX'
 // R367 HİBRİT MİMARİ ÖZET:
 //  • R367 çöküş/tepe koruması (dikey-tepe+momentum-ölü+dağıtım+dikey-pomp) HER LONG'da aktif — AI'dan bağımsız, bedava.
 //    2+ risk sinyali → giriş ENGELLENİR (BIRB -%27 tipi). 1 sinyal → SL %40 daraltılır.
@@ -3796,7 +3796,7 @@ NASIL USTA GİBİ DAVRAN:
 - Giriş: reclaim mumunda ya da hemen sonrasında (sweep dibinin hemen üstü).
 - SL: süpürülen likidite seviyesinin biraz altı (dar tut, ~1-1.5 ATR — süpürme başarısızsa fikir çabuk bozulur).
 - TP: GENİŞ tut. Bir üstteki likidite seviyesine / yapı hedefine (~3-4 ATR). Kazançları büyüt, kayıpları kısa kes — bu stratejinin matematiği buna dayanır (WR ~%48 ama kazananlar büyük).
-- Kaldıraç: güven 64-69→10x, 70-77→15x, 78-84→20x, 85+→25x. TAVAN 25x (küçük bakiye koruması), AŞMA.
+- Kaldıraç: güven 64-69→10x, 70-77→13x, 78+→15x. TAVAN 15x (küçük bakiye LİKİDASYON koruması — 20x+ hesabı sildirir), AŞMA. Güvenin kaldıracı ölçer ama 15x katıdır.
 
 VERİ: "mumlar" = OHLCV [Açılış,Yüksek,Düşük,Kapanış,Hacim], en sağ en güncel. 1d(30, aylık büyük resim) + 4h(30) + 1h(40, HTF trend) + 15m(150, ANA GRAFİK — kararını burada ver, 37 saatlik hikaye) + 5m(50, sadece giriş zamanlaması için ince ayar) + btc5m.
 
@@ -6396,7 +6396,7 @@ function r311zCoinGecmisOzeti(symbol, lookbackMs = 6 * 60 * 60 * 1000) {
 const R84_MUM_MS = 5 * 60 * 1000;
 const CD_PROFIT_MS  = 10 * 60 * 1000;  // TP / kâr taşıma: 2 mum
 const CD_BE_MS      =  8 * 60 * 1000;  // başabaş / küçük koruma kapanışı: yaklaşık 1-2 mum
-const CD_MANUAL_MS  = 15 * 60 * 1000;  // kullanıcı/Binance dış kapanış: 3 mum
+const CD_MANUAL_MS  = 30 * 60 * 1000;  // R369: 15→30dk. TLM 18:00 +%57 kazandı, 18:30 aynı coine dönüp -%27 yedi (coin artık tepedeydi). Kapanış sonrası aynı coine 30dk girme — tepede tekrar giriş tuzağı.
 const CD_LOSS_MS    = 60 * 60 * 1000;  // R149: normal zarar/SL sonrası aynı yön 1 saat; ters yön serbest
 const CD_HARD_LOSS_MS = 60 * 60 * 1000; // R149: sert zarar/acil koruma sonrası aynı yön 1 saat; ters yön serbest
 const CD_ERR_MS_R25 = 8 * 60 * 1000;  // emir hatası: yaklaşık 1-2 mum
@@ -17698,7 +17698,7 @@ async function runAutoScan(prioritySymbol=null) {
             let lo=Infinity,hi=-Infinity; for(const b of seg){lo=Math.min(lo,+b[2]);hi=Math.max(hi,+b[1]);}
             const rng=hi-lo; const pos = rng>0 ? (entryRef-lo)/rng*100 : 50;
             // 1) DİKEY TEPE: fiyat bacağın %88+ üstünde
-            const dikeyTepe = pos >= 88;
+            const dikeyTepe = pos >= 85; // R369: 88→85 (TLM 18:30 -%27 tepe-girişi kaçmıştı; backtest'te iyi giriş elemiyor)
             // 2) MOMENTUM ÖLÜMÜ: son 3 mum gövde ort < önceki 3'ün %60'ı + son mum kırmızı
             let momOlu=false;
             if(n>=6){ const g=(a,z)=>{let s=0;for(let i=a;i<z;i++)s+=Math.abs(C(i)-O(i));return s/(z-a);};
@@ -18467,10 +18467,12 @@ async function runAutoScan(prioritySymbol=null) {
                         const binancePanelCap = Math.max(1, executeLeverage);
                         // R325D: TEK PATRON AI KALDIRAÇ — TAVAN 25x (küçük bakiye likidasyon koruması, kullanıcı talimatı).
                         // Taban 10x. AI güveni yükseldikçe artar ama 25x'i AŞMAZ. Promptaki tabloyla senkron.
+                        // R369 (canlı karne dersi): TAVAN 25x→15x. Gece VANRY 20x LİKİDE oldu (-84%).
+                        // Küçük bakiyede 20x-25x ölümcül: tek ters hareket = likidasyon. Backtest 10x ile +573% yaptı,
+                        // 15x fazlasıyla yeter. Yüksek güven artık 15x tavanda kalır — likidasyon riski kesildi.
                         let aiTargetLev;
-                        if (aiConf >= 85)      aiTargetLev = 25;  // en net setup: tavan 25x
-                        else if (aiConf >= 78) aiTargetLev = 20;
-                        else if (aiConf >= 70) aiTargetLev = 15;
+                        if (aiConf >= 78)      aiTargetLev = 15;  // en net setup: TAVAN 15x (25x değil)
+                        else if (aiConf >= 70) aiTargetLev = 13;
                         else                   aiTargetLev = 10;  // 64-69: TABAN 10x
                         // AI panel tavanından MUAF — Binance fiziksel izni VE 25x tavanı sınırlar.
                         let r310BinanceMax = null;
@@ -18478,7 +18480,7 @@ async function runAutoScan(prioritySymbol=null) {
                           r310BinanceMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * aiTargetLev).catch(()=>null);
                         } catch(_e) {}
                         const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? Math.min(25, r310BinanceMax) : 25; // R325D: 25x mutlak tavan
-                        aiTargetLev = Math.max(10, Math.min(aiTargetLev, r310Ceil)); // R325D: min 10x, max 25x
+                        aiTargetLev = Math.max(10, Math.min(15, Math.min(aiTargetLev, r310Ceil))); // R369: min 10x, TAVAN 15x (likidasyon koruması)
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
