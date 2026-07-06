@@ -17715,7 +17715,7 @@ async function runAutoScan(prioritySymbol=null) {
             let lo=Infinity,hi=-Infinity; for(const b of seg){lo=Math.min(lo,+b[2]);hi=Math.max(hi,+b[1]);}
             const rng=hi-lo; const pos = rng>0 ? (entryRef-lo)/rng*100 : 50;
             // 1) DİKEY TEPE: fiyat bacağın %88+ üstünde
-            const dikeyTepe = pos >= 85; // R369: 88→85 (TLM 18:30 -%27 tepe-girişi kaçmıştı; backtest'te iyi giriş elemiyor)
+            const dikeyTepe = pos >= 82; // R369: 88→85 (TLM 18:30 -%27 tepe-girişi kaçmıştı; backtest'te iyi giriş elemiyor)
             // 2) MOMENTUM ÖLÜMÜ: son 3 mum gövde ort < önceki 3'ün %60'ı + son mum kırmızı
             let momOlu=false;
             if(n>=6){ const g=(a,z)=>{let s=0;for(let i=a;i<z;i++)s+=Math.abs(C(i)-O(i));return s/(z-a);};
@@ -17726,6 +17726,8 @@ async function runAutoScan(prioritySymbol=null) {
             // 4) DİKEY POMP: son 4 mum çok dik (parabolik tepe)
             let body4=0; for(let i=n-4;i<n;i++)body4+=(C(i)-O(i)); const diklik=body4/atr;
             const dikeyPomp = diklik>=2.5 && pos>=82;
+            // YENİ: Sadece tepe pozisyonu + momentum zayıflığı
+            const tepeBlok = pos >= 82 && (momOlu || dagitim);
             // Risk skoru
             const riskler=[]; if(dikeyTepe)riskler.push('dikey-tepe(%'+pos.toFixed(0)+')'); if(momOlu)riskler.push('momentum-ölü'); if(dagitim)riskler.push('dağıtım-fitil'); if(dikeyPomp)riskler.push('dikey-pomp('+diklik.toFixed(1)+'ATR)');
             return { risk: riskler.length ? riskler.join('+') : 'temiz', pos, momOlu, dagitim, dikeyTepe, dikeyPomp, riskSayi: riskler.length };
