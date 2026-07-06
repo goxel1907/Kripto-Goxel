@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R370_ERKEN_YUKSELIS'
+const LAZARUS_BUILD = 'R370C_BLUR_VANRY_FIX'
 // R367 HİBRİT MİMARİ ÖZET:
 //  • R367 çöküş/tepe koruması (dikey-tepe+momentum-ölü+dağıtım+dikey-pomp) HER LONG'da aktif — AI'dan bağımsız, bedava.
 //    2+ risk sinyali → giriş ENGELLENİR (BIRB -%27 tipi). 1 sinyal → SL %40 daraltılır.
@@ -14391,6 +14391,35 @@ const trailingState = new Map(); // symbol → pozisyon durumu
 // Aynı coine tekrar tekrar girmesini önler. Manuel/SL/TP kapanışında,
 // hata durumunda ve açık pozisyon varken cooldown eklenir.
 const cooldownMap = new Map(); // symbol (FULLSYM) → expiry timestamp
+// R370-E: COIN ZARAR TAKİBİ (VANRY dersi: aynı coin üst üste kaybediyor, 3 büyük kayıp hep VANRY'di).
+// Bir coin kısa sürede 2 kez zarar yazdıysa, o coini 2 saat BLOKLA (aynı tuzağa 3. kez düşme).
+const r370CoinZararMap = new Map(); // base symbol → { count, lastLossTs, blockUntil }
+function r370CoinZararKaydet(baseSymbol) {
+  try {
+    const base = String(baseSymbol||'').replace('USDT','').toUpperCase();
+    const now = Date.now();
+    const rec = r370CoinZararMap.get(base) || { count:0, lastLossTs:0, blockUntil:0 };
+    // Son zarardan 90dk geçtiyse sayaç sıfırlanır (eski zararlar birikmesin)
+    if (now - rec.lastLossTs > 90*60*1000) rec.count = 0;
+    rec.count++; rec.lastLossTs = now;
+    // 2 zarar birikince 2 saat blok
+    if (rec.count >= 2) {
+      rec.blockUntil = now + 2*60*60*1000;
+      logAuto(`🚫 ${base} R370-E COIN BLOK: 90dk içinde ${rec.count} zarar — 2 saat bloklandı (VANRY dersi: aynı coine ısrar etme)`);
+    }
+    r370CoinZararMap.set(base, rec);
+  } catch(_) {}
+}
+function r370CoinBlokluMu(baseSymbol) {
+  try {
+    const base = String(baseSymbol||'').replace('USDT','').toUpperCase();
+    const rec = r370CoinZararMap.get(base);
+    if (rec && rec.blockUntil > Date.now()) {
+      return { blok:true, kalanDk: Math.ceil((rec.blockUntil-Date.now())/60000) };
+    }
+    return { blok:false };
+  } catch(_) { return { blok:false }; }
+}
 const COOLDOWN_CLOSE_MS   = CD_MANUAL_MS; // R84: genel kapanış bekleme yedeği
 const COOLDOWN_ERR_MS     = CD_ERR_MS_R25; // R84: emir hatası bekleme
 // NOT: POSOPEN cooldown kaldırıldı — açık pozisyon koruması alreadyOpen kontrolüyle yapılır
@@ -17856,9 +17885,23 @@ async function runAutoScan(prioritySymbol=null) {
             // 4) DİKEY POMP: son 4 mum çok dik (parabolik tepe)
             let body4=0; for(let i=n-4;i<n;i++)body4+=(C(i)-O(i)); const diklik=body4/atr;
             const dikeyPomp = diklik>=2.5 && pos>=82;
+            // 5) R370-C MAKRO PARABOLİK TEPE (BLUR dersi): coin son 20-30 mumda parabolik PUMP yaptı VE
+            //    şu an o pump'ın ÜST bölgesindeyse (konsolidasyon olsa bile) = pump-sonrası tepe, LONG riskli.
+            //    R367 'yakın momentum'a bakıyordu; BLUR yatay konsolidasyondaydı ama bütün olarak tepedeydi, kaçtı.
+            let makroTepe=false, makroPumpPct=0;
+            if(n>=24){
+              // son 24 mumun dip→şimdi yükselişi (pump büyüklüğü)
+              let dip24=Infinity, dipIdx=n-24; for(let i=n-24;i<n;i++){ if(L(i)<dip24){dip24=L(i);dipIdx=i;} }
+              const zirve24 = Math.max(...Array.from({length:24},(_,k)=>H(n-24+k)));
+              makroPumpPct = dip24>0 ? (zirve24-dip24)/dip24*100 : 0;
+              // pump zirvesine göre şu anki konum (dip sonrası yükselişte neredeyiz)
+              const pumpPos = (zirve24-dip24)>0 ? (entryRef-dip24)/(zirve24-dip24)*100 : 50;
+              // MAKRO TEPE: son 24 mumda %25+ parabolik pump VAR VE şu an o pump'ın üst %78+'inde VE dip pompadan önce (dipIdx eski)
+              makroTepe = makroPumpPct>=25 && pumpPos>=78 && dipIdx < n-6;
+            }
             // Risk skoru
-            const riskler=[]; if(dikeyTepe)riskler.push('dikey-tepe(%'+pos.toFixed(0)+')'); if(momOlu)riskler.push('momentum-ölü'); if(dagitim)riskler.push('dağıtım-fitil'); if(dikeyPomp)riskler.push('dikey-pomp('+diklik.toFixed(1)+'ATR)');
-            return { risk: riskler.length ? riskler.join('+') : 'temiz', pos, momOlu, dagitim, dikeyTepe, dikeyPomp, riskSayi: riskler.length };
+            const riskler=[]; if(dikeyTepe)riskler.push('dikey-tepe(%'+pos.toFixed(0)+')'); if(momOlu)riskler.push('momentum-ölü'); if(dagitim)riskler.push('dağıtım-fitil'); if(dikeyPomp)riskler.push('dikey-pomp('+diklik.toFixed(1)+'ATR)'); if(makroTepe)riskler.push('makro-parabolik-tepe(pump%'+makroPumpPct.toFixed(0)+')');
+            return { risk: riskler.length ? riskler.join('+') : 'temiz', pos, momOlu, dagitim, dikeyTepe, dikeyPomp, makroTepe, riskSayi: riskler.length };
           } catch(_) { return { risk:'hata' }; } })();
 
           // ═══ R369-E DÜŞEN BIÇAK KORUMASI (görsel kanıt 4USDT/TLM: giriş anında fiyat düşüyordu, SL avlandı sonra hedefe gitti) ═══
@@ -18596,6 +18639,31 @@ async function runAutoScan(prioritySymbol=null) {
                     }
                   }
                 } catch(_r318e) {}
+                // ═══ R370-E COIN BLOK KONTROLÜ (VANRY dersi: aynı coin üst üste kaybediyor) ═══
+                try {
+                  const _blok = r370CoinBlokluMu(coin.symbol);
+                  if (_blok.blok) {
+                    logAuto(`🚫 ${coin.symbol} R370-E BLOK: bu coin son zararlardan sonra ${_blok.kalanDk}dk daha bloklu — AÇILMADI (aynı coine ısrar etme)`);
+                    markAutoSkip(coin.symbol, `R370-E coin blok: ${_blok.kalanDk}dk kaldı`, {rec:ai.side, score, aiBrain:ai});
+                    continue;
+                  }
+                } catch(_r370e) {}
+                // ═══ R370-D AI ÇELİŞKİ VETOSU (VANRY dersi: AI "1m AŞAĞI parabolik" dedi ama yine LONG açtı, kaybetti) ═══
+                // AI kendi gerekçesinde 'aşağı parabolik / düşüyor / satıcı baskın' yazıp yine de LONG istiyorsa = çelişki.
+                // Bu indikatör değil — AI'ın kendi HAM FİYAT okumasıyla ÇELİŞMESİ. Düşen coine LONG = MM avı. Engelle.
+                try {
+                  const gerekce = String(decisionChain?.aiBrain?.reasoning || '').toLowerCase();
+                  if (ai.side === 'LONG') {
+                    const asagiSinyal = /aşağı parabolik|aşağı-parabolik|düşüyor|düşüş devam|satıcı baskın|çöküş|aşağı yönlü impuls/.test(gerekce);
+                    // 'BTC düşerken tutuyor' gibi zayıf gerekçe de riskli (VANRY dersi)
+                    const zayifGerekce = /btc düşerken.*tut|düşerken.*birikim/.test(gerekce);
+                    if (asagiSinyal || zayifGerekce) {
+                      logAuto(`🛑 ${coin.symbol} R370-D AI ÇELİŞKİ VETOSU: AI gerekçesinde aşağı/zayıf sinyal var ama LONG istiyor — ENGELLENDİ (VANRY dersi: düşen coine LONG = MM avı). Gerekçe: "${gerekce.slice(0,60)}"`);
+                      markAutoSkip(coin.symbol, `R370-D AI çelişki: aşağı sinyal + LONG`, {rec:ai.side, score, aiBrain:ai});
+                      continue;
+                    }
+                  }
+                } catch(_r370d) {}
                 // ═══ R370 VETO: 2+ ciddi uyarı birikti = MM tuzağı, EMRİ ENGELLE (kullanıcı dersi: BEL 12:30'da 3 uyarı vardı → açıldı → kaybetti) ═══
                 // TEK uyarı geçer (AI özgür, R291 boğma dersi). Ama 2+ ciddi uyarı ÜST ÜSTE = düşük olasılık, MM avı riski yüksek.
                 // Bu, "düşen trend + akış ters + RSI 85 sweep'siz" gibi ölümcül kombinasyonları keser. Sweep varsa uyarılar zaten sayılmaz.
@@ -19256,6 +19324,8 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
     if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = 'Binance kapanışı kârda'; emoji = '✅'; }
     if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = 'Binance kapanışı zararda'; emoji = '❌'; }
   }
+  // R370-E: zarar kapanışında coini zarar-takibine kaydet (2 zarar/90dk = 2 saat blok)
+  try { if (Number.isFinite(pnlVal) && pnlVal < -0.01 && typeof r370CoinZararKaydet === 'function') r370CoinZararKaydet(symbol); } catch(_) {}
   const margin = Number(state?.usdtAmount || state?.marginUSDT || autoConfig?.usdtAmount || 0);
   const roiByPnl = margin > 0 && Number.isFinite(pnlVal) ? pnlVal / margin * 100 : null;
 
