@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R374_R370_DONUSUM_IZLEME'
+const LAZARUS_BUILD = 'R374B_ENJEKSIYON_TEPE_GARDI'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -9374,6 +9374,19 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
             const full = ea.symbol + 'USDT';
             const tk = await cached(`r370coin_${full}`, 60*1000, () => bPub('/fapi/v1/ticker/24hr', `symbol=${full}`));
             if (tk && tk.lastPrice) {
+              // R374-B TEPE GARDI (canlı ders DASH 07.07: worker pencere-içi konuma bakıyor ama 24h konuma DEĞİL —
+              // günlük tepedeki DASH "taze impuls" diye TOP2 slotunu kaptı, AI doğru reddetti, SPELL(124) dışarıda kaldı).
+              // R373'teki r327 gardının AYNISI: 24h tepesine yapışık coin TOP2 slotu işgal etmesin.
+              // VETO değil: coin normal yoldan (12h lider listesi) AI'a yine gidebilir; sadece "taze aday" slotunu kullanamaz.
+              const _hi24 = Number(tk.highPrice||0), _lo24 = Number(tk.lowPrice||0), _px24 = Number(tk.lastPrice||0);
+              if (_hi24 > _lo24 && _px24 > 0) {
+                const _rp24 = (_px24 - _lo24) / (_hi24 - _lo24);
+                if (_rp24 >= 0.85) {
+                  r374Olay('TOP2_RED_TEPE', String(ea.symbol), `24h konum %${(_rp24*100).toFixed(0)} — günlük tepede, taze-aday slotu verilmedi`);
+                  logAuto(`🌱 R374-B ${ea.symbol} taze-aday REDDİ: 24h konum %${(_rp24*100).toFixed(0)} (tepeye yapışık) — slot gerçek taze coine saklandı`);
+                  continue;
+                }
+              }
               const coin = normalizeTickerToCoin(tk);
               coin.source = 'r370_erken';
               coin.r370Erken = true;
@@ -16928,8 +16941,9 @@ app.get('/api/r374', (req, res) => {
       bulunanCoinler: [...d.bulunan],
       top2GirenCoinler: [...d.top2Giren],
       islemAcilanCoinler: [...d.islemAcilan],
-      karar: d.bulunan.size === 0 ? 'Henüz veri yok — R370 hiç taze coin bulmadı'
-        : (d.bulunan.size >= 5 && d.islemAcilan.size === 0) ? 'BULUYOR ama İŞLEME DÖNÜŞMÜYOR → sorun seçim/onay zinciri, genişletme İŞE YARAMAZ'
+      karar: +saat < 6 ? `Veri birikiyor (${saat} saat) — hüküm için en az 6 saat bekle, 24-48 saat ideal`
+        : d.bulunan.size === 0 ? 'Henüz veri yok — R370 hiç taze coin bulmadı'
+        : (d.bulunan.size >= 5 && d.islemAcilan.size === 0 && +saat >= 12) ? 'BULUYOR ama İŞLEME DÖNÜŞMÜYOR → sorun seçim/onay zinciri, genişletme İŞE YARAMAZ'
         : (d.bulunan.size <= 2 && +saat >= 24) ? 'AZ BULUYOR → tarama genişletme (30→50) mantıklı'
         : 'Veri birikiyor — 24-48 saat sonra tekrar bak',
       sonOlaylar: d.olaylar.slice(-60),
