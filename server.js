@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R372E_BILESIK_MARJIN'
+const LAZARUS_BUILD = 'R373_TEPE_MESAFESI_GARDI'
 // R367 HİBRİT MİMARİ ÖZET:
 //  • R367 çöküş/tepe koruması (dikey-tepe+momentum-ölü+dağıtım+dikey-pomp) HER LONG'da aktif — AI'dan bağımsız, bedava.
 //    2+ risk sinyali → giriş ENGELLENİR (BIRB -%27 tipi). 1 sinyal → SL %40 daraltılır.
@@ -9382,7 +9382,7 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
 // Ayrıca "patlama potansiyeli" (sıkışma sonrası hacimli yükseliş başlangıcı) gösteren coini öne al.
 function r327PatlamaScore(c) {
   // Patlama adayı: yükseliyor ama henüz parabolik değil (erken yakala) + volatil + işlem canlı
-  // Mevcut alanlar: change24h, change12h(varsa), rangePct, volume, trades
+  // Mevcut alanlar: change24h, change12h(varsa), rangePct, volume, trades, high, low, price
   const ch = Number(c.change12h ?? c.change24h ?? 0);
   const range = Number(c.rangePct || 0);
   const trades = Number(c.trades || 0);
@@ -9391,14 +9391,34 @@ function r327PatlamaScore(c) {
   if (range >= 10) score += 1;          // yüksek volatilite (hareket var)
   if (range >= 20) score += 1;          // çok volatil
   if (trades > 50000) score += 1;       // işlem hacmi canlı (ilgi var)
+  // ═══ R373 TEPE-MESAFESİ GARDI (canlı ders: TAC/EVAA parabolik-tepede iken "patlama adayı🚀"
+  // sayılıp TOP2'yi kilitliyordu → AI hep BEKLE → 2.7 saat sıfır işlem. Kullanıcı tanımı:
+  // "patlama adayı = TABANDAN yeni kalkan taze impuls (TRIA/CLO tipi), TEPEDE tükenmiş DEĞİL").
+  // 24h high/low içindeki anlık konum: tepeye çok yakınsa parabolik tükeniş riski, patlama adayı DEĞİL.
+  // Bu bir VETO değil — sadece "patlama adayı" etiketini doğru dağıtır; coin normal yoldan AI'a yine gider.
+  const hi = Number(c.high || 0), lo = Number(c.low || 0), px = Number(c.price || 0);
+  if (hi > lo && px > 0) {
+    const rp24 = (px - lo) / (hi - lo); // 0=24h dip, 1=24h tepe
+    if (rp24 >= 0.88) score = 0;             // 24h tepesine yapışık: parabolik tükeniş, patlama adayı DEĞİL
+    else if (rp24 >= 0.78) score = Math.max(0, score - 2); // tepeye yakın: ağır ceza
+  }
   return score;
 }
 function r326ApplySingleCoinLock(orderedList) {
   if (!Array.isArray(orderedList) || orderedList.length === 0) return orderedList;
-  // R372-D: TOP2 (50$ bakiye maliyet dersi: TOP3'ün AI maliyeti ($1.65/gün) küçük bakiyede kârı yiyordu).
-  // TOP2 = 2 coin izle (tek coine kilitli DEĞİL, ama 3 değil — maliyet/fırsat dengesi 50$ bileşik için optimal).
-  // Bakiye büyüdükçe (200$+) TOP3'e panelden çıkılabilir (maxPositions/scanMode ayarı).
-  const top2 = orderedList.slice(0, 2);
+  // R372-F: TOP2 + ERKEN YÜKSELİŞ ÖNCELİĞİ (canlı ders: 2 saat sıfır işlem — TOP2 hep 12h en çok yükselen
+  // = parabolik tepe = AI hep BEKLE = kısır döngü. Çözüm: taze/erken coinleri (r370Erken) TOP2'ye öncelikle al).
+  // Erken adaylar listenin sonunda kırpılıyordu; artık ÖNE alınır — girilecek yer onlar, tepedekiler değil.
+  // R373 (canlı ders): gerçek r370Erken (motor doğrulamış taze impuls) MUTLAK önce gelmeli.
+  // Eski kod r370Erken ile r327PatlamaScore'u aynı havuza koyuyordu; TAC/EVAA sözde-patlama
+  // skoruyla listede önde olduğu için gerçek taze coini (M) slice(0,2) kesiyordu → kısır döngü.
+  // Yeni sıra: (1) doğrulanmış taze impuls, (2) tepede-olmayan patlama adayı, (3) 12h liderleri.
+  const gercekErken   = orderedList.filter(c => c.r370Erken);
+  const patlamaAdayi  = orderedList.filter(c => !c.r370Erken && r327PatlamaScore(c) >= 3);
+  const digerler      = orderedList.filter(c => !c.r370Erken && r327PatlamaScore(c) < 3);
+  // Doğrulanmış taze coinler EN ÖNDE, sonra tepede-olmayan patlama adayları, sonra 12h liderleri
+  const sirali = [...gercekErken, ...patlamaAdayi, ...digerler];
+  const top2 = sirali.slice(0, 2);
   // Patlama skoruna göre ikincil sıralama (yüksek patlama adayı öne)
   top2.sort((a,b) => r327PatlamaScore(b) - r327PatlamaScore(a));
   // İşaretle: AI'a hangisinin patlama adayı olduğunu bildir
