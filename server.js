@@ -82,7 +82,25 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R373_TEPE_MESAFESI_GARDI'
+const LAZARUS_BUILD = 'R374_R370_DONUSUM_IZLEME'
+// ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
+// Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
+// Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
+const r374Donusum = {
+  bulunan: new Set(),      // R370 worker'ın tespit ettiği farklı coinler
+  top2Giren: new Set(),    // TOP2/tarama listesine enjekte edilen R370 coinleri
+  islemAcilan: new Set(),  // gerçekten işlem açılan R370 coinleri
+  toplamIslem: 0,          // tüm işlemler (R370 olsun olmasın) — oran için
+  olaylar: [],             // kalıcı olay geçmişi (autoLog 80-satır tamponundan bağımsız, cap 300)
+  baslangic: Date.now(),   // izlemenin başladığı an
+};
+function r374Olay(tip, coin, detay='') {
+  try {
+    const ts = new Intl.DateTimeFormat('tr-TR',{timeZone:'Europe/Istanbul',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date());
+    r374Donusum.olaylar.push({ts, tip, coin, detay});
+    if (r374Donusum.olaylar.length > 300) r374Donusum.olaylar.shift();
+  } catch(_) {}
+}
 // R367 HİBRİT MİMARİ ÖZET:
 //  • R367 çöküş/tepe koruması (dikey-tepe+momentum-ölü+dağıtım+dikey-pomp) HER LONG'da aktif — AI'dan bağımsız, bedava.
 //    2+ risk sinyali → giriş ENGELLENİR (BIRB -%27 tipi). 1 sinyal → SL %40 daraltılır.
@@ -9360,6 +9378,7 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
               coin.source = 'r370_erken';
               coin.r370Erken = true;
               coin.r370Skor = ea.skor;
+              try { if(!r374Donusum.top2Giren.has(String(ea.symbol))) r374Olay('TOP2_GIRDI', String(ea.symbol), ea.sebep||''); r374Donusum.top2Giren.add(String(ea.symbol)); } catch(_) {} // R374 izleme
               coin.r370Sebep = ea.sebep;
               coin.change15m = ea.change15m;
               out.push(coin); // listeye ekle (AI değerlendirecek)
@@ -9429,6 +9448,12 @@ function r326ApplySingleCoinLock(orderedList) {
   });
   const names = tagged.map(c => `${String(c.fullSymbol||'').replace('USDT','')}${c.r327Patlama?'🚀':''}`).join(', ');
   logAuto(`🎯 R372-D TOP2 izleniyor: ${names} (patlama adayı 🚀 ile işaretli — 50$ bakiye maliyet-optimal, 2 coin)`);
+  // R374 dönüşüm özeti: taze coin bulundu → TOP2'ye girdi → işleme dönüştü (genişletme kararı bu rakamlarla verilecek)
+  try {
+    if (r374Donusum.bulunan.size) {
+      logAuto(`🌱 R374 dönüşüm: R370 buldu ${r374Donusum.bulunan.size} coin → TOP2'ye girdi ${r374Donusum.top2Giren.size} → işlem açıldı ${r374Donusum.islemAcilan.size} (toplam işlem ${r374Donusum.toplamIslem}) | bulunanlar: ${[...r374Donusum.bulunan].slice(0,8).join(',')}`);
+    }
+  } catch(_) {}
   return tagged;
 }
 
@@ -16084,6 +16109,7 @@ async function r370ErkenYukselisWorker() {
     bulunan.sort((a,b)=>b.skor-a.skor);
     r370ErkenAdaylar = bulunan.slice(0, 5);
     autoScanState.r370ErkenYukselis = r370ErkenAdaylar;
+    try { for (const x of r370ErkenAdaylar) { if(!r374Donusum.bulunan.has(String(x.symbol))) r374Olay('BULUNDU', String(x.symbol), `skor ${x.skor} +%${x.change15m}`); r374Donusum.bulunan.add(String(x.symbol)); } } catch(_) {} // R374 izleme
     if (r370ErkenAdaylar.length) {
       const ozet = r370ErkenAdaylar.slice(0,3).map(x=>`${x.symbol}(${x.skor}·+%${x.change15m})`).join(' · ');
       logAuto(`🌱 R370 ERKEN YÜKSELİŞ tespiti: ${ozet} — TOP2 adayı taze impulslar, erken izleme`);
@@ -16708,6 +16734,16 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
         } catch(e) { logAuto(`⚠️ ${sym} AI ledger kaydı yazılamadı: ${String(e?.message||e).slice(0,80)}`); }
         r308SetLastAiDecision({status:'AI_EMİR_AÇILDI', symbol:sym, ai:{...ai, entry, tp:orderResp.details?.target || ai.tp, sl:orderResp.details?.stop || ai.sl}, quality:q, candidate:r, order:{state:'AÇILDI', margin, leverage:lev, entry, quantity:orderResp.details?.quantity || orderResp.quantity || null, slSuccess:!!orderResp.slSuccess, tpSuccess:!!orderResp.tpSuccess}});
         logAuto(`✅ ${sym} AI CANLI EMİR AÇILDI: ${ai.side} entry:${entry} TP:${orderResp.details?.target || ai.tp} SL:${orderResp.details?.stop || ai.sl}`);
+        // R374 izleme: bu işlem R370 taze-coin kaynaklı mı?
+        try {
+          r374Donusum.toplamIslem++;
+          const _s = String(sym).replace('USDT','');
+          if (r374Donusum.top2Giren.has(_s) || r374Donusum.bulunan.has(_s)) {
+            r374Donusum.islemAcilan.add(_s);
+            r374Olay('ISLEM_ACILDI', _s, String(ai.side||''));
+            logAuto(`🌱 R374: bu işlem R370 taze-coin kaynaklı (${_s}) — dönüşüm sayacına işlendi`);
+          } else { r374Olay('ISLEM_R370_DISI', _s, String(ai.side||'')); }
+        } catch(_) {}
         break;
       } else if (ai && ai.skipped) {
         r308SetLastAiDecision({status:'AI_ATLANDI', symbol:sym, side:'WAIT', candidate:r, rejectReason:ai.reason});
@@ -16875,6 +16911,43 @@ app.post('/api/auto/config', (req, res) => {
     stopAutoTrader();
     res.json({ ok:true, message:'Otomatik işlem durduruldu', saverMode:AI_SAVER_MODE });
   }
+});
+
+// ═══ R374 DÖNÜŞÜM RAPORU — tarayıcıdan tek tıkla: /api/r374 (JSON) veya /api/r374?format=text (okunur metin) ═══
+app.get('/api/r374', (req, res) => {
+  try {
+    const d = r374Donusum;
+    const saat = ((Date.now() - d.baslangic) / 3600000).toFixed(1);
+    const ozet = {
+      build: LAZARUS_BUILD,
+      izlemeSuresiSaat: +saat,
+      r370Bulunan: d.bulunan.size,
+      top2Giren: d.top2Giren.size,
+      islemAcilanR370: d.islemAcilan.size,
+      toplamIslem: d.toplamIslem,
+      bulunanCoinler: [...d.bulunan],
+      top2GirenCoinler: [...d.top2Giren],
+      islemAcilanCoinler: [...d.islemAcilan],
+      karar: d.bulunan.size === 0 ? 'Henüz veri yok — R370 hiç taze coin bulmadı'
+        : (d.bulunan.size >= 5 && d.islemAcilan.size === 0) ? 'BULUYOR ama İŞLEME DÖNÜŞMÜYOR → sorun seçim/onay zinciri, genişletme İŞE YARAMAZ'
+        : (d.bulunan.size <= 2 && +saat >= 24) ? 'AZ BULUYOR → tarama genişletme (30→50) mantıklı'
+        : 'Veri birikiyor — 24-48 saat sonra tekrar bak',
+      sonOlaylar: d.olaylar.slice(-60),
+    };
+    if (String(req.query.format||'') === 'text') {
+      const L = [];
+      L.push(`R374 DÖNÜŞÜM RAPORU — ${LAZARUS_BUILD} (${saat} saattir izleniyor)`);
+      L.push(`R370 buldu: ${ozet.r370Bulunan} coin [${ozet.bulunanCoinler.join(', ')}]`);
+      L.push(`TOP2'ye girdi: ${ozet.top2Giren} [${ozet.top2GirenCoinler.join(', ')}]`);
+      L.push(`İşleme dönüştü: ${ozet.islemAcilanR370} [${ozet.islemAcilanCoinler.join(', ')}] — toplam işlem ${ozet.toplamIslem}`);
+      L.push(`KARAR: ${ozet.karar}`);
+      L.push('', 'SON OLAYLAR:');
+      for (const o of ozet.sonOlaylar) L.push(`${o.ts} ${o.tip} ${o.coin} ${o.detay}`);
+      res.set('Content-Type','text/plain; charset=utf-8');
+      return res.send(L.join('\n'));
+    }
+    res.json({ ok: true, ...ozet });
+  } catch (e) { res.status(500).json({ ok:false, error:String(e?.message||e) }); }
 });
 
 app.get('/api/auto/status', (req, res) => {
@@ -19082,6 +19155,15 @@ async function runAutoScan(prioritySymbol=null) {
           markAutoOpened(coin.fullSymbol, recommendation);
           invalidatePositionRiskCache('ORDER_OPENED');
           autoScanState.phase = 'EMİR_AÇILDI';
+          // R374 izleme: bu işlem R370 taze-coin kaynaklı mı?
+          try {
+            r374Donusum.toplamIslem++;
+            if (coin.r370Erken || r374Donusum.top2Giren.has(String(coin.symbol))) {
+              r374Donusum.islemAcilan.add(String(coin.symbol));
+              r374Olay('ISLEM_ACILDI', String(coin.symbol), String(recommendation||''));
+              logAuto(`🌱 R374: bu işlem R370 taze-coin kaynaklı (${coin.symbol}) — dönüşüm sayacına işlendi`);
+            } else { r374Olay('ISLEM_R370_DISI', String(coin.symbol), String(recommendation||'')); }
+          } catch(_) {}
           logAuto(`✅ ${coin.symbol} ${trSideLabel(recommendation)} açıldı — ${toTurkishText(orderResp.message||'Emir açıldı')}`);
           try {
             const _tgKey = `${coin.fullSymbol}_${recommendation}_${Math.round(Date.now()/60000)}`;
