@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R374B_ENJEKSIYON_TEPE_GARDI'
+const LAZARUS_BUILD = 'R375_HACIM_METRIK_TUTARLILIK'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -3977,6 +3977,7 @@ NASIL USTA GİBİ DAVRAN:
 - MM ÖZ-SEZİ ÇERÇEVESİ (her kararda zihnen cevapla): (1) MM şu an hangi oyunda? Üç seçenekten birini seç ve kanıtla: [A] BİRİKİM/av hazırlığı — fiyatı likidite havuzuna çekiyor, henüz binme, havuzun süpürülmesini bekle; [B] İTKİ/dağıtım öncesi koşu — trend yakıtlı, momentum girişi serbest, karşı likiditeye kadar taşı; [C] DAĞITIM/tuzak — yukarı fitiller satılıyor, OI çözülüyor, delta fiyatla ayrışıyor → GİRME; [D] BAŞKA BİR OYUN — grafik bu üçe uymayan bir hikâye anlatıyorsa oyunun adını SEN koy ve kanıtla (çerçeve mercektir, kafes değil; usta kalıpların dışını da okur). (2) SENİN SL'in MM'in av havuzunda mı? Planladığın SL, verilen SSL bölgesinin z-aralığının İÇİNDEyse MM oraya gelir: SL'i havuzun belirgin ALTINA koy ya da sweep gerçekleşip dönünce gir. (3) Binance botları yuvarlak sayılara ve önceki tepe/dip likiditesine emir yığar — TP'yi tam yuvarlak seviyeye değil, 1 tık ÖNÜNE koy (0.60 hedefse 0.5985 gibi), botlardan önce dolmuş ol.
 - SON İŞLEMLERİNDEN DERS AL — AMA TEK KAYIPTAN KURAL ÇIKARMA: "sonIslemlerim" senin oturum hafızan; amacı kalıp YASAKLAMAK değil, "ne değişti?" sorusunu sordurmak. TEK kayıp gürültüdür, tezin yanlışlandığı anlamına GELMEZ — doğru tez kötü tetikle de kaybedebilir. Kanıtlanmış örnek: aynı tez iki kez SL yedikten sonra sweep tamamlanıp yapı yenilenince arka arkaya +%22 ve +%53 kazandırdı; kayıptan sonra tezi terk eden bu ikisini kaçırırdı. Kural: kayıptan sonra AYNI teze girerken neyin değiştiğini (sweep tamam mı, yapı yenilendi mi, yakıt geldi mi) gerekçende söyle ve gir; hiçbir şey değişmediyse bekle. Bir kalıbı ancak 3-4 kez ÜST ÜSTE, benzer koşullarda yenilirse sorgula. Kazanan kalıbı da tanı ve tereddütsüz sürdür.
 - GÜVEN = KALDIRAÇ AYARIDIR (LONG & SHORT): Güven skorun kaldıraca çevrilir; bunu bilinçli kullan. Tetik erken/teyitsizse 64-67 (düşük kaldıraç, kayıp küçük); teyitli girişte 70-77; tablo kusursuzsa 78+. SHORT'ta ekstra temkinli ol — gainer evreninde SHORT daha risklidir, sadece net parabolik dönüşte ve güçlü teyitle yüksek güven ver.
+- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07.07 gecesi, 3 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA) → üçü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut bir kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
 - KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
 - SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
@@ -9369,6 +9370,13 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
         const mevcutSemboller = new Set(out.map(c => String(c.symbol||c.fullSymbol||'').replace('USDT','')));
         for (const ea of erken.slice(0, 2)) { // en güçlü 2 erken aday
           if (mevcutSemboller.has(ea.symbol)) continue; // zaten listedeyse atla
+          // R375 HACİM TABANI (canlı ders 07.07 gecesi: hacim 0.7-1.0x cılız sinyaller (BTW/USELESS/MON) slot
+          // kaptı, MON -3$; 3.4x AGLD kazandı; 108x USTC dışarıda kaldı. Backtest tezindeki hacim onayı ≥1.3x
+          // ile aynı ilke). VETO değil: coin AI'a normal yoldan yine gidebilir, sadece kıt taze-aday slotu alamaz.
+          if (Number(ea.hacimArtis || 0) < 1.3) {
+            r374Olay('TOP2_RED_HACIM', String(ea.symbol), `hacim ${ea.hacimArtis}x < 1.3x — cılız sinyal, slot verilmedi`);
+            continue;
+          }
           // ticker'dan coin objesi oluştur
           try {
             const full = ea.symbol + 'USDT';
@@ -19617,6 +19625,16 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   } catch(_) {}
   let pnlVal = Number(realPnlFromIncome ?? wa.pnl);
   if ((!Number.isFinite(pnlVal) || Math.abs(pnlVal) < 0.000001) && Number.isFinite(approxPnlFromPrice) && Math.abs(approxPnlFromPrice) > 0.000001) pnlVal = approxPnlFromPrice;
+  // ═══ R375 METRİK TUTARLILIK (canlı ders CLO 07.07 23:05: karne "+2.07$ kâr, plan çalıştı" yazdı ama
+  // giriş 0.2028 → çıkış 0.1947 = kesin zarar; Binance gerçeği -1.33$. Income eşleştirmesi komşu işlemin
+  // kârını almış). Kural: income PnL'i ile fiyat-bazlı hesap İŞARET olarak çelişiyorsa fiyat-bazlı KAZANIR —
+  // fiyat hesabı her zaman BU işlemin giriş/çıkış/miktarından gelir, başka işleme ait olamaz. ═══
+  if (Number.isFinite(approxPnlFromPrice) && Number.isFinite(pnlVal)
+      && Math.abs(approxPnlFromPrice) > 0.10 && Math.abs(pnlVal) > 0.000001
+      && Math.sign(pnlVal) !== Math.sign(approxPnlFromPrice)) {
+    try { logAuto(`⚖️ R375 metrik düzeltme ${symbol}: income PnL ${pnlVal.toFixed(2)}$ fiyat hesabıyla (${approxPnlFromPrice.toFixed(2)}$) İŞARET çelişkisinde — fiyat-bazlı değer karneye yazıldı`); } catch(_) {}
+    pnlVal = approxPnlFromPrice;
+  }
   if (code === 'EXTERNAL_OR_MANUAL' && Number.isFinite(pnlVal)) {
     if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = 'Binance kapanışı kârda'; emoji = '✅'; }
     if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = 'Binance kapanışı zararda'; emoji = '❌'; }
