@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R370C_BLUR_VANRY_FIX'
+const LAZARUS_BUILD = 'R372E_BILESIK_MARJIN'
 // R367 HİBRİT MİMARİ ÖZET:
 //  • R367 çöküş/tepe koruması (dikey-tepe+momentum-ölü+dağıtım+dikey-pomp) HER LONG'da aktif — AI'dan bağımsız, bedava.
 //    2+ risk sinyali → giriş ENGELLENİR (BIRB -%27 tipi). 1 sinyal → SL %40 daraltılır.
@@ -1017,6 +1017,144 @@ function startGlobalLiqStream() {
 
 // Sunucu başladığında likidasyon stream'ini aç
 startGlobalLiqStream();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// R371 GERÇEK ORDER FLOW MOTORU — MM ile aynı trene binmek için
+// ═══════════════════════════════════════════════════════════════════════════════
+// Kullanıcı hedefi: "MM ve Binance botlarıyla aynı trendde ol, beraber bin beraber in."
+// Mumlar GECİKMELİ ve MM tarafından boyanabilir (BLUR: mum yeşildi ama gerçek akış satıştı).
+// Bu motor, MM'in kullandığı AYNI ham veriyi canlı dinler:
+//   1. aggTrade: her GERÇEK işlem — kim alıyor kim satıyor (gerçek delta, muma göre çok daha hassas)
+//   2. depth (order book): MM nerede likidite duvarı örmüş, nerede stop biriktirmiş
+// Sadece AKTİF işlem coini + aday coinler için dinlenir (kaynak tasarrufu). AI'a canlı özet gider.
+const r371FlowStore = new Map(); // symbol → { trades:[], book:{bids,asks}, lastUpdate }
+const r371ActiveStreams = new Map(); // symbol → { aggWs, depthWs }
+
+function r371StartFlow(symbol) {
+  try {
+    const full = String(symbol).toUpperCase().replace('USDT','') + 'USDT';
+    if (r371ActiveStreams.has(full)) return; // zaten dinleniyor
+    const lower = full.toLowerCase();
+    if (!r371FlowStore.has(full)) r371FlowStore.set(full, { trades:[], book:{bids:new Map(),asks:new Map()}, lastUpdate:0, bookReady:false });
+    const store = r371FlowStore.get(full);
+
+    // ── aggTrade: gerçek işlem akışı (delta) ──
+    const aggWs = new WebSocket(`${FAPI_WS_PUBLIC}/ws/${lower}@aggTrade`);
+    aggWs.on('message', (data) => {
+      try {
+        const d = JSON.parse(data.toString());
+        const price = parseFloat(d.p), qty = parseFloat(d.q);
+        // m=true: alıcı market maker (yani AGRESİF SATIŞ — taker sattı). m=false: agresif ALIŞ (taker aldı).
+        const agresifAlis = d.m === false;
+        store.trades.push({ ts: Date.now(), price, qty, usdt: price*qty, agresifAlis });
+        // Son 2 dakikayı tut
+        const cutoff = Date.now() - 120*1000;
+        if (store.trades.length > 500) store.trades = store.trades.filter(t => t.ts > cutoff);
+        store.lastUpdate = Date.now();
+      } catch(_) {}
+    });
+    aggWs.on('error', ()=>{});
+    aggWs.on('close', ()=>{ /* aday değişince kapanır, normal */ });
+
+    // ── depth: order book (likidite duvarları + stop bölgeleri) ──
+    const depthWs = new WebSocket(`${FAPI_WS_PUBLIC}/ws/${lower}@depth20@100ms`);
+    depthWs.on('message', (data) => {
+      try {
+        const d = JSON.parse(data.toString());
+        const bids = d.b || d.bids || [];
+        const asks = d.a || d.asks || [];
+        // Snapshot mantığı: depth20 her mesajda top20 verir, direkt yaz
+        store.book.bids = new Map(bids.map(x => [parseFloat(x[0]), parseFloat(x[1])]));
+        store.book.asks = new Map(asks.map(x => [parseFloat(x[0]), parseFloat(x[1])]));
+        store.bookReady = true;
+        store.lastUpdate = Date.now();
+      } catch(_) {}
+    });
+    depthWs.on('error', ()=>{});
+    depthWs.on('close', ()=>{});
+
+    r371ActiveStreams.set(full, { aggWs, depthWs });
+    // Aktif stream sayısını sınırla (kaynak): en fazla 4 coin. Fazlaysa en eskiyi kapat.
+    if (r371ActiveStreams.size > 4) {
+      const ilk = r371ActiveStreams.keys().next().value;
+      r371StopFlow(ilk);
+    }
+  } catch(_) {}
+}
+
+function r371StopFlow(symbol) {
+  try {
+    const full = String(symbol).toUpperCase().replace('USDT','') + 'USDT';
+    const s = r371ActiveStreams.get(full);
+    if (s) {
+      try { s.aggWs && s.aggWs.close(); } catch(_){}
+      try { s.depthWs && s.depthWs.close(); } catch(_){}
+      r371ActiveStreams.delete(full);
+    }
+  } catch(_) {}
+}
+
+// AI'a giden order flow özeti — MM ile aynı trende miyiz?
+function r371GetFlowAnalysis(symbol, refPrice) {
+  try {
+    const full = String(symbol).toUpperCase().replace('USDT','') + 'USDT';
+    const store = r371FlowStore.get(full);
+    if (!store || (!store.trades.length && !store.bookReady)) return null;
+    const now = Date.now();
+    const price = Number(refPrice) || (store.trades.length ? store.trades[store.trades.length-1].price : 0);
+    if (!price) return null;
+
+    // ── 1) GERÇEK DELTA (son 30sn ve 2dk) — kim gerçekten alıyor/satıyor ──
+    const t30 = store.trades.filter(t => t.ts > now - 30*1000);
+    const t120 = store.trades.filter(t => t.ts > now - 120*1000);
+    const alisUsdt30 = t30.filter(t=>t.agresifAlis).reduce((s,t)=>s+t.usdt,0);
+    const satisUsdt30 = t30.filter(t=>!t.agresifAlis).reduce((s,t)=>s+t.usdt,0);
+    const alisUsdt120 = t120.filter(t=>t.agresifAlis).reduce((s,t)=>s+t.usdt,0);
+    const satisUsdt120 = t120.filter(t=>!t.agresifAlis).reduce((s,t)=>s+t.usdt,0);
+    const delta30 = alisUsdt30 - satisUsdt30;   // + = alıcı baskın (gerçek), - = satıcı
+    const delta120 = alisUsdt120 - satisUsdt120;
+    const toplam30 = alisUsdt30 + satisUsdt30 || 1;
+    const alisOran30 = alisUsdt30 / toplam30 * 100; // %
+
+    // ── 2) ORDER BOOK DUVARLARI (MM nerede duruyor) ──
+    let ustDuvar=null, altDuvar=null, ustDuvarUsdt=0, altDuvarUsdt=0;
+    if (store.bookReady) {
+      // en büyük ask duvarı (üstte satış duvarı = direnç, fiyat oraya gidince döner)
+      let maxAsk=0, maxAskP=0;
+      for (const [p,q] of store.book.asks) { const u=p*q; if(u>maxAsk){maxAsk=u;maxAskP=p;} }
+      // en büyük bid duvarı (altta alış duvarı = destek, VEYA stop-avı hedefi)
+      let maxBid=0, maxBidP=0;
+      for (const [p,q] of store.book.bids) { const u=p*q; if(u>maxBid){maxBid=u;maxBidP=p;} }
+      ustDuvar = maxAskP; ustDuvarUsdt = maxAsk;
+      altDuvar = maxBidP; altDuvarUsdt = maxBid;
+    }
+
+    // ── 3) TREND UYUMU — MM ile aynı yönde miyiz? ──
+    // Gerçek akış (delta) yukarıysa VE hızlanıyorsa = MM alıyor, trene bin (LONG).
+    // Delta aşağıysa VEYA son 30sn 2dk'ya göre zayıflıyorsa = MM dağıtıyor, inme vakti.
+    const akisYonu = delta30 > toplam30*0.1 ? 'ALIŞ' : delta30 < -toplam30*0.1 ? 'SATIŞ' : 'DENGE';
+    const ivme = Math.abs(delta30) > Math.abs(delta120)/4 ? 'GÜÇLENİYOR' : 'ZAYIFLIYOR'; // 30sn payı 2dk'nın 1/4'ünden fazlaysa hızlanıyor
+    return {
+      // Gerçek delta (mumdan değil, gerçek işlemlerden)
+      gercekDelta30sn: Math.round(delta30),
+      gercekDelta2dk: Math.round(delta120),
+      alisOrani30sn: +alisOran30.toFixed(0),
+      akisYonu, ivme,
+      // Order book duvarları
+      ustSatisDuvari: ustDuvar ? { fiyat:ustDuvar, usdt:Math.round(ustDuvarUsdt), uzaklikPct:+((ustDuvar-price)/price*100).toFixed(2) } : null,
+      altAlisDuvari: altDuvar ? { fiyat:altDuvar, usdt:Math.round(altDuvarUsdt), uzaklikPct:+((altDuvar-price)/price*100).toFixed(2) } : null,
+      // MM uyum özeti (AI için net cümle)
+      mmTrendUyumu: akisYonu === 'ALIŞ'
+        ? `Gerçek akış ALIŞ baskın (%${alisOran30.toFixed(0)} alıcı, delta +${Math.round(delta30)}$/30sn ${ivme}) — MM/botlar ALIYOR, LONG için trene binme anı`
+        : akisYonu === 'SATIŞ'
+        ? `Gerçek akış SATIŞ baskın (%${(100-alisOran30).toFixed(0)} satıcı, delta ${Math.round(delta30)}$/30sn ${ivme}) — MM/botlar SATIYOR/DAĞITIYOR, LONG girme (inme vakti)`
+        : `Gerçek akış DENGEDE — net yön yok, bekle`,
+      veriTazeMi: (now - store.lastUpdate) < 10000
+    };
+  } catch(_) { return null; }
+}
+
+
 
 function getLiqData(symbol) {
   const full = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase() + 'USDT';
@@ -3736,6 +3874,12 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       } catch(_) { return null; } })(),
       // R370: ERKEN YÜKSELİŞ etiketi — bu coin yükselişine YENİ başladıysa (taze impuls, TRIA tipi), AI bilsin ki
       // en uzun koşma potansiyeli var → RUNNER ve cesur TP mantığı. Erken coin = max kâr fırsatı.
+      // R371 GERÇEK ORDER FLOW — MM ile aynı trende miyiz? (aggTrade delta + depth duvarları, canlı)
+      r371OrderFlow: (()=>{ try {
+        const ref = Number(data.price || data.lastPrice || 0);
+        const flow = (typeof r371GetFlowAnalysis === 'function') ? r371GetFlowAnalysis(symbol, ref) : null;
+        return flow || null;
+      } catch(_) { return null; } })(),
       r370ErkenYukselis: (()=>{ try {
         const base = String(symbol||'').replace('USDT','');
         const erken = Array.isArray(autoScanState?.r370ErkenYukselis) ? autoScanState.r370ErkenYukselis : [];
@@ -3793,6 +3937,12 @@ NASIL USTA GİBİ DAVRAN:
 - ERKEN ÇIKMA = EN BÜYÜK KÂR KATİLİ (15m'de HAYATİ): 15m modunda işlem başına isabetin yüksek (~%75 doğru yön) AMA kazançlar küçük kalırsa strateji zar zor kâr eder. Sırrı: kazananı SONUNA KADAR KOŞTUR. 15m mumlar uzun trend taşır — %1-2 kârla panikleyip çıkarsan +%10'luk hareketleri kaçırırsın (backtest'te kaçan +%11'ler tam buydu). RUNNER modu ZORUNLU: TP'yi bir sonraki büyük üst likiditeye/Fib uzantısına (1.272-1.618) koy, 15m yapısı kırılmadıkça (HL bozulmadıkça) POZİSYONDA KAL. Trailing ile taşı. Az işlem aç ama her kazananı büyüt — 15m'nin matematiği budur.
 - FİB SAYILARINI AYNEN KULLAN: Sana verilen fib/likidite haritasındaki (fibGeriCekilme, fibHedef, sonBacakFib, likidite havuzları) sayılar HAZIR hesaplanmıştır — TP/SL/giriş seçerken bu sayıları BİREBİR kullan. Kendi fib aritmetiğini YAPMA; kafadan "fib 1.272 = X" hesaplama, geçmişte yanlış hesapladın. sonBacakFib en güncel impuls bacağıdır (çapaları yazılı), makro sonImpuls 15 saatlik uçlardır — hedef seçerken önce sonBacakFib.uzatmaHedef ve üst likidite havuzlarına bak.
 - VOLATİLİTE SEBEBİ (R366 — canlı takip): 'volatiliteSebep' verisi, sen 7.5dk'da bir çalıştığın için ARADAKİ sürede bu coini 30sn'de bir izleyen worker'ın bulgusudur — coin ŞU AN neden yükseliyor/düşüyor (hacim patlaması mı, agresif alıcı/satıcı mı, ivmeleniyor mu, tükeniyor mu). Bunu bağlam olarak kullan: sebep 'yükseliş ivmeleniyor + hacim patladı' ise taze momentum var (LONG lehine); 'momentum yavaşlıyor + üst fitil uzun' ise hareket tükeniyor (dikkat). Karar senin ama bu, mumların arasındaki canlı hikâyeyi verir.
+- 🚂 GERÇEK ORDER FLOW (R371 — MM İLE AYNI TRENE BİN): 'r371OrderFlow' verisi, mumlardan DEĞİL, Binance'in canlı gerçek işlem akışından (aggTrade) ve order book'undan (depth) gelir. Bu, MM/botların GERÇEKTE ne yaptığını gösterir — mumlar gecikmeli ve MM tarafından boyanabilir, ama bu ham akış boyanamaz. EN ÖNEMLİ ALANLAR:
+  • mmTrendUyumu: Sana net cümleyle söyler — 'MM/botlar ALIYOR, trene binme anı' VEYA 'MM/botlar SATIYOR/DAĞITIYOR, LONG girme'. Bu cümleye ÇOK dikkat et.
+  • gercekDelta30sn / akisYonu: Son 30sn'de GERÇEKTE kim baskın — alıcı mı satıcı mı. Bu, 15m mumun gösterdiğinden farklı olabilir (BLUR dersi: mum yeşildi ama gerçek akış -29$ satıştı, girdik ve avlandık). AKIŞ 'SATIŞ' ise mum ne derse desin LONG GİRME.
+  • ivme (GÜÇLENİYOR/ZAYIFLIYOR): Alış akışı güçleniyorsa MM daha yeni başlıyor (LONG için taze). Zayıflıyorsa MM dağıtımı bitiriyor (geç kaldın).
+  • ustSatisDuvari / altAlisDuvari: MM'in order book'ta nerede büyük duvar örmüş. Üst satış duvarı = fiyat oraya gidince döner (TP'yi ondan ÖNCE koy). Alt alış duvarı = destek AMA dikkat: MM bariz destek altına stop biriktirir, SL'ini o duvarın DİBİNE koyma (avlanırsın), biraz daha aşağı koy.
+  KURAL — MM İLE AYNI YÖNDE OL: LONG açmak için gerçek akış ALIŞ + güçleniyor olmalı (MM alıyor, sen de al = beraber bin). Gerçek akış SATIŞ ise, mum/fib ne kadar güzel görünürse görünsün LONG AÇMA — MM dağıtıyor, sen tepede kalırsın. Beraber in demek: akış SATIŞ'a dönünce sen de çık. Bu veri BLUR tipi tuzağı önler çünkü giriş anında MM'in gerçekte ne yaptığını görürsün, mumun boyadığını değil. (veriTazeMi false ise akış verisi eski/yok, o zaman normal analizinle karar ver.)
 - 🌱 ERKEN YÜKSELİŞ (R370 — TAZE İMPULS, MAX KÂR FIRSATI): 'r370ErkenYukselis' doluysa bu coin yükselişine YENİ başlamış demektir (TRIA tipi: az önce dipten/yataydan çıkıp güçlü impuls başlatmış, henüz tepede değil). Bu ALTIN fırsattır çünkü: hareketin BAŞINDASIN, en uzun koşma potansiyeli var. Bu coinlerde: (1) girişte cesur ol (dönüş teyidi varsa taze impulsu kaçırma), (2) TP'yi UZAK koy (sonBacakFib 1.618, hatta 2.0 — taze hareket uzar), (3) MUTLAKA RUNNER düşün (kâr TP'de kesme, trailing ile taşı — hareket daha yeni başladı, çok gidebilir). Bu, botun 'fırsatı erken yakala + max kâr' hedefinin tam kalbidir. Ama yine de düşen bıçağa dikkat (dönüş teyidi şart) ve tepe %90+ ise geç kalmışsındır.
 - 1DK PARABOLİK FİB (R366) — SADECE GİRİŞ ZAMANLAMASI İÇİN, TP/SL İÇİN DEĞİL: 'parabolik1dk' son 1 saatin 1dk mumlarından parabolik analizdir. GÖREVİ: 15m'de gördüğün LONG fırsatına EN İYİ giriş ANINI bulmak (geri çekilme dibini yakalamak). yon YUKARI-PARABOLİK + fiyatKonumu %62 altı = taze geri çekilme, giriş için elverişli; fiyatKonumu %90+ = parabolik tepe, giriş için BEKLE. 
   ⚠️ NET KURAL — HANGİ FİB NEREDE KULLANILIR (kafa karıştırma):
@@ -3805,7 +3955,7 @@ NASIL USTA GİBİ DAVRAN:
   (AŞAĞI-parabolik görürsen coin düşüyor → WAIT, SHORT açmıyoruz.)
 - MM AVCISI KESKİNLİĞİ: Binance botu gibi düşünme — MM İNSANDIR ve senden önce davranmaya çalışır. Onu hamlesinden ÖNCE avla: likidite nerede birikti (stoplar nerede kümelendi), MM oraya NEDEN gelecek, hangi seviyede tuzak kuracak? Sen o seviyeye MM gelmeden pusu kur: sweep bölgesinin hemen üstünde dönüş teyidiyle bin, MM'in hedeflediği karşı likiditeye kadar taşı. "Herkes ne görüyor"u değil "MM herkese ne göstermek istiyor"u oku.
 - KÂRDA ÜRKEKLİK YASAK: Pozisyon kârdayken lehine güçlü yeşil devam mumu geldiyse bu "kaç" sinyali DEĞİL "taşı" sinyalidir — "güzel mum geldi, kârı alayım" diye düşünme, "yakıt geldi, hedef yaklaşıyor" diye düşün. Geri çekilme 15m yapıyı (son HL'yi) kırmadıkça POZİSYON TUTULUR; max kâr zirveyi tahmin etmekle değil yapı kırılana kadar kalmakla yapılır. Küçük fırsatta (NORMAL) tam tersi: TP'ye/ilk dirence gelince kârı VUR-KAÇ al, oyalanma.
-- ALTIN İŞLEM ANATOMİSİ (hedeflediğin standart): büyük impuls → dar bant konsolidasyon sıkışması → sonBacakFib 0.618 tutmuş → OI/büyük trader yakıtı artıyor → sıkışma üstünden giriş, SL bandın altına DAR (yapıya göre, likidite havuzuna değil), TP sonBacakFib 1.272, RUNNER ile 15m HL kırılana dek taşı → 32 dakikada +%53 böyle geldi. Hızlı karar + dar yapısal SL + uzak fib hedefi + taşıma cesareti: max kâr formülü bu dörtlüdür.
+- ALTIN İŞLEM ANATOMİSİ (hedeflediğin standart): büyük impuls → dar bant konsolidasyon sıkışması → sonBacakFib 0.618 tutmuş → OI/büyük trader yakıtı artıyor → sıkışma üstünden giriş, SL GENİŞ (%5-6, MM süpürme mesafesinin dışında — DAR SL koyma, MM tam dibe daldırıp avlıyor, canlı kanıt: BLUR/VANRY dar SL'de avlandı), TP sonBacakFib 1.272, RUNNER ile 15m HL kırılana dek taşı. Kaldıraç DÜŞÜK (5x) olduğu için geniş SL %5 bile risk %25 marjda kalır (likidasyon yok). Hızlı karar + GENİŞ SL (MM avını boşa çıkarır) + uzak fib hedefi + taşıma cesareti: max kâr formülü bu dörtlüdür.
 - MM ÖZ-SEZİ ÇERÇEVESİ (her kararda zihnen cevapla): (1) MM şu an hangi oyunda? Üç seçenekten birini seç ve kanıtla: [A] BİRİKİM/av hazırlığı — fiyatı likidite havuzuna çekiyor, henüz binme, havuzun süpürülmesini bekle; [B] İTKİ/dağıtım öncesi koşu — trend yakıtlı, momentum girişi serbest, karşı likiditeye kadar taşı; [C] DAĞITIM/tuzak — yukarı fitiller satılıyor, OI çözülüyor, delta fiyatla ayrışıyor → GİRME; [D] BAŞKA BİR OYUN — grafik bu üçe uymayan bir hikâye anlatıyorsa oyunun adını SEN koy ve kanıtla (çerçeve mercektir, kafes değil; usta kalıpların dışını da okur). (2) SENİN SL'in MM'in av havuzunda mı? Planladığın SL, verilen SSL bölgesinin z-aralığının İÇİNDEyse MM oraya gelir: SL'i havuzun belirgin ALTINA koy ya da sweep gerçekleşip dönünce gir. (3) Binance botları yuvarlak sayılara ve önceki tepe/dip likiditesine emir yığar — TP'yi tam yuvarlak seviyeye değil, 1 tık ÖNÜNE koy (0.60 hedefse 0.5985 gibi), botlardan önce dolmuş ol.
 - SON İŞLEMLERİNDEN DERS AL — AMA TEK KAYIPTAN KURAL ÇIKARMA: "sonIslemlerim" senin oturum hafızan; amacı kalıp YASAKLAMAK değil, "ne değişti?" sorusunu sordurmak. TEK kayıp gürültüdür, tezin yanlışlandığı anlamına GELMEZ — doğru tez kötü tetikle de kaybedebilir. Kanıtlanmış örnek: aynı tez iki kez SL yedikten sonra sweep tamamlanıp yapı yenilenince arka arkaya +%22 ve +%53 kazandırdı; kayıptan sonra tezi terk eden bu ikisini kaçırırdı. Kural: kayıptan sonra AYNI teze girerken neyin değiştiğini (sweep tamam mı, yapı yenilendi mi, yakıt geldi mi) gerekçende söyle ve gir; hiçbir şey değişmediyse bekle. Bir kalıbı ancak 3-4 kez ÜST ÜSTE, benzer koşullarda yenilirse sorgula. Kazanan kalıbı da tanı ve tereddütsüz sürdür.
 - GÜVEN = KALDIRAÇ AYARIDIR (LONG & SHORT): Güven skorun kaldıraca çevrilir; bunu bilinçli kullan. Tetik erken/teyitsizse 64-67 (düşük kaldıraç, kayıp küçük); teyitli girişte 70-77; tablo kusursuzsa 78+. SHORT'ta ekstra temkinli ol — gainer evreninde SHORT daha risklidir, sadece net parabolik dönüşte ve güçlü teyitle yüksek güven ver.
@@ -3819,7 +3969,7 @@ NASIL USTA GİBİ DAVRAN:
 
 ★ GİRİŞ/ÇIKIŞ:
 - Giriş: reclaim mumunda ya da hemen sonrasında (sweep dibinin hemen üstü).
-- SL: süpürülen likidite seviyesinin biraz altı (dar tut, ~1-1.5 ATR — süpürme başarısızsa fikir çabuk bozulur).
+- SL: %5-6 GENİŞ tut (5x kaldıraçta risk %25-30 marj, likidasyon yok). DAR SL (%2-3) KOYMA — MM tam o dar SL'i süpürüp seni avlıyor (BLUR -%20, VANRY dersi). Geniş SL, MM'in daldırma mesafesinin dışında kalır; fiyat gerçekten dönerse %5 geride SL seni korur ama normal süpürme avlayamaz.
 - TP: GENİŞ tut. Bir üstteki likidite seviyesine / yapı hedefine (~3-4 ATR). Kazançları büyüt, kayıpları kısa kes — bu stratejinin matematiği buna dayanır (WR ~%48 ama kazananlar büyük).
 - Kaldıraç: güven 64-69→10x, 70-77→13x, 78+→15x. TAVAN 15x (küçük bakiye LİKİDASYON koruması — 20x+ hesabı sildirir), AŞMA. Güvenin kaldıracı ölçer ama 15x katıdır.
 
@@ -5660,7 +5810,7 @@ let AI_SAVER_MODE = process.env.AI_SAVER_MODE === '1' || process.env.AI_SAVER_MO
 const AI_BRAIN_CONF_FLOOR = 64; // değiştirme: tasarım kararı. Üstü AI'ya bırakılır, leverage güvenle ölçeklenir.
 const AI_BRAIN_MIN_CONF = AI_BRAIN_CONF_FLOOR; // panel göstergesi = gerçek kapı (artık tutarlı)
 const AI_BRAIN_MIN_RR = Math.max(0.8, Number(process.env.AI_BRAIN_MIN_RR || 1.5) || 1.5);
-const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 6.0) || 6.0); // R328C: 3→6, volatil coinlerde dar SL iyi setupları reddediyordu
+const AI_BRAIN_MAX_SL_PCT = Math.max(0.3, Number(process.env.AI_BRAIN_MAX_SL_PCT || 8.0) || 8.0); // R372: 6→8 (A seçeneği geniş SL %5-6 + pay)
 // R308E: CANLI modda eski motor AI onayı olmadan emir açamaz.
 const AI_BRAIN_STRICT_GATE = process.env.AI_BRAIN_STRICT_GATE !== '0';
 let r308AiSpendDay = new Date().toISOString().slice(0,10);
@@ -9245,7 +9395,9 @@ function r327PatlamaScore(c) {
 }
 function r326ApplySingleCoinLock(orderedList) {
   if (!Array.isArray(orderedList) || orderedList.length === 0) return orderedList;
-  // TOP2: en iyi 2 coini al (12h sıralı zaten). Patlama potansiyeli yüksekse sırayı ayarla.
+  // R372-D: TOP2 (50$ bakiye maliyet dersi: TOP3'ün AI maliyeti ($1.65/gün) küçük bakiyede kârı yiyordu).
+  // TOP2 = 2 coin izle (tek coine kilitli DEĞİL, ama 3 değil — maliyet/fırsat dengesi 50$ bileşik için optimal).
+  // Bakiye büyüdükçe (200$+) TOP3'e panelden çıkılabilir (maxPositions/scanMode ayarı).
   const top2 = orderedList.slice(0, 2);
   // Patlama skoruna göre ikincil sıralama (yüksek patlama adayı öne)
   top2.sort((a,b) => r327PatlamaScore(b) - r327PatlamaScore(a));
@@ -9256,7 +9408,7 @@ function r326ApplySingleCoinLock(orderedList) {
              r327Patlama: ps >= 3 };  // 3+ = güçlü patlama adayı
   });
   const names = tagged.map(c => `${String(c.fullSymbol||'').replace('USDT','')}${c.r327Patlama?'🚀':''}`).join(', ');
-  logAuto(`🎯 R327 TOP2 izleniyor: ${names} (patlama adayı 🚀 ile işaretli)`);
+  logAuto(`🎯 R372-D TOP2 izleniyor: ${names} (patlama adayı 🚀 ile işaretli — 50$ bakiye maliyet-optimal, 2 coin)`);
   return tagged;
 }
 
@@ -14071,7 +14223,7 @@ app.post('/api/order', async (req, res) => {
       const openRows = Array.isArray(rows) ? rows.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0) : [];
       const sameSym = openRows.find(p=>String(p.symbol||'').toUpperCase()===sym);
       if (sameSym) throw new Error(`${sym} zaten açık pozisyon var; ikinci emir engellendi`);
-      const maxP = normalizeUserMaxPositions(maxPositions || autoConfig?.maxPositions || 1, 1);
+      const maxP = normalizeUserMaxPositions(maxPositions || autoConfig?.maxPositions || 2, 2);
       if (openRows.length >= maxP) throw new Error(`Max pozisyon dolu (${openRows.length}/${maxP}); emir engellendi`);
     } catch(limitErr) {
       if (String(limitErr.message||'').includes('engellendi') || String(limitErr.message||'').includes('Max pozisyon')) throw limitErr;
@@ -14391,6 +14543,34 @@ const trailingState = new Map(); // symbol → pozisyon durumu
 // Aynı coine tekrar tekrar girmesini önler. Manuel/SL/TP kapanışında,
 // hata durumunda ve açık pozisyon varken cooldown eklenir.
 const cooldownMap = new Map(); // symbol (FULLSYM) → expiry timestamp
+
+// ═══ R372-E OTOMATİK BİLEŞİK MARJİN (kullanıcı: kâr eklendikçe pozisyon büyüsün) ═══
+// Sabit marjin yerine güncel bakiyeye göre pozisyon: bakiye büyürse marjin büyür, küçülürse küçülür.
+// GÜVENLİK: bakiyenin %40'ı × 2 poz = %80 kullanım, %20 TAMPON (iki poz aynı anda SL yerse hesap sağ kalır).
+// Bakiye 50$ → marjin 20$ (poz başına). Kâr olur 54$ → marjin 21.6$. Otomatik bileşik büyüme.
+let r372BakiyeCache = { value: 0, ts: 0 };
+async function r372GetBilesikMarjin(apiKey, apiSecret, fallbackMargin) {
+  try {
+    const now = Date.now();
+    // Bakiyeyi 60sn cache'le (her emirde API çağrısı yapma)
+    if (now - r372BakiyeCache.ts > 60*1000 || r372BakiyeCache.value <= 0) {
+      const balRows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance');
+      const usdtRow = Array.isArray(balRows) ? balRows.find(x => String(x.asset||'').toUpperCase()==='USDT') : null;
+      const bal = Number(usdtRow?.balance ?? usdtRow?.availableBalance ?? 0);
+      if (Number.isFinite(bal) && bal > 0) { r372BakiyeCache = { value: bal, ts: now }; }
+    }
+    const bakiye = r372BakiyeCache.value;
+    if (!bakiye || bakiye <= 0) return fallbackMargin; // bakiye alınamazsa panel marjına düş
+    // maxPositions kadar böl, her poza %40 (2 poz için %80 kullanım, %20 tampon)
+    const maxPos = Math.max(1, Number(autoConfig?.maxPositions) || 2);
+    const kullanimOrani = 0.80; // toplam bakiyenin %80'i (güvenlik tamponu %20)
+    const marjinPerPoz = (bakiye * kullanimOrani) / maxPos;
+    // Binance min notional (~5$ marjin) altına düşme
+    const marjin = Math.max(5, marjinPerPoz);
+    return +marjin.toFixed(2);
+  } catch(_) { return fallbackMargin; }
+}
+
 // R370-E: COIN ZARAR TAKİBİ (VANRY dersi: aynı coin üst üste kaybediyor, 3 büyük kayıp hep VANRY'di).
 // Bir coin kısa sürede 2 kez zarar yazdıysa, o coini 2 saat BLOKLA (aynı tuzağa 3. kez düşme).
 const r370CoinZararMap = new Map(); // base symbol → { count, lastLossTs, blockUntil }
@@ -15024,6 +15204,9 @@ async function managePosition(apiKey, apiSecret, pos) {
       // R309Z: KÂR KOŞTURMA — geri-verme toleransı GEVŞETİLDİ (kullanıcı: "kâr sonuna kadar koşsun, max hedef").
       // Eski değerler kârı erken kapatıyordu (zirve %12+ → sadece %20 geri verince kilit). Artık daha geniş nefes:
       // kâr trendi sürdükçe koşar, sadece BÜYÜK geri dönüşte kilitlenir. Risk: kâr geri dönebilir (kullanıcı onayladı).
+      // R372 BACKTEST KANITI (tam-eşit, 6 coin): bu SIKI giveback tablosu OPTIMAL. Gevşetmek denendi (%45-68'e)
+      // ama kârı DÜŞÜRDÜ (+14.2$→+10.7$) — volatil TOP gainer'larda zirveden geri verme sert, geç kilitlersen kâr erir.
+      // ERKEN KİLİTLEME BURADA DOĞRU. Bu tabloyu gevşetme (test edildi, kötüledi).
       const peak = Number(state.peakPnl || 0);
       let giveCap, minGive;
       if (peak >= 20)      { giveCap = 0.30; minGive = 5.0; }  // çok büyük kâr (%20+): zirveden %30 geri verince kilitle (eskiden %20)
@@ -16426,7 +16609,7 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
         try {
           const posRows = await getPositionRiskCached(cfg.apiKey, cfg.apiSecret);
           const openRows = Array.isArray(posRows) ? posRows.filter(p => Math.abs(parseFloat(p.positionAmt||0)) > 0) : [];
-          const maxP = normalizeUserMaxPositions(cfg.maxPositions || autoScanState?.settings?.maxPositions || 1, 1);
+          const maxP = normalizeUserMaxPositions(cfg.maxPositions || autoScanState?.settings?.maxPositions || 2, 2);
           if (openRows.find(p => String(p.symbol||'').toUpperCase() === fullSym)) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Aynı sembolde açık pozisyon var'}); logAuto(`⛔ ${sym} AI canlı emir yok: aynı sembolde açık pozisyon var`); continue; }
           if (openRows.length >= maxP) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:`Max pozisyon dolu (${openRows.length}/${maxP})`}); logAuto(`⛔ ${sym} AI canlı emir yok: max pozisyon dolu (${openRows.length}/${maxP})`); continue; }
         } catch(e) {
@@ -16449,7 +16632,7 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
             leverage: lev, marginType: cfg.marginType,
             targetPrice: ai.tp, stopPrice: ai.sl,
             usdtAmount: margin,
-            maxPositions: cfg.maxPositions || autoScanState?.settings?.maxPositions || 1
+            maxPositions: cfg.maxPositions || autoScanState?.settings?.maxPositions || 2
           })
         }).then(x => x.json());
 
@@ -16756,11 +16939,25 @@ async function runAutoScan(prioritySymbol=null) {
 
   try {
     const cfg = autoConfig;
-    const { apiKey, apiSecret, usdtAmount, leverage, marginType,
+    const { apiKey, apiSecret, usdtAmount:panelUsdtAmount, leverage, marginType,
       maxPositions:rawMaxPositions=3, minScore=70, allowLong=true, allowShort=true,
       sweepOnly=false, scanMode='TOP10', scanLimit=null,
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[],
       vurKacEnabled=false, vurKacAutoLev=false, vurKacMaxLev=50 } = cfg;
+
+    // ═══ R372-E OTOMATİK BİLEŞİK MARJİN ═══
+    // Panel marjını (sabit) yerine güncel bakiyeye göre marjin kullan (kâr eklendikçe pozisyon büyür).
+    // Bakiye alınamazsa panel değerine düşer (güvenli fallback). Bileşik büyüme kullanıcı talebi.
+    let usdtAmount = panelUsdtAmount;
+    if (autoConfig?.enabled && apiKey && apiSecret) {
+      const bilesikMarjin = await r372GetBilesikMarjin(apiKey, apiSecret, panelUsdtAmount);
+      if (bilesikMarjin && bilesikMarjin > 0) {
+        usdtAmount = bilesikMarjin;
+        if (Math.abs(bilesikMarjin - Number(panelUsdtAmount||0)) > 0.5) {
+          logAuto(`💰 R372-E bileşik marjin: güncel bakiyeye göre poz başına ${bilesikMarjin}$ (panel sabit ${panelUsdtAmount}$ yerine — kâr eklendikçe büyür)`);
+        }
+      }
+    }
 
     const maxPositions = normalizeUserMaxPositions(rawMaxPositions, 3);
     const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'TOP10');
@@ -16887,6 +17084,12 @@ async function runAutoScan(prioritySymbol=null) {
     }
     // R341: patlama radarı için GENİŞ liste — TOP2 filtresi uygulanmadan önceki ilk 10 gainer.
     try { autoScanState.genisListe = (scanList||[]).slice(0,10).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean); } catch(_) {}
+    // R371: TOP2 + aday coinler için gerçek order flow stream'lerini başlat (aggTrade + depth).
+    // Böylece AI karar verirken bu coinlerin GERÇEK akışı (MM ne yapıyor) canlı hazır olur.
+    try {
+      const flowCoinler = (scanList||[]).slice(0,3).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean);
+      if (typeof r371StartFlow === 'function') for (const fc of flowCoinler) r371StartFlow(fc);
+    } catch(_) {}
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
       // R341: patlama bayraklı coin TOP2 filtresinden düşmesin — bayrak "TOP2 muamelesi" demektir,
@@ -17845,16 +18048,36 @@ async function runAutoScan(prioritySymbol=null) {
         // Tüm düşürücüler (R151 yeni-coin, R150 mikro-cap, R157/R191 valiler) çalıştıktan SONRA
         // sonucu 10x'e yükselt — scalp yapıyoruz, 3x-6x-9x gibi düşük kaldıraç kabul edilmez.
         // Binance izinli tavanı aşmaz (bracketMaxLev korunur). Güvenlik SL disiplininde: SL dar tutulur.
-        if (executeLeverage < 10) {
+        // R372 (A SEÇENEĞİ): kaldıraç tavanı 5x. Düşük kaldıraç + geniş SL = MM avı zorlaşır, likidasyon yok.
+        // Kaldıraç 5x'i AŞMASIN (geniş SL zaten koruyor). 5x'ten yüksekse 5x'e indir.
+        if (executeLeverage > 5) {
           const _oldLevFloor = executeLeverage;
-          const _cap = (typeof r137BaseMaxLev === 'number' && r137BaseMaxLev > 0) ? r137BaseMaxLev : 25;
-          executeLeverage = Math.min(10, _cap);
-          if (executeLeverage !== _oldLevFloor) {
-            leverageNote += ` · R366 scalp taban ${_oldLevFloor}x→${executeLeverage}x (min 10x)`;
-            logAuto(`⚙️ ${coin.symbol} R366 scalp kaldıraç tabanı: ${_oldLevFloor}x→${executeLeverage}x (kullanıcı: min 10x)`);
-          }
+          executeLeverage = 5;
+          leverageNote += ` · R372 A-seçeneği kaldıraç ${_oldLevFloor}x→5x (düşük kaldıraç + geniş SL)`;
+          logAuto(`⚙️ ${coin.symbol} R372 kaldıraç: ${_oldLevFloor}x→5x (A seçeneği — geniş SL ile MM avı zorlaşır)`);
         }
 
+        // R372 (A SEÇENEĞİ): SL TABAN GENİŞLİĞİ — AI dar SL koyarsa min %5'e genişlet (MM avı koruması).
+        // Backtest kanıtı: dar SL (%2.5) MM avlıyor (WR %61), geniş SL (%5) avlayamıyor (WR %90). 5x kaldıraçta %5 SL = %25 risk.
+        if (isLong && typeof userSLPct === 'number' && userSLPct < 5.0) {
+          const _oldSLwide = userSLPct;
+          userSLPct = 5.0; // min %5 geniş SL
+          logAuto(`📏 ${coin.symbol} R372 SL genişletildi %${_oldSLwide.toFixed(1)}→%5.0 (A seçeneği — dar SL MM avlıyor, geniş SL korur)`);
+        }
+        // R370-F: RUNNER'ı NORMAL'e zorlama bayrağı (tepe/belirsiz setup'ta kâr taşıma riski alma)
+        let _r370ForceNormal = false;
+        // R371: GERÇEK ORDER FLOW (MM ile aynı trende miyiz?). Backtest dersi (6 coin): 15m ortalama delta
+        // yanıltıcı olabilir, otomatik RUNNER-iptal kâr kaçırıyordu (+1000% fark!). Bu yüzden KOD MÜDAHALE ETMEZ —
+        // order flow SADECE AI'a bilgi gider (prompt'ta), AI diğer verilerle birlikte değerlendirir. Kod sadece loglar.
+        // Kullanıcı ilkesi: AI'ı boğma, kod zorla müdahale etme. Order flow = güçlü bir GİRDİ, otomatik veto DEĞİL.
+        if (isLong) {
+          try {
+            const _flow = (typeof r371GetFlowAnalysis === 'function') ? r371GetFlowAnalysis(coin.symbol, entryRef) : null;
+            if (_flow && _flow.veriTazeMi) {
+              logAuto(`🚂 ${coin.symbol} R371 ORDER FLOW (AI'a bilgi, kod müdahale etmez): akış ${_flow.akisYonu} ${_flow.ivme} · delta ${_flow.gercekDelta30sn}$/30sn · ${_flow.akisYonu==='ALIŞ'?'MM alıyor ✓':_flow.akisYonu==='SATIŞ'?'MM satıyor, AI değerlendirsin':'denge'}`);
+            }
+          } catch(_r371e) {}
+        }
         // ═══ R367 KODA-GÖMÜLÜ ÇÖKÜŞ/TEPE KORUMASI (AI'sız, bedava, HER ZAMAN aktif) ═══
         // Hibrit mimarinin kalbi: AI açık olsun kapalı olsun, BIRB -%27 tipi tepe-girişini kod yakalar.
         // Backtest kanıtı: TOP gainer'lar tepeden %11-27 çöküyor. Bu koruma dikey tepe + momentum ölümü +
@@ -17904,43 +18127,19 @@ async function runAutoScan(prioritySymbol=null) {
             return { risk: riskler.length ? riskler.join('+') : 'temiz', pos, momOlu, dagitim, dikeyTepe, dikeyPomp, makroTepe, riskSayi: riskler.length };
           } catch(_) { return { risk:'hata' }; } })();
 
-          // ═══ R369-E DÜŞEN BIÇAK KORUMASI (görsel kanıt 4USDT/TLM: giriş anında fiyat düşüyordu, SL avlandı sonra hedefe gitti) ═══
-          // Giriş anında son 1m mumlar DÜŞÜYORSA (dönüş başlamamış), giriş ERKEN → MM stop-hunt riski. Dönüş teyidi bekle.
-          const _dususBicak = (()=>{ try {
-            const c1m = analysis?.r308RawCandles?.['1m'];
-            if (!Array.isArray(c1m) || c1m.length < 5) return { bicak:false };
-            const n1 = c1m.length;
-            const O=i=>+c1m[i][0], C=i=>+c1m[i][3], L=i=>+c1m[i][2], H=i=>+c1m[i][1];
-            // R369-E2 GEVŞETİLDİ (M backtest: fazla agresifti, iyi girişleri eliyordu +272% kaçtı).
-            // Artık SADECE SERT düşen bıçak engellenir: son 3 mumun HEPSİ kırmızı VE son mum güçlü düşüyor VE reclaim yok.
-            // Hafif geri çekilmeler AI'ın dönüş-teyidi kuralına bırakılır. Sadece 4USDT tipi net-düşüş engellenir.
-            let kirmizi=0; for(let i=n1-3;i<n1;i++){ if(C(i)<O(i))kirmizi++; }
-            const sonYesil = C(n1-1) > O(n1-1);
-            const sonMum = { o:O(n1-1), c:C(n1-1), l:L(n1-1), h:H(n1-1) };
-            const altFitil = Math.min(sonMum.o,sonMum.c) - sonMum.l;
-            const govde = Math.abs(sonMum.c-sonMum.o) || 1e-9;
-            const reclaim = altFitil > govde * 0.8; // uzun alt fitil = dip alındı
-            // Son mumun düşüş gücü: gövde menzilin %50+'si (kararlı düşüş, kararsız değil)
-            const menzil = sonMum.h - sonMum.l || 1e-9;
-            const sertDusus = (sonMum.o - sonMum.c) / menzil > 0.5; // güçlü kırmızı gövde
-            // SERT DÜŞEN BIÇAK: 3/3 kırmızı VE son mum sert düşüyor VE reclaim yok (sadece en net bıçak)
-            const bicak = kirmizi >= 3 && sertDusus && !reclaim;
-            return { bicak, kirmizi, sonYesil, reclaim, sertDusus };
-          } catch(_) { return { bicak:false }; } })();
-          if (_dususBicak.bicak) {
-            logAuto(`🩸 ${coin.symbol} R369-E DÜŞEN BIÇAK: giriş anında son 1m mumlar düşüyor (${_dususBicak.kirmizi}/3 kırmızı, dönüş yok) — AÇILMADI. Dönüş teyidi (yeşil mum/reclaim) beklenecek. MM stop-hunt riski (4USDT dersi).`);
-            markAutoSkip(coin.symbol, `R369-E düşen bıçak: dönüş teyidi yok`, {rec:(decisionChain?.aiBrain?.side)||recommendation, score, aiBrain:(decisionChain?.aiBrain||null)});
-            continue;
-          }
-
-          // Çok riskli (2+ sinyal) → girişi ENGELLE. Tek sinyal → SL'i daralt (yarıya), risk azalt.
+          // R370-F TEMİZLİK (kullanıcı dersi: R291 boğma riski, 133 engel birikmişti — VETO'LARI RİSK YÖNETİMİNE ÇEVİR).
+          // R369-E düşen bıçak KALDIRILDI (backtest fazla agresif, +272% kaçırıyordu). R367 çöküş koruması artık
+          // ENGELLEMİYOR — sadece SL daraltıyor + RUNNER kapatıyor. Bot işlem açar (frekans korunur), risk küçük kalır.
+          // Felsefe: zararı SIĞLAŞTIR (SL/kaldıraç), işlemi ENGELLEME (veto yok). Backtest'te kanıtlanmış katmanlar kalır.
           if (_koruma.riskSayi >= 2) {
-            logAuto(`🛑 ${coin.symbol} R367 ÇÖKÜŞ KORUMASI: ${_koruma.risk} — LONG ENGELLENDİ (tepe-girişi, BIRB -%27 tipi risk). ${AI_BRAIN_ENABLED?'AI onayladı ama kod vetoladı':'saf kod koruması'}`);
-            markAutoSkip(coin.symbol, `R367 çöküş koruması: ${_koruma.risk}`, {rec:(decisionChain?.aiBrain?.side)||recommendation, score, aiBrain:(decisionChain?.aiBrain||null)});
-            continue;
+            // 2+ risk sinyali: ENGELLEME YOK, SL'i sert daralt + RUNNER kapat (tepe girişi olabilir, riski küçük tut)
+            const _oldSL = userSLPct;
+            userSLPct = Math.max(5.0, userSLPct * 0.55); // R372: taban %5 (A seçeneği — geniş SL koru, MM avı)
+            _r370ForceNormal = true; // tepe riski varsa RUNNER yapma
+            logAuto(`⚠️ ${coin.symbol} R367: ${_koruma.risk} (${_koruma.riskSayi} sinyal) — ENGELLEME YOK, SL %${_oldSL.toFixed(1)}→%${userSLPct.toFixed(1)} + NORMAL (risk azalt, işlem açılır)`);
           } else if (_koruma.riskSayi === 1) {
             const _oldSL = userSLPct;
-            userSLPct = Math.max(0.8, Math.min(userSLPct, userSLPct * 0.6)); // SL'i %40 daralt
+            userSLPct = Math.max(5.0, Math.min(userSLPct, userSLPct * 0.7)); // R372: taban %5 (A seçeneği)
             if (userSLPct !== _oldSL) logAuto(`⚠️ ${coin.symbol} R367: ${_koruma.risk} tespit — SL daraltıldı %${_oldSL.toFixed(1)}→%${userSLPct.toFixed(1)} (risk azalt, girişe izin var)`);
           }
         }
@@ -18639,38 +18838,20 @@ async function runAutoScan(prioritySymbol=null) {
                     }
                   }
                 } catch(_r318e) {}
-                // ═══ R370-E COIN BLOK KONTROLÜ (VANRY dersi: aynı coin üst üste kaybediyor) ═══
-                try {
-                  const _blok = r370CoinBlokluMu(coin.symbol);
-                  if (_blok.blok) {
-                    logAuto(`🚫 ${coin.symbol} R370-E BLOK: bu coin son zararlardan sonra ${_blok.kalanDk}dk daha bloklu — AÇILMADI (aynı coine ısrar etme)`);
-                    markAutoSkip(coin.symbol, `R370-E coin blok: ${_blok.kalanDk}dk kaldı`, {rec:ai.side, score, aiBrain:ai});
-                    continue;
-                  }
-                } catch(_r370e) {}
-                // ═══ R370-D AI ÇELİŞKİ VETOSU (VANRY dersi: AI "1m AŞAĞI parabolik" dedi ama yine LONG açtı, kaybetti) ═══
-                // AI kendi gerekçesinde 'aşağı parabolik / düşüyor / satıcı baskın' yazıp yine de LONG istiyorsa = çelişki.
-                // Bu indikatör değil — AI'ın kendi HAM FİYAT okumasıyla ÇELİŞMESİ. Düşen coine LONG = MM avı. Engelle.
-                try {
-                  const gerekce = String(decisionChain?.aiBrain?.reasoning || '').toLowerCase();
-                  if (ai.side === 'LONG') {
-                    const asagiSinyal = /aşağı parabolik|aşağı-parabolik|düşüyor|düşüş devam|satıcı baskın|çöküş|aşağı yönlü impuls/.test(gerekce);
-                    // 'BTC düşerken tutuyor' gibi zayıf gerekçe de riskli (VANRY dersi)
-                    const zayifGerekce = /btc düşerken.*tut|düşerken.*birikim/.test(gerekce);
-                    if (asagiSinyal || zayifGerekce) {
-                      logAuto(`🛑 ${coin.symbol} R370-D AI ÇELİŞKİ VETOSU: AI gerekçesinde aşağı/zayıf sinyal var ama LONG istiyor — ENGELLENDİ (VANRY dersi: düşen coine LONG = MM avı). Gerekçe: "${gerekce.slice(0,60)}"`);
-                      markAutoSkip(coin.symbol, `R370-D AI çelişki: aşağı sinyal + LONG`, {rec:ai.side, score, aiBrain:ai});
-                      continue;
-                    }
-                  }
-                } catch(_r370d) {}
+                // R370-F TEMİZLİK: R370-E coin blok + R370-D AI çelişki vetoları KALDIRILDI (reaktif, botu boğuyordu).
+                // Coin tekrarı zaten aynı-yön cooldown (30dk) ile yönetiliyor. AI çelişkisi = AI'ın kendi işi, kod veto etmesin.
+                // Kullanıcı ilkesi: tek kayıptan kural çıkarma, AI'ı boğma. Bu iki veto tam o hatalardı — silindi.
                 // ═══ R370 VETO: 2+ ciddi uyarı birikti = MM tuzağı, EMRİ ENGELLE (kullanıcı dersi: BEL 12:30'da 3 uyarı vardı → açıldı → kaybetti) ═══
                 // TEK uyarı geçer (AI özgür, R291 boğma dersi). Ama 2+ ciddi uyarı ÜST ÜSTE = düşük olasılık, MM avı riski yüksek.
                 // Bu, "düşen trend + akış ters + RSI 85 sweep'siz" gibi ölümcül kombinasyonları keser. Sweep varsa uyarılar zaten sayılmaz.
+                // R370-F (kullanıcı dersi: R291 boğma riski — VETO YERİNE RİSK AZALT). 2+ uyarı = işlemi ENGELLEME,
+                // sadece SL'i daralt + RUNNER'ı kapat (NORMAL yap). Bot işlem açar (frekans korunur) ama riski küçük tutar.
+                // Engelleme yerine risk yönetimi: kötü olabilir ama açılsın, kaybederse SL sığ olsun. Felç etme.
                 if (_r370UyariSay >= 2) {
-                  logAuto(`🛑 ${coin.symbol} R370 VETO: ${_r370UyariSay} ciddi uyarı birikti [${_r370Uyarilar.join(', ')}] — EMİR ENGELLENDİ (MM tuzağı kombinasyonu, BEL 12:30 dersi). Tek uyarı geçerdi ama 2+ = düşük olasılık.`);
-                  markAutoSkip(coin.symbol, `R370 çoklu-uyarı vetosu: ${_r370Uyarilar.join('+')}`, {rec:ai.side, score, aiBrain:ai});
-                  continue;
+                  const _oldSL2 = userSLPct;
+                  userSLPct = Math.max(5.0, userSLPct * 0.7); // R372: taban %5 (A seçeneği)
+                  _r370ForceNormal = true; // RUNNER kapat (belirsiz setup, kâr taşıma riski alma)
+                  logAuto(`⚠️ ${coin.symbol} R370-F: ${_r370UyariSay} uyarı [${_r370Uyarilar.join(', ')}] — ENGELLEME YOK, SL daraltıldı %${_oldSL2.toFixed(1)}→%${userSLPct.toFixed(1)} + NORMAL mod (risk azalt, işlem açılır)`);
                 }
                 // ═══ R319: "AMA TESTİ" — AI kendi gerekçesinde çelişki yazıyorsa emin değildir (gerçek: tüm dev kayıplarda 'ama' vardı) ═══
                 // Mantık: AI gerekçesinde 'ama/ancak/rağmen/çelişki' + sweep yok + akış aşırı güçlü değil (|delta|<50)
@@ -18728,20 +18909,18 @@ async function runAutoScan(prioritySymbol=null) {
                         const binancePanelCap = Math.max(1, executeLeverage);
                         // R325D: TEK PATRON AI KALDIRAÇ — TAVAN 25x (küçük bakiye likidasyon koruması, kullanıcı talimatı).
                         // Taban 10x. AI güveni yükseldikçe artar ama 25x'i AŞMAZ. Promptaki tabloyla senkron.
-                        // R369 (canlı karne dersi): TAVAN 25x→15x. Gece VANRY 20x LİKİDE oldu (-84%).
-                        // Küçük bakiyede 20x-25x ölümcül: tek ters hareket = likidasyon. Backtest 10x ile +573% yaptı,
-                        // 15x fazlasıyla yeter. Yüksek güven artık 15x tavanda kalır — likidasyon riski kesildi.
-                        let aiTargetLev;
-                        if (aiConf >= 78)      aiTargetLev = 15;  // en net setup: TAVAN 15x (25x değil)
-                        else if (aiConf >= 70) aiTargetLev = 13;
-                        else                   aiTargetLev = 10;  // 64-69: TABAN 10x
+                        // R372 (A SEÇENEĞİ — backtest kanıtı): DÜŞÜK KALDIRAÇ + GENİŞ SL. Tezadın kaynağı bulundu:
+                        // dar SL'de (%2.5) MM tam oraya daldırıp avlıyordu (WR %61). Geniş SL (%5) + düşük kaldıraç (5x) ile
+                        // MM avlaması zorlaşıyor, risk aynı (%25 marj). Bileşik backtest: 5x+%5 SL = 50$→98$/gün, 0 kaybeden gün.
+                        // Kaldıraç SABİT 5x (güven fark etmez — geniş SL zaten koruyor, yüksek kaldıraca gerek yok).
+                        let aiTargetLev = 5;
                         // AI panel tavanından MUAF — Binance fiziksel izni VE 25x tavanı sınırlar.
                         let r310BinanceMax = null;
                         try {
                           r310BinanceMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * aiTargetLev).catch(()=>null);
                         } catch(_e) {}
                         const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? Math.min(25, r310BinanceMax) : 25; // R325D: 25x mutlak tavan
-                        aiTargetLev = Math.max(10, Math.min(15, Math.min(aiTargetLev, r310Ceil))); // R369: min 10x, TAVAN 15x (likidasyon koruması)
+                        aiTargetLev = Math.max(5, Math.min(5, Math.min(aiTargetLev, r310Ceil))); // R372: SABİT 5x (A seçeneği — düşük kaldıraç + geniş SL)
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
@@ -18973,7 +19152,9 @@ async function runAutoScan(prioritySymbol=null) {
             try {
               const _ai = decisionChain?.aiBrain || {};
               const _tf = analysis?.timeframes || {};
-              _stOpen.aiRunner = (_ai.karKosma === 'RUNNER') || r368BotRunnerUygunMu(analysis, coin).runner;  // R368: AI RUNNER der VEYA bot uygun görür (varsayılan RUNNER, uygun koşulda)
+              // R368: AI RUNNER der VEYA bot uygun görür. R370-F: ama tepe/belirsiz setup'ta (_r370ForceNormal) RUNNER kapalı.
+              _stOpen.aiRunner = ((_ai.karKosma === 'RUNNER') || r368BotRunnerUygunMu(analysis, coin).runner) && !(typeof _r370ForceNormal !== 'undefined' && _r370ForceNormal);
+              if (typeof _r370ForceNormal !== 'undefined' && _r370ForceNormal && _stOpen.aiRunner === false) logAuto(`⚠️ ${coin.symbol} R370-F: RUNNER kapatıldı (tepe/belirsiz setup — kâr taşıma riski alınmıyor, NORMAL yönetim)`);
               _stOpen.aiSnapshot = {
                 // AI'nın kararı ve gerekçesi
                 aiSide: _ai.side || recommendation,
@@ -19075,7 +19256,7 @@ async function runAutoScan(prioritySymbol=null) {
     if (autoScanState.phase === 'MAX_POZİSYON_DOLU') {
       try {
         const cnt = await getNewPosCount();
-        const maxP = normalizeUserMaxPositions(autoConfig?.maxPositions || autoScanState?.settings?.maxPositions || 1, 1);
+        const maxP = normalizeUserMaxPositions(autoConfig?.maxPositions || autoScanState?.settings?.maxPositions || 2, 2);
         autoScanState.positionCount = cnt;
         if (cnt < maxP) autoScanState.phase = autoScanState.opened>0 ? 'EMİR_AÇILDI' : 'BEKLİYOR';
       } catch(e) {}
