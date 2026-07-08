@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R377D_EFFORT_KALDIRILDI'
+const LAZARUS_BUILD = 'R377E_TIMEOUT_UYUM'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -4063,7 +4063,11 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
     const r311tTransient = (st) => (st === 429 || st === 500 || st === 502 || st === 503 || st === 529);
     for (let attempt = 0; attempt < 3; attempt++) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 25000);
+      // R377E: thinking'li modeller (Sonnet 5/Opus/Fable) 25sn'de kesiliyordu ("This operation was aborted",
+      // 08.07 15:05 KAITO kararı kayboldu). Thinking'e zaman ver; env AI_TIMEOUT_MS ile ayarlanabilir.
+      const r377eTimeoutMs = parseInt(process.env.AI_TIMEOUT_MS || '0', 10)
+        || (/opus|fable|mythos|sonnet-5/i.test(ANTHROPIC_MODEL) ? 60000 : 25000);
+      const timeout = setTimeout(() => controller.abort(), r377eTimeoutMs);
       try {
         resp = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
