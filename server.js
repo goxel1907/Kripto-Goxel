@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R377G_TOKEN_TAVANI'
+const LAZARUS_BUILD = 'R378_RESTART_GUARD_FIX'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -6495,7 +6495,7 @@ function rememberOpenPositionForReentry(p, state={}) {
   lastKnownPositions[sym] = {
     symbol:sym, side, positionAmt:Math.abs(amt),
     entryPrice:safeNum(p.entryPrice || state.entryPrice || old.entryPrice, 10),
-    leverage:Number(p.leverage || state.leverage || old.leverage || autoConfig?.leverage || 1),
+    leverage:Number(p.leverage || state.leverage || old.leverage || 5), // R378: panel fallback kaldırıldı (R372 sabit 5x)
     openedAt:Number(state.openedAt || old.openedAt || Date.now()),
     currentSL:safeNum(state.currentSL || state.slPrice || old.currentSL || old.slPrice, 10),
     targetTP:safeNum(state.targetTP || state.tpPrice || old.targetTP || old.tpPrice, 10),
@@ -14565,7 +14565,7 @@ app.post('/api/positions', async (req, res) => {
       const full=normalizeSymbol(p.symbol);
       const state=trailingState.get(full)||trailingState.get(String(p.symbol||''))||{};
       // R37: Bazı positionRisk/account cevaplarında leverage 1/boş dönebiliyor; canlı state/panel leverage'ı ile tamamla.
-      const lev=parseInt(p.leverage)||parseInt(state.leverage)||parseInt(autoConfig?.leverage)||1;
+      const lev=parseInt(p.leverage)||parseInt(state.leverage)||5; // R378: panel fallback yerine R372 sabit 5x (gösterim dürüstlüğü)
       const side=amt>0?'LONG':'SHORT';
       const pct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)).toFixed(2):'0';
       // SL/TP bracket kontrolü — R145: her dashboard yenilemede openOrders/openAlgoOrders dövülmez.
@@ -15391,8 +15391,21 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 0. R14 ACİL ZARAR KORUMASI — SL çalışmaz/gecikirse kaçış ─────────────
   // Normalde Binance algo SL kapatmalı. Ama yeni sembol / aşırı hızlı fitil / proof gecikmesi
   // durumunda pozisyon SL seviyesinin ötesine sarkarsa 3 dakikalık taramayı beklemeden kapatılır.
-  const hardLossReal = -Math.max(slPct + 0.25, slPct * 1.12); // SL %2 ise yaklaşık -%2.25 coin hareketi
-  const hardLossRoi  = -Math.max((slPct * leverage) + 5, 30); // 15x %2 SL için yaklaşık -%35 ROI
+  // R378 ANA FIX: eşik PANEL slPct'sinden (%1.7) değil İŞLEMİN GERÇEK SL'inden türetilir.
+  // Eski hali her pozisyonu -%1.95 coin hareketinde kesiyordu → R372 "%5 geniş SL" tasarımı
+  // canlıda HİÇ çalışmamıştı (08.07: ZBT/PLAY/UAI -%1.9~-2.05'te kesildi; backtest +%27-31 ile
+  // canlı ıraksamasının kökü). Öncelik: açılış slPct → gerçek SL fiyatı → AI planı → geniş taban %5.
+  const r378EffSlPct = (() => {
+    const stored = parseFloat(state.slPct || state.entrySLPct || 0);
+    if (stored > 0) return stored;
+    const slp = parseFloat(state.currentSL || state.slPrice || 0);
+    if (slp > 0 && entryPrice > 0) return Math.abs(entryPrice - slp) / entryPrice * 100;
+    const ai = parseFloat(state.aiBrain?.sl || 0);
+    if (ai > 0 && entryPrice > 0) return Math.abs(entryPrice - ai) / entryPrice * 100;
+    return Math.max(5, slPct); // hiçbir gerçek kaynak yok → R372 geniş-SL tabanı, panel kıl tetiği yok
+  })();
+  const hardLossReal = -Math.max(r378EffSlPct + 0.25, r378EffSlPct * 1.12);
+  const hardLossRoi  = -Math.max((r378EffSlPct * leverage) + 5, 30);
   if (realProfitPct <= hardLossReal || pnlPct <= hardLossRoi) {
     action = {
       type:'EMERGENCY_EXIT', urgency:'CRITICAL',
@@ -19792,23 +19805,40 @@ async function syncPositions() {
     for (const [sym, p] of openMap.entries()) {
       if (!trailingState.has(sym)) {
         const ep  = parseFloat(p.entryPrice || 0);
-        const lev = parseInt(p.leverage) || parseInt(autoConfig?.leverage) || 1;
+        // R378 FIX-1: panel kaldıracı (13-15x) fallback OLAMAZ. R372 A-seçeneği her işlemi 5x açar;
+        // v3 positionRisk leverage döndürmediği için buradaki fallback panelden değil sabit 5x'ten gelir.
+        // (08.07 vakası: deploy sonrası BTW/POWER/UAI restore panel 13x + panel SL %1.7 aldı →
+        //  R14 guard ROI'yi 13x'ten -26.8 sanıp gerçek SL'in yarısında, -%2 harekette kesti; -12.37$.)
+        const lev = parseInt(p.leverage) || 5;
         const side = parseFloat(p.positionAmt) > 0 ? 'LONG' : 'SHORT';
         const lastKnown = lastKnownPositions?.[sym] || {};
+        // R378 FIX-2: json (Railway geçici disk) silinmişse gerçek SL/TP Binance'teki açık emirlerden okunur.
+        // Binance tek doğruluk kaynağı; liveOpenBracketOrders 60sn cache'li, ekstra weight maliyeti düşük.
+        let r378LiveSL = 0, r378LiveTP = 0;
+        if (!(lastKnown.currentSL || lastKnown.slPrice) && !isBinanceBackoffActive()) {
+          try {
+            const _ords = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
+            r378LiveSL = orderTriggerPrice(_ords.find(o => orderKind(o) === 'SL')) || 0;
+            r378LiveTP = orderTriggerPrice(_ords.find(o => orderKind(o) === 'TP')) || 0;
+            if (r378LiveSL) logAuto(`🩹 R378: ${sym.replace('USDT','')} restore — gerçek SL Binance emrinden alındı (${r378LiveSL})`);
+          } catch(_) {}
+        }
         trailingState.set(sym, {
           entryPrice:    lastKnown.entryPrice || ep,
           side:          lastKnown.side || side,
           leverage:      lastKnown.leverage || lev,
           usdtAmount:    lastKnown.usdtAmount || parseFloat(autoConfig?.usdtAmount || 10),
-          currentSL:      lastKnown.currentSL || lastKnown.slPrice || 0,
-          targetTP:      lastKnown.targetTP || lastKnown.tpPrice || 0,
-          slPrice:       lastKnown.currentSL || lastKnown.slPrice || 0,
-          tpPrice:       lastKnown.targetTP || lastKnown.tpPrice || 0,
+          currentSL:      lastKnown.currentSL || lastKnown.slPrice || r378LiveSL || 0,
+          targetTP:      lastKnown.targetTP || lastKnown.tpPrice || r378LiveTP || 0,
+          slPrice:       lastKnown.currentSL || lastKnown.slPrice || r378LiveSL || 0,
+          tpPrice:       lastKnown.targetTP || lastKnown.tpPrice || r378LiveTP || 0,
           breakEvenSet:  !!(lastKnown.currentSL || lastKnown.slPrice),
           tpExtended:    false,
           trendHoldCount:0,
           sltpVerified:  !!(lastKnown.sltpVerified || lastKnown.currentSL || lastKnown.targetTP),
-          slPct:         Number(lastKnown.slPct || autoConfig?.slPct || 0),
+          // R378 FIX-3: panel slPct'si (%1.7) restore'da gerçek slPct gibi YAZILMAZ. 0 bırakılır ki
+          // R14 guard zinciri gerçek SL fiyatından (currentSL → slFromPriceGuard) türetsin.
+          slPct:         Number(lastKnown.slPct || 0),
           tpPct:         Number(lastKnown.tpPct || autoConfig?.tpPct || 0),
           aiRunner:      !!(lastKnown.aiRunner),                    // R338: RUNNER modu restart'ta kaybolmasın
           brainMode:     lastKnown.brainMode || null,               // R338: AI pozisyonu restart'ta AI pozisyonu kalsın
@@ -19836,7 +19866,9 @@ async function syncPositions() {
         // p.leverage hep undefined → panel kaldıracına (15x) düşüyordu → ROI yanlış hesaplanıyordu
         // (02.07 MUSDT: gerçek 8x iken roi -38.3 sanılıp AI SL'inden önce kesildi). Önce state'teki gerçek emir kaldıracı.
         // R345: v3 positionRisk leverage döndürmediği için state'e 1 sızabiliyor — 1'den büyük ilk gerçek değer alınır.
-        const lev = [parseInt(stGuard.executeLeverage), parseInt(stGuard.leverage), parseInt(p.leverage), parseInt(autoConfig.leverage)].find(v => Number.isFinite(v) && v > 1) || 1;
+        // R378: panel kaldıracı (13-15x) zincirden ÇIKARILDI — R372 her işlemi 5x açar; panel fallback
+        // ROI'yi 2.6 kat şişirip guard'ı erken tetikliyordu (08.07 BTW/POWER/UAI: -%2 harekette roi -26.8 sanıldı).
+        const lev = [parseInt(stGuard.executeLeverage), parseInt(stGuard.leverage), parseInt(p.leverage)].find(v => Number.isFinite(v) && v > 1) || 5;
         // R338 GUARD FIX-2: restart-restore sonrası stGuard.slPct kayboluyordu (lastKnown slPct saklamıyordu)
         // → panel varsayılanı %2'ye düşüp AI'ın geniş SL'inden ÖNCE kesiyordu ("bot AI'ı kesmesin" ihlali).
         // En sağlam kaynak: gerçek SL fiyatından türet (currentSL restore'da korunuyor).
@@ -19849,7 +19881,15 @@ async function syncPositions() {
           const s = parseFloat(stGuard.aiBrain?.sl || 0);
           return (s > 0 && ep > 0) ? Math.abs(ep - s) / ep * 100 : 0;
         })();
-        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || slFromPriceGuard || slFromAiGuard || parseFloat(autoConfig.slPct || 2));
+        // R378 GUARD FIX: öncelik sırası artık GERÇEK SL fiyatı (Binance'e kurulu emir) → AI planı →
+        // açılışta yazılan slPct → panel (son çare). R338'in kendi ilkesi ("en sağlam kaynak gerçek SL
+        // fiyatı") uygulanıyor. Hiçbir gerçek kaynak yoksa R372 A-seçeneği geniş-SL tabanı (%5) devreye
+        // girer — restart/deploy sonrası guard hiçbir koşulda AI'ın SL'inden önce davranamaz.
+        const r378StoredSlPct = parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || 0;
+        let slPctGuard = Math.max(0.1, slFromPriceGuard || slFromAiGuard || r378StoredSlPct || parseFloat(autoConfig.slPct || 2));
+        if (!slFromPriceGuard && !slFromAiGuard && !(r378StoredSlPct > 0)) {
+          slPctGuard = Math.max(slPctGuard, 5); // R378: kaynak belirsiz → min %5 (geniş SL garantisi)
+        }
         const realMoveGuard = ep > 0 && mp > 0
           ? ((mp - ep) / ep * 100 * (isLongGuard ? 1 : -1))
           : 0;
