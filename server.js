@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R377C_SPIKE_KALIBRASYON'
+const LAZARUS_BUILD = 'R377D_EFFORT_KALDIRILDI'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -4054,7 +4054,11 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
       system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
       messages: [{ role: 'user', content: JSON.stringify(brief) }]
     };
-    if (r377bEffortDestekli) r377bBody.effort = String(process.env.AI_EFFORT || 'low').trim();
+    // R377D: effort parametresi KALDIRILDI — canlı ders 08.07 15:00: API 400 "effort: Extra inputs are not
+    // permitted" döndü (top-level param değil / beta gerektiriyor olabilir). Tahminle tekrar denenmez.
+    // Sonnet 5 varsayılan effort ile çalışır; asıl kritik düzeltme max_tokens=2000 zaten aktif (thinking'e yer var).
+    // r377bEffortDestekli değişkeni ileride doğru API şekli doğrulanırsa kullanılmak üzere duruyor.
+    void r377bEffortDestekli;
     const r311tReqBody = JSON.stringify(r377bBody);
     const r311tTransient = (st) => (st === 429 || st === 500 || st === 502 || st === 503 || st === 529);
     for (let attempt = 0; attempt < 3; attempt++) {
