@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R377F_MARKDOWN_SOYUCU'
+const LAZARUS_BUILD = 'R377G_TOKEN_TAVANI'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -5855,7 +5855,10 @@ const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_B
 // R323: Opus 4.8 ADAPTIVE THINKING kullanır — model cevaptan önce düşünür ve thinking token'ları da
 // max_tokens'a sayılır. Eski 280 (Sonnet için) Opus'ta thinking ortasında kesilir → JSON bozulur → işlem KAÇAR.
 // Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
-const AI_MAX_TOKENS = /opus|fable|mythos|sonnet-5/i.test(ANTHROPIC_MODEL) ? 2000 : 450; // R377B: Sonnet 5 adaptive thinking kullanır (effort varsayılan HIGH) — thinking max_tokens'a sayılır; 450 keserdi (önceki Sonnet 5 denemesinin başarısızlık sebebi = R323 Opus dersinin tekrarı). // R367: Sonnet 600→450 (çıktı kısma, maliyet -%25). Gerekçe max 90 karakter, JSON küçük, 450 fazlasıyla yeter.
+// R377G: canlı ders 08.07 15:20 — Sonnet 5 çıktı TAM 2000'e çarptı (thinking hepsini yedi, JSON hiç
+// tamamlanamadı → "markdown döndü, güven:0"). Thinking'li modele 6000 ver; env AI_MAX_TOKENS ile ayarlanır.
+const AI_MAX_TOKENS = parseInt(process.env.AI_MAX_TOKENS || '0', 10)
+  || (/opus|fable|mythos|sonnet-5/i.test(ANTHROPIC_MODEL) ? 6000 : 450); // R377B: Sonnet 5 adaptive thinking kullanır (effort varsayılan HIGH) — thinking max_tokens'a sayılır; 450 keserdi (önceki Sonnet 5 denemesinin başarısızlık sebebi = R323 Opus dersinin tekrarı). // R367: Sonnet 600→450 (çıktı kısma, maliyet -%25). Gerekçe max 90 karakter, JSON küçük, 450 fazlasıyla yeter.
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
