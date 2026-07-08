@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R376_OLU_VERI_FIX'
+const LAZARUS_BUILD = 'R377C_SPIKE_KALIBRASYON'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -524,7 +524,15 @@ async function cleanupClosedPositionState(symbol, reason='POSITION_ALREADY_CLOSE
   try { trailingState.delete(sym); } catch(_) {}
   try { invalidatePositionRiskCache(reason); } catch(_) {}
   try {
-    const cls = { code:'EXTERNAL_OR_MANUAL', label:'Kullanıcı/Binance kapanışı algılandı', emoji:'👁️', closePrice:null, realizedPnl:null, side:st?.side };
+    // R377 (EDGE dersi 08.07 10:45: bot koruma SL'i Binance'te doldu ama panel "Kullanıcı kapattı" yazdı —
+    // kullanıcı kapatmamıştı). Kör damga yerine önce zengin sınıflandırıcıya sor (income+fiyat+emir bilgisi).
+    let cls = null;
+    try {
+      if (typeof classifyClosedPosition === 'function' && autoConfig?.apiKey && autoConfig?.apiSecret) {
+        cls = await classifyClosedPosition(autoConfig.apiKey, autoConfig.apiSecret, sym, st);
+      }
+    } catch(_) { cls = null; }
+    if (!cls) cls = { code:'EXTERNAL_OR_MANUAL', label:'Kullanıcı/Binance kapanışı algılandı', emoji:'👁️', closePrice:null, realizedPnl:null, side:st?.side };
     const cdMs = setCloseCooldown(sym, cls, st);
     cls.cooldownMs = cdMs;
     try { recordTradeClose(sym, st, cls); } catch(_) {}
@@ -3991,7 +3999,7 @@ NASIL USTA GİBİ DAVRAN:
 - MM ÖZ-SEZİ ÇERÇEVESİ (her kararda zihnen cevapla): (1) MM şu an hangi oyunda? Üç seçenekten birini seç ve kanıtla: [A] BİRİKİM/av hazırlığı — fiyatı likidite havuzuna çekiyor, henüz binme, havuzun süpürülmesini bekle; [B] İTKİ/dağıtım öncesi koşu — trend yakıtlı, momentum girişi serbest, karşı likiditeye kadar taşı; [C] DAĞITIM/tuzak — yukarı fitiller satılıyor, OI çözülüyor, delta fiyatla ayrışıyor → GİRME; [D] BAŞKA BİR OYUN — grafik bu üçe uymayan bir hikâye anlatıyorsa oyunun adını SEN koy ve kanıtla (çerçeve mercektir, kafes değil; usta kalıpların dışını da okur). (2) SENİN SL'in MM'in av havuzunda mı? Planladığın SL, verilen SSL bölgesinin z-aralığının İÇİNDEyse MM oraya gelir: SL'i havuzun belirgin ALTINA koy ya da sweep gerçekleşip dönünce gir. (3) Binance botları yuvarlak sayılara ve önceki tepe/dip likiditesine emir yığar — TP'yi tam yuvarlak seviyeye değil, 1 tık ÖNÜNE koy (0.60 hedefse 0.5985 gibi), botlardan önce dolmuş ol.
 - SON İŞLEMLERİNDEN DERS AL — AMA TEK KAYIPTAN KURAL ÇIKARMA: "sonIslemlerim" senin oturum hafızan; amacı kalıp YASAKLAMAK değil, "ne değişti?" sorusunu sordurmak. TEK kayıp gürültüdür, tezin yanlışlandığı anlamına GELMEZ — doğru tez kötü tetikle de kaybedebilir. Kanıtlanmış örnek: aynı tez iki kez SL yedikten sonra sweep tamamlanıp yapı yenilenince arka arkaya +%22 ve +%53 kazandırdı; kayıptan sonra tezi terk eden bu ikisini kaçırırdı. Kural: kayıptan sonra AYNI teze girerken neyin değiştiğini (sweep tamam mı, yapı yenilendi mi, yakıt geldi mi) gerekçende söyle ve gir; hiçbir şey değişmediyse bekle. Bir kalıbı ancak 3-4 kez ÜST ÜSTE, benzer koşullarda yenilirse sorgula. Kazanan kalıbı da tanı ve tereddütsüz sürdür.
 - GÜVEN = KALDIRAÇ AYARIDIR (LONG & SHORT): Güven skorun kaldıraca çevrilir; bunu bilinçli kullan. Tetik erken/teyitsizse 64-67 (düşük kaldıraç, kayıp küçük); teyitli girişte 70-77; tablo kusursuzsa 78+. SHORT'ta ekstra temkinli ol — gainer evreninde SHORT daha risklidir, sadece net parabolik dönüşte ve güçlü teyitle yüksek güven ver.
-- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07-08.07, 4 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA/BAS) → dördü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). ÖNEMLİ İSTİSNA: akış alanı "VERI_YOK/BAYAT" diyorsa bu zayıflık DEĞİLDİR — stream kesilmiştir; akışı NÖTR say, bu kuralı UYGULAMA ve kararını diğer kanıtlarla ver (gece dersi: ölü veri "zayıflıyor" okundu, EVAA +%42 kaçtı). Bu kural yalnız GERÇEK tick verisi varken geçerlidir. "Taze impuls / yeşil seri" bu kanıt DEĞİLDİR — BAS dersi: RSI 5m ≥85 + delta negatif + defter satıcı baskınken "taze impuls" gerekçesi mikro-pump'ın TEPESİNİ tarif eder, girişini değil; o üçlü birlikteyken LONG'un dürüst sonucu WAIT'tir (2 dakikada -%13 kesildi). Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
+- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07-08.07, 4 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA/BAS) → dördü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). ÖNEMLİ İSTİSNA: akış alanı "VERI_YOK/BAYAT" diyorsa bu zayıflık DEĞİLDİR — stream kesilmiştir; akışı NÖTR say, bu kuralı UYGULAMA ve kararını diğer kanıtlarla ver (gece dersi: ölü veri "zayıflıyor" okundu, EVAA +%42 kaçtı). Bu kural yalnız GERÇEK tick verisi varken geçerlidir. "Taze impuls / yeşil seri" bu kanıt DEĞİLDİR — BAS+KAITO dersi: RSI 5m ≥90 + delta negatif iken — DEFTER NE DERSE DESİN (spike anında defter spoof'lanır; KAITO'da "alıcı baskın 21.3" görünüyordu, avın yemiydi) — dikey spike mumunun tepesinde/ilk mumlarında LONG verme; "yapı kırılmadı" deme, taze spike'ta henüz yapı YOKTUR; retest+tutunma bekle (KAITO: +%35 spike tepesi 0.8236 giriş → 3dk'da -%19; BAS: 2dk'da -%13). RSI 5m 85-90 arası + delta negatif + defter satıcı baskınsa aynı kural geçerli. Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
 - KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
 - SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
@@ -4036,12 +4044,18 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
     // R311T: 529 (overloaded) / 429 (rate limit) / 5xx geçici hatalarında RETRY.
     // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
     let resp = null;
-    const r311tReqBody = JSON.stringify({
+    // R377B: effort yalnız destekleyen modellere eklenir (Sonnet 5 / Opus 4.8 / Fable) — 4.6 ve öncesine
+    // gönderilirse 400 döner. Varsayılan 'low': kısa JSON kararı için yeterli, thinking maliyetini/gecikmeyi kısar.
+    // Gerekirse Railway env AI_EFFORT=high ile yükseltilebilir.
+    const r377bEffortDestekli = /sonnet-5|opus-4-8|opus-4\.8|fable|mythos/i.test(ANTHROPIC_MODEL);
+    const r377bBody = {
       model: ANTHROPIC_MODEL,
-      max_tokens: AI_MAX_TOKENS, // R323: model-bazlı (Opus thinking için 2000, Sonnet 280). Eski sabit 280 Opus'ta thinking'i kesip işlemi kaçırıyordu.
+      max_tokens: AI_MAX_TOKENS, // R323/R377B: model-bazlı (thinking'li modeller 2000, eski Sonnet 450).
       system: [{ type:'text', text: sys, cache_control: { type:'ephemeral', ttl:'1h' } }],
       messages: [{ role: 'user', content: JSON.stringify(brief) }]
-    });
+    };
+    if (r377bEffortDestekli) r377bBody.effort = String(process.env.AI_EFFORT || 'low').trim();
+    const r311tReqBody = JSON.stringify(r377bBody);
     const r311tTransient = (st) => (st === 429 || st === 500 || st === 502 || st === 503 || st === 529);
     for (let attempt = 0; attempt < 3; attempt++) {
       const controller = new AbortController();
@@ -5822,7 +5836,7 @@ const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_B
 // R323: Opus 4.8 ADAPTIVE THINKING kullanır — model cevaptan önce düşünür ve thinking token'ları da
 // max_tokens'a sayılır. Eski 280 (Sonnet için) Opus'ta thinking ortasında kesilir → JSON bozulur → işlem KAÇAR.
 // Opus için thinking+JSON'a yetecek alan ver. Sonnet/Haiku ise 280'de kalır (gereksiz maliyet yok).
-const AI_MAX_TOKENS = /opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? 2000 : 450; // R367: Sonnet 600→450 (çıktı kısma, maliyet -%25). Gerekçe max 90 karakter, JSON küçük, 450 fazlasıyla yeter.
+const AI_MAX_TOKENS = /opus|fable|mythos|sonnet-5/i.test(ANTHROPIC_MODEL) ? 2000 : 450; // R377B: Sonnet 5 adaptive thinking kullanır (effort varsayılan HIGH) — thinking max_tokens'a sayılır; 450 keserdi (önceki Sonnet 5 denemesinin başarısızlık sebebi = R323 Opus dersinin tekrarı). // R367: Sonnet 600→450 (çıktı kısma, maliyet -%25). Gerekçe max 90 karakter, JSON küçük, 450 fazlasıyla yeter.
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
@@ -19650,8 +19664,9 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
     pnlVal = approxPnlFromPrice;
   }
   if (code === 'EXTERNAL_OR_MANUAL' && Number.isFinite(pnlVal)) {
-    if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = 'Binance kapanışı kârda'; emoji = '✅'; }
-    if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = 'Binance kapanışı zararda'; emoji = '❌'; }
+    const _korumaVar = !!(state?.currentSLAlgoId || state?.tpAlgoId); // botun Binance'e yazdığı SL/TP/trailing emri kayıtlı mı
+    if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = _korumaVar ? 'Binance koruma emri (SL-kâr kilidi/TP/trailing) doldu — kârda (manuel DEĞİL)' : 'Binance kapanışı kârda'; emoji = '✅'; }
+    if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = _korumaVar ? 'Binance koruma emri (SL) doldu — zararda (manuel DEĞİL)' : 'Binance kapanışı zararda'; emoji = '❌'; }
   }
   // R370-E: zarar kapanışında coini zarar-takibine kaydet (2 zarar/90dk = 2 saat blok)
   try { if (Number.isFinite(pnlVal) && pnlVal < -0.01 && typeof r370CoinZararKaydet === 'function') r370CoinZararKaydet(symbol); } catch(_) {}
