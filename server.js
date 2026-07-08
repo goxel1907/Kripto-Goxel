@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R377E_TIMEOUT_UYUM'
+const LAZARUS_BUILD = 'R377F_MARKDOWN_SOYUCU'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -4102,7 +4102,18 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
     }
     if (!resp || !resp.ok) return null;
     const j = await resp.json();
-    const text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
+    let text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
+    // R377F: Sonnet 5 JSON'u markdown çitiyle (```json ... ```) veya açıklama metniyle sarabiliyor
+    // (canlı ders 08.07 15:14: "AI markdown döndü" → güven:0, karar kullanılamadı). Çiti soy,
+    // ilk { ... son } arasını al — model ne sararsa sarsın ham JSON'a in.
+    try {
+      const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenced && fenced[1]) text = fenced[1].trim();
+      if (!text.startsWith('{')) {
+        const a = text.indexOf('{'), b = text.lastIndexOf('}');
+        if (a >= 0 && b > a) text = text.slice(a, b + 1).trim();
+      }
+    } catch(_) {}
     let clean = text.replace(/```json|```/g, '').trim();
     let decision;
     try {
