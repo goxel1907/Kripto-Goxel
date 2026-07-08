@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R375_HACIM_METRIK_TUTARLILIK'
+const LAZARUS_BUILD = 'R376_OLU_VERI_FIX'
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -1071,8 +1071,8 @@ function r371StartFlow(symbol) {
         store.lastUpdate = Date.now();
       } catch(_) {}
     });
-    aggWs.on('error', ()=>{});
-    aggWs.on('close', ()=>{ /* aday değişince kapanır, normal */ });
+    aggWs.on('error', ()=>{ try { r371ActiveStreams.delete(full); } catch(_){} });
+    aggWs.on('close', ()=>{ try { r371ActiveStreams.delete(full); } catch(_){} }); // R376: ölü stream kaydı temizlenir → sonraki tarama (30sn) otomatik YENİDEN BAĞLAR (gece dersi: WS düştü, kayıt kaldı, akış sonsuza dek 0$ okundu)
 
     // ── depth: order book (likidite duvarları + stop bölgeleri) ──
     const depthWs = new WebSocket(`${FAPI_WS_PUBLIC}/ws/${lower}@depth20@100ms`);
@@ -1088,8 +1088,8 @@ function r371StartFlow(symbol) {
         store.lastUpdate = Date.now();
       } catch(_) {}
     });
-    depthWs.on('error', ()=>{});
-    depthWs.on('close', ()=>{});
+    depthWs.on('error', ()=>{ try { r371ActiveStreams.delete(full); } catch(_){} });
+    depthWs.on('close', ()=>{ try { r371ActiveStreams.delete(full); } catch(_){} }); // R376: aynı yeniden-bağlanma garantisi
 
     r371ActiveStreams.set(full, { aggWs, depthWs });
     // Aktif stream sayısını sınırla (kaynak): en fazla 4 coin. Fazlaysa en eskiyi kapat.
@@ -1150,6 +1150,20 @@ function r371GetFlowAnalysis(symbol, refPrice) {
     // ── 3) TREND UYUMU — MM ile aynı yönde miyiz? ──
     // Gerçek akış (delta) yukarıysa VE hızlanıyorsa = MM alıyor, trene bin (LONG).
     // Delta aşağıysa VEYA son 30sn 2dk'ya göre zayıflıyorsa = MM dağıtıyor, inme vakti.
+    // R376 ÖLÜ-VERİ GARDI (gece dersi 08.07: WS kesildi, delta 0$/30sn okundu, motor bunu "DENGE/ZAYIFLIYOR"
+    // diye raporladı → AI bütün gece fren yaptı, EVAA +%42 kaçtı. Veri YOKLUĞU sinyal DEĞİLDİR.)
+    const veriBayat = (now - store.lastUpdate) > 10000;
+    const tickYok = t30.length === 0;
+    if (veriBayat || tickYok) {
+      return {
+        gercekDelta30sn: 0, gercekDelta2dk: Math.round(delta120), alisOrani30sn: 0,
+        akisYonu: 'VERI_YOK', ivme: 'VERI_YOK', tick30sn: t30.length,
+        ustSatisDuvari: (store.bookReady && ustDuvar) ? { fiyat:ustDuvar, usdt:Math.round(ustDuvarUsdt), uzaklikPct:+((ustDuvar-price)/price*100).toFixed(2) } : null,
+        altAlisDuvari: (store.bookReady && altDuvar) ? { fiyat:altDuvar, usdt:Math.round(altDuvarUsdt), uzaklikPct:+((altDuvar-price)/price*100).toFixed(2) } : null,
+        mmTrendUyumu: 'Gerçek akış verisi YOK/BAYAT (stream kesilmiş olabilir) — bunu SATIŞ ya da zayıflık SAYMA; akışı NÖTR kabul et ve kararını fiyat yapısı/mum/OI/likidite gibi diğer kanıtlarla ver',
+        veriTazeMi: false
+      };
+    }
     const akisYonu = delta30 > toplam30*0.1 ? 'ALIŞ' : delta30 < -toplam30*0.1 ? 'SATIŞ' : 'DENGE';
     const ivme = Math.abs(delta30) > Math.abs(delta120)/4 ? 'GÜÇLENİYOR' : 'ZAYIFLIYOR'; // 30sn payı 2dk'nın 1/4'ünden fazlaysa hızlanıyor
     return {
@@ -1166,7 +1180,7 @@ function r371GetFlowAnalysis(symbol, refPrice) {
         ? `Gerçek akış ALIŞ baskın (%${alisOran30.toFixed(0)} alıcı, delta +${Math.round(delta30)}$/30sn ${ivme}) — MM/botlar ALIYOR, LONG için trene binme anı`
         : akisYonu === 'SATIŞ'
         ? `Gerçek akış SATIŞ baskın (%${(100-alisOran30).toFixed(0)} satıcı, delta ${Math.round(delta30)}$/30sn ${ivme}) — MM/botlar SATIYOR/DAĞITIYOR, LONG girme (inme vakti)`
-        : `Gerçek akış DENGEDE — net yön yok, bekle`,
+        : `Gerçek akış DENGEDE (${t30.length} tick/30sn) — net yön yok; akış nötr, kararı diğer kanıtlarla ver`,
       veriTazeMi: (now - store.lastUpdate) < 10000
     };
   } catch(_) { return null; }
@@ -3958,7 +3972,7 @@ NASIL USTA GİBİ DAVRAN:
 - 🚂 GERÇEK ORDER FLOW (R371 — MM İLE AYNI TRENE BİN): 'r371OrderFlow' verisi, mumlardan DEĞİL, Binance'in canlı gerçek işlem akışından (aggTrade) ve order book'undan (depth) gelir. Bu, MM/botların GERÇEKTE ne yaptığını gösterir — mumlar gecikmeli ve MM tarafından boyanabilir, ama bu ham akış boyanamaz. EN ÖNEMLİ ALANLAR:
   • mmTrendUyumu: Sana net cümleyle söyler — 'MM/botlar ALIYOR, trene binme anı' VEYA 'MM/botlar SATIYOR/DAĞITIYOR, LONG girme'. Bu cümleye ÇOK dikkat et.
   • gercekDelta30sn / akisYonu: Son 30sn'de GERÇEKTE kim baskın — alıcı mı satıcı mı. Bu, 15m mumun gösterdiğinden farklı olabilir (BLUR dersi: mum yeşildi ama gerçek akış -29$ satıştı, girdik ve avlandık). AKIŞ 'SATIŞ' ise mum ne derse desin LONG GİRME.
-  • ivme (GÜÇLENİYOR/ZAYIFLIYOR): Alış akışı güçleniyorsa MM daha yeni başlıyor (LONG için taze). Zayıflıyorsa MM dağıtımı bitiriyor (geç kaldın).
+  • ivme (GÜÇLENİYOR/ZAYIFLIYOR/VERI_YOK): Alış akışı güçleniyorsa MM daha yeni başlıyor (LONG için taze). Zayıflıyorsa MM dağıtımı bitiriyor (geç kaldın). VERI_YOK ise stream kesik — akışı yok say, zayıflık sanma.
   • ustSatisDuvari / altAlisDuvari: MM'in order book'ta nerede büyük duvar örmüş. Üst satış duvarı = fiyat oraya gidince döner (TP'yi ondan ÖNCE koy). Alt alış duvarı = destek AMA dikkat: MM bariz destek altına stop biriktirir, SL'ini o duvarın DİBİNE koyma (avlanırsın), biraz daha aşağı koy.
   KURAL — MM İLE AYNI YÖNDE OL: LONG açmak için gerçek akış ALIŞ + güçleniyor olmalı (MM alıyor, sen de al = beraber bin). Gerçek akış SATIŞ ise, mum/fib ne kadar güzel görünürse görünsün LONG AÇMA — MM dağıtıyor, sen tepede kalırsın. Beraber in demek: akış SATIŞ'a dönünce sen de çık. Bu veri BLUR tipi tuzağı önler çünkü giriş anında MM'in gerçekte ne yaptığını görürsün, mumun boyadığını değil. (veriTazeMi false ise akış verisi eski/yok, o zaman normal analizinle karar ver.)
 - 🌱 ERKEN YÜKSELİŞ (R370 — TAZE İMPULS, MAX KÂR FIRSATI): 'r370ErkenYukselis' doluysa bu coin yükselişine YENİ başlamış demektir (TRIA tipi: az önce dipten/yataydan çıkıp güçlü impuls başlatmış, henüz tepede değil). Bu ALTIN fırsattır çünkü: hareketin BAŞINDASIN, en uzun koşma potansiyeli var. Bu coinlerde: (1) girişte cesur ol (dönüş teyidi varsa taze impulsu kaçırma), (2) TP'yi UZAK koy (sonBacakFib 1.618, hatta 2.0 — taze hareket uzar), (3) MUTLAKA RUNNER düşün (kâr TP'de kesme, trailing ile taşı — hareket daha yeni başladı, çok gidebilir). Bu, botun 'fırsatı erken yakala + max kâr' hedefinin tam kalbidir. Ama yine de düşen bıçağa dikkat (dönüş teyidi şart) ve tepe %90+ ise geç kalmışsındır.
@@ -3977,7 +3991,7 @@ NASIL USTA GİBİ DAVRAN:
 - MM ÖZ-SEZİ ÇERÇEVESİ (her kararda zihnen cevapla): (1) MM şu an hangi oyunda? Üç seçenekten birini seç ve kanıtla: [A] BİRİKİM/av hazırlığı — fiyatı likidite havuzuna çekiyor, henüz binme, havuzun süpürülmesini bekle; [B] İTKİ/dağıtım öncesi koşu — trend yakıtlı, momentum girişi serbest, karşı likiditeye kadar taşı; [C] DAĞITIM/tuzak — yukarı fitiller satılıyor, OI çözülüyor, delta fiyatla ayrışıyor → GİRME; [D] BAŞKA BİR OYUN — grafik bu üçe uymayan bir hikâye anlatıyorsa oyunun adını SEN koy ve kanıtla (çerçeve mercektir, kafes değil; usta kalıpların dışını da okur). (2) SENİN SL'in MM'in av havuzunda mı? Planladığın SL, verilen SSL bölgesinin z-aralığının İÇİNDEyse MM oraya gelir: SL'i havuzun belirgin ALTINA koy ya da sweep gerçekleşip dönünce gir. (3) Binance botları yuvarlak sayılara ve önceki tepe/dip likiditesine emir yığar — TP'yi tam yuvarlak seviyeye değil, 1 tık ÖNÜNE koy (0.60 hedefse 0.5985 gibi), botlardan önce dolmuş ol.
 - SON İŞLEMLERİNDEN DERS AL — AMA TEK KAYIPTAN KURAL ÇIKARMA: "sonIslemlerim" senin oturum hafızan; amacı kalıp YASAKLAMAK değil, "ne değişti?" sorusunu sordurmak. TEK kayıp gürültüdür, tezin yanlışlandığı anlamına GELMEZ — doğru tez kötü tetikle de kaybedebilir. Kanıtlanmış örnek: aynı tez iki kez SL yedikten sonra sweep tamamlanıp yapı yenilenince arka arkaya +%22 ve +%53 kazandırdı; kayıptan sonra tezi terk eden bu ikisini kaçırırdı. Kural: kayıptan sonra AYNI teze girerken neyin değiştiğini (sweep tamam mı, yapı yenilendi mi, yakıt geldi mi) gerekçende söyle ve gir; hiçbir şey değişmediyse bekle. Bir kalıbı ancak 3-4 kez ÜST ÜSTE, benzer koşullarda yenilirse sorgula. Kazanan kalıbı da tanı ve tereddütsüz sürdür.
 - GÜVEN = KALDIRAÇ AYARIDIR (LONG & SHORT): Güven skorun kaldıraca çevrilir; bunu bilinçli kullan. Tetik erken/teyitsizse 64-67 (düşük kaldıraç, kayıp küçük); teyitli girişte 70-77; tablo kusursuzsa 78+. SHORT'ta ekstra temkinli ol — gainer evreninde SHORT daha risklidir, sadece net parabolik dönüşte ve güçlü teyitle yüksek güven ver.
-- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07.07 gecesi, 3 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA) → üçü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut bir kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
+- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07-08.07, 4 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA/BAS) → dördü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). ÖNEMLİ İSTİSNA: akış alanı "VERI_YOK/BAYAT" diyorsa bu zayıflık DEĞİLDİR — stream kesilmiştir; akışı NÖTR say, bu kuralı UYGULAMA ve kararını diğer kanıtlarla ver (gece dersi: ölü veri "zayıflıyor" okundu, EVAA +%42 kaçtı). Bu kural yalnız GERÇEK tick verisi varken geçerlidir. "Taze impuls / yeşil seri" bu kanıt DEĞİLDİR — BAS dersi: RSI 5m ≥85 + delta negatif + defter satıcı baskınken "taze impuls" gerekçesi mikro-pump'ın TEPESİNİ tarif eder, girişini değil; o üçlü birlikteyken LONG'un dürüst sonucu WAIT'tir (2 dakikada -%13 kesildi). Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
 - KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
 - SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
