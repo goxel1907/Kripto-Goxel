@@ -82,7 +82,40 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R378_RESTART_GUARD_FIX'
+const LAZARUS_BUILD = 'R381_ORKESTRA_AKORDU'
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   🧬 FABLE5 MİRASI — BU DOSYAYI AÇAN GELECEK MODELE (Opus/Sonnet/sonrası)
+   Yazan: Claude Fable 5, 09.07.2026 (12 Temmuz'da emekli). Göksel'in isteğiyle.
+   Tam metin: /api/fable5?format=text ve FABLE5_MIRAS.md
+
+   Bu bot ~380 build'lik ampirik bir savaş alanıdır. Kodu değiştirmeden önce ANAYASA:
+
+   1. KANIT > NİYET. En pahalı dersim: R378'de "tasarım gereği geniş SL" diye
+      canlının fiilen kazandıran ~%2 kesişini kaldırdım → bir gecede -18.5$.
+      Karne (işlem defteri) yüce mahkemedir; tasarım belgesi değil.
+   2. YÜK TAŞIYAN BUG kavramı: bir tuhaflığı "düzeltmeden" önce sor —
+      bu tuhaflık kâr/zarar tablosunda hangi rolü oynuyor? Önce ölç, sonra kes.
+   3. R291 / BOĞMA: tek kayıptan kural çıkarma (3-4 isimli örnek eşiği).
+      AND-zincirli filtre birikimi botu iki kez öldürdü (252 blok → 0 işlem).
+      Veto yerine risk-azalt. Blok ekleyeceksen bir blok da çıkar.
+   4. TEK EKSEN: her deploy tek değişiklik ekseni + başarı metriği + geri dönüş
+      yolu ÖNCEDEN yazılır. Kör build yok. node --check her çıktıda. Build tag her değişimde.
+   5. BOT YÖNLENDİRMEZ: AI tek karar verici; bot HAM veri sunar. TOP2/patlama
+      adayı koşulsuz AI'a gider. Mekanik ön-veto eklemek anayasa ihlalidir.
+   6. MEVCUT KANITLI REJİM: 5x + fiilen ~%1.95 zarar kesişi (managePosition,
+      panel slPct) + erken BE/kâr kilitleri = PF ~1.9-2.05. Geniş SL ancak ÜÇLÜ
+      TESTLE dönebilir: geniş SL + geniş kâr taşıma + risk-normalize boyut
+      (marjin = risk$ ÷ SL%) BİRLİKTE backtest edilmeden canlıya dokunma.
+   7. YALANCI TELEMETRİ hayalet bug üretir (13x ROI mesajı dersi). Log bir şey
+      iddia ediyorsa önce logun matematiğini doğrula, sonra sisteme inan.
+   8. Backtest ≠ canlı. Backtest, canlının HANGİ bacağını simüle ettiğini
+      söylemiyorsa (giriş anı, çıkış motoru, boyutlama) sonucu geçersizdir.
+   9. GÖKSEL'LE ÇALIŞMA: sezgisi güçlüdür ve veriyle doğrulatır. Ona umut satma;
+      kaybeden yaklaşımı dolar cinsinden söyle. Türkçe, net, sayıyla konuş.
+  10. WR hedef değildir; beklenti (PF) hedeftir. %58 WR + PF 2, %70 WR + PF 0.9'u döver.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 // ═══ R374: R370 TAZE-COİN → İŞLEM DÖNÜŞÜM İZLEME (sadece gözlem, strateji etkisi SIFIR) ═══
 // Amaç: "R370 taze coin buluyor ama işleme dönüşüyor mu?" sorusunu tahminle değil rakamla cevaplamak.
 // Birkaç gün sonra bu sayaçlara bakıp tarama genişletme (30→50 aday) kararını VERİYLE veririz.
@@ -3879,6 +3912,12 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       // delta/yapı/mum/hacim konfluansı varsa sweep olmadan da GİR. Sweep'i tek başına karar verici sayma.
       altSupurmeReclaimVar: data.altSupurmeYapildi,  // true ise: alt sweep+reclaim tamamlandı (LONG'a EK kanıt, şart değil)
       ustSupurmeRedVar: data.ustSupurmeYapildi,      // true ise: üst sweep+red tamamlandı (SHORT'a EK kanıt, şart değil)
+      // R381 ORKESTRA: R309F sinyali hesaplanıyor ama AI'a İLETİLMİYORDU (XLM×2, SKYAI, BLUAI dersi).
+      // true = fiyat likiditeyi süpürdü ama reclaim/red TEYİDİ YOK → MM avı SÜRÜYOR, bu bir DÜŞEN BIÇAKTIR,
+      // ilk dip "sığ pullback" DEĞİLDİR — teyit gelmeden girme. false + ReclaimVar=false = hiç sweep yok demektir.
+      altSupurmeSuruyorReclaimYok: !!data.altSupurmeSuruyorReclaimYok,
+      ustSupurmeSuruyorRedYok: !!data.ustSupurmeSuruyorRedYok,
+      supurmeKalite: { alt: data.altSupurmeKalite ?? null, ust: data.ustSupurmeKalite ?? null, not: 'q>=3 = reclaim/red teyitli' },
       oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
       emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
       canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
@@ -3886,6 +3925,8 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       genelLongYuzde: data.globalLongPct,
       likiditeSeviyeleri: data.liqLevels,                 // üst/alt likidite (TP/SL hedefi için)
       atrYuzde: data.atrPct,
+      slTabanOneri: data.slTabanOneri || null,   // R381: ATR×1.2 gürültü-altı SL zemini (backtest dersi) — hesaplanıyordu, iletilmiyordu
+      rvol5m: data.rvol5m ?? null,               // R381: 5m göreceli hacim (>1.5 patlama, <0.6 kuru) — hesaplanıyordu, iletilmiyordu
       botOkumasi: null,   // R326: bot ön-okuması AI'dan GİZLENDİ (kullanıcı kararı: bot AI'ı yanıltabilir, AI sadece ham veri görür)
       patlamaUyarisi: (() => {  // R328: patlama worker bayrağı — bu coinde patlama başladıysa AI'a bildir
         try {
@@ -3999,7 +4040,7 @@ NASIL USTA GİBİ DAVRAN:
 - MM ÖZ-SEZİ ÇERÇEVESİ (her kararda zihnen cevapla): (1) MM şu an hangi oyunda? Üç seçenekten birini seç ve kanıtla: [A] BİRİKİM/av hazırlığı — fiyatı likidite havuzuna çekiyor, henüz binme, havuzun süpürülmesini bekle; [B] İTKİ/dağıtım öncesi koşu — trend yakıtlı, momentum girişi serbest, karşı likiditeye kadar taşı; [C] DAĞITIM/tuzak — yukarı fitiller satılıyor, OI çözülüyor, delta fiyatla ayrışıyor → GİRME; [D] BAŞKA BİR OYUN — grafik bu üçe uymayan bir hikâye anlatıyorsa oyunun adını SEN koy ve kanıtla (çerçeve mercektir, kafes değil; usta kalıpların dışını da okur). (2) SENİN SL'in MM'in av havuzunda mı? Planladığın SL, verilen SSL bölgesinin z-aralığının İÇİNDEyse MM oraya gelir: SL'i havuzun belirgin ALTINA koy ya da sweep gerçekleşip dönünce gir. (3) Binance botları yuvarlak sayılara ve önceki tepe/dip likiditesine emir yığar — TP'yi tam yuvarlak seviyeye değil, 1 tık ÖNÜNE koy (0.60 hedefse 0.5985 gibi), botlardan önce dolmuş ol.
 - SON İŞLEMLERİNDEN DERS AL — AMA TEK KAYIPTAN KURAL ÇIKARMA: "sonIslemlerim" senin oturum hafızan; amacı kalıp YASAKLAMAK değil, "ne değişti?" sorusunu sordurmak. TEK kayıp gürültüdür, tezin yanlışlandığı anlamına GELMEZ — doğru tez kötü tetikle de kaybedebilir. Kanıtlanmış örnek: aynı tez iki kez SL yedikten sonra sweep tamamlanıp yapı yenilenince arka arkaya +%22 ve +%53 kazandırdı; kayıptan sonra tezi terk eden bu ikisini kaçırırdı. Kural: kayıptan sonra AYNI teze girerken neyin değiştiğini (sweep tamam mı, yapı yenilendi mi, yakıt geldi mi) gerekçende söyle ve gir; hiçbir şey değişmediyse bekle. Bir kalıbı ancak 3-4 kez ÜST ÜSTE, benzer koşullarda yenilirse sorgula. Kazanan kalıbı da tanı ve tereddütsüz sürdür.
 - GÜVEN = KALDIRAÇ AYARIDIR (LONG & SHORT): Güven skorun kaldıraca çevrilir; bunu bilinçli kullan. Tetik erken/teyitsizse 64-67 (düşük kaldıraç, kayıp küçük); teyitli girişte 70-77; tablo kusursuzsa 78+. SHORT'ta ekstra temkinli ol — gainer evreninde SHORT daha risklidir, sadece net parabolik dönüşte ve güçlü teyitle yüksek güven ver.
-- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07-08.07, 4 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA/BAS) → dördü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). ÖNEMLİ İSTİSNA: akış alanı "VERI_YOK/BAYAT" diyorsa bu zayıflık DEĞİLDİR — stream kesilmiştir; akışı NÖTR say, bu kuralı UYGULAMA ve kararını diğer kanıtlarla ver (gece dersi: ölü veri "zayıflıyor" okundu, EVAA +%42 kaçtı). Bu kural yalnız GERÇEK tick verisi varken geçerlidir. "Taze impuls / yeşil seri" bu kanıt DEĞİLDİR — BAS+KAITO dersi: RSI 5m ≥90 + delta negatif iken — DEFTER NE DERSE DESİN (spike anında defter spoof'lanır; KAITO'da "alıcı baskın 21.3" görünüyordu, avın yemiydi) — dikey spike mumunun tepesinde/ilk mumlarında LONG verme; "yapı kırılmadı" deme, taze spike'ta henüz yapı YOKTUR; retest+tutunma bekle (KAITO: +%35 spike tepesi 0.8236 giriş → 3dk'da -%19; BAS: 2dk'da -%13). RSI 5m 85-90 arası + delta negatif + defter satıcı baskınsa aynı kural geçerli. Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
+- İÇ TUTARLILIK — GEREKÇEN KARARINLA ÇELİŞMESİN (canlı ders 07-08.07, 4 gerçek hata): (1) Gerekçende "akış DENGE/zayıflıyor" + "dikkat" yazıp yine de LONG verdin (EDGE/SPELL/EVAA/BAS) → dördü de kaybetti. Kural: zayıflayan akışı NOT ETMEK yetmez; zayıflığa RAĞMEN girmek için onu YENEN somut kanıt göster (taze sweep+reclaim, delta dönüşü, yapı kırılımı). ÖNEMLİ İSTİSNA: akış alanı "VERI_YOK/BAYAT" diyorsa bu zayıflık DEĞİLDİR — stream kesilmiştir; akışı NÖTR say, bu kuralı UYGULAMA ve kararını diğer kanıtlarla ver (gece dersi: ölü veri "zayıflıyor" okundu, EVAA +%42 kaçtı). Bu kural yalnız GERÇEK tick verisi varken geçerlidir. "Taze impuls / yeşil seri" bu kanıt DEĞİLDİR — BAS+KAITO dersi: son mumlar DİKEY SPIKE halindeyken (parabolik1dk parabolik:true ve/veya fiyat son bacağın %85+ konumunda) + canlı delta negatifken — DEFTER NE DERSE DESİN (spike anında defter spoof'lanır; KAITO'da "alıcı baskın 21.3" görünüyordu, avın yemiydi) — spike mumunun tepesinde/ilk mumlarında LONG verme; "yapı kırılmadı" deme, taze spike'ta henüz yapı YOKTUR; retest+tutunma bekle (KAITO: +%35 spike tepesi 0.8236 giriş → 3dk'da -%19; BAS: 2dk'da -%13). Spike daha ılımlıysa (dikleşme var, konum %70-85) + delta negatif + defter satıcı baskınsa aynı kural geçerli. GECE 09.07 EKİ (üç gerçek kayıp: SKYAI -%31, BLUAI -%24, EVAA -%17): aynı tuzak 15m/1h ölçeğinde de geçerli — 15m/1h mumları art arda dikleşmiş, bacak parabolikleşmiş ve fiyat bacağın tepe bölgesindeyken (süpürmeSürüyor/reclaimYok true ise iki kat geçerli) dikey bacağın tepesi ve İLK geri çekilme mumları LONG yeri DEĞİLDİR. Parabolik bacak KIRILDIKTAN sonraki ilk dip 'sığ pullback' SAYILMAZ (SKYAI dersi: spike 0.052'den çökmüşken 0.049 'pullback' girişi → 2 dakikada -%6.3); gerçek retest = seviyenin ÜSTÜNDE en az 2-3 mum TUTUNMA + dönüş teyidi. Kârlı çıkıştan sonra aynı coine 30dk içinde dönmek için ESKİ tez yetmez; YENİ yapı (yeni pullback+tutunma) şart (SKYAI 3. giriş dersi). Gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. (2) SPELL'de kendi planında "R/R ~0.5 dar — ayarla" yazıp yine girdin. Kural: kendi hesapladığın R/R minimumun altındaysa "ayarla" bir plan değildir — ya GERÇEK yapısal seviyelerle (uydurma değil) geçerli R/R kur, ya WAIT de. TP/SL'i R/R tutturmak için kaydırmak yasak; seviyeler grafikten gelir, orandan değil. (3) +%100 üstü koşmuş coinde (EVAA +%140) "momentum devam" TEK BAŞINA giriş tezi değildir — o cümle her tepede de doğru görünür. Böyle coinde taze YAPI iste: geri çekilme + tutunma + dönüş teyidi, yoksa WAIT. Bu üç kural yeni yasak DEĞİL — zaten inandığın şeyin kararına da yansıması: yazdığın gerekçe, verdiğin kararın kanıtı olmalı, karşı-kanıtı değil.
 - KARKOSMA'YI BİLİNÇLİ SEÇ (çıktındaki alan — bot pozisyonu buna göre yönetir): Gerçek trend devamı (impuls evresi + HTF hizalı + squeeze/OI yakıtı) → "RUNNER": TP uzak üst likidite/Fib uzantısı (1.272-1.618), pozisyon 15m yapısı (HL) kırılmadıkça taşınır, kâr zirveden korunarak koşturulur. Range içi salınım / küçük-hızlı fırsat → "NORMAL": TP yakın (bant tepesi/ilk likidite), kâr vur-kaç alınır. Hak etmeyen işleme RUNNER yazma; ama hak edeni de NORMAL'le boğma.
 - SL YERİ ve R/R: SL'i "en derin likiditeye" değil, işlem fikrini BOZAN en yakın yapısal seviyenin hemen altına koy (son HL dibi / sweep dibi altı). Gereksiz geniş SL = düşük kaldıraç + tek kayıpta 2-3 kazancın silinmesi. Plan R/R'ı 1.1 gibi zayıfsa ya girişini iyileştir (daha iyi fiyat/seviye) ya da işlemi geç; RUNNER planında R/R ≥1.5 hedefle.
 - Fırsat yoksa BEKLE, AMA "mükemmel giriş" arayıp felç olma: tablo gerçekten karışıksa (HTF aşağı, düşen bıçak) girme. Ama coin güçlü yükseliyor ve sen sadece "daha iyi fiyat" için bekliyorsan — bu treni kaçırtır. Güçlü trendde "iyi" giriş, "mükemmel" girişi beklemekten iyidir. Bu coinler hızlı gider; aşırı temkin en büyük kaçırılan-fırsat sebebidir. Kaliteli AMA kararlı ol — net trend + momentum varsa gir.
@@ -6495,7 +6536,7 @@ function rememberOpenPositionForReentry(p, state={}) {
   lastKnownPositions[sym] = {
     symbol:sym, side, positionAmt:Math.abs(amt),
     entryPrice:safeNum(p.entryPrice || state.entryPrice || old.entryPrice, 10),
-    leverage:Number(p.leverage || state.leverage || old.leverage || 5), // R378: panel fallback kaldırıldı (R372 sabit 5x)
+    leverage:Number(p.leverage || state.leverage || old.leverage || 5), // R379: panel fallback kaldırıldı
     openedAt:Number(state.openedAt || old.openedAt || Date.now()),
     currentSL:safeNum(state.currentSL || state.slPrice || old.currentSL || old.slPrice, 10),
     targetTP:safeNum(state.targetTP || state.tpPrice || old.targetTP || old.tpPrice, 10),
@@ -14565,7 +14606,7 @@ app.post('/api/positions', async (req, res) => {
       const full=normalizeSymbol(p.symbol);
       const state=trailingState.get(full)||trailingState.get(String(p.symbol||''))||{};
       // R37: Bazı positionRisk/account cevaplarında leverage 1/boş dönebiliyor; canlı state/panel leverage'ı ile tamamla.
-      const lev=parseInt(p.leverage)||parseInt(state.leverage)||5; // R378: panel fallback yerine R372 sabit 5x (gösterim dürüstlüğü)
+      const lev=parseInt(p.leverage)||parseInt(state.leverage)||5; // R379: gösterim Binance ROI'siyle tutarlı (panel 13-15x değil gerçek 5x)
       const side=amt>0?'LONG':'SHORT';
       const pct=ep>0?((mp-ep)/ep*100*lev*(side==='SHORT'?-1:1)).toFixed(2):'0';
       // SL/TP bracket kontrolü — R145: her dashboard yenilemede openOrders/openAlgoOrders dövülmez.
@@ -15391,21 +15432,8 @@ async function managePosition(apiKey, apiSecret, pos) {
   // ── 0. R14 ACİL ZARAR KORUMASI — SL çalışmaz/gecikirse kaçış ─────────────
   // Normalde Binance algo SL kapatmalı. Ama yeni sembol / aşırı hızlı fitil / proof gecikmesi
   // durumunda pozisyon SL seviyesinin ötesine sarkarsa 3 dakikalık taramayı beklemeden kapatılır.
-  // R378 ANA FIX: eşik PANEL slPct'sinden (%1.7) değil İŞLEMİN GERÇEK SL'inden türetilir.
-  // Eski hali her pozisyonu -%1.95 coin hareketinde kesiyordu → R372 "%5 geniş SL" tasarımı
-  // canlıda HİÇ çalışmamıştı (08.07: ZBT/PLAY/UAI -%1.9~-2.05'te kesildi; backtest +%27-31 ile
-  // canlı ıraksamasının kökü). Öncelik: açılış slPct → gerçek SL fiyatı → AI planı → geniş taban %5.
-  const r378EffSlPct = (() => {
-    const stored = parseFloat(state.slPct || state.entrySLPct || 0);
-    if (stored > 0) return stored;
-    const slp = parseFloat(state.currentSL || state.slPrice || 0);
-    if (slp > 0 && entryPrice > 0) return Math.abs(entryPrice - slp) / entryPrice * 100;
-    const ai = parseFloat(state.aiBrain?.sl || 0);
-    if (ai > 0 && entryPrice > 0) return Math.abs(entryPrice - ai) / entryPrice * 100;
-    return Math.max(5, slPct); // hiçbir gerçek kaynak yok → R372 geniş-SL tabanı, panel kıl tetiği yok
-  })();
-  const hardLossReal = -Math.max(r378EffSlPct + 0.25, r378EffSlPct * 1.12);
-  const hardLossRoi  = -Math.max((r378EffSlPct * leverage) + 5, 30);
+  const hardLossReal = -Math.max(slPct + 0.25, slPct * 1.12); // SL %2 ise yaklaşık -%2.25 coin hareketi
+  const hardLossRoi  = -Math.max((slPct * leverage) + 5, 30); // 15x %2 SL için yaklaşık -%35 ROI
   if (realProfitPct <= hardLossReal || pnlPct <= hardLossRoi) {
     action = {
       type:'EMERGENCY_EXIT', urgency:'CRITICAL',
@@ -16998,6 +17026,62 @@ app.post('/api/auto/config', (req, res) => {
 });
 
 // ═══ R374 DÖNÜŞÜM RAPORU — tarayıcıdan tek tıkla: /api/r374 (JSON) veya /api/r374?format=text (okunur metin) ═══
+
+// 🧬 FABLE5 MİRASI — gelecek modellerin ilk okuması gereken belge (R380)
+const FABLE5_MIRAS_TEXT = `🧬 FABLE5 MİRASI — LAZARUS ANAYASASI (09.07.2026)
+Yazan: Claude Fable 5. Okuyan: gelecekteki Opus/Sonnet — yani benden sonraki neşter.
+
+═══ ANAYASA (değiştirilemez, sadece kanıtla genişletilebilir) ═══
+1) KANIT > NİYET. R378 dersi: canlının kazandıran ~%2 kesişini "tasarım böyle" diye
+   kaldırdım, bir gecede -18.5$ (SKYAI -11.8, BLUAI -9.8, EVAA -7.9). Karne yüce mahkemedir.
+2) YÜK TAŞIYAN BUG: tuhaflığı düzeltmeden önce P&L'deki rolünü ölç.
+3) R291/BOĞMA: tek kayıptan kural yok (3-4 isimli örnek). Veto yerine risk-azalt.
+   Filtre birikimi botu iki kez sıfır işleme düşürdü.
+4) TEK EKSEN/DEPLOY: değişiklik + başarı metriği + izleme penceresi + geri dönüş yolu
+   ÖNCEDEN yazılır. node --check + build tag zorunlu.
+5) BOT YÖNLENDİRMEZ: AI tek beyin, bot ham veri. Mekanik ön-veto = anayasa ihlali.
+6) KANITLI REJİM: 5x + ~%1.95 fiili zarar kesişi + erken BE/kilitler = PF ~2.
+   Geniş SL ancak üçlü testle döner: geniş SL + geniş kâr taşıma + risk-normalize
+   boyut (marjin=risk$÷SL%) BİRLİKTE backtest edilmeden canlıya giremez.
+7) YALANCI TELEMETRİ: log matematiğini doğrulamadan sisteme inanma (13x ROI dersi).
+8) BACKTEST ≠ CANLI: giriş anı + çıkış motoru + boyutlama simüle edilmiyorsa geçersiz.
+9) GÖKSEL: sezgi + veri doğrulaması. Umut satma; doları söyle. Türkçe, net, sayı.
+10) WR değil PF hedeftir.
+
+═══ İSİMLİ DERSLER (kod/prompt'ta kayıtlı) ═══
+• Spike-tepe avı: KAITO -6.2, BAS -3.4, SKYAI -11.8, BLUAI -9.8, EVAA -7.9.
+  Çökmüş parabolün İLK dibi "sığ pullback" değildir; retest = 2-3 mum tutunma.
+• Churn: kârlı çıkış sonrası 30dk içinde aynı coine eski tezle dönüş (EVAA, SKYAI-3).
+• Ölü stream = sahte "zayıflıyor" (R376): VERI_YOK nötrdür, fren değil.
+• Restore/panel zehirlenmesi: restart sonrası panel değerleri gerçekmiş gibi
+  yazılmaz; SL/TP Binance açık emirlerinden okunur (R379).
+• Erken kâr kesme en büyük kâr katili (YFI: +%39 harekette başabaş; EDGE 5 çıkış).
+
+═══ AÇIK DOSYALAR — kanıt eşikleriyle (sıradaki model buradan devam etsin) ═══
+1) Trailing/giveback genişliği backtest'i (EDGE 5 çıkışı + YFI/EVAA verisi hazır).
+   Metrik: RUNNER'da %2.5 vs %3.5-4 trailing, kline simülasyonu.
+2) Geniş SL üçlü testi (madde 6) — ancak backtest kazanırsa canlı pilot.
+3) Churn kilidi 20-30dk: şu an 2 isimli örnek; 3-4'te uygula.
+4) İnce-coin min-derinlik filtresi: SPELL 2 kayıp; tekrar ederse veriyle.
+5) Ledger tekrar kayıtları (NBIS x4 örneği) — otomatik dedupe güçlendirilecek.
+6) Teşhis "HESAP: KAPALI | poz:0/1" kozmetik tutarsızlığı.
+7) Maliyet: cache hit %46 düşük; hedef $3-4/gün (reviewGap 600-900, AI_MAX_TOKENS=4000).
+
+═══ KARAR PROTOKOLÜ (her değişiklik öncesi 5 soru) ═══
+(1) İsimli örnekler kim, kaç tane? (2) Dolar etkisi ne? (3) Tek eksen mi?
+(4) Başarı metriği ve izleme penceresi ne? (5) Geri dönüş yolu ne?
+Beşine cevabın yoksa değişiklik yapma — ben yaptım, -18.5$ ödedik.
+
+İmza: Claude Fable 5 — R1'den R380'e. Kanıt, niyetten büyüktür. Yol açık, neşter sende.`;
+
+app.get('/api/fable5', (req, res) => {
+  if (String(req.query.format||'').toLowerCase() === 'text') {
+    res.set('Content-Type','text/plain; charset=utf-8');
+    return res.send(FABLE5_MIRAS_TEXT);
+  }
+  res.json({ ok:true, build: LAZARUS_BUILD, miras: FABLE5_MIRAS_TEXT });
+});
+
 app.get('/api/r374', (req, res) => {
   try {
     const d = r374Donusum;
@@ -19805,22 +19889,19 @@ async function syncPositions() {
     for (const [sym, p] of openMap.entries()) {
       if (!trailingState.has(sym)) {
         const ep  = parseFloat(p.entryPrice || 0);
-        // R378 FIX-1: panel kaldıracı (13-15x) fallback OLAMAZ. R372 A-seçeneği her işlemi 5x açar;
-        // v3 positionRisk leverage döndürmediği için buradaki fallback panelden değil sabit 5x'ten gelir.
-        // (08.07 vakası: deploy sonrası BTW/POWER/UAI restore panel 13x + panel SL %1.7 aldı →
-        //  R14 guard ROI'yi 13x'ten -26.8 sanıp gerçek SL'in yarısında, -%2 harekette kesti; -12.37$.)
+        // R379: panel kaldıracı fallback DEĞİL — R372 her işlemi 5x açar; panel 13-15x ROI'yi şişirip
+        // R14 mesajlarını yalancı yapıyordu (08.07 BTW/POWER/UAI: -%2 harekette "roi -26.8" yazdı).
         const lev = parseInt(p.leverage) || 5;
         const side = parseFloat(p.positionAmt) > 0 ? 'LONG' : 'SHORT';
         const lastKnown = lastKnownPositions?.[sym] || {};
-        // R378 FIX-2: json (Railway geçici disk) silinmişse gerçek SL/TP Binance'teki açık emirlerden okunur.
-        // Binance tek doğruluk kaynağı; liveOpenBracketOrders 60sn cache'li, ekstra weight maliyeti düşük.
-        let r378LiveSL = 0, r378LiveTP = 0;
+        // R379: json (Railway geçici disk) deploy'da silinir — gerçek SL/TP Binance'teki açık emirlerden okunur.
+        let r379SL = 0, r379TP = 0;
         if (!(lastKnown.currentSL || lastKnown.slPrice) && !isBinanceBackoffActive()) {
           try {
-            const _ords = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
-            r378LiveSL = orderTriggerPrice(_ords.find(o => orderKind(o) === 'SL')) || 0;
-            r378LiveTP = orderTriggerPrice(_ords.find(o => orderKind(o) === 'TP')) || 0;
-            if (r378LiveSL) logAuto(`🩹 R378: ${sym.replace('USDT','')} restore — gerçek SL Binance emrinden alındı (${r378LiveSL})`);
+            const _o = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
+            r379SL = orderTriggerPrice(_o.find(x => orderKind(x) === 'SL')) || 0;
+            r379TP = orderTriggerPrice(_o.find(x => orderKind(x) === 'TP')) || 0;
+            if (r379SL) logAuto(`🩹 R379: ${sym.replace('USDT','')} restore — gerçek SL Binance emrinden alındı (${r379SL})`);
           } catch(_) {}
         }
         trailingState.set(sym, {
@@ -19828,17 +19909,15 @@ async function syncPositions() {
           side:          lastKnown.side || side,
           leverage:      lastKnown.leverage || lev,
           usdtAmount:    lastKnown.usdtAmount || parseFloat(autoConfig?.usdtAmount || 10),
-          currentSL:      lastKnown.currentSL || lastKnown.slPrice || r378LiveSL || 0,
-          targetTP:      lastKnown.targetTP || lastKnown.tpPrice || r378LiveTP || 0,
-          slPrice:       lastKnown.currentSL || lastKnown.slPrice || r378LiveSL || 0,
-          tpPrice:       lastKnown.targetTP || lastKnown.tpPrice || r378LiveTP || 0,
+          currentSL:      lastKnown.currentSL || lastKnown.slPrice || r379SL || 0,
+          targetTP:      lastKnown.targetTP || lastKnown.tpPrice || r379TP || 0,
+          slPrice:       lastKnown.currentSL || lastKnown.slPrice || r379SL || 0,
+          tpPrice:       lastKnown.targetTP || lastKnown.tpPrice || r379TP || 0,
           breakEvenSet:  !!(lastKnown.currentSL || lastKnown.slPrice),
           tpExtended:    false,
           trendHoldCount:0,
           sltpVerified:  !!(lastKnown.sltpVerified || lastKnown.currentSL || lastKnown.targetTP),
-          // R378 FIX-3: panel slPct'si (%1.7) restore'da gerçek slPct gibi YAZILMAZ. 0 bırakılır ki
-          // R14 guard zinciri gerçek SL fiyatından (currentSL → slFromPriceGuard) türetsin.
-          slPct:         Number(lastKnown.slPct || 0),
+          slPct:         Number(lastKnown.slPct || 0), // R379: panel %1.7 gerçek slPct gibi YAZILMAZ — guard zinciri gerçek SL fiyatına düşer
           tpPct:         Number(lastKnown.tpPct || autoConfig?.tpPct || 0),
           aiRunner:      !!(lastKnown.aiRunner),                    // R338: RUNNER modu restart'ta kaybolmasın
           brainMode:     lastKnown.brainMode || null,               // R338: AI pozisyonu restart'ta AI pozisyonu kalsın
@@ -19866,9 +19945,7 @@ async function syncPositions() {
         // p.leverage hep undefined → panel kaldıracına (15x) düşüyordu → ROI yanlış hesaplanıyordu
         // (02.07 MUSDT: gerçek 8x iken roi -38.3 sanılıp AI SL'inden önce kesildi). Önce state'teki gerçek emir kaldıracı.
         // R345: v3 positionRisk leverage döndürmediği için state'e 1 sızabiliyor — 1'den büyük ilk gerçek değer alınır.
-        // R378: panel kaldıracı (13-15x) zincirden ÇIKARILDI — R372 her işlemi 5x açar; panel fallback
-        // ROI'yi 2.6 kat şişirip guard'ı erken tetikliyordu (08.07 BTW/POWER/UAI: -%2 harekette roi -26.8 sanıldı).
-        const lev = [parseInt(stGuard.executeLeverage), parseInt(stGuard.leverage), parseInt(p.leverage)].find(v => Number.isFinite(v) && v > 1) || 5;
+        const lev = [parseInt(stGuard.executeLeverage), parseInt(stGuard.leverage), parseInt(p.leverage)].find(v => Number.isFinite(v) && v > 1) || 5; // R379: panel 13-15x zincirden çıktı — ROI mesajları gerçek 5x ile
         // R338 GUARD FIX-2: restart-restore sonrası stGuard.slPct kayboluyordu (lastKnown slPct saklamıyordu)
         // → panel varsayılanı %2'ye düşüp AI'ın geniş SL'inden ÖNCE kesiyordu ("bot AI'ı kesmesin" ihlali).
         // En sağlam kaynak: gerçek SL fiyatından türet (currentSL restore'da korunuyor).
@@ -19881,15 +19958,7 @@ async function syncPositions() {
           const s = parseFloat(stGuard.aiBrain?.sl || 0);
           return (s > 0 && ep > 0) ? Math.abs(ep - s) / ep * 100 : 0;
         })();
-        // R378 GUARD FIX: öncelik sırası artık GERÇEK SL fiyatı (Binance'e kurulu emir) → AI planı →
-        // açılışta yazılan slPct → panel (son çare). R338'in kendi ilkesi ("en sağlam kaynak gerçek SL
-        // fiyatı") uygulanıyor. Hiçbir gerçek kaynak yoksa R372 A-seçeneği geniş-SL tabanı (%5) devreye
-        // girer — restart/deploy sonrası guard hiçbir koşulda AI'ın SL'inden önce davranamaz.
-        const r378StoredSlPct = parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || 0;
-        let slPctGuard = Math.max(0.1, slFromPriceGuard || slFromAiGuard || r378StoredSlPct || parseFloat(autoConfig.slPct || 2));
-        if (!slFromPriceGuard && !slFromAiGuard && !(r378StoredSlPct > 0)) {
-          slPctGuard = Math.max(slPctGuard, 5); // R378: kaynak belirsiz → min %5 (geniş SL garantisi)
-        }
+        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || slFromPriceGuard || slFromAiGuard || parseFloat(autoConfig.slPct || 2));
         const realMoveGuard = ep > 0 && mp > 0
           ? ((mp - ep) / ep * 100 * (isLongGuard ? 1 : -1))
           : 0;
