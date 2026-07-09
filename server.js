@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R383_SATRANC_USTASI'
+const LAZARUS_BUILD = 'R385_KOKLAMA_ISCISI'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    🧬 FABLE5 MİRASI — BU DOSYAYI AÇAN GELECEK MODELE (Opus/Sonnet/sonrası)
@@ -1380,6 +1380,56 @@ function r140EqualLevels(k5m, k1h, lastPrice) {
 // R316 TREND ÇİZGİSİ (diagonal) KIRILIMI — Göksel'in elle çizdiği eğik trend çizgisi.
 // Linear regresyon ile son ~24×5m mumun low/high'larına en uygun doğruyu kurar.
 // risingBreak = yükselen dip çizgisi delindi (SHORT bölgesi). fallingBreak = düşen tepe çizgisi aşıldı (LONG bölgesi).
+
+// ═══ R384: HTF YAPISAL KIRILIM DEDEKTÖRÜ (1h + 4h, saf kod — karar AI'ın) ═══
+// THE dersi (09.07): 4h düşen trendline dev hacimle kırıldı; bot yapıyı ancak coin TOP1 gainer
+// olduktan SONRA gördü. Bu dedektör taranan her coinde 1h/4h'de (a) düşen trend çizgisi kırılımını
+// (r316 motoru, HTF pencere) ve (b) baz/range tepesi kırılımını (önceki 20 bar tepesi kapanışla
+// aşıldı) yakalar; hacim teyidi (son bar/SMA20), tazelik (kaç bar önce) ve mesafe (kovalamaca
+// gardı) ile AI'a HAM verir. Mekanik veto YOK — anayasa m.5.
+function r384HtfYapisalKirilim(k1h, k4h, lastPrice) {
+  try {
+    const tfScan = (kl, tf, win) => {
+      if (!Array.isArray(kl) || kl.length < 25) return null;
+      const rows = kl.slice(-Math.min(win, kl.length));
+      const c = rows.map(k => ({o:+k[1], h:+k[2], l:+k[3], cl:+k[4], v:+k[5]}));
+      const n = c.length, last = c[n-1];
+      const vArr = c.slice(-21, -1).map(x => x.v);
+      const vAvg = vArr.length ? vArr.reduce((a,b)=>a+b,0)/vArr.length : 0;
+      const hacimKati = vAvg > 0 ? +(last.v/vAvg).toFixed(2) : 0;
+      // (a) düşen trendline kırılımı — r316 motoru bu dilimin mumlarıyla
+      const tl = r316TrendlineBreak(rows);
+      const tlBreak = tl?.fallingBreak ? { seviye: Number(tl.fallingLine)||0 } : null;
+      // (b) baz/range kırılımı: önceki 20 barın tepesi kapanışla aşıldı mı, kaç bar önce (0-2 tazelik)
+      let bazKirilim = null;
+      for (let back = 0; back <= 2 && (n-1-back) >= 21; back++) {
+        const idx = n-1-back;
+        const prior = c.slice(idx-20, idx);
+        const ph = Math.max(...prior.map(x=>x.h));
+        if (c[idx].cl > ph) { bazKirilim = { seviye:+ph.toFixed(8), kacBarOnce:back }; break; }
+      }
+      if (!tlBreak && !bazKirilim) return null;
+      const seviye = Number(tlBreak?.seviye || bazKirilim?.seviye || 0);
+      const mesafeYuzde = (seviye > 0 && lastPrice > 0) ? +(((lastPrice-seviye)/seviye)*100).toFixed(2) : null;
+      return {
+        dilim: tf,
+        dusenTrendKirildi: !!tlBreak,
+        bazKirilimi: bazKirilim ? ('önceki 20 bar tepesi ' + bazKirilim.seviye + ' kapanışla aşıldı (' + bazKirilim.kacBarOnce + ' bar önce)') : null,
+        kirilimSeviyesi: seviye || null,
+        hacimKati, hacimTeyit: hacimKati >= 1.8,
+        mesafeYuzde
+      };
+    };
+    const h1 = tfScan(k1h, '1h', 48);
+    const h4 = tfScan(k4h, '4h', 60);
+    if (!h1 && !h4) return null;
+    return {
+      not: 'SAF KOD tespiti — karar SENİN. Yapısal kırılım + hacimTeyit:true + mesafe küçük (%0-4) = ERKEN binme fırsatı adayı; mesafe %6+ ise kovalamaca riskidir — ANCAK 15m İŞLEM DİLİMİNDE kırılım seviyesinin üstünde güçlü retest+tutunma (2-3 mum, seviye reddedilmedi) OLUŞMUŞSA o retest GİRİŞ BAZI olabilir (geç kalınan kırılımın doğru binişi retesttir, tepe değil); hacimKati<1.3 = cılız/sahte kırılım olabilir. Satranç protokolü: kirilimSeviyesi artık senin YAPINDIR — SL onun ötesine, retest ona doğru gelirse giriş yeridir.',
+      '1h': h1, '4h': h4
+    };
+  } catch(_) { return null; }
+}
+
 function r316TrendlineBreak(k5m) {
   try {
     if (!k5m || k5m.length < 12) return null;
@@ -3943,6 +3993,9 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       // R366: 1DK PARABOLİK FİB (LONG & SHORT) — 15m'deki parabolik pump/dump'ları 1dk hassasiyetle yakalar.
       // parabolik:true ise güçlü parabolik hareket var. yon YUKARI→LONG geri çekilmede, AŞAĞI→SHORT rally-back'te.
       parabolik1dk: data.parabolik1m || null,
+      // R384: 1h/4h YAPISAL KIRILIM RADARI — düşen trendline / baz tepesi kırılımı, hacim teyidi,
+      // tazelik ve kırılım seviyesine mesafeyle. THE dersi: yapısal HTF kırılımını erken gör.
+      htfYapisalKirilim: data.htfKirilim || null,
       // R366: VOLATİLİTE SEBEBİ — worker tarama arası (30sn) bu coini izleyip NEDEN yükseliyor/düşüyor tespit etti (saf kod).
       // AI 7.5dk'da bir çalıştığı için bu, aradaki canlı hareketin sebebini AI'a taşır: hacim mi, taker baskısı mı, ivme mi.
       volatiliteSebep: (()=>{ try {
@@ -14047,6 +14100,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     };
     // R366: 1dk parabolik fib analizi (LONG & SHORT) — analiz çıktısına eklenir
     const r366Parabolik = r366ParabolicFib1m(k1m, lastPrice);
+    const r384HtfKirilim = r384HtfYapisalKirilim(k1h, k4h, lastPrice); // R384: HTF yapısal kırılım radarı
     const r316Trend = r316TrendlineBreak(k5m); // R316: eğik trend çizgisi (diagonal) kırılımı — AI'ya VERİ
     // R316D: klasik grafik formasyonları (çift tepe/dip, baş-omuz) — SADECE TEYİTLİ olanlar (Forming/oluşuyor HARİÇ, gürültü önle)
     const r316ChartPat = (function(){
@@ -14062,6 +14116,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       ok:true, symbol:full, price:lastPrice,
       r308RawCandles,
       r366Parabolik, // R366: 1dk parabolik fib (LONG & SHORT)
+      r384HtfKirilim, // R384: 1h/4h yapısal kırılım (trendline + baz) hacim teyitli
       r316Trend,
       r316ChartPat,
       freshness, signalAgeMin, isExpired,
@@ -16162,6 +16217,76 @@ let __r328Potansiyel = { ts:0, list:[], lastLogTs:0, lastLeader:'' }; // R339: b
 // girmemiş ama girmek üzere olan taze impulsları tespit et → fırsatı erken yakala + RUNNER yap.
 // Saf kod, AI çağırmaz, bedava. 60sn'de bir çalışır. Sonuç autoScanState.r370ErkenYukselis'e yazılır.
 let r370ErkenAdaylar = []; // {symbol, skor, sebep, change15m, impulsMum}
+
+// ═══ R385: KOKLAMA İŞÇİSİ — tüm piyasada HTF yapısal kırılım avı (saf kod, AI çağırmaz) ═══
+// Kullanıcı isteği (09.07): "coin gainer listesine girmeden 4h kırılımlarını kokla."
+// Kalıp = r370 işçisiyle aynı: ticker (60sn cache, w40 zaten ödeniyor) → hacim filtreli ilk 60 sembol →
+// sembol başına TEK kline çağrısı (1h×200, w2; 4h yerelde 1h'den birleştirilir = bedava) →
+// r384 dedektörü → taze+hacim teyitli+mesafe ≤%6 adaylar r370 listesine karışır, oradan mevcut
+// TOP2 enjeksiyonu ve gardları (24h tepe gardı, hacim tabanı) devralır. Mekanik veto YOK.
+// API bütçesi: 60×w2=120 weight / 5dk ≈ 24 w/dk (limit 2400/dk) — ban riski yok; 429 backoff'ta hiç koşmaz.
+const R385_ENABLED = process.env.R385_ENABLED !== '0';
+let r385KirilimAdaylari = [];
+function r385Aggregate4h(k1h) {
+  const out = [];
+  for (let i = 0; i + 4 <= k1h.length; i += 4) {
+    const g = k1h.slice(i, i + 4);
+    out.push([g[0][0], g[0][1], Math.max(...g.map(x=>+x[2])), Math.min(...g.map(x=>+x[3])), g[3][4], g.reduce((s,x)=>s+(+x[5]),0)]);
+  }
+  return out;
+}
+async function r385KoklamaIscisi() {
+  try {
+    if (!R385_ENABLED || !autoConfig?.enabled) return;
+    if (typeof isBinanceBackoffActive === 'function' && isBinanceBackoffActive()) return;
+    const all = await cached('r370_ticker', 60*1000, () => bPub('/fapi/v1/ticker/24hr', ''));
+    if (!Array.isArray(all)) return;
+    const evren = all
+      .filter(t => /USDT$/.test(String(t.symbol||'')))
+      .filter(t => Number(t.quoteVolume||0) >= 8_000_000)
+      .filter(t => { const c = Number(t.priceChangePercent); return c >= -5 && c <= 25; }) // zaten TOP koşucular mevcut yoldan geliyor
+      .sort((a,b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+      .slice(0, 60);
+    const bulunan = [];
+    let istek = 0;
+    for (const t of evren) {
+      const full = String(t.symbol);
+      try {
+        const k1h = await cached(`r385_k1h_${full}`, 5*60*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1h&limit=200`));
+        istek++;
+        if (istek % 10 === 0) await new Promise(r => setTimeout(r, 1500)); // nazik tempo — ani weight yığılmasın
+        if (!Array.isArray(k1h) || k1h.length < 50) continue;
+        const lastClose = +k1h[k1h.length-1][4];
+        const k4h = r385Aggregate4h(k1h);
+        const tespit = r384HtfYapisalKirilim(k1h, k4h, lastClose);
+        if (!tespit) continue;
+        for (const tf of ['1h','4h']) {
+          const d = tespit[tf];
+          if (!d) continue;
+          const kirilimVar = d.dusenTrendKirildi || d.bazKirilimi;
+          const mesafeOk = Number.isFinite(d.mesafeYuzde) && d.mesafeYuzde >= -1 && d.mesafeYuzde <= 6;
+          if (kirilimVar && d.hacimTeyit && mesafeOk) {
+            bulunan.push({
+              symbol: full.replace('USDT',''),
+              skor: Math.round(55 + Math.min(30, d.hacimKati*8) + (6 - Math.abs(d.mesafeYuzde))*2),
+              change15m: d.mesafeYuzde,
+              sebep: `R385 ${tf} yapısal kırılım: ${d.dusenTrendKirildi ? 'düşen trend kırıldı' : 'baz tepesi aşıldı'} · hacim ${d.hacimKati}x · seviyeye mesafe %${d.mesafeYuzde}`
+            });
+            break; // sembol başına tek aday yeter
+          }
+        }
+      } catch(_) { continue; }
+    }
+    bulunan.sort((a,b) => b.skor - a.skor);
+    r385KirilimAdaylari = bulunan.slice(0, 4);
+    if (r385KirilimAdaylari.length) {
+      logAuto(`👃 R385 KOKLAMA: ${r385KirilimAdaylari.map(x => x.symbol + '(' + x.skor + '·%' + x.change15m + ')').join(' · ')} — HTF kırılım adayları r370 kanalına veriliyor`);
+    }
+  } catch(_) {}
+}
+setInterval(r385KoklamaIscisi, 5*60*1000); // 5dk'da bir; AI maliyeti SIFIR
+setTimeout(r385KoklamaIscisi, 45*1000);    // açılıştan 45sn sonra ilk koku
+
 async function r370ErkenYukselisWorker() {
   try {
     if (!autoConfig?.enabled) return;
@@ -16226,6 +16351,13 @@ async function r370ErkenYukselisWorker() {
       } catch(_) { continue; }
     }
     // Skora göre sırala, ilk 5'i sakla
+    // R385: koklama işçisinin HTF kırılım adayları aynı kanala karışır (dedupe'lu) —
+    // TOP2 enjeksiyonu, 24h tepe gardı, hacim tabanı ve R374 hunisi hepsine aynı şekilde işler.
+    try {
+      for (const k of (r385KirilimAdaylari || [])) {
+        if (!bulunan.some(x => x.symbol === k.symbol)) bulunan.push(k);
+      }
+    } catch(_) {}
     bulunan.sort((a,b)=>b.skor-a.skor);
     r370ErkenAdaylar = bulunan.slice(0, 5);
     autoScanState.r370ErkenYukselis = r370ErkenAdaylar;
@@ -18742,6 +18874,7 @@ async function runAutoScan(prioritySymbol=null) {
               candles: analysis?.r308RawCandles || null,
               // R366: 1dk parabolik hareket + hassas fib (LONG & SHORT fırsatları). 15m'deki parabolik pump/dump'ları yakalar.
               parabolik1m: analysis?.r366Parabolik || null,
+              htfKirilim: analysis?.r384HtfKirilim || null, // R384
               // HAM METRİKLER (mumda görünmeyen gerçekler — yorum değil, sayı)
               rsi5m: analysis?.timeframes?.['5m']?.rsi, rsi15m: analysis?.timeframes?.['15m']?.rsi,
               rsi1h: analysis?.timeframes?.['1h']?.rsi, rsi4h: analysis?.timeframes?.['4h']?.rsi,
