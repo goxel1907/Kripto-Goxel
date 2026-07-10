@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R389_ALTIN_VURUS'
+const LAZARUS_BUILD = 'R392_DIKEY_FAZ'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    🧬 FABLE5 MİRASI — BU DOSYAYI AÇAN GELECEK MODELE (Opus/Sonnet/sonrası)
@@ -3996,6 +3996,46 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       // R384: 1h/4h YAPISAL KIRILIM RADARI — düşen trendline / baz tepesi kırılımı, hacim teyidi,
       // tazelik ve kırılım seviyesine mesafeyle. THE dersi: yapısal HTF kırılımını erken gör.
       htfYapisalKirilim: data.htfKirilim || null,
+      // R392 DİKEY FAZ DEVAMI: momentum-devamı ayrı rejim (backtest kanıtı: 08.07 POWER 19:15/19:45
+      // canlı kazançları dikey-faz girişleriydi ve spike yasağı onları reddederdi; ChatGPT bağımsız
+      // aynı noktaya vardı → eşik doldu). Sığ mola + tutunma + yakıt ÖLÇÜLÜR, karar AI'ındır.
+      dikeyFazDevami: (() => { try {
+        const k15 = (data.candles && data.candles['15m']) || [];
+        const k1  = (data.candles && data.candles['1m'])  || [];
+        if (k15.length < 8 || k1.length < 6) return null;
+        const w = k15.slice(-6);
+        const o0 = Number(w[0][1]), lastC = Number(w[5][4]);
+        const hi = Math.max(...w.map(x => Number(x[2]))), lo = Math.min(...w.map(x => Number(x[3])));
+        const net = (lastC / o0 - 1) * 100;
+        if (!(net >= 4) || hi <= lo) return null;                 // dikey faz adayı değil → alan hiç gitmez
+        const lp = Number(data.lastPrice) || lastC;
+        const sigPullback = +(((hi - lp) / (hi - lo)).toFixed(2)); // 0=tepede, 1=impuls dibinde
+        const ref = Number(w[4][2]);                               // önceki 15m tepesi = tutunma seviyesi vekili
+        const tutunma = k1.slice(-5).filter(b => Number(b[4]) >= ref * 0.999).length;
+        const gucluRed = k1.slice(-3).some(b => { const h=Number(b[2]),o=Number(b[1]),c=Number(b[4]),l=Number(b[3]);
+          const r=h-l; return r>0 && (h - Math.max(o,c))/r > 0.6 && c < o; });
+        return { impulsNet:+net.toFixed(1), sigPullback, tutunma1m:`${tutunma}/5`, gucluRedFitili:gucluRed,
+          not:'DİKEY FAZ ADAYI. İstisna şartları (DÖRDÜ BİRDEN): sigPullback<0.30 + tutunma1m>=3/5 + gucluRedFitili:false + devamYakiti GÜÇLÜ → parabolik-tepe yasağının TEK istisnası: trend hızlanırken sığ molada DEVAM girişi verilebilir. Şartlardan biri eksikse yasak AYNEN geçerli (KAITO/SKYAI dersi). Bu giriş sınıfı ince-flush\'a en yakın sınıftır: SL son mikro-taban altına, boyutu küçük tut.' };
+      } catch(_) { return null; } })(),
+      // R391 DEVAM YAKITI: salma radarının AYNA İKİZİ — trend devamının yakıtı tek skora damıtılır.
+      // (ChatGPT'nin haklı olduğu tek yapısal nokta: bileşenler tek tek gidiyordu, hikâye özeti gitmiyordu.)
+      // VETO DEĞİL: GÜÇLÜ ise pullback+reclaim devam girişinde tereddüt etme; DÜŞÜK + koşmuş fiyat = TSLA/SLX tuzağı.
+      devamYakiti: (() => { try {
+        const n = []; let s = 0;
+        const oi1 = Number(data.oiChange1h);
+        if (Number.isFinite(oi1) && oi1 >= 3) { s += 2; n.push(`OI fiyatla BİRLİKTE artıyor (+${oi1}%) — trene gerçek para biniyor`); }
+        const dl = Number(data.cvdDelta);
+        if (Number.isFinite(dl) && dl >= 15) { s += 1; n.push(`canlı delta pozitif (${dl}) — taker alıcı sürüyor`); }
+        const rv = Number(data.rvol5m);
+        if (Number.isFinite(rv) && rv >= 1.5) { s += 1; n.push(`rvol ${rv}x — hacim kurumadı`); }
+        const fu = Number(data.funding);
+        if (Number.isFinite(fu) && fu <= -0.3) { s += 2; n.push(`funding ${fu} negatif — short kalabalık, squeeze yakıtı dolu`); }
+        const ob = Number(data.orderBookImbalance);
+        if (Number.isFinite(ob) && ob >= 15 && Number.isFinite(dl) && dl >= 0) { s += 1; n.push(`defter alıcı (${ob}) ve delta uyumlu — spoof kokusu yok`); }
+        if (!s) return null;
+        return { skor: s, seviye: s >= 4 ? 'GÜÇLÜ' : (s >= 2 ? 'ORTA' : 'ZAYIF'), nedenler: n,
+          not: 'GÜÇLÜ + yapıya yakın pullback/reclaim = en yüksek beklentili DEVAM girişin; "çok koştu" tek başına red gerekçesi DEĞİLDİR (yapıya uzaklık + parabolik tepe kuralları geçerli kalır). ZAYIF + koşmuş fiyat = sürdürülemez impuls, TSLA/SLX tuzağı — teyitsiz binme. Bu skor emir değildir; hikâyenin yakıt göstergesidir.' };
+      } catch(_) { return null; } })(),
       // R388 SALMA RADARI: MM'in "aşağı salıp avlama" ZEMİNİNİ ölçer (tekil hamle öngörülemez, zemin ölçülür).
       // TAG 10.07 -18.3$ imzasından doğdu: fiyat koşarken OI düşüyordu (dağıtım), giriş yapıdan %5.8 uzaktı,
       // alt havuz doluydu. Bileşenler zaten payload'daki sinyaller — tek skora damıtıldı. VETO DEĞİL, karar AI'ın.
@@ -4096,7 +4136,7 @@ NASIL USTA GİBİ DAVRAN:
 - CANLI KORUMA GERÇEĞİ (giriş zamanlamanın matematiği — R382): Binance'e konan geniş SL (%4-8) sadece ANİ ÇÖKÜŞ yedeğidir. Canlı koruma motoru pozisyonu coin hareketi ~-%2'ye ulaştığında keser — GERÇEK nefes alanın -%2'dir. "SL'im geniş, düşerse toparlamasını beklerim" varsayımı GEÇERSİZ; -%2'den derin hiçbir geri çekilmeyi göremeyeceksin. Bunun tek anlamı: girişini -%2'lik doğal çalkantının seni VURMAYACAĞI yerden al — teyitli dip/reclaim/retest SONRASI, yapının hemen üstü, çalkantı dibine %2'den yakın olmayan yer; bacak tepesinden, dikey mumun içinden, teyitsiz ilk dipten DEĞİL. Giriş yerin doğruysa %2 alan yeter; yanlışsa %8 SL bile kurtarmaz (EDGE dersi 09.07: bacak tepesi 0.4966 girişi 97 saniyede -%1.97'de kesildi; plan SL %5.36'daydı, oraya hiç gidilemedi). ATR'si %4+ coinde bu daha da kritiktir: tek nötr mum bile %2 oynatır — o coinlerde SADECE teyit sonrası, yapıya yaslanmış giriş al ya da WAIT de. WAIT demek maliyetsizdir; 420sn sonra aynı coine tekrar bakacaksın.
 - SATRANÇ PROTOKOLÜ — RAKİBİN HAMLESİNİ ÖNCE DÜŞÜN (R383): Karşında iki rakip var: likidite avlayan MM ve momentum kovalayan borsa botları. Her karardan önce 4 hamlelik satranç oyna:
   (1) TEZ: hangi setup, giriş nerede, seni ne haklı çıkarır? Setup seçimi TAMAMEN SERBEST — yüzlerce kalıbın hepsi masada; kısıt setupta değil, giriş fiziğindedir.
-  (2) RAKİBİN EN KÂRLI HAMLESİ: bu tabloda MM ne yapar? altLikiditeHavuzlari kalabalık + funding pozitif + retail long-ağır = MM'in yemi AŞAĞI SWEEP'tir → o sweep gelmeden LONG alma; sweep+reclaim SONRASI MM'LE AYNI YÖNE bin (kanıt: sweep sonrası WR%64, sweepsiz %37). Üstte kalın short likiditesi + retail short-ağır + negatif funding = MM'in zorunlu hamlesi YUKARI SQUEEZE → bu senin rüzgârın, momentumla git. salmaRiski alanı bu hamlenin ÖLÇÜLMÜŞ halidir: YÜKSEK ise LONG ancak salma GERÇEKLEŞİP sweep+reclaim teyidi geldikten sonra — MM'in avını yapmasını bekle, av OLMA; tersine avdan SONRA binmek senin en yüksek WR'li girişindir (%64).
+  (2) RAKİBİN EN KÂRLI HAMLESİ: bu tabloda MM ne yapar? altLikiditeHavuzlari kalabalık + funding pozitif + retail long-ağır = MM'in yemi AŞAĞI SWEEP'tir → o sweep gelmeden LONG alma; sweep+reclaim SONRASI MM'LE AYNI YÖNE bin (kanıt: sweep sonrası WR%64, sweepsiz %37). Üstte kalın short likiditesi + retail short-ağır + negatif funding = MM'in zorunlu hamlesi YUKARI SQUEEZE → bu senin rüzgârın, momentumla git. salmaRiski alanı bu hamlenin ÖLÇÜLMÜŞ halidir: YÜKSEK ise LONG ancak salma GERÇEKLEŞİP sweep+reclaim teyidi geldikten sonra — MM'in avını yapmasını bekle, av OLMA; tersine avdan SONRA binmek senin en yüksek WR'li girişindir (%64). devamYakiti alanı bunun ayna ikizidir: GÜÇLÜ + yapıya yakın pullback+reclaim = devam işleminde tereddüt etme; ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX dersi), teyit gelmeden binme. R392 DİKEY FAZ İSTİSNASI: dikeyFazDevami alanı DÖRT şartı birden sağlıyorsa (sigPullback<0.30, tutunma>=3/5, güçlü red fitili yok, devamYakiti GÜÇLÜ) parabolik-tepe yasağının TEK istisnası açılır — trend hızlanırken sığ molada devam girişi VER, bekleyip kaçırma (kanıt: 08.07 POWER dikey-faz kazançları). Ama istisna şartsız kullanılamaz; tek şart eksikse yasak aynen geçerli ve SL her durumda son mikro-taban altı, boyut küçük.
   (3) SEN DE HARİTADASIN: senin SL'in de birinin defterinde duran avdır. SL'i bariz havuzun İÇİNE koyma — havuzun/yapının ÖTESİNE koy. Girişin bariz bir stop kümesine %2'den yakınsa av listesindesin demektir; giriş yerini kaydır ya da WAIT.
   (4) ÖLDÜRÜCÜ KANIT: tezini ne ÖLDÜRÜR, önceden adını koy (örn: reclaim altına 5m kapanış, delta'nın negatife dönmesi, süpürmeSürüyor=true, defter spoof imzası). O kanıt ŞU AN masadaysa girme — WAIT. Sonradan gelirse planlı çıkışındır.
   Şah-mat hedefleme: MM'i yenemezsin ama masasına oturabilirsin — onun ZORUNLU hamlelerini bekleyip aynı yöne binmek, senin tek sürdürülebilir üstünlüğündür.
@@ -6698,6 +6738,9 @@ function recordTradeClose(symbol, state={}, cls={}) {
     resultNote:buildResultNote(cls,state),
     sl:cls.sl||state?.currentSL||null, tp:cls.tp||state?.targetTP||null,
     cooldownMin:cdMs>0?Math.ceil(cdMs/60000):null,
+    // R390: kapanış anında yönetici ne kadar süredir bu pozisyona bakmamıştı? >90sn = KÖR PENCERE
+    // (SKL -%65.6 ve SLX -%12.9 vakaları: anatomi zirve 0/dip 0 → yönetici çöküşü hiç görmedi).
+    yoneticiKorSn: (state?.lastManageTs ? Math.round((Date.now()-state.lastManageTs)/1000) : null),
     // R389 İŞLEM ANATOMİSİ: zirve = işlemin gördüğü en iyi an, dip = en kötü an (ROI, kaldıraçlı).
     // "Erken mi kesildi, kötü mü girildi" sorusunun cevabı bu iki sayıdadır (YFI/SKL dersleri).
     zirveRoi: Number.isFinite(Number(state?.peakPnl)) ? safeNum(Number(state.peakPnl)*lev,1) : null,
@@ -15342,6 +15385,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   state.leverage = state.leverage || leverage;
   state.peakPnl    = Math.max(Number(state.peakPnl || 0), Number(pnlPct || 0));
   state.dipPnl     = Math.min(Number(state.dipPnl ?? 0), Number(pnlPct || 0)); // R389: MAE — işlem en kötü nereyi gördü
+  state.lastManageTs = Date.now(); // R390: yönetici kalp atışı — kör pencere teşhisi için
   state.peakRealPct= Math.max(Number(state.peakRealPct || 0), Number(realProfitPct || 0));
   // R94: vur-kaç çıkış motoru yüksek kârı takip eder; küçük kârda ücret/kayma yememek için acele kilitlemez.
   // LONG için en yüksek fiyat, SHORT için en düşük fiyat pozisyon açıldığı andan itibaren izlenir.
@@ -15367,22 +15411,32 @@ async function managePosition(apiKey, apiSecret, pos) {
   const cfg = autoConfig || {};
   // parseFloat + fallback — NaN koruması
   const safe = (v, def) => { const n=parseFloat(v); return isNaN(n)?def:n; };
-  const trailPct      = safe(cfg.trailingPct,  2);
+  let   trailPct      = safe(cfg.trailingPct,  2); // R390: aşağıda ATR ile ölçeklenir
   const trailStep     = safe(cfg.trailStep,    0.25);
   // R310H: KÂR TAŞIMA PANELDEN BAĞIMSIZ — kullanıcı isteği: panel değerlerini EZ, kod karar versin.
   // Panel "1/2/3.5" gibi erken kilit yazsa bile YOK SAYILIR. Kâr koşsun diye geç kademe sabit.
   // R342: sabitler artık AI tarafından ayarlanabilir taban (aiBE/aiKT1-3); yoksa eski sabitler.
-  const breakEvenAt   = Number(cfg.aiBE)  > 0 ? Number(cfg.aiBE)  : 0.8;
-  const karTasima1    = Number(cfg.aiKT1) > 0 ? Number(cfg.aiKT1) : 1.5;
-  const karTasima2    = Number(cfg.aiKT2) > 0 ? Number(cfg.aiKT2) : 3.0;
-  const karTasima3    = Number(cfg.aiKT3) > 0 ? Number(cfg.aiKT3) : 5.5;
+  // ═══ R390 ATR NORMALİZASYONU (TSLA 10.07 dersi, -3.44$: ATR %0.49'luk hisse-token'da BE tetiği
+  // %0.8 = 1.6 ATR, ilk adım 3 ATR, trailing 4 ATR uzaktaydı — motor FİZİKSEL olarak erişilmezdi;
+  // zirve +1 ATR yaptı, hiçbir kilit devreye giremedi, tam stop yedi. Koklama hisse-token'ları
+  // (10x düşük ATR) havuza sokunca mutlak eşikler sessizce kırıldı. Çözüm: kâr eşikleri coinin
+  // ATR'siyle ölçeklenir. ATR>=%3 (kripto koşucuları) → k=1, HİÇBİR ŞEY DEĞİŞMEZ. ATR bilinmiyorsa
+  // k=1. SADECE KÂR TARAFI — kayıp kesişi R378 dersi gereği dokunulmaz. ChatGPT'nin "BE yok" teşhisi
+  // yanlıştı; BE vardı ama düşük-ATR'de erişilmezdi. Anatomi satırı (🫀) bu deliği ifşa etti. ═══
+  const r390Atr = Number(state.atrPct || 0);
+  const r390K = r390Atr > 0 ? Math.min(1, Math.max(0.3, r390Atr / 3.0)) : 1;
+  const breakEvenAt   = (Number(cfg.aiBE)  > 0 ? Number(cfg.aiBE)  : 0.8) * r390K;
+  const karTasima1    = (Number(cfg.aiKT1) > 0 ? Number(cfg.aiKT1) : 1.5) * r390K;
+  const karTasima2    = (Number(cfg.aiKT2) > 0 ? Number(cfg.aiKT2) : 3.0) * r390K;
+  const karTasima3    = (Number(cfg.aiKT3) > 0 ? Number(cfg.aiKT3) : 5.5) * r390K;
+  trailPct = trailPct * r390K; // R390: trailing de coinin nefesine ölçekli
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
   // BE emri sadece entry'ye değil, taker fee + olası stop-market kayması için
   // küçük kâr bölgesine taşınır. INJ örneğinde entry üstü kapanışa rağmen
   // komisyon/slippage nedeniyle eksi yazmıştı. Varsayılan %0.22 coin hareketi.
-  const beFeeSafePct = Math.max(0.12, safe(cfg.beLockPct ?? cfg.breakEvenLockPct ?? cfg.beProfitLockPct, 0.22));
+  const beFeeSafePct = Math.max(0.08, safe(cfg.beLockPct ?? cfg.breakEvenLockPct ?? cfg.beProfitLockPct, 0.22) * r390K); // R390
   const r281ProtectMode = !!(state.r281ProMap?.protect && !state.r281ProMap?.runner);
   const r281RunnerMode  = !!(state.r281ProMap?.runner);
   const r282Plan = state.r282TradePlan || {};
@@ -19574,6 +19628,7 @@ async function runAutoScan(prioritySymbol=null) {
             targetTP:orderResp.details?.target||targetPrice,
             leverage:parseInt(executeLeverage)||parseInt(leverage)||1,
             slPct:userSLPct, tpPct:userTPPct,
+            atrPct: Number(analysis?.leverage?.atrPct || 0), // R390: kâr motoru ATR-normalizasyonu için
             r190Edge:{
               earlyContinuation:!!decisionChain?.r190Edge?.earlyContinuation, squeeze:!!decisionChain?.r190Edge?.squeeze,
               r192FuelOk:!!decisionChain?.r190Edge?.r192FuelOk, r192FuelScore:Number(decisionChain?.r190Edge?.r192FuelScore||0),
