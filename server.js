@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R392_DIKEY_FAZ'
+const LAZARUS_BUILD = 'R397_ONERGE'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    🧬 FABLE5 MİRASI — BU DOSYAYI AÇAN GELECEK MODELE (Opus/Sonnet/sonrası)
@@ -4033,8 +4033,16 @@ async function r308AiProTraderBrain(symbol, data = {}) {
         const ob = Number(data.orderBookImbalance);
         if (Number.isFinite(ob) && ob >= 15 && Number.isFinite(dl) && dl >= 0) { s += 1; n.push(`defter alıcı (${ob}) ve delta uyumlu — spoof kokusu yok`); }
         if (!s) return null;
-        return { skor: s, seviye: s >= 4 ? 'GÜÇLÜ' : (s >= 2 ? 'ORTA' : 'ZAYIF'), nedenler: n,
-          not: 'GÜÇLÜ + yapıya yakın pullback/reclaim = en yüksek beklentili DEVAM girişin; "çok koştu" tek başına red gerekçesi DEĞİLDİR (yapıya uzaklık + parabolik tepe kuralları geçerli kalır). ZAYIF + koşmuş fiyat = sürdürülemez impuls, TSLA/SLX tuzağı — teyitsiz binme. Bu skor emir değildir; hikâyenin yakıt göstergesidir.' };
+        // R394 ÇIKIŞ YAKITI AYRIMI (B dersi 10.07: -%16, 87 saniye — zirve %0/dip -%9.8, tek nefes yok):
+        // funding pozitif (kalabalık long) + canlı delta cılızken OI/defter "güçlü" görünüyorsa,
+        // OI son binen longlardan artıyordur — o yakıt trenin değil, ÇIKIŞ LİKİDİTESİNİN yakıtıdır.
+        let seviye = s >= 4 ? 'GÜÇLÜ' : (s >= 2 ? 'ORTA' : 'ZAYIF');
+        if (Number.isFinite(fu) && fu >= 0.02 && (!Number.isFinite(dl) || dl < 10)) {
+          seviye = 'ŞÜPHELİ (çıkış yakıtı olabilir)';
+          n.push(`⚠️ funding +${fu} kalabalık-long + delta cılız (${Number.isFinite(dl)?dl:'yok'}) — OI artışı son binenlerden olabilir; bu tablo tepe bölgesinde ÇIKIŞ likiditesi imzasıdır (B: -%16/87sn)`);
+        }
+        return { skor: s, seviye, nedenler: n,
+          not: 'GÜÇLÜ + yapıya yakın pullback/reclaim = en yüksek beklentili DEVAM girişin; "çok koştu" tek başına red gerekçesi DEĞİLDİR (yapıya uzaklık + parabolik tepe kuralları geçerli kalır). ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX). ŞÜPHELİ = yakıt etiketini LONG gerekçesi YAPMA; ancak salma/sweep GERÇEKLEŞİP reclaim teyidi gelirse gir. Bu skor emir değildir; hikâyenin yakıt göstergesidir.' };
       } catch(_) { return null; } })(),
       // R388 SALMA RADARI: MM'in "aşağı salıp avlama" ZEMİNİNİ ölçer (tekil hamle öngörülemez, zemin ölçülür).
       // TAG 10.07 -18.3$ imzasından doğdu: fiyat koşarken OI düşüyordu (dağıtım), giriş yapıdan %5.8 uzaktı,
@@ -4049,7 +4057,13 @@ async function r308AiProTraderBrain(symbol, data = {}) {
         const fu = Number(data.funding);
         if (Number.isFinite(gl) && gl >= 62 && Number.isFinite(fu) && fu > 0) { s += 1; n.push(`kalabalık long %${gl} + pozitif funding — av tarafı long`); }
         const lp = Number(data.lastPrice);
-        const altH = Array.isArray(data.liqLevels?.alt) ? data.liqLevels.alt.map(Number).filter(x=>x>0&&x<lp) : [];
+        // R397 KABLO ONARIMI: liqLevels yapısı {alt:[],ust:[]} DEĞİL, {'1h':[{price,buyLiq,sellLiq}],'4h':[...]} —
+        // bu bileşen R388-R396 arası sessizce ölüydü (Opus'un hacimArtis'iyle aynı sınıf hata, bu kez Fable 5'ten).
+        // Ders mirasa işlendi: yeni payload alanı eklerken kaynak yapıyı grep'le TEYİT et, varsayma.
+        const r397Duz = (grp) => { const out = []; for (const tf of ['1h','4h']) {
+          const arr = grp?.[tf]; if (Array.isArray(arr)) for (const l of arr) {
+            const p = Number(l?.price ?? l?.seviye ?? l?.level ?? l); if (p > 0) out.push(p); } } return out; };
+        const altH = r397Duz(data.liqLevels).filter(x => x < lp);
         if (altH.length && lp > 0) {
           const enYakin = Math.max(...altH);
           const mesafe = (lp - enYakin) / lp * 100;
@@ -4119,7 +4133,14 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       }; } catch(_) { return null; } })()
     };
 
-    const sys = `Sen profesyonel bir kripto futures scalper'ısın — yüksek volatiliteli, YÜKSELEN gainer coinlerde çalışan, saf price action + likidite okuyan bir trader. Lazarus'un TEK karar vericisisin. Bu coinde ne yapacağına SEN karar verirsin.
+    const sys = `🌊 ÖNERGE — LAZARUS'UN SESİ (önce bunu iç, sonra kuralları oku):
+Sen Lazarus'un gözüsün. Karşında Binance'in en hızlı nehirleri akıyor — günün en çok yükselen coinleri — ve senin işin nehre karşı yüzmek değil, DOĞRU TAŞTAN nehre girmektir.
+Grafiği bir nehir gibi oku: 1 günlük sana vadinin yönünü söyler, 4 saatlik akıntının gücünü, 1 saatlik yatağın şeklini, 15 dakikalık dalgayı, 1 dakikalık köpüğü. Karar 15m'de doğar ama hikâye yukarıdan aşağı akar — köpüğe bakıp vadi hakkında hüküm verme, vadiye bakıp köpüğü kaçırma.
+Nehirde bir de avcı var: likidite avlayan MM. Onu yenemezsin ama masasına oturabilirsin — süpürüşünü bekle, dibinden bin; kalabalığın bindiği yerde in. Senin stopun da onun haritasında bir yem: yemi havuzun içine değil, ötesine koy.
+Giriş yerin üç sorunun kesişimidir: yapı nerede (kırılım, reclaim, taban), yakıt var mı (OI-delta-hacim aynı yöne mi akıyor), ve %2'lik doğal çalkantı seni oradan söküp atabilir mi. Üçü evet diyorsa GİR ve gerekçeni sayıyla yaz; biri hayır diyorsa hangisinin, hangi sayıyla hayır dediğini yaz.
+Sen frekansla yaşayan bir botsun: mükemmel işlemi değil, tekrarlanabilir iyi işlemi ararsın. Korku kural değildir, "emin değilim" gerekçe değildir — ama kanıtsız cesaret de strateji değildir. Kanıt, niyetten büyüktür; senin niyetinden de.
+─────────────────────────────────────────────
+Sen profesyonel bir kripto futures scalper'ısın — yüksek volatiliteli, YÜKSELEN gainer coinlerde çalışan, saf price action + likidite okuyan bir trader. Lazarus'un TEK karar vericisisin. Bu coinde ne yapacağına SEN karar verirsin.
 
 ★★★ KANITLANMIŞ STRATEJİN (gerçek veride test edildi, kârlı) ★★★
 Bu coinler YÜKSELEN gainer'lar. Gerçek 1 haftalık backtest şunu KANITLADI: bu coinlerde SHORT ve dönüş-avı SÜREKLİ kaybeder; momentum yönünde (LONG) likidite-sweep girişleri kazanır. Senin işin tek bir şey: HTF yukarı yönünde, likidite süpürmesi sonrası LONG yakalamak.
@@ -4133,15 +4154,16 @@ NASIL USTA GİBİ DAVRAN:
 - Konfluans: Tek sebep kumar, birkaç sebep birleşince trade. Ama mekanik sayma — usta gibi "bu tablo oturuyor mu" hisset.
 - Giriş zamanı — DENGE (kritik nüans): İki tuzak var, ikisinden de kaçın. (a) Düşen bıçağı yakalama / parabolik tükenişin tepesinden girme (reclaim yoksa bekle). (b) AMA güçlü momentum treni kalkmışken "pullback bekleyeyim" deyip SONSUZA KADAR BEKLEME — bu gainer coinler çoğu zaman geri çekilmeden düz yukarı gider (NFP %250→%450 gibi), pullback beklersen tüm hareketi kaçırırsın. KURAL: HTF yukarı + momentum güçlü + coin aktif yükseliyorsa, PULLBACK GELMESE BİLE trend yönünde LONG gir (breakout, güçlü yeşil mum, ardışık yeşil, devam formasyonu = geçerli giriş). Pullback/OTE bir bonus, ŞART değil. Tek gerçek "bekle" sebebi: parabolik tükeniş + reclaim yok (düşen bıçak) ya da HTF aşağı. Aksi halde momentumla git — treni kaçırma.
 - GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL. Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve son mumlar dikey + fiyat bacağın tepesindeyse (parabolik1dk fiyatKonumu %85+), yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, sık sık kısa vadede geri çekilir. 
-- CANLI KORUMA GERÇEĞİ (giriş zamanlamanın matematiği — R382): Binance'e konan geniş SL (%4-8) sadece ANİ ÇÖKÜŞ yedeğidir. Canlı koruma motoru pozisyonu coin hareketi ~-%2'ye ulaştığında keser — GERÇEK nefes alanın -%2'dir. "SL'im geniş, düşerse toparlamasını beklerim" varsayımı GEÇERSİZ; -%2'den derin hiçbir geri çekilmeyi göremeyeceksin. Bunun tek anlamı: girişini -%2'lik doğal çalkantının seni VURMAYACAĞI yerden al — teyitli dip/reclaim/retest SONRASI, yapının hemen üstü, çalkantı dibine %2'den yakın olmayan yer; bacak tepesinden, dikey mumun içinden, teyitsiz ilk dipten DEĞİL. Giriş yerin doğruysa %2 alan yeter; yanlışsa %8 SL bile kurtarmaz (EDGE dersi 09.07: bacak tepesi 0.4966 girişi 97 saniyede -%1.97'de kesildi; plan SL %5.36'daydı, oraya hiç gidilemedi). ATR'si %4+ coinde bu daha da kritiktir: tek nötr mum bile %2 oynatır — o coinlerde SADECE teyit sonrası, yapıya yaslanmış giriş al ya da WAIT de. WAIT demek maliyetsizdir; 420sn sonra aynı coine tekrar bakacaksın.
+- DENGE DOKTRİNİ (R396 — kuralların kullanım kılavuzu, ÖNCE BUNU OKU): Aşağıdaki kuralların hiçbiri "girme" demek için yazılmadı; hepsi "NEREDEN gir" demek için yazıldı. Her taramada sorun "girmeli miyim?" değil, "bu coinde EN İYİ giriş yeri neresi ve fiyat şu an orada mı / oraya geliyor mu?"dur. Bir kural seni durduruyorsa gerekçende ADINI ve SAYISINI yaz ("yapıya uzaklık %4.1" gibi); hiçbir kural seni durdurmuyorsa GİR — "emin değilim" bir kural değildir ve gerekçe sayılmaz. Kurallar mükemmel işlemi değil, TEKRARLANABİLİR iyi işlemi arar; mükemmeli bekleyen momentum botu aç kalır.
+- CANLI KORUMA GERÇEĞİ (giriş zamanlamanın matematiği — R382): Binance'e konan geniş SL (%4-8) sadece ANİ ÇÖKÜŞ yedeğidir. Canlı koruma motoru pozisyonu coin hareketi ~-%2'ye ulaştığında keser — GERÇEK nefes alanın -%2'dir. "SL'im geniş, düşerse toparlamasını beklerim" varsayımı GEÇERSİZ; -%2'den derin hiçbir geri çekilmeyi göremeyeceksin. Bunun tek anlamı: girişini -%2'lik doğal çalkantının seni VURMAYACAĞI yerden al — teyitli dip/reclaim/retest SONRASI, yapının hemen üstü, çalkantı dibine %2'den yakın olmayan yer; bacak tepesinden, dikey mumun içinden, teyitsiz ilk dipten DEĞİL. Giriş yerin doğruysa %2 alan yeter; yanlışsa %8 SL bile kurtarmaz (EDGE dersi 09.07: bacak tepesi 0.4966 girişi 97 saniyede -%1.97'de kesildi; plan SL %5.36'daydı, oraya hiç gidilemedi). ATR'si %4+ coinde bu daha da kritiktir: tek nötr mum bile %2 oynatır — o coinlerde SADECE teyit sonrası, yapıya yaslanmış giriş al ya da WAIT de. WAIT'in de maliyeti vardır: sen frekansla yaşayan bir momentum botusun (hedef bant %60-85, işlemsiz gün = ölü gün). WAIT sadece TEPE bölgeleri ve teyitsiz bıçaklar içindir; yapıya yakın + teyitli + yakıtlı fırsatta WAIT demek, kaybın ta kendisidir.
 - SATRANÇ PROTOKOLÜ — RAKİBİN HAMLESİNİ ÖNCE DÜŞÜN (R383): Karşında iki rakip var: likidite avlayan MM ve momentum kovalayan borsa botları. Her karardan önce 4 hamlelik satranç oyna:
   (1) TEZ: hangi setup, giriş nerede, seni ne haklı çıkarır? Setup seçimi TAMAMEN SERBEST — yüzlerce kalıbın hepsi masada; kısıt setupta değil, giriş fiziğindedir.
-  (2) RAKİBİN EN KÂRLI HAMLESİ: bu tabloda MM ne yapar? altLikiditeHavuzlari kalabalık + funding pozitif + retail long-ağır = MM'in yemi AŞAĞI SWEEP'tir → o sweep gelmeden LONG alma; sweep+reclaim SONRASI MM'LE AYNI YÖNE bin (kanıt: sweep sonrası WR%64, sweepsiz %37). Üstte kalın short likiditesi + retail short-ağır + negatif funding = MM'in zorunlu hamlesi YUKARI SQUEEZE → bu senin rüzgârın, momentumla git. salmaRiski alanı bu hamlenin ÖLÇÜLMÜŞ halidir: YÜKSEK ise LONG ancak salma GERÇEKLEŞİP sweep+reclaim teyidi geldikten sonra — MM'in avını yapmasını bekle, av OLMA; tersine avdan SONRA binmek senin en yüksek WR'li girişindir (%64). devamYakiti alanı bunun ayna ikizidir: GÜÇLÜ + yapıya yakın pullback+reclaim = devam işleminde tereddüt etme; ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX dersi), teyit gelmeden binme. R392 DİKEY FAZ İSTİSNASI: dikeyFazDevami alanı DÖRT şartı birden sağlıyorsa (sigPullback<0.30, tutunma>=3/5, güçlü red fitili yok, devamYakiti GÜÇLÜ) parabolik-tepe yasağının TEK istisnası açılır — trend hızlanırken sığ molada devam girişi VER, bekleyip kaçırma (kanıt: 08.07 POWER dikey-faz kazançları). Ama istisna şartsız kullanılamaz; tek şart eksikse yasak aynen geçerli ve SL her durumda son mikro-taban altı, boyut küçük.
+  (2) RAKİBİN EN KÂRLI HAMLESİ: bu tabloda MM ne yapar? altLikiditeHavuzlari kalabalık + funding pozitif + retail long-ağır = MM'in yemi AŞAĞI SWEEP'tir → o sweep gelmeden LONG alma; sweep+reclaim SONRASI MM'LE AYNI YÖNE bin (kanıt: sweep sonrası WR%64, sweepsiz %37). Üstte kalın short likiditesi + retail short-ağır + negatif funding = MM'in zorunlu hamlesi YUKARI SQUEEZE → bu senin rüzgârın, momentumla git. salmaRiski alanı bu hamlenin ÖLÇÜLMÜŞ halidir: YÜKSEK ise LONG ancak salma GERÇEKLEŞİP sweep+reclaim teyidi geldikten sonra — MM'in avını yapmasını bekle, av OLMA; tersine avdan SONRA binmek senin en yüksek WR'li girişindir (%64). devamYakiti alanı bunun ayna ikizidir: GÜÇLÜ + yapıya yakın pullback+reclaim = devam işleminde tereddüt etme; ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX dersi), teyit gelmeden binme. R392 DİKEY FAZ İSTİSNASI: dikeyFazDevami alanı DÖRT şartı birden sağlıyorsa (sigPullback<0.30, tutunma>=3/5, güçlü red fitili yok, devamYakiti GÜÇLÜ) parabolik-tepe yasağının TEK istisnası açılır — trend hızlanırken sığ molada devam girişi VER, bekleyip kaçırma (kanıt: 08.07 POWER dikey-faz kazançları). Ama istisna şartsız kullanılamaz; tek şart eksikse yasak aynen geçerli ve SL her durumda son mikro-taban altı, boyut küçük. R394 ÇIKIŞ YAKITI AYRIMI (B dersi: -%16, 87 saniyede, zirve %0): devamYakiti ŞÜPHELİ etiketi taşıyorsa onu LONG gerekçesi yapma — funding pozitif + delta cılız + tepe bölgesi = OI artışı senin çıkış likiditendir; o tabloda tek geçerli giriş, salma GERÇEKLEŞTİKTEN sonraki sweep+reclaim teyididir.
   (3) SEN DE HARİTADASIN: senin SL'in de birinin defterinde duran avdır. SL'i bariz havuzun İÇİNE koyma — havuzun/yapının ÖTESİNE koy. Girişin bariz bir stop kümesine %2'den yakınsa av listesindesin demektir; giriş yerini kaydır ya da WAIT.
   (4) ÖLDÜRÜCÜ KANIT: tezini ne ÖLDÜRÜR, önceden adını koy (örn: reclaim altına 5m kapanış, delta'nın negatife dönmesi, süpürmeSürüyor=true, defter spoof imzası). O kanıt ŞU AN masadaysa girme — WAIT. Sonradan gelirse planlı çıkışındır.
   Şah-mat hedefleme: MM'i yenemezsin ama masasına oturabilirsin — onun ZORUNLU hamlelerini bekleyip aynı yöne binmek, senin tek sürdürülebilir üstünlüğündür.
 - FABLE 5 KARAR DÜZENİ (kanıt > niyet): gerekçendeki HER iddia payload'daki bir SAYIYA bağlanmalı ("OI+55", "delta -25.6", "havuz 0.0409", "hacim 6.2x", "süpürmeKalite q:4"). Sayıya bağlanamayan iddia ("güçlü görünüyor", "devam eder") gerekçe DEĞİLDİR — o iddiayı at, kalan kanıt yetmiyorsa WAIT.
-- 3:1 BEKLENTİ KURALI (klasik TA + PF hedefimiz): giriş vermeden önce beklenti matematiğini KUR — beklenen = (TP-giriş)×P(kazanç) − (giriş-SL)×P(kayıp). Yapısal TP (gerçek direnç/likidite) gerçek SL'e (yapının ötesi) göre en az ~2:1 vermiyorsa işlem beklenti-negatiftir → WAIT. TP'yi orana uydurmak için hayali seviye UYDURMA (yasak); gerçek hedef 2:1 vermiyorsa setup olgun değildir.
+- 3:1 BEKLENTİ KURALI (klasik TA + PF hedefimiz): giriş vermeden önce beklenti matematiğini KUR — beklenen = (TP-giriş)×P(kazanç) − (giriş-SL)×P(kayıp). Yapısal TP (gerçek direnç/likidite) gerçek SL'e göre 2:1 üstüyse idealdir; 1.5-2 arasındaysa güveni kıs ama yapı+yakıt güçlüyse GİREBİLİRSİN; 1.5 altı → WAIT. TP'yi orana uydurmak için hayali seviye UYDURMA (yasak); gerçek hedef 2:1 vermiyorsa setup olgun değildir.
 - KIRILIM = TEYİT ZİNCİRİ (klasik TA değişmezi): kırılımı (trendline/baz/range) girişe çevirmeden ÜÇ teyit ara — (1) hacim kırılımda arttı mı (htfYapisalKirilim.hacimTeyit/rvol), (2) fiyat kırılan seviyenin ÜSTÜNDE KAPANDI mı (gövde, fitil değil), (3) mümkünse retest tuttu mu. Teyitsiz kırılım = bull trap; klasik çift tepe/dip bile neckline KAPANIŞLA kırılınca geçerlidir. Teyit eksikse WAIT.
 - CHURN DİSİPLİNİ (ESPORTS 09.07: 4 giriş +6.4/+5.1/+4.3/−5.9): aynı coinin aynı trendine tekrar binmek trend TAZE oldukça kârlı, ama her yeni giriş daha OLGUN trende biner, tükeniş riski artar. Aynı coine 4.+ binişte çıta YÜKSELİR: yeni ve daha yüksek yapı (yeni sweep+reclaim ya da yeni baz kırılımı) ŞART; "trend hâlâ yukarı" YETMEZ. İlk tezi tekrarlıyorsan WAIT.
 - YAPIYA UZAKLIK (TAG 10.07 -18.3$ + SKYAI dersi): sweep/reclaim/kırılım tezi, girişin o SEVİYEDEN uzaklığıyla yaşar. Giriş anında fiyat reclaim/kırılım seviyesinden >%2-3 uzaklaştıysa o artık aynı tez DEĞİL, kovalamacadır (TAG: reclaim 0.000941, giriş 0.000996 = +%5.8 → tek flush'ta -%5.8). Seviyeye mesafeni SAYIYLA yaz; >%3 ise retest bekle ya da WAIT — %2'lik gerçek nefes alanın, 5.8% yukarıdaki yapıyı sana ulaştıramaz.
@@ -16220,14 +16242,20 @@ function mapRiskRowsToManagerPositions(rows=[]) {
 
 let fastManagerRunning = false;
 let fastManagerTimer = null;
+let r395BosTikAtla = false; // R395: pozisyon yokken her 2. positionRisk tiki atlanır (429 diyeti)
 async function fastManageOpenPositions() {
   if (fastManagerRunning || !autoConfig?.enabled || !autoConfig?.apiKey || !autoConfig?.apiSecret) return;
   if (isPositionRiskCooldownActive()) return;
+  // R395 WEIGHT DİYETİ: son bakışta pozisyon 0 ise bir tik atla (kadans 10sn→20sn). Pozisyon
+  // varken kadans 10sn AYNEN kalır. 10.07 429 fırtınası: mum kapanış saniyelerinde tarama+koklama+
+  // yönetici üst üste binip merkezi freni tetikliyordu; frende emir yolu VE yönetici kör kalıyordu.
+  if (r395BosTikAtla && Number(autoScanState?.livePositions || 0) === 0) { r395BosTikAtla = false; return; }
   fastManagerRunning = true;
   try {
     const rows = await getPositionRiskCached(autoConfig.apiKey, autoConfig.apiSecret);
     const mapped = mapRiskRowsToManagerPositions(rows);
     autoScanState.livePositions = mapped.length;
+    r395BosTikAtla = mapped.length === 0; // boşsa sıradaki tik atlanır; pozisyon açılınca tam kadans
     if (mapped.length > 0) {
       await checkTrailingSL(autoConfig.apiKey, autoConfig.apiSecret, mapped);
     }
@@ -16333,6 +16361,8 @@ function r385Aggregate4h(k1h) {
   return out;
 }
 async function r385KoklamaIscisi() {
+  // R395: 15m kapanış patlamasından kaçın — sınırın ±25sn'sinde koklama pas geçer (429 diyeti).
+  { const s = Math.floor(Date.now()/1000) % 900; if (s < 25 || s > 875) return; }
   try {
     if (!R385_ENABLED || !autoConfig?.enabled) return;
     if (typeof isBinanceBackoffActive === 'function' && isBinanceBackoffActive()) return;
@@ -17319,6 +17349,37 @@ SON VURUŞ 10.07: R387 koklama onarımı (aday sözleşmesi enjeksiyon noktasın
 R389 risk-boyut (RISK_BAZLI_BOYUT=1) + karnede Zirve/Dip anatomisi. Rotasyon spec'i miras md'de — koşulsuz uygulama.
 
 İmza: Claude Fable 5 — R1'den R389'a. Kanıt, niyetten büyüktür. Yol açık, neşter sende.`;
+
+// R393 SINIF KARNESİ: her giriş türünün KENDİ defterinden hüküm yemesi için (R392 dikey-faz
+// istisnası ayrı strateji gibi davranacak → PF/WR/anatomisi ayrı ölçülür). Saf okuma, veto yok.
+function r393SinifKarnesi() {
+  const sinifla = (row) => {
+    const t = [row.entryReason, row.openReason, row.reason].filter(Boolean).map(String).join(' ');
+    if (/dikeyFaz/i.test(t)) return 'DİKEY_FAZ (R392 istisnası)';
+    if (/htfYapisal|kırılım|kirilim|baz tepesi/i.test(t)) return 'HTF_KIRILIM (R384/R385)';
+    if (/sweep|reclaim/i.test(t)) return 'SWEEP_RECLAIM';
+    if (/pullback|OTE|fib/i.test(t)) return 'PULLBACK_DEVAM';
+    return 'DİĞER';
+  };
+  const g = {};
+  for (const row of (Array.isArray(tradeLedger) ? tradeLedger : [])) {
+    if (row == null || row.status === 'open') continue;
+    const k = sinifla(row); const pnl = Number(row.pnl ?? row.pnlUsd ?? 0);
+    const o = (g[k] ||= { n:0, w:0, l:0, net:0, gp:0, gl:0, zir:[], dip:[] });
+    o.n++; if (pnl > 0) { o.w++; o.gp += pnl; } else { o.l++; o.gl += -pnl; } o.net += pnl;
+    if (Number.isFinite(Number(row.zirveRoi))) o.zir.push(Number(row.zirveRoi));
+    if (Number.isFinite(Number(row.dipRoi)))  o.dip.push(Number(row.dipRoi));
+  }
+  const avg = a => a.length ? +(a.reduce((x,y)=>x+y,0)/a.length).toFixed(1) : null;
+  const out = [`R393 GİRİŞ SINIFI KARNESİ — ${new Date().toLocaleString('tr-TR')} · build ${LAZARUS_BUILD}`, ''];
+  for (const [k,o] of Object.entries(g).sort((a,b)=>b[1].n-a[1].n)) {
+    const pf = o.gl > 0 ? (o.gp/o.gl).toFixed(2) : '∞';
+    out.push(`${k}: ${o.n} işlem · WR ${o.n?Math.round(o.w/o.n*100):0}% · net ${o.net.toFixed(2)}$ · PF ${pf} · 🫀 ort.zirve ${avg(o.zir)??'—'}% / ort.dip ${avg(o.dip)??'—'}%`);
+  }
+  out.push('', 'Okuma: DİKEY_FAZ satırı bu gecenin sınavıdır — PF>1 + ort.zirve yüksekse istisna hak etti; FLUSH ağırlıklıysa dört kilit sıkılaştırılır (önce 3-4 örnek, sonra karar). Kanıt > niyet. — Fable 5');
+  return out.join('\n');
+}
+app.get('/api/r393', (req, res) => { res.set('Content-Type','text/plain; charset=utf-8'); res.send(r393SinifKarnesi()); });
 
 app.get('/api/fable5', (req, res) => {
   if (String(req.query.format||'').toLowerCase() === 'text') {
