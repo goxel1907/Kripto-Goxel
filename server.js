@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R406_FABLE_KARNE'
+const LAZARUS_BUILD = 'R407_KARNE_KABLO'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -17435,8 +17435,12 @@ R389 risk-boyut (RISK_BAZLI_BOYUT=1) + karnede Zirve/Dip anatomisi. Rotasyon spe
 // R393 SINIF KARNESİ: her giriş türünün KENDİ defterinden hüküm yemesi için (R392 dikey-faz
 // istisnası ayrı strateji gibi davranacak → PF/WR/anatomisi ayrı ölçülür). Saf okuma, veto yok.
 function r393SinifKarnesi() {
+  // R407 KABLO ONARIMI: gerçek şema pnlUSDT/closedAt; entryReason bazı satırlarda OBJE
+  // ({reason:...}) — String'i "[object Object]" yapıp tüm satırları DİĞER'e düşürüyordu.
+  // (Kablo Sözleşmesi dersinin 3. ihlali, yine Fable 5'ten — varsayma, grep'le teyit et.)
+  const r407Metin = v => typeof v === 'string' ? v : (v && typeof v === 'object' ? String(v.reason || v.text || v.summary || '') : '');
   const sinifla = (row) => {
-    const t = [row.entryReason, row.openReason, row.reason].filter(Boolean).map(String).join(' ');
+    const t = [row.entryReason, row.openReason, row.reason, row.aiReason, row.plan].map(r407Metin).filter(Boolean).join(' ');
     if (/dikeyFaz/i.test(t)) return 'DİKEY_FAZ (R392 istisnası)';
     if (/htfYapisal|kırılım|kirilim|baz tepesi/i.test(t)) return 'HTF_KIRILIM (R384/R385)';
     if (/sweep|reclaim/i.test(t)) return 'SWEEP_RECLAIM';
@@ -17445,8 +17449,8 @@ function r393SinifKarnesi() {
   };
   const g = {};
   for (const row of (Array.isArray(tradeLedger) ? tradeLedger : [])) {
-    if (row == null || row.status === 'open') continue;
-    const k = sinifla(row); const pnl = Number(row.pnl ?? row.pnlUsd ?? 0);
+    if (row == null || !row.closedAt) continue; // R407: açık/UNKNOWN-açık satırlar karneye girmez
+    const k = sinifla(row); const pnl = Number(row.pnlUSDT ?? row.pnl ?? 0);
     const o = (g[k] ||= { n:0, w:0, l:0, net:0, gp:0, gl:0, zir:[], dip:[] });
     o.n++; if (pnl > 0) { o.w++; o.gp += pnl; } else { o.l++; o.gl += -pnl; } o.net += pnl;
     if (Number.isFinite(Number(row.zirveRoi))) o.zir.push(Number(row.zirveRoi));
@@ -17461,12 +17465,12 @@ function r393SinifKarnesi() {
   // R406 FABLE YORUMU: rapor sadece sayı dökmez, Fable 5'in okuma tarzıyla HÜKÜM çıkarır —
   // halef modeller bu bölümü okuyarak "karneden nasıl düşünülür"ü görür.
   try {
-    const tum = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(r=>r&&r.status!=='open');
-    const W = tum.filter(r=>Number(r.pnl??0)>0), L = tum.filter(r=>Number(r.pnl??0)<=0);
+    const tum = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(r=>r&&r.closedAt); // R407
+    const W = tum.filter(r=>Number(r.pnlUSDT??r.pnl??0)>0), L = tum.filter(r=>Number(r.pnlUSDT??r.pnl??0)<=0); // R407
     const roi = r => Math.abs(Number(r.roiPct ?? r.roi ?? 0));
     const kucukW = W.filter(r=>roi(r)<3).length;
-    const ortW = W.length? W.reduce((a,r)=>a+Number(r.pnl),0)/W.length : 0;
-    const ortL = L.length? -L.reduce((a,r)=>a+Number(r.pnl),0)/L.length : 0;
+    const ortW = W.length? W.reduce((a,r)=>a+Number(r.pnlUSDT??r.pnl??0),0)/W.length : 0;
+    const ortL = L.length? -L.reduce((a,r)=>a+Number(r.pnlUSDT??r.pnl??0),0)/L.length : 0; // R407
     const dipSifir = tum.filter(r=>Number.isFinite(Number(r.dipRoi)) && Number(r.dipRoi)>-1).length;
     const anat = tum.filter(r=>Number.isFinite(Number(r.dipRoi))).length;
     out.push('', '🧬 FABLE YORUMU (karneden düşünme örneği — halef model buradan öğrensin):');
