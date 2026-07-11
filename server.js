@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R403_TAZELIK_KAPISI'
+const LAZARUS_BUILD = 'R404_KESIK_TESHISI'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -4020,7 +4020,7 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
       parabolik1dk: data.parabolik1m || null,
       // R384: 1h/4h YAPISAL KIRILIM RADARI — düşen trendline / baz tepesi kırılımı, hacim teyidi,
       // tazelik ve kırılım seviyesine mesafeyle. THE dersi: yapısal HTF kırılımını erken gör.
-      ...(data._r400FormatUyari ? { SON_FORMAT_UYARISI: 'ÖNCEKİ CEVABIN SAF JSON DEĞİLDİ VE ÇÖPE GİTTİ. Bu sefer SADECE tek satır saf JSON döndür: önsöz yok, kod çiti yok, JSON dışında tek karakter yok.' } : {}),
+      ...(data._r400FormatUyari ? { SON_FORMAT_UYARISI: 'ÖNCEKİ CEVABIN SAF JSON DEĞİLDİ VE ÇÖPE GİTTİ (muhtemelen uzunluktan kesildi). Bu sefer: düşünceni ÇOK KISA tut, gerekçeni en fazla 15 kelimeyle yaz ve SADECE tek satır saf JSON döndür — önsöz yok, kod çiti yok, JSON dışında tek karakter yok.' } : {}),
       htfYapisalKirilim: data.htfKirilim || null,
       // R392 DİKEY FAZ DEVAMI: momentum-devamı ayrı rejim (backtest kanıtı: 08.07 POWER 19:15/19:45
       // canlı kazançları dikey-faz girişleriydi ve spike yasağı onları reddederdi; ChatGPT bağımsız
@@ -4328,6 +4328,13 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
     if (!resp || !resp.ok) return null;
     const j = await resp.json();
     r399Ekle(j.usage); // R399: masraf sayacı
+    // R404 KESİK TEŞHİSİ: "markdown döndü" vakalarının çoğu düzyazı değil KESİLME olabilir —
+    // düşünce max_tokens tavanına çarpınca JSON'un kafası kopar, avcı da düzeltme turu da boşa döner.
+    // stop_reason bunu kesin söyler; artık körü körüne "markdown" demiyoruz.
+    const r404Stop = String(j.stop_reason || '');
+    if (r404Stop === 'max_tokens') {
+      logAuto(`✂️ ${symbol} AI cevabı max_tokens tavanında KESİLDİ (düşünce şişti) — çare: AI_MAX_TOKENS'ı artır (örn 8000) YA DA R401 mum derinliğini azalt (1h 48→36). Bu, markdown sorunu DEĞİL.`);
+    }
     let text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
     // R377F: Sonnet 5 JSON'u markdown çitiyle (```json ... ```) veya açıklama metniyle sarabiliyor
     // (canlı ders 08.07 15:14: "AI markdown döndü" → güven:0, karar kullanılamadı). Çiti soy,
@@ -4402,7 +4409,7 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
             // brief'e SON_FORMAT_UYARISI eklenip aynı soru bir kez daha sorulur (bayrakla sınırlı,
             // sonsuz döngü imkânsız). Maliyet: sadece başarısızlık anında +1 çağrı; R399 sayacında görünür.
             if (!_r400Tekrar) {
-              logAuto(`🔁 R400: ${symbol} cevabı JSON değildi — tek seferlik düzeltme turu isteniyor`);
+              logAuto(`🔁 R400: ${symbol} cevabı JSON değildi (stop:${r404Stop||"?"}${r404Stop==="max_tokens"?" = KESİK, markdown değil":""}) — tek seferlik düzeltme turu isteniyor`);
               try { return await r308AiProTraderBrain(symbol, { ...data, _r400FormatUyari: true }, true); } catch(_) {}
             }
             let sideGuess = waitHints ? 'WAIT' : (longHints ? 'LONG' : (shortHints ? 'SHORT' : 'WAIT'));
