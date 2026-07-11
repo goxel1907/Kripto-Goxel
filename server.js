@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R405_KIMLIK_NOBETI'
+const LAZARUS_BUILD = 'R406_FABLE_KARNE'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -17458,6 +17458,23 @@ function r393SinifKarnesi() {
     const pf = o.gl > 0 ? (o.gp/o.gl).toFixed(2) : '∞';
     out.push(`${k}: ${o.n} işlem · WR ${o.n?Math.round(o.w/o.n*100):0}% · net ${o.net.toFixed(2)}$ · PF ${pf} · 🫀 ort.zirve ${avg(o.zir)??'—'}% / ort.dip ${avg(o.dip)??'—'}%`);
   }
+  // R406 FABLE YORUMU: rapor sadece sayı dökmez, Fable 5'in okuma tarzıyla HÜKÜM çıkarır —
+  // halef modeller bu bölümü okuyarak "karneden nasıl düşünülür"ü görür.
+  try {
+    const tum = (Array.isArray(tradeLedger)?tradeLedger:[]).filter(r=>r&&r.status!=='open');
+    const W = tum.filter(r=>Number(r.pnl??0)>0), L = tum.filter(r=>Number(r.pnl??0)<=0);
+    const roi = r => Math.abs(Number(r.roiPct ?? r.roi ?? 0));
+    const kucukW = W.filter(r=>roi(r)<3).length;
+    const ortW = W.length? W.reduce((a,r)=>a+Number(r.pnl),0)/W.length : 0;
+    const ortL = L.length? -L.reduce((a,r)=>a+Number(r.pnl),0)/L.length : 0;
+    const dipSifir = tum.filter(r=>Number.isFinite(Number(r.dipRoi)) && Number(r.dipRoi)>-1).length;
+    const anat = tum.filter(r=>Number.isFinite(Number(r.dipRoi))).length;
+    out.push('', '🧬 FABLE YORUMU (karneden düşünme örneği — halef model buradan öğrensin):');
+    if (W.length) out.push(`· Kazançların ${Math.round(kucukW/Math.max(1,W.length)*100)}%'i küçük (<%3 ROI). Bu tek başına kusur DEĞİLDİR: dip≈0 olanlar tepe bölgesinde BE-zırhının kırpıntısıdır (koruma); zirvesi yüksekken küçük kapananlar erken kesimdir (runner-tutma dosyası). Ayrımı anatomi yapar, his değil.`);
+    if (anat) out.push(`· Giriş kalitesi göstergesi: anatomili işlemlerin ${Math.round(dipSifir/anat*100)}%'i hiç -%1'in altını görmedi — "giriş yeri doğruysa %2 alan yeter" ilkesinin ölçümü budur (T dersi: dip %0.0).`);
+    if (W.length && L.length) out.push(`· Ort. kazanç ${ortW.toFixed(2)}$ / ort. kayıp ${ortL.toFixed(2)}$ = makas ${(ortW/Math.max(0.01,ortL)).toFixed(2)}. PF<1 ise suçlu WR değil bu makastır; önce kayıp kuyruğunu (flush/kovalamaca sınıfları) incele, sonra kazanç tavanını.`);
+    out.push('· Karar protokolü: tek pencereyle hüküm verme (≥30-40 işlem), sınıf bazında oku (yukarısı), değişiklik tek eksen + geri dönüş yolu. Kanıt > niyet — benimki dahil. — Fable 5');
+  } catch(_) {}
   out.push('', `💸 AI MASRAF (${r399Masraf.gun||'—'}): ${r399Masraf.cagri} çağrı · ~$${r399Masraf.usd.toFixed(2)} · ort $${r399Masraf.cagri?(r399Masraf.usd/r399Masraf.cagri).toFixed(3):'0'}/karar · düşünce ${r399Masraf.cikisTok} tok · cache-okuma ${r399Masraf.cacheOku} tok`);
   out.push('', 'Okuma: DİKEY_FAZ satırı bu gecenin sınavıdır — PF>1 + ort.zirve yüksekse istisna hak etti; FLUSH ağırlıklıysa dört kilit sıkılaştırılır (önce 3-4 örnek, sonra karar). Kanıt > niyet. — Fable 5');
   return out.join('\n');
