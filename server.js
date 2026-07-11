@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R404_KESIK_TESHISI'
+const LAZARUS_BUILD = 'R405_KIMLIK_NOBETI'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -768,6 +768,18 @@ function formatBinanceError(path, data) {
   return `${path}: ${msg} (${code})`;
 }
 
+// R405 KİMLİK NÖBETİ: Railway deploy'da çıkış IP'si DEĞİŞEBİLİR; Binance anahtarı IP-kısıtlıysa
+// bot sessizce kilitlenir (11.07: 34.124.168.27 vakası — imzalı uçlar öldü, huni çalışıyor sanıldı).
+// Bu nöbetçi -2015'i yakalar, IP'yi söker, 10dk'da bir tam talimatla bağırır.
+let r405Son = 0;
+function r405Nobetci(text) { try {
+  const s = String(text || '');
+  if (!s.includes('-2015') && !s.toLowerCase().includes('invalid api-key')) return;
+  const ip = (s.match(/request ip:\s*([\d.]+)/i) || [])[1] || '?';
+  if (Date.now() - r405Son > 10 * 60 * 1000) { r405Son = Date.now();
+    logAuto(`🔑🚨 BINANCE KİLİDİ (-2015): Railway çıkış IP'si ${ip} anahtarın beyaz listesinde DEĞİL — imzalı uçlar ölü, EMİR AÇILAMAZ. ÇÖZÜM (2dk): Binance → API Management → anahtarı düzenle → IP listesine ${ip} ekle. Kalıcı: Railway statik IP ya da kısıtsız anahtar (withdrawal izni ASLA).`);
+  }
+} catch(_) {} }
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
   // R9: Ana Binance signed request tekrar çalışan eski gövdeye alındı.
   // GET/DELETE query string, POST form body. AlgoOrder ayrı bAlgo ile query-string çalışır.
@@ -824,6 +836,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   }
   if (netErr) throw new Error(`Ağ/gövde hatası (3 deneme): ${String(netErr?.message||netErr).slice(0,90)}`);
   let data;
+  r405Nobetci(text); // R405: -2015 kimlik nöbeti
   try { data = JSON.parse(text); }
   catch(e) { throw new Error(`JSON hatası: ${text.substring(0,120)}`); }
   if (data.code && data.code < 0) {
