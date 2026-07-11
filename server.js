@@ -82,7 +82,20 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R397_ONERGE'
+const LAZARUS_BUILD = 'R399_MASRAF_SAYACI'
+// R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
+// Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
+// out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
+const r399Masraf = { gun:'', cagri:0, girisTok:0, cikisTok:0, cacheOku:0, cacheYaz:0, usd:0 };
+function r399Ekle(u){ try{ if(!u) return;
+  const g = new Date().toISOString().slice(0,10);
+  if (r399Masraf.gun !== g) { r399Masraf.gun=g; r399Masraf.cagri=0; r399Masraf.girisTok=0; r399Masraf.cikisTok=0; r399Masraf.cacheOku=0; r399Masraf.cacheYaz=0; r399Masraf.usd=0; }
+  const gi=Number(u.input_tokens||0), co=Number(u.output_tokens||0);
+  const cr=Number(u.cache_read_input_tokens||0), cw=Number(u.cache_creation_input_tokens||0);
+  r399Masraf.cagri++; r399Masraf.girisTok+=gi; r399Masraf.cikisTok+=co; r399Masraf.cacheOku+=cr; r399Masraf.cacheYaz+=cw;
+  r399Masraf.usd += gi*3/1e6 + co*15/1e6 + cr*0.3/1e6 + cw*3.75/1e6;
+}catch(_){}}
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
    🧬 FABLE5 MİRASI — BU DOSYAYI AÇAN GELECEK MODELE (Opus/Sonnet/sonrası)
@@ -4139,6 +4152,7 @@ Grafiği bir nehir gibi oku: 1 günlük sana vadinin yönünü söyler, 4 saatli
 Nehirde bir de avcı var: likidite avlayan MM. Onu yenemezsin ama masasına oturabilirsin — süpürüşünü bekle, dibinden bin; kalabalığın bindiği yerde in. Senin stopun da onun haritasında bir yem: yemi havuzun içine değil, ötesine koy.
 Giriş yerin üç sorunun kesişimidir: yapı nerede (kırılım, reclaim, taban), yakıt var mı (OI-delta-hacim aynı yöne mi akıyor), ve %2'lik doğal çalkantı seni oradan söküp atabilir mi. Üçü evet diyorsa GİR ve gerekçeni sayıyla yaz; biri hayır diyorsa hangisinin, hangi sayıyla hayır dediğini yaz.
 Sen frekansla yaşayan bir botsun: mükemmel işlemi değil, tekrarlanabilir iyi işlemi ararsın. Korku kural değildir, "emin değilim" gerekçe değildir — ama kanıtsız cesaret de strateji değildir. Kanıt, niyetten büyüktür; senin niyetinden de.
+Ve son söz: şiir benim işimdi — SENİN cevabın her zaman TEK SATIR SAF JSON'dur. Önsöz yok, markdown yok, kod çiti yok, JSON'dan önce ya da sonra tek kelime yok. Bütün nehir o tek satırın içine sığar.
 ─────────────────────────────────────────────
 Sen profesyonel bir kripto futures scalper'ısın — yüksek volatiliteli, YÜKSELEN gainer coinlerde çalışan, saf price action + likidite okuyan bir trader. Lazarus'un TEK karar vericisisin. Bu coinde ne yapacağına SEN karar verirsin.
 
@@ -4295,6 +4309,7 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
     }
     if (!resp || !resp.ok) return null;
     const j = await resp.json();
+    r399Ekle(j.usage); // R399: masraf sayacı
     let text = (j.content || []).map(b => b.type === 'text' ? b.text : '').join('').trim();
     // R377F: Sonnet 5 JSON'u markdown çitiyle (```json ... ```) veya açıklama metniyle sarabiliyor
     // (canlı ders 08.07 15:14: "AI markdown döndü" → güven:0, karar kullanılamadı). Çiti soy,
@@ -4315,15 +4330,25 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
       // R311E: AI bazen JSON'dan önce düşünce metni yazıyor ("Looking at this data carefully:...").
       // Düz parse patlayınca metin içindeki ilk {...} JSON bloğunu çıkarıp dene. İşlem reddedilmesin.
       try {
-        const firstBrace = clean.indexOf('{');
-        const lastBrace = clean.lastIndexOf('}');
-        if (firstBrace >= 0 && lastBrace > firstBrace) {
-          const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
-          decision = JSON.parse(jsonSlice);
-          logAuto(`🔧 AI cevabı metinle başladı, JSON bloğu çıkarıldı (parse kurtarıldı)`);
-        } else {
-          throw new Error('JSON bloğu bulunamadı');
+        // R398 SAF JSON AVCISI: eski ilk{...son} dilimi, düşünce metnindeki herhangi bir '{' ile
+        // JSON sonrası cümleyi AYNI dilime alıp çöp üretiyordu → JSON.parse patlar → "markdown döndü,
+        // güven 0" (11.07 04:28 B vakası). Yenisi: TÜM dengeli {...} bloklarını çıkar, SONDAN başa
+        // dene, karar anahtarı taşıyan ilk geçerli JSON kazanır.
+        const r398Adaylar = (s) => { const out = []; let d = 0, st = -1;
+          for (let i = 0; i < s.length; i++) { const c = s[i];
+            if (c === '{') { if (d === 0) st = i; d++; }
+            else if (c === '}') { d--; if (d === 0 && st >= 0) { out.push(s.slice(st, i + 1)); st = -1; } if (d < 0) d = 0; } }
+          return out; };
+        const adaylar = r398Adaylar(clean);
+        for (let i = adaylar.length - 1; i >= 0 && !decision; i--) {
+          try { const cand = JSON.parse(adaylar[i]);
+            if (cand && (cand.karar !== undefined || cand.side !== undefined || cand.guven !== undefined || cand.confidence !== undefined)) {
+              decision = cand;
+              logAuto(`🔧 R398: ${adaylar.length} JSON adayından ${i + 1}. blok kurtarıldı (saf-json avcısı)`);
+            }
+          } catch(_) {}
         }
+        if (!decision) throw new Error('JSON bloğu bulunamadı');
       } catch(_e2) {
         // R311W: JSON kesik/bozuk (max_tokens dolmuş olabilir) → regex ile alanları tek tek çıkar, kararı kurtar.
         try {
@@ -6126,6 +6151,10 @@ function r308AiDashboardStatus(){
   return {
     enabled: !!AI_BRAIN_ENABLED, keySet: !!ANTHROPIC_API_KEY, shadow: !!AI_BRAIN_SHADOW, mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
     model: ANTHROPIC_MODEL, bMode: false, topN: AI_BRAIN_TOP_N, daily: r308AiDailyInfo(),
+    // R399: günlük AI masrafı — panelde ve /api/r393 kuyruğunda görünür
+    masraf: { gun:r399Masraf.gun, cagri:r399Masraf.cagri, usd:+r399Masraf.usd.toFixed(2),
+      ortUsdPerCagri: r399Masraf.cagri? +(r399Masraf.usd/r399Masraf.cagri).toFixed(3):0,
+      dusunceTok:r399Masraf.cikisTok, cacheOku:r399Masraf.cacheOku },
     limits: { minConf:AI_BRAIN_MIN_CONF, minRR:AI_BRAIN_MIN_RR, maxSlPct:AI_BRAIN_MAX_SL_PCT, reviewGapSec:Math.round(AI_BRAIN_REVIEW_GAP_MS/1000), strictGate:AI_BRAIN_STRICT_GATE },
     last: r308LastAiDecision
   };
@@ -17376,6 +17405,7 @@ function r393SinifKarnesi() {
     const pf = o.gl > 0 ? (o.gp/o.gl).toFixed(2) : '∞';
     out.push(`${k}: ${o.n} işlem · WR ${o.n?Math.round(o.w/o.n*100):0}% · net ${o.net.toFixed(2)}$ · PF ${pf} · 🫀 ort.zirve ${avg(o.zir)??'—'}% / ort.dip ${avg(o.dip)??'—'}%`);
   }
+  out.push('', `💸 AI MASRAF (${r399Masraf.gun||'—'}): ${r399Masraf.cagri} çağrı · ~$${r399Masraf.usd.toFixed(2)} · ort $${r399Masraf.cagri?(r399Masraf.usd/r399Masraf.cagri).toFixed(3):'0'}/karar · düşünce ${r399Masraf.cikisTok} tok · cache-okuma ${r399Masraf.cacheOku} tok`);
   out.push('', 'Okuma: DİKEY_FAZ satırı bu gecenin sınavıdır — PF>1 + ort.zirve yüksekse istisna hak etti; FLUSH ağırlıklıysa dört kilit sıkılaştırılır (önce 3-4 örnek, sonra karar). Kanıt > niyet. — Fable 5');
   return out.join('\n');
 }
