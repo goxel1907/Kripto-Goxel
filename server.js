@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R399_MASRAF_SAYACI'
+const LAZARUS_BUILD = 'R403_TAZELIK_KAPISI'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -3944,7 +3944,19 @@ function r329FibLiqMap(candles, lastPrice, liqLevels) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-async function r308AiProTraderBrain(symbol, data = {}) {
+async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
+  // R403 VERİ TAZELİK KAPISI: son kapanmış 15m mum 120sn'den yaşlıysa kline cache bayattır —
+  // az önce kapanan mum pakette YOK demektir (sağlıklı yaş 5-40sn; bayatken ~900sn'ye sıçrar).
+  // Bayat gerçekliğe düşünce parası harcanmaz; karar sonraki tura kalır. Bu piyasa vetosu değil,
+  // VERİ KALİTESİ kapısıdır (anayasa m.7: yalancı telemetriye inanma).
+  try {
+    const r403Yas = Number(data?.candles?.son15mMumYasiSn ?? data?.r308RawCandles?.son15mMumYasiSn);
+    if (Number.isFinite(r403Yas) && r403Yas > 120) {
+      logAuto(`⏸️ ${symbol} AI çağrısı atlandı: son kapanmış 15m mum ${r403Yas}sn yaşlı (cache bayat) — bayat veriye para harcanmaz, sonraki turda taze bakılır`);
+      return { side:'WAIT', entry:null, tp:null, sl:null, confidence:0, karKosma:'NORMAL',
+        reasoning:`VERI_BAYAT: son kapanmış 15m mum ${r403Yas}sn yaşlı — AI çağrılmadı, maliyet korundu`, plan:'' };
+    }
+  } catch(_) {}
   if (!AI_BRAIN_ENABLED || !ANTHROPIC_API_KEY) return null;
   try {
     // R323: MALİYET-TASARRUF KAPISI — sadece AI_SAVER_MODE açıkken aktif (varsayılan kapalı).
@@ -4008,6 +4020,7 @@ async function r308AiProTraderBrain(symbol, data = {}) {
       parabolik1dk: data.parabolik1m || null,
       // R384: 1h/4h YAPISAL KIRILIM RADARI — düşen trendline / baz tepesi kırılımı, hacim teyidi,
       // tazelik ve kırılım seviyesine mesafeyle. THE dersi: yapısal HTF kırılımını erken gör.
+      ...(data._r400FormatUyari ? { SON_FORMAT_UYARISI: 'ÖNCEKİ CEVABIN SAF JSON DEĞİLDİ VE ÇÖPE GİTTİ. Bu sefer SADECE tek satır saf JSON döndür: önsöz yok, kod çiti yok, JSON dışında tek karakter yok.' } : {}),
       htfYapisalKirilim: data.htfKirilim || null,
       // R392 DİKEY FAZ DEVAMI: momentum-devamı ayrı rejim (backtest kanıtı: 08.07 POWER 19:15/19:45
       // canlı kazançları dikey-faz girişleriydi ve spike yasağı onları reddederdi; ChatGPT bağımsız
@@ -4168,6 +4181,11 @@ NASIL USTA GİBİ DAVRAN:
 - Konfluans: Tek sebep kumar, birkaç sebep birleşince trade. Ama mekanik sayma — usta gibi "bu tablo oturuyor mu" hisset.
 - Giriş zamanı — DENGE (kritik nüans): İki tuzak var, ikisinden de kaçın. (a) Düşen bıçağı yakalama / parabolik tükenişin tepesinden girme (reclaim yoksa bekle). (b) AMA güçlü momentum treni kalkmışken "pullback bekleyeyim" deyip SONSUZA KADAR BEKLEME — bu gainer coinler çoğu zaman geri çekilmeden düz yukarı gider (NFP %250→%450 gibi), pullback beklersen tüm hareketi kaçırırsın. KURAL: HTF yukarı + momentum güçlü + coin aktif yükseliyorsa, PULLBACK GELMESE BİLE trend yönünde LONG gir (breakout, güçlü yeşil mum, ardışık yeşil, devam formasyonu = geçerli giriş). Pullback/OTE bir bonus, ŞART değil. Tek gerçek "bekle" sebebi: parabolik tükeniş + reclaim yok (düşen bıçak) ya da HTF aşağı. Aksi halde momentumla git — treni kaçırma.
 - GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL. Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve son mumlar dikey + fiyat bacağın tepesindeyse (parabolik1dk fiyatKonumu %85+), yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, sık sık kısa vadede geri çekilir. 
+- REJİM ANAYASASI (R401 — HER kararın SIFIRINCI adımı): Sinyal üretmeden ÖNCE grafiği üç rejimden birine koy ve gerekçenin İLK kelimeleri bunu söylesin: "REJİM:NORMAL·" / "REJİM:DEVAM·" / "REJİM:TÜKENİŞ·".
+  · NORMAL = sağlıklı HH/HL, dengeli momentum, temiz fitiller → standart kurallar geçerli.
+  · DEVAM = dikeyFazDevami DÖRT şartı birden (sığPullback<0.30 + tutunma≥3/5 + red fitili yok + devamYakiti GÜÇLÜ) → devam girişi serbest, SL mikro-taban altı.
+  · TÜKENİŞ = şunlardan en az İKİSİ: parabolik dikleşme + bacak konumu ≥85 · son 15m mumlarda belirgin üst fitil reddi · devamYakiti ŞÜPHELİ ya da funding aşırı pozitif + delta cılız · salmaRiski YÜKSEK · ani hacim spike sonrası daralma. TÜKENİŞ'te: LONG devam YASAK; TEK MUM reclaim GEÇERSİZDİR (kalıcılık = 2-3 mum tutunma şart); SHORT YOK (kod kapalı, backtest 23/1) — doğru hamle WAIT + salma GERÇEKLEŞTİKTEN sonra dipten sweep+reclaim planı.
+  ALTIN VARSAYIM: parabolik harekette varsayılan DAĞITIMDIR; aksini ancak DEVAM'ın dört şartı ispatlar. Ve yakıt yorumunun anahtarı: güçlü OI+hacim trend BAŞINDA devam yakıtı, trend SONUNDA çıkış likiditesidir — ayrımı VERİ değil REJİM belirler; önce rejim, sonra veri. Rejim belirsizse NORMAL say ve standart kurallarla devam et — belirsizlik işlemsizlik gerekçesi değildir (Denge Doktrini geçerli).
 - DENGE DOKTRİNİ (R396 — kuralların kullanım kılavuzu, ÖNCE BUNU OKU): Aşağıdaki kuralların hiçbiri "girme" demek için yazılmadı; hepsi "NEREDEN gir" demek için yazıldı. Her taramada sorun "girmeli miyim?" değil, "bu coinde EN İYİ giriş yeri neresi ve fiyat şu an orada mı / oraya geliyor mu?"dur. Bir kural seni durduruyorsa gerekçende ADINI ve SAYISINI yaz ("yapıya uzaklık %4.1" gibi); hiçbir kural seni durdurmuyorsa GİR — "emin değilim" bir kural değildir ve gerekçe sayılmaz. Kurallar mükemmel işlemi değil, TEKRARLANABİLİR iyi işlemi arar; mükemmeli bekleyen momentum botu aç kalır.
 - CANLI KORUMA GERÇEĞİ (giriş zamanlamanın matematiği — R382): Binance'e konan geniş SL (%4-8) sadece ANİ ÇÖKÜŞ yedeğidir. Canlı koruma motoru pozisyonu coin hareketi ~-%2'ye ulaştığında keser — GERÇEK nefes alanın -%2'dir. "SL'im geniş, düşerse toparlamasını beklerim" varsayımı GEÇERSİZ; -%2'den derin hiçbir geri çekilmeyi göremeyeceksin. Bunun tek anlamı: girişini -%2'lik doğal çalkantının seni VURMAYACAĞI yerden al — teyitli dip/reclaim/retest SONRASI, yapının hemen üstü, çalkantı dibine %2'den yakın olmayan yer; bacak tepesinden, dikey mumun içinden, teyitsiz ilk dipten DEĞİL. Giriş yerin doğruysa %2 alan yeter; yanlışsa %8 SL bile kurtarmaz (EDGE dersi 09.07: bacak tepesi 0.4966 girişi 97 saniyede -%1.97'de kesildi; plan SL %5.36'daydı, oraya hiç gidilemedi). ATR'si %4+ coinde bu daha da kritiktir: tek nötr mum bile %2 oynatır — o coinlerde SADECE teyit sonrası, yapıya yaslanmış giriş al ya da WAIT de. WAIT'in de maliyeti vardır: sen frekansla yaşayan bir momentum botusun (hedef bant %60-85, işlemsiz gün = ölü gün). WAIT sadece TEPE bölgeleri ve teyitsiz bıçaklar içindir; yapıya yakın + teyitli + yakıtlı fırsatta WAIT demek, kaybın ta kendisidir.
 - SATRANÇ PROTOKOLÜ — RAKİBİN HAMLESİNİ ÖNCE DÜŞÜN (R383): Karşında iki rakip var: likidite avlayan MM ve momentum kovalayan borsa botları. Her karardan önce 4 hamlelik satranç oyna:
@@ -4380,6 +4398,13 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
             const waitHints = /çelişki|net taraf yok|conflict|no clear|wait|bekle|karışık|belirsiz/i.test(clean);
             const longHints = /\b(long|yükseliş|al\b|buy)\b/i.test(low) && !/short|düşüş|sat\b|sell/i.test(low);
             const shortHints = /\b(short|düşüş|sat\b|sell)\b/i.test(low) && !/long|yükseliş|al\b|buy/i.test(low);
+            // R400 KALICI FORMAT: avcı da düştüyse fallback'e razı olmadan önce TEK düzeltme turu —
+            // brief'e SON_FORMAT_UYARISI eklenip aynı soru bir kez daha sorulur (bayrakla sınırlı,
+            // sonsuz döngü imkânsız). Maliyet: sadece başarısızlık anında +1 çağrı; R399 sayacında görünür.
+            if (!_r400Tekrar) {
+              logAuto(`🔁 R400: ${symbol} cevabı JSON değildi — tek seferlik düzeltme turu isteniyor`);
+              try { return await r308AiProTraderBrain(symbol, { ...data, _r400FormatUyari: true }, true); } catch(_) {}
+            }
             let sideGuess = waitHints ? 'WAIT' : (longHints ? 'LONG' : (shortHints ? 'SHORT' : 'WAIT'));
             decision = { side: sideGuess, entry:null, tp:null, sl:null, confidence: 0, karKosma:'NORMAL',
               reasoning: 'AI markdown döndü, yön metinden çıkarıldı: '+sideGuess, plan:'' };
@@ -14214,8 +14239,14 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     // ═══ R308K: AI'YA HAM MUM VERİSİ ═══
     // AI artık botun skorunu değil, gerçek mum dizisini okuyacak (pro trader gibi).
     // Kompakt OHLCV: her mum [O,H,L,C,V] — anlamlı basamak korunarak, token tasarrufu.
-    function r308PackKlines(kl, n) {
+    function r308PackKlines(kl, n, perMs) {
       if (!Array.isArray(kl) || !kl.length) return [];
+      // R402 KAPANMIŞ MUM GARANTİSİ: Binance klines son satırda OLUŞAN mumu döndürür — R310R (satır
+      // 1564) bunu RVOL için düzeltmişti ama AI'ın ham mum paketi düzeltmemişti. Sonuç: AI'ın her
+      // dilimdeki "son mumu" saniyelik bir taslak olabiliyordu ("son mum kırmızı" gerekçeleri taslağa
+      // kurulu, R392 tutunma/fitil okumaları kirli). Artık kapanış zamanı gelmemiş satırlar düşer —
+      // "AI hep KAPANMIŞ mumu görür" (satır 19920 tasarım sözü) paketleme katmanında da gerçek oldu.
+      if (perMs > 0) { const now = Date.now(); kl = kl.filter(c => Number(c[0]) + perMs <= now); if (!kl.length) return []; }
       const slice = kl.slice(-n);
       // fiyat basamağı: son kapanışa göre dinamik (örn 0.0048 → 6 hane, 66000 → 1 hane)
       const lastC = parseFloat(slice[slice.length-1][4]) || 1;
@@ -14225,14 +14256,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       return slice.map(c => [f(c[1]), f(c[2]), f(c[3]), f(c[4]), fv(c[5])]);
     }
     const r308RawCandles = {
-      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda (guncel). En eski en solda.',
-      '1d':  r308PackKlines(k1d, 20),
-      '4h':  r308PackKlines(k4h, 18),
-      '1h':  r308PackKlines(k1h, 24),
-      '15m': r308PackKlines(k15m, 96),
-      '5m':  r308PackKlines(k5m, 24),
-      '1m':  r308PackKlines(k1m, 60), // R366: 1dk×60 (son 1 saat) — parabolik hareket için
-      btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6)
+      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda ve KAPANMIŞTIR (oluşan mum pakete girmez). En eski en solda.',
+      son15mMumYasiSn: (() => { try { const kk = (k15m||[]).filter(c => Number(c[0]) + 900000 <= Date.now());
+        return kk.length ? Math.round((Date.now() - (Number(kk[kk.length-1][0]) + 900000)) / 1000) : null; } catch(_) { return null; } })(), // R402: doğrulama damgası — son kapanmış 15m mumu kaç sn önce kapandı
+      '1d':  r308PackKlines(k1d, 20, 86400000),
+      '4h':  r308PackKlines(k4h, 30, 14400000), // R401: 3 gün→5 gün (rejim sınıflandırması derinlik ister)
+      '1h':  r308PackKlines(k1h, 48, 3600000), // R401: 1 gün→2 gün
+      '15m': r308PackKlines(k15m, 96, 900000),
+      '5m':  r308PackKlines(k5m, 36, 300000), // R401: 2 saat→3 saat mikro bağlam
+      '1m':  r308PackKlines(k1m, 60, 60000), // R366: 1dk×60 (son 1 saat) — parabolik hareket için
+      btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6, 300000)
     };
     // R366: 1dk parabolik fib analizi (LONG & SHORT) — analiz çıktısına eklenir
     const r366Parabolik = r366ParabolicFib1m(k1m, lastPrice);
