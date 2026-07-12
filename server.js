@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R408_DELTA_ETIKET'
+const LAZARUS_BUILD = 'R409_TP_ERISIM_GOLGE'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -15514,13 +15514,15 @@ async function managePosition(apiKey, apiSecret, pos) {
   // Önceki sürümde action yoksa lastCheck/managerStatus eski kalıyor, panel 'kontrol 15dk önce' gösteriyordu.
   const stampManager = (type='İZLEME', reason=null, urgency='LOW') => {
     state.lastCheck = Date.now();
+    const r409n = state.r409Golge?.not ? ` • ${state.r409Golge.not}` : '';  // R409 gölge uyarı (kapatma yok)
     state.managerStatus = {
       type, urgency,
-      reason: reason || `${sym} ${side} canlı izleniyor • PnL %${Number(pnlPct||0).toFixed(2)} • BE:${state.breakEvenSet?'AKTİF':'bekliyor'} • SL/TP:${state.sltpVerified?'doğrulandı':'kontrol'}`,
+      reason: reason || `${sym} ${side} canlı izleniyor • PnL %${Number(pnlPct||0).toFixed(2)} • BE:${state.breakEvenSet?'AKTİF':'bekliyor'} • SL/TP:${state.sltpVerified?'doğrulandı':'kontrol'}${r409n}`,
       pnlPct:Number(pnlPct||0), peakPnl:Number(state.peakPnl||0), peakRealPct:Number(state.peakRealPct||0),
       currentSL:state.currentSL||null, targetTP:state.targetTP||null, lastCheck:state.lastCheck,
       r91Exit: state.r91Exit || null,
       exitMode: state.exitMode || null,
+      r409Golge: state.r409Golge || null,  // R409 gölge tanı: {tpErisim, zararHiz, tpYolPct, not}
       profitLockLevel: state.profitLockLevel || null
     };
     trailingState.set(sym, state);
@@ -15671,12 +15673,60 @@ async function managePosition(apiKey, apiSecret, pos) {
     const devamGucu = cvdSupport && !extra.tickFlip && !extra.exhaustExit && !extra.trappedExit && pullbackPct < (r281ProtectMode ? 0.16 : 0.22);
     if (devamGucu && exitScore > 0) exitScore = Math.max(0, exitScore - 1.5);
     const mode = pnlPct >= 20 ? 'KÂR-KORU' : pnlPct >= 10 ? 'VUR-KAÇ' : pnlPct >= 4 ? 'KİLİT-HAZIR' : 'İZLE';
+
+    // ═══ R409 GÖLGE TANI (KAPATMA YETKİSİ YOK — Göksel'in elle "buradan döner" gözünü taklit eder) ═══
+    // Amaç: kârdayken "TP'ye varamaz, kârı geri verme" durumunu ve zararda "hızlı git­­iyor" durumunu
+    // VERİYLE erken yakalayıp SADECE UYARIR (panel/log). İndikatör YOK — hepsi ham akış+geometri+MM.
+    // Fable 5 disiplini (açık dosya #a): asla doğrudan kapatmaz; 15-20 örnekte Göksel'in kararıyla
+    // örtüşürse halef gerçek yetkiye çevirir. YFI dersi: erken mekanik kesim kâr katilidir — o yüzden GÖLGE.
+    let r409Golge = null;
+    try {
+      const tpP = Number(state.targetTP || state.tpPrice || 0);
+      const cur = Number(curPrice || 0);
+      const ent = Number(entryPrice || 0);
+      if (tpP > 0 && cur > 0 && ent > 0) {
+        // TP'ye giden yolun ne kadarı kat edildi (0=girişte, 1=TP'de)
+        const tpYol = isLong ? (cur - ent) / (tpP - ent) : (ent - cur) / (ent - tpP);
+        const tpYolPct = Math.round(Math.max(-50, Math.min(150, tpYol * 100)));
+        // Ham kanıtlar (indikatör değil): momentum sönüyor mu, akış destekliyor mu, defter/MM ne diyor
+        const momOlu = (mom === 'NEGATIVE' || mom === 'ACCELERATING_BEAR' || String(cvd.momentum||'').includes('WEAK')) ||
+                       !!extra.exhaustExit;
+        const akisDestekYok = !cvdSupport;
+        const mmKarsi = !!(cvdAgainst || (extra.cascade && extra.cascade.adverse) || extra.trappedExit);
+        // KÂR TARAFI: peak yapmış + kârda + TP'nin çoğu duruyor (<%55 kat) + momentum söndü + akış/MM karşı
+        // = "buradan TP'ye varamaz, kârı koru" (Göksel'in gözü). exhaustExit'ten ERKEN yakalar.
+        const peakVar = Number(state.peakPnl || 0) >= 3;
+        let tpErisim = 'KOLAY';
+        if (inProfit && peakVar && tpYolPct < 55) {
+          const zayifKanit = (momOlu ? 1 : 0) + (akisDestekYok ? 1 : 0) + (mmKarsi ? 1 : 0);
+          if (zayifKanit >= 2) tpErisim = 'ZOR';      // 2+ ham kanıt: TP zor, kâr riskte
+          else if (zayifKanit === 1) tpErisim = 'ORTA';
+        } else if (inProfit && tpYolPct >= 75) {
+          tpErisim = 'YAKIN';  // TP'nin %75+ yolu katedilmiş — bırak koşsun
+        }
+        // ZARAR TARAFI: zararda + hızlanan ters hareket + MM karşı = "hızlı gidiyor, küçükken kes" adayı
+        // (mevcut hardLossRoi -%27 tabanından ÇOK erken; gölge olarak Göksel'e haber verir)
+        let zararHiz = 'NORMAL';
+        if (!inProfit && Number(pnlPct||0) <= -4) {
+          const hizliKanit = (mmKarsi ? 1 : 0) + (akisDestekYok ? 1 : 0) + (adverseTick ? 1 : 0);
+          if (hizliKanit >= 2) zararHiz = 'HIZLI';   // 2+ kanıt: dip derinleşiyor, elle kesim düşün
+        }
+        const tpNot = tpErisim === 'ZOR' ? `🔮 TP-ZOR: yolun %${tpYolPct}'i katedildi, momentum/akış sönük — kârı geri verme riski (elle bak)`
+                    : tpErisim === 'ORTA' ? `🔮 TP-ORTA: yol %${tpYolPct}, tek zayıf kanıt — izle`
+                    : tpErisim === 'YAKIN' ? `🔮 TP-YAKIN: yol %${tpYolPct} — bırak koşsun`
+                    : null;
+        const zararNot = zararHiz === 'HIZLI' ? `⚠️ ZARAR-HIZLI: -%${Math.abs(Number(pnlPct)).toFixed(0)} ROI, akış+MM karşı hızlanıyor (elle kesim düşün)` : null;
+        r409Golge = { tpErisim, zararHiz, tpYolPct, not: tpNot || zararNot || null };
+      }
+    } catch(_) { r409Golge = null; }
+
     return {
       active: true, mode, exitScore:+exitScore.toFixed(1), reasons: reasons.slice(0,5),
       pnlPct:+Number(pnlPct||0).toFixed(2), realProfitPct:+Number(realProfitPct||0).toFixed(3),
       peakPnl:+Number(state.peakPnl||0).toFixed(2), peakRealPct:+Number(state.peakRealPct||0).toFixed(3),
       pullbackPct:+pullbackPct.toFixed(3), givebackRoi:+givebackRoi.toFixed(2), givebackReal:+givebackReal.toFixed(3),
-      cvdRatio:Number.isFinite(ratio)?+ratio.toFixed(1):null, cvdMomentum:mom, devamGucu
+      cvdRatio:Number.isFinite(ratio)?+ratio.toFixed(1):null, cvdMomentum:mom, devamGucu,
+      r409Golge  // R409 gölge tanı — KAPATMA YETKİSİ YOK, sadece uyarı
     };
   };
 
@@ -15818,6 +15868,10 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade });
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
+  state.r409Golge = r91Brain.r409Golge || null;  // R409 gölge tanı → panel/log (KAPATMA YETKİSİ YOK)
+  if (r91Brain.r409Golge?.not) {  // gölge uyarı varsa loga da yaz (Göksel elle görsün, sonra kanıt karşılaştırması)
+    try { logAuto(`🔮 ${sym} R409-GÖLGE: ${r91Brain.r409Golge.not} [yetki YOK, sadece uyarı]`); } catch(_){}
+  }
 
   // R283: Kârı erken boğma yok. Normal trader küçük yeşili hemen cebine atmaz;
   // setup çalışıyorsa hedef/FVG/likidite yoluna nefes verir. Sadece fikir bozulursa hasar keser.
