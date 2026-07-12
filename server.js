@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R408_GECE_MUHURU'
+const LAZARUS_BUILD = 'R408_DELTA_ETIKET'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -4008,7 +4008,21 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
       supurmeKalite: { alt: data.altSupurmeKalite ?? null, ust: data.ustSupurmeKalite ?? null, not: 'q>=3 = reclaim/red teyitli' },
       oiDegisim: { '1h': data.oiChange1h, '4h': data.oiChange4h },
       emirDefteriDengesizlik: data.orderBookImbalance,   // + = alıcı baskın, - = satıcı baskın
-      canliDelta: data.cvdDelta,                          // canlı alıcı/satıcı baskısı %
+      // R408 DELTA GEÇERLİLİK ETİKETİ (SYN -6.9$ / T -6.7$ dersi 12.07): çıplak cvdDelta sayısı brief'e
+      // gidiyordu ama GEÇERLİLİK bayrağı gitmiyordu → AI "-12"nin gerçek satış mı yoksa ölü-stream/ısınma
+      // mı olduğunu ayırt edemedi (SYN gerekçesi "delta VERI_YOK nötr" yazıp yine de girdi). Motor bunu
+      // zaten biliyor (r125OrderFlow.liveReady/tickFresh/cvdValid, aiData'da R408 ile taşındı) — sadece
+      // iletilmiyordu. VETO DEĞİL, yalnız etiket: AI ham sayıyı doğru okusun. Anayasa m.7 (eksik telemetri).
+      canliDelta: (() => {
+        // Geçerli tick akışı yoksa (ısınma/ölü stream) sayı GÜVENİLMEZ → null (R376: veri yokluğu satış değildir).
+        if (data.cvdLiveReady === false || (data.cvdTickFresh === false && data.cvdValid === false)) return null;
+        return data.cvdDelta;
+      })(),
+      canliDeltaGecerli: (() => {   // AI bu bayrağı okur: true = gerçek tick akışı → delta karar kanıtı;
+        // false = VERI_YOK/ısınma → deltayı NÖTR say, zayıflık sanma (R376 EVAA +%42 dersi)
+        if (data.cvdLiveReady === false || (data.cvdTickFresh === false && data.cvdValid === false)) return false;
+        return (data.cvdTickFresh === true || data.cvdValid === true);
+      })(),
       buyukTraderLongYuzde: data.topTraderLongPct,
       genelLongYuzde: data.globalLongPct,
       likiditeSeviyeleri: data.liqLevels,                 // üst/alt likidite (TP/SL hedefi için)
@@ -4203,7 +4217,7 @@ NASIL USTA GİBİ DAVRAN:
 - CANLI KORUMA GERÇEĞİ (giriş zamanlamanın matematiği — R382): Binance'e konan geniş SL (%4-8) sadece ANİ ÇÖKÜŞ yedeğidir. Canlı koruma motoru pozisyonu coin hareketi ~-%2'ye ulaştığında keser — GERÇEK nefes alanın -%2'dir. "SL'im geniş, düşerse toparlamasını beklerim" varsayımı GEÇERSİZ; -%2'den derin hiçbir geri çekilmeyi göremeyeceksin. Bunun tek anlamı: girişini -%2'lik doğal çalkantının seni VURMAYACAĞI yerden al — teyitli dip/reclaim/retest SONRASI, yapının hemen üstü, çalkantı dibine %2'den yakın olmayan yer; bacak tepesinden, dikey mumun içinden, teyitsiz ilk dipten DEĞİL. Giriş yerin doğruysa %2 alan yeter; yanlışsa %8 SL bile kurtarmaz (EDGE dersi 09.07: bacak tepesi 0.4966 girişi 97 saniyede -%1.97'de kesildi; plan SL %5.36'daydı, oraya hiç gidilemedi). ATR'si %4+ coinde bu daha da kritiktir: tek nötr mum bile %2 oynatır — o coinlerde SADECE teyit sonrası, yapıya yaslanmış giriş al ya da WAIT de. WAIT'in de maliyeti vardır: sen frekansla yaşayan bir momentum botusun (hedef bant %60-85, işlemsiz gün = ölü gün). WAIT sadece TEPE bölgeleri ve teyitsiz bıçaklar içindir; yapıya yakın + teyitli + yakıtlı fırsatta WAIT demek, kaybın ta kendisidir.
 - SATRANÇ PROTOKOLÜ — RAKİBİN HAMLESİNİ ÖNCE DÜŞÜN (R383): Karşında iki rakip var: likidite avlayan MM ve momentum kovalayan borsa botları. Her karardan önce 4 hamlelik satranç oyna:
   (1) TEZ: hangi setup, giriş nerede, seni ne haklı çıkarır? Setup seçimi TAMAMEN SERBEST — yüzlerce kalıbın hepsi masada; kısıt setupta değil, giriş fiziğindedir.
-  (2) RAKİBİN EN KÂRLI HAMLESİ: bu tabloda MM ne yapar? altLikiditeHavuzlari kalabalık + funding pozitif + retail long-ağır = MM'in yemi AŞAĞI SWEEP'tir → o sweep gelmeden LONG alma; sweep+reclaim SONRASI MM'LE AYNI YÖNE bin (kanıt: sweep sonrası WR%64, sweepsiz %37). Üstte kalın short likiditesi + retail short-ağır + negatif funding = MM'in zorunlu hamlesi YUKARI SQUEEZE → bu senin rüzgârın, momentumla git. salmaRiski alanı bu hamlenin ÖLÇÜLMÜŞ halidir: YÜKSEK ise LONG ancak salma GERÇEKLEŞİP sweep+reclaim teyidi geldikten sonra — MM'in avını yapmasını bekle, av OLMA; tersine avdan SONRA binmek senin en yüksek WR'li girişindir (%64). devamYakiti alanı bunun ayna ikizidir: GÜÇLÜ + yapıya yakın pullback+reclaim = devam işleminde tereddüt etme; ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX dersi), teyit gelmeden binme. R392 DİKEY FAZ İSTİSNASI: dikeyFazDevami alanı DÖRT şartı birden sağlıyorsa (sigPullback<0.30, tutunma>=3/5, güçlü red fitili yok, devamYakiti GÜÇLÜ) parabolik-tepe yasağının TEK istisnası açılır — trend hızlanırken sığ molada devam girişi VER, bekleyip kaçırma (kanıt: 08.07 POWER dikey-faz kazançları). Ama istisna şartsız kullanılamaz; tek şart eksikse yasak aynen geçerli ve SL her durumda son mikro-taban altı, boyut küçük. R394 ÇIKIŞ YAKITI AYRIMI (B dersi: -%16, 87 saniyede, zirve %0): devamYakiti ŞÜPHELİ etiketi taşıyorsa onu LONG gerekçesi yapma — funding pozitif + delta cılız + tepe bölgesi = OI artışı senin çıkış likiditendir; o tabloda tek geçerli giriş, salma GERÇEKLEŞTİKTEN sonraki sweep+reclaim teyididir. R408 DELTA MÜHRÜ (XPL -5.2$ delta -80 · ZEC -5.0$ delta -63, 12.07 gecesi — ikisinde zirve %0/dip -%8): canliDelta ≤ -15 iken (taker SATIYOR) kırılım/pullback LONG'unu 'emir defteri alıcı' gerekçesiyle AÇAMAZSIN — defter+delta çelişkisi gece ince defterde spoof/dağıtım imzasıdır ve delta defterden DAHA dürüsttür. Bu tabloda giriş ancak deltanın pozitife dönmesi + 1m sweep-reclaim teyidiyle. R408 R/R MÜHRÜ: kendi hesapladığın R/R AI_BRAIN_MIN_RR'ın (varsayılan 1.3) altındaysa 'kabul/ayarla' KELİMESİNİ YAZAMAZSIN — doğru fiil WAIT'tir (iki isimli ders: XPL 'R/R 1.1 kabul' -5.2$, T 'R/R 0.89 LONG'; kural pazarlık edilemez, sayı seni bağlar). AYRICA GİRİŞ SAPMASI: planında 'X fiyatına geri çekilmede gir' diyorsan ve şu anki fiyat X'in %0.8 üstündeyse, bu artık senin planın DEĞİL — market seviyeyi geçmiş, R/R'ın bozulmuştur; WAIT de, kovalama (T dersi: plan 0.004723 bekle idi, market 0.0048'e bindi, R/R 0.89→0.52).
+  (2) RAKİBİN EN KÂRLI HAMLESİ: bu tabloda MM ne yapar? altLikiditeHavuzlari kalabalık + funding pozitif + retail long-ağır = MM'in yemi AŞAĞI SWEEP'tir → o sweep gelmeden LONG alma; sweep+reclaim SONRASI MM'LE AYNI YÖNE bin (kanıt: sweep sonrası WR%64, sweepsiz %37). Üstte kalın short likiditesi + retail short-ağır + negatif funding = MM'in zorunlu hamlesi YUKARI SQUEEZE → bu senin rüzgârın, momentumla git. salmaRiski alanı bu hamlenin ÖLÇÜLMÜŞ halidir: YÜKSEK ise LONG ancak salma GERÇEKLEŞİP sweep+reclaim teyidi geldikten sonra — MM'in avını yapmasını bekle, av OLMA; tersine avdan SONRA binmek senin en yüksek WR'li girişindir (%64). devamYakiti alanı bunun ayna ikizidir: GÜÇLÜ + yapıya yakın pullback+reclaim = devam işleminde tereddüt etme; ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX dersi), teyit gelmeden binme. R392 DİKEY FAZ İSTİSNASI: dikeyFazDevami alanı DÖRT şartı birden sağlıyorsa (sigPullback<0.30, tutunma>=3/5, güçlü red fitili yok, devamYakiti GÜÇLÜ) parabolik-tepe yasağının TEK istisnası açılır — trend hızlanırken sığ molada devam girişi VER, bekleyip kaçırma (kanıt: 08.07 POWER dikey-faz kazançları). Ama istisna şartsız kullanılamaz; tek şart eksikse yasak aynen geçerli ve SL her durumda son mikro-taban altı, boyut küçük. R394 ÇIKIŞ YAKITI AYRIMI (B dersi: -%16, 87 saniyede, zirve %0): devamYakiti ŞÜPHELİ etiketi taşıyorsa onu LONG gerekçesi yapma — funding pozitif + delta cılız + tepe bölgesi = OI artışı senin çıkış likiditendir; o tabloda tek geçerli giriş, salma GERÇEKLEŞTİKTEN sonraki sweep+reclaim teyididir.
   (3) SEN DE HARİTADASIN: senin SL'in de birinin defterinde duran avdır. SL'i bariz havuzun İÇİNE koyma — havuzun/yapının ÖTESİNE koy. Girişin bariz bir stop kümesine %2'den yakınsa av listesindesin demektir; giriş yerini kaydır ya da WAIT.
   (4) ÖLDÜRÜCÜ KANIT: tezini ne ÖLDÜRÜR, önceden adını koy (örn: reclaim altına 5m kapanış, delta'nın negatife dönmesi, süpürmeSürüyor=true, defter spoof imzası). O kanıt ŞU AN masadaysa girme — WAIT. Sonradan gelirse planlı çıkışındır.
   Şah-mat hedefleme: MM'i yenemezsin ama masasına oturabilirsin — onun ZORUNLU hamlelerini bekleyip aynı yöne binmek, senin tek sürdürülebilir üstünlüğündür.
@@ -19172,6 +19186,12 @@ async function runAutoScan(prioritySymbol=null) {
               oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
               orderBookImbalance: analysis?.orderBook?.imbalance,
               cvdDelta: analysis?.r125OrderFlow?.deltaPct ?? null,
+              // R408 DELTA GEÇERLİLİK BAYRAKLARI (SYN -6.9$/T -6.7$ dersi 12.07): ham deltaPct sayısı brief'e
+              // gidiyordu ama geçerlilik bilgisi GİTMİYORDU → AI "-12"nin gerçek satış mı ölü-stream mi
+              // olduğunu ayırt edemedi. Motor bunu zaten biliyor; taşınmıyordu (R397 kablo sözleşmesi dersi).
+              cvdLiveReady: analysis?.r125OrderFlow?.liveReady ?? null,
+              cvdTickFresh: analysis?.r125OrderFlow?.tickFresh ?? null,
+              cvdValid: analysis?.r125OrderFlow?.cvdValid ?? null,
               topTraderLongPct: analysis?.smartMoney?.topLongPct,
               globalLongPct: analysis?.smartMoney?.globalLongPct,
               // HAM LİKİDİTE SEVİYELERİ (mumda yok, AI hedef/stop için kullanır)
