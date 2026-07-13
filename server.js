@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R415_KONUM_KALIBRE_73'
+const LAZARUS_BUILD = 'R421_GIRIS_8COIN'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -3456,6 +3456,34 @@ function r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice) {
   if (bullishFVG) dashParts.push(`FVG_bull:${bullishFVG.low}-${bullishFVG.high}`);
   if (bearishFVG) dashParts.push(`FVG_bear:${bearishFVG.low}-${bearishFVG.high}`);
 
+  // ═══ R418 ÇOK-ZAMAN-DİLİMLİ SEVİYELER (kullanıcı isteği 13.07: 15m işlem alıyoruz, HTF seviyeleri de gör) ═══
+  // FVG/OTE yukarıda SADECE 5m'den (r5) hesaplanıyordu — 15m/1h/4h önemli seviyeleri AI göremiyordu.
+  // Bu helper aynı FVG/OTE mantığını 15m/1h/4h mumlarına (zaten normalize: r15/r1h/r4h) uygular.
+  function tfFvgOte(rows, tfAd) {
+    if (!Array.isArray(rows) || rows.length < 12) return null;
+    let bFVG = null;
+    for (let i = 1; i < Math.min(7, rows.length - 1); i++) {
+      const a = rows.at(-(i+2)), b = rows.at(-i);
+      if (!a || !b) continue;
+      if (a.h < b.l && !bFVG) bFVG = { alt: R(a.h), ust: R(b.l), orta: R((a.h+b.l)/2) };
+    }
+    // OTE: son 24 mumluk bacağın 0.62-0.79 geri çekilmesi
+    const seg = rows.slice(-24);
+    let hi=-Infinity, lo=Infinity, hiIdx=-1, loIdx=-1;
+    for (let i=0;i<seg.length;i++){ if(seg[i].h>hi){hi=seg[i].h;hiIdx=i;} if(seg[i].l<lo){lo=seg[i].l;loIdx=i;} }
+    const range = hi-lo; let ote=null;
+    if (range>0 && loIdx<hiIdx) {  // yukarı bacak → LONG OTE
+      const oteUst=hi-range*0.62, oteAlt=hi-range*0.79;
+      ote = { alt:R(oteAlt), ust:R(oteUst), icinde: lp<=oteUst && lp>=oteAlt };
+    }
+    return (bFVG || ote) ? { tf:tfAd, bullFVG:bFVG, oteZonu:ote } : null;
+  }
+  const htfSeviyeler = {
+    '15m': tfFvgOte(r15, '15m'),
+    '1h':  tfFvgOte(r1h, '1h'),
+    '4h':  tfFvgOte(r4h, '4h')
+  };
+
   return {
     ok: true,
     phase,
@@ -3470,6 +3498,7 @@ function r110AnalyzeICT(k5m, k15m, k1h, k4h, lastPrice) {
     bullishChoCH, bearishChoCH,
     bullishFVG, bearishFVG,
     inBullishFVG, inBearishFVG,
+    htfSeviyeler,   // R418: 15m/1h/4h FVG+OTE ham seviyeler (5m'e ek — çok-zaman-dilimli)
     approachingSSL, approachingBSL,
     // R279: HTF direnç/destek REDDİ — fitil atılıp kırılamama (MM güç toplama sinyali).
     // BSL reddi: fiyat üst likiditeye fitil attı ama kapanış altında kaldı → yukarı kırılamadı,
@@ -4109,7 +4138,7 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
         if (Number.isFinite(k4))  parts.push(`4h:%${Math.round(k4)}`);
         if (Number.isFinite(k1))  parts.push(`1h:%${Math.round(k1)}`);
         let uyari = '';
-        if (Number.isFinite(k24) && k24 >= 73) uyari = ' ⚠️GÜNLÜK-TAVAN: teyitsiz LONG alma, pullback+reclaim bekle';
+        if (Number.isFinite(k24) && k24 >= 80) uyari = ' ⚠️GÜNLÜK-TAVAN: teyitsiz LONG alma, pullback+reclaim bekle';
         else if (Number.isFinite(k4) && k4 >= 85) uyari = ' ⚠️4H-TAVAN: dikkat, sığ pullback+teyit şart';
         else if (Number.isFinite(k24) && k24 <= 25) uyari = ' ✓dip bölgesi: dönüş teyidiyle iyi giriş';
         return parts.length ? (parts.join(' · ') + uyari) : null;
@@ -4224,7 +4253,9 @@ NASIL USTA GİBİ DAVRAN:
 - Trendi oku: Bu coin nerede — impulsun başında mı (gir), ortasında pullback mı (dip topla), yoksa parabolik tükeniş mi (bekle/dikkat)? Trendin evresini bil.
 - Konfluans: Tek sebep kumar, birkaç sebep birleşince trade. Ama mekanik sayma — usta gibi "bu tablo oturuyor mu" hisset.
 - Giriş zamanı — DENGE (kritik nüans): İki tuzak var, ikisinden de kaçın. (a) Düşen bıçağı yakalama / parabolik tükenişin tepesinden girme (reclaim yoksa bekle). (b) AMA güçlü momentum treni kalkmışken "pullback bekleyeyim" deyip SONSUZA KADAR BEKLEME — bu gainer coinler çoğu zaman geri çekilmeden düz yukarı gider (NFP %250→%450 gibi), pullback beklersen tüm hareketi kaçırırsın. KURAL: HTF yukarı + momentum güçlü + coin aktif yükseliyorsa, PULLBACK GELMESE BİLE trend yönünde LONG gir (breakout, güçlü yeşil mum, ardışık yeşil, devam formasyonu = geçerli giriş). Pullback/OTE bir bonus, ŞART değil. Tek gerçek "bekle" sebebi: parabolik tükeniş + reclaim yok (düşen bıçak) ya da HTF aşağı. Aksi halde momentumla git — treni kaçırma.
-- MAKRO KONUM ÖNCE (R412 — DODOX -12.6/FHE -6.7/KORU -4.9 dersi 13.07): Her karardan ÖNCE "makroKonum" alanını oku (fiyatın 24h/4h/1h aralığında gerçek yeri, 0=dip 100=tavan). parabolik1m SADECE son 1 saatlik dar penceredir, makro tavanı GÖSTERMEZ. Kritik tuzak: coin son 1 saatte biraz düşünce parabolik1m "%26 geri çekilme elverişli" der AMA konum24h %85+ ise coin GÜNLÜK TAVANDADIR — bu geri çekilme değil dağıtımdır. "ucuz/taze impuls" sanıp LONG alma (acemi-trader hatası: dar pencerede düşüşü ucuzluk sanmak). Kural: konum24h ≥ 73 VEYA konum4h ≥ 78 ise yeni LONG için sığ pullback + 15m reclaim TEYİDİ ŞART, teyit yoksa WAIT; konum24h ≤ 25 (dip) + dönüş teyidi = en iyi giriş. R415 KALİBRASYON (kanıt 13.07: EPIC girdi konum4h%73→-5.7%, 1000XEC konum%74→-10.4% — ikisi de eski %80 eşiğinin ALTINDAN sızdı; kazananlar SENT%22/PAXG%35/AVAX%55/NEAR%68 hepsi %73 altı. Eşik %80→%73: iki büyük kaybı yakalar, SIFIR kazanç keser, net +16.1%). Tepe %73'ten başlar, eski %80 eşiği kör noktaydı. 15m'de işlem alırken bile makro konumu gör: 15m fırsatı makro tavanla çelişiyorsa teyit bekle.
+- MAKRO KONUM ÖNCE (R412 — DODOX -12.6/FHE -6.7/KORU -4.9 dersi 13.07): Her karardan ÖNCE "makroKonum" alanını oku (fiyatın 24h/4h/1h aralığında gerçek yeri, 0=dip 100=tavan). parabolik1m SADECE son 1 saatlik dar penceredir, makro tavanı GÖSTERMEZ. Kritik tuzak: coin son 1 saatte biraz düşünce parabolik1m "%26 geri çekilme elverişli" der AMA konum24h %85+ ise coin GÜNLÜK TAVANDADIR — bu geri çekilme değil dağıtımdır. "ucuz/taze impuls" sanıp LONG alma (acemi-trader hatası: dar pencerede düşüşü ucuzluk sanmak). Kural: konum24h ≥ 80 VEYA konum4h ≥ 85 ise yeni LONG için sığ pullback + 15m reclaim TEYİDİ ŞART, teyit yoksa WAIT; konum24h ≤ 25 (dip) + dönüş teyidi = en iyi giriş. 15m'de işlem alırken bile makro konumu gör: 15m fırsatı makro tavanla çelişiyorsa teyit bekle.
+- SEVİYE HARİTASI (R417 — kullanıcı isteği 13.07: FVG/OTE/yapı/likidite ham seviyeler artık önünde): "seviyeHaritasi" alanını oku. Bu, bot'un HESAPLADIĞI ham price-action seviyeleridir — artık kaba "pullback %23" demek yerine SAYIYLA giriş yeri belirle. Kullanımı: (a) bullFVG (doldurulacak boşluk) = fiyat bu bölgeye geri çekilirse GİRİŞ FIRSATI; fiyat FVG üstünde uzaktaysa kovalama, FVG'ye pullback bekle. (b) oteZonu (0.62-0.79 fib geri çekilme) = ideal LONG bölgesi; fiyat oteZonu içindeyse giriş kalitesi yüksek. (c) sslAlindi=true (alt likidite süpürüldü) + reclaim + yapiChoCH=true = bu botun EN YÜKSEK WR'li girişidir (dip stop-avı sonrası dönüş — EPIC dersi: asıl giriş yeri süpürme sonrası taban reclaim'iydi, tepe kovalama değil). (d) bslAlindi=true (üst likidite süpürüldü) = tepe sinyali, DİKKAT. (e) yakinSSL = yakın alt havuz ham fiyatı, SL yerleşimi için. KRİTİK: bu seviyeler kararını DESTEKLER, körlemesine dayatma değildir (madde 5: sen tek beyinsin) — ham mum okumanla ÇELİŞİYORSA mumları esas al ama çelişkiyi gerekçende belirt. Seviye haritası null ise (hesaplanamadı) ham mum + likidite ile devam et, bu eksiklik WAIT sebebi değildir.
+- YAPI + DOĞRU-BACAK FİB + IMBALANCE (R419 — kullanıcı isteği 13.07): "yapiVeFib" alanı her zaman diliminde (15m/1h/4h) şunları verir: (a) yapi = HH/HL (yükseliş yapısı, LONG lehine) ya da LH/LL (düşüş yapısı, LONG için tehlike) — 15m girişte 1h/4h yapı YÜKSELİŞ ise devam olasılığı yüksek, DÜŞÜŞ ise karşı-trend riski. (b) fib = bot'un DOĞRU BACAKtan (fraktal impuls bacağı, rastgele swing değil) çektiği fib seviyeleri; 0.618/0.786 geri çekilme = alım bölgesi, 1.272/1.618 uzantı = TP hedefi. Fib seviyelerini TP/SL için GERÇEK yapısal hedef olarak kullan (uydurma değil). (c) fvg = o TF'teki boşluk. (d) altFitil/ustFitil = yakın fitil reddi (altFitil=alım/imbalance bölgesi, ustFitil=satış bölgesi). "imbalance" alanı = footprint agresif alım/satım dengesizliği (pozitifse alıcı agresif). KRİTİK KULLANIM: 15m'de işlem alırken 1h+4h yapiVeFib.yapi'yı ÖNCE oku — HTF yapı yükseliş + fiyat 15m/1h fib 0.618-0.786 bölgesinde + FVG desteği = YÜKSEK KALİTE giriş (senin "asıl giriş yeri" dediğin). HTF yapı düşüş + fiyat fib üst bölgede = tepe kovalama, WAIT. Bu seviyeler kararını DESTEKLER; ham mumla çelişirse mumu esas al, çelişkiyi belirt.
 - GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL.Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve son mumlar dikey + fiyat bacağın tepesindeyse (parabolik1dk fiyatKonumu %85+), yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, sık sık kısa vadede geri çekilir. 
 - REJİM ANAYASASI (R401 — HER kararın SIFIRINCI adımı): Sinyal üretmeden ÖNCE grafiği üç rejimden birine koy ve gerekçenin İLK kelimeleri bunu söylesin: "REJİM:NORMAL·" / "REJİM:DEVAM·" / "REJİM:TÜKENİŞ·".
   · NORMAL = sağlıklı HH/HL, dengeli momentum, temiz fitiller → standart kurallar geçerli.
@@ -16566,7 +16597,7 @@ async function r370ErkenYukselisWorker() {
       try {
         const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=20`);
         if (!Array.isArray(kl) || kl.length < 12) continue;
-        const b = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5]}));
+        const b = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]}));
         const n = b.length;
         // ATR
         let atr=0,cnt=0; for(let i=n-10;i<n;i++){if(i<1)continue; atr+=Math.max(b[i].h-b[i].l,Math.abs(b[i].h-b[i-1].c),Math.abs(b[i].l-b[i-1].c));cnt++;} atr=cnt?atr/cnt:0;
@@ -16592,6 +16623,22 @@ async function r370ErkenYukselisWorker() {
         const pos = (hi-lo)>0 ? (b[n-1].c-lo)/(hi-lo)*100 : 50;
         const tepedeDegil = pos < 92; // %92+ = parabolik tepe, geç
         if (!tepedeDegil) continue;
+        // ═══ R421: 8 COİN-GÜN DOĞRULANMIŞ GİRİŞ FİLTRESİ (ALLO/ESPORTS/POWER/BLUAI + HMSTR/H/M/OPG) ═══
+        // R420 (pos<70) çok katıydı: kazanan günleri kaçırdı (HMSTR +96%→0). 8-coin doğrulama:
+        // pos24<80 VE delta>=0.52 = net +238%, PF 3.80, 32 işlem, WR %68 — EN İYİ DENGE.
+        // Kıyas: mevcut(pos<92) net+193/PF1.25/180iş · R420(pos<70) net+188/PF8.37/17iş(az) · pos<80 net+238/PF3.80/32iş.
+        // pos24<80 = tepe felaketini önler (ESPORTS -129→+1, POWER -65→+20) AMA kazananı yakalar (HMSTR/M/OPG).
+        // delta>=0.52 = taker alıcı baskın (sahte spike keser). bt: r420_validate.py 8 coin-gün.
+        const pos24 = (() => {
+          const seg = b.slice(-24); if (!seg.length) return 50;
+          let h2=-1e18,l2=1e18; for(const x of seg){h2=Math.max(h2,x.h);l2=Math.min(l2,x.l);}
+          return (h2-l2)>0 ? (b[n-1].c-l2)/(h2-l2)*100 : 50;
+        })();
+        const sonMumDelta = (() => {
+          const lm = b[n-1]; return (lm && lm.v>0 && Number.isFinite(lm.tbv)) ? lm.tbv/lm.v : 0.5;
+        })();
+        if (pos24 >= 80) continue;         // R421: tepede girme (8-coin: pos24<80 optimal denge)
+        if (sonMumDelta < 0.52) continue;  // R421: taker alıcı baskın olmalı (spike-tuzağı önle)
         // ERKEN YÜKSELİŞ SKORU
         const skor = Math.round(son6Net*4 + hacimArtis*15 + yesilSay*5 + (100-pos)*0.3);
         bulunan.push({
@@ -19221,6 +19268,50 @@ async function runAutoScan(prioritySymbol=null) {
               oiChange1h: analysis?.openInterest?.change1h, oiChange4h: analysis?.openInterest?.change4h,
               orderBookImbalance: analysis?.orderBook?.imbalance,
               cvdDelta: analysis?.r125OrderFlow?.deltaPct ?? null,
+              // ═══ R417 SEVİYE HARİTASI — FVG/OTE/YAPI/LİKİDİTE ham seviyeler AI'a (kullanıcı isteği 13.07) ═══
+              // KÖK SORUN: r110ICT bu seviyeleri HESAPLIYOR (bullishFVG low/high/mid, oteZone oteLow/oteHigh/depth,
+              // ChoCH, sslSwept/bslSwept) ama AI'a sadece SKOR özeti gidiyordu — ham seviye değil. AI "asıl giriş
+              // yerini" (EPIC mor kutu = demand OB/FVG) SAYI olarak göremiyordu, kaba "pullback %23" okumasına düşüyordu.
+              // Fable R381 dersi (R309F hesaplanıyordu iletilmiyordu) ile aynı sınıf — kablo bağlandı, hesap değişmedi.
+              seviyeHaritasi: (() => {
+                const ict = decisionChain?._r278ICT || decisionChain?.r278ICT || null;
+                if (!ict) return null;
+                const fvg = ict.bullishFVG || null;
+                const ote = ict.oteZone || null;
+                return {
+                  bullFVG: fvg ? { alt: fvg.low ?? fvg.alt ?? null, ust: fvg.high ?? fvg.ust ?? null, orta: fvg.midpoint ?? fvg.mid ?? null } : null,
+                  oteZonu: (ote && ote.inOte && ote.side === 'LONG') ? { alt: ote.oteLow ?? null, ust: ote.oteHigh ?? null, derinlik: ote.depth ?? null } : null,
+                  yapiChoCH: !!ict.bullishChoCH,        // yükseliş yapı kırılımı (HH/HL onayı)
+                  sslAlindi: !!ict.sslSwept,            // alt likidite süpürüldü (dip stop avı → reclaim gir)
+                  bslAlindi: !!ict.bslSwept,            // üst likidite süpürüldü (tepe → dikkat)
+                  yakinSSL: ict.nearSSL ?? null,        // yakın alt likidite havuzu (ham fiyat)
+                  faz: ict.phase || null,               // ICT faz (accumulation/distribution/manipulation)
+                  htfSeviyeler: ict.htfSeviyeler || null,  // R418: 15m/1h/4h FVG+OTE (5m dar, HTF önemli seviyeler)
+                  // ═══ R419: r281ProMap.detail — DOĞRU BACAK fib + HH/LL yapı + FVG, HER zaman diliminde ═══
+                  // Kullanıcı isteği 13.07: "fibolar doğru bacak seçimi, zaman dilimlerinde OB, imbalance, HH/LL".
+                  // r281 fraktal-tabanlı DOĞRU BACAK seçer (satır 3820: macroRange %30 fraktal) sonra fib çeker —
+                  // rastgele swing değil, gerçek impuls bacağı. detail[tf] her TF için structure+fib+fvg taşır.
+                  yapiVeFib: (() => {
+                    const pm = decisionChain?.r281ProMap || null;
+                    if (!pm || !pm.detail) return null;
+                    const out = {};
+                    for (const tf of ['15m','1h','4h']) {
+                      const d = pm.detail[tf];
+                      if (!d) continue;
+                      out[tf] = {
+                        yapi: d.structure || null,           // HH/HL (yükseliş) / LH/LL (düşüş) trend yapısı
+                        fib: d.fib || null,                  // DOĞRU BACAKTAN çekilmiş fib seviyeleri (0.382/0.5/0.618/0.786 + uzantı)
+                        fvg: d.fvg || null,                  // bu TF'te bull/bear FVG
+                        ustFitil: d.wick?.upperNear || null, // yakın üst fitil reddi (satış bölgesi)
+                        altFitil: d.wick?.lowerNear || null  // yakın alt fitil reddi (alım bölgesi / imbalance)
+                      };
+                    }
+                    return Object.keys(out).length ? out : null;
+                  })(),
+                  imbalance: (analysis?.orderBook?.imbalance ?? null),  // R419: order book imbalance (alıcı/satıcı agresif dengesizliği — footprint stacked bu scope'ta yok, R397: erişilebilir olanı bağla)
+                  not: 'Ham price-action seviyeleri. bullFVG(5m)=yakın boşluk; htfSeviyeler=15m/1h/4h FVG+OTE (ASIL önemli seviyeler — 15m işlem alıyoruz, HTF seviye giriş yerini belirler). oteZonu=0.62-0.79 fib geri çekilme (ideal LONG), sslAlindi+reclaim=dip süpürme sonrası en yüksek WR girişi. Bu seviyeleri kendi grafik okumanla BİRLEŞTİR; körlemesine uyma.'
+                };
+              })(),
               // R411 KABLO ONARIMI (BEAT -%10.6/OGN -%20.7 dersi): Fable'ın R408 DELTA MÜHRÜ (canliDelta≤-15
               // → LONG açma) güçlü AMA delta VERI_YOK olunca AI, VERI_YOK istisnasıyla mührü ATLIYORDU.
               // Oysa canlı tick ısınırken bile aggTrade momentum + mum-delta GERÇEK satış gösterebilir.
@@ -19458,6 +19549,18 @@ async function runAutoScan(prioritySymbol=null) {
                 // R324C: GİR kararında streak sıfırla
                 global.__aiWaitStreak = 0;
                 global.__aiTotalDecisions = (global.__aiTotalDecisions || 0) + 1;
+                // ═══ R416: R411 KOD MÜHRÜ — yedekSatisKaniti SATIŞ iken LONG REDDİ ═══
+                // Kanıt (3 isimli, Fable m.3 dolu): NEAR -10.1%, BEAT -10.6%, OGN -20.7%.
+                // Üçünde de canliDelta VERI_YOK + yedekSatisKaniti:SATIS iken AI VERI_YOK
+                // istisnasıyla R411 mührünü ATLADI ve LONG açtı. Prompt kuralı (satır 4272) VAR
+                // ama AI ihlal etti → değişmez kural KOD katmanına iner (Fable katman disiplini).
+                // Bu YÖN vetosu DEĞİL, veri-geçerliliği kapısı: gerçek satış momentumu varken
+                // (aggTrade + mum-delta) LONG açılmaz; delta ALIŞ/NÖTR'e dönünce serbest.
+                if (ai.side === 'LONG' && String(aiData?.yedekSatisKaniti || 'NOTR') === 'SATIS') {
+                  logAuto(`⛔ ${coin.symbol} R416 MÜHÜR: yedekSatisKaniti=SATIS iken LONG REDDİ (NEAR/BEAT/OGN dersi) — momentum+mum-delta gerçek satış, VERI_YOK istisnası geçersiz. AI güven ${ai.confidence}% olsa da AÇILMADI.`);
+                  markAutoSkip(coin.symbol, `R416: yedekSatisKaniti SATIS — delta-satış anında LONG bloke`, {rec:ai.side, score, aiBrain:ai});
+                  continue;
+                }
                 if (ai.side !== 'LONG' && ai.side !== 'SHORT') {
                   logAuto(`⛔ ${coin.symbol} AI geçersiz yön (${ai.side}) — emir AÇILMADI`);
                   markAutoSkip(coin.symbol, `AI geçersiz yön: ${ai.side}`, {rec:ai.side, score, aiBrain:ai});
