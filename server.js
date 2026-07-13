@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R412_MAKRO_KONUM'
+const LAZARUS_BUILD = 'R413_HACIM_SKOR'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -9734,13 +9734,22 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
         const mevcutSemboller = new Set(out.map(c => String(c.symbol||c.fullSymbol||'').replace('USDT','')));
         for (const ea of erken.slice(0, 2)) { // en güçlü 2 erken aday
           if (mevcutSemboller.has(ea.symbol)) continue; // zaten listedeyse atla
-          // R375 HACİM TABANI (canlı ders 07.07 gecesi: hacim 0.7-1.0x cılız sinyaller (BTW/USELESS/MON) slot
-          // kaptı, MON -3$; 3.4x AGLD kazandı; 108x USTC dışarıda kaldı. Backtest tezindeki hacim onayı ≥1.3x
-          // ile aynı ilke). VETO değil: coin AI'a normal yoldan yine gidebilir, sadece kıt taze-aday slotu alamaz.
+          // R375 HACİM TABANI (canlı ders 07.07: hacim 0.7-1.0x cılız sinyaller MON -3$ slot kaptı).
+          // R413 DÜZELTME (EDGE kanıtı 13.07: skor 86 taze impuls, anlık hacim 0.4x ölçülüp elendi, SONRA ~%5 pump'ladı
+          // = kaçırılan altın damar). Kök sebep: worker hacimArtis'i vSon3/vOnce3 (SADECE 6 mumluk dar pencere) —
+          // güçlü coinde bir sakin 3 mum oranı düşürüp eliyordu. Çözüm (Göksel önerisi): tek anlık hacim TEK BAŞINA
+          // veto olamaz; skor zaten çok-faktörlü (hacim×15 + yeşil mum + net hareket + konum). skor GÜÇLÜYSE (patlama
+          // teyidi kuvvetli) anlık hacim düşük olsa bile geç — çifte cezalandırma değil. MON koruması sürer: düşük
+          // skor + düşük hacim = hâlâ elenir (gerçek cılız). Sadece güçlü-skor + anlık-düşük-hacim kurtulur.
           const r387Hacim = Number(ea.hacimArtis ?? (String(ea.sebep||'').match(/hacim\s+([\d.]+)x/)?.[1]) ?? 0);
-          if (r387Hacim < 1.3) {
-            r374Olay('TOP2_RED_HACIM', String(ea.symbol), `hacim ${Number.isFinite(r387Hacim)&&r387Hacim>0 ? r387Hacim : 'ALAN-EKSİK(bug)'}x < 1.3x — cılız sinyal, slot verilmedi`);
+          const r413Skor = Number(ea.skor ?? 0);
+          const r413GucluPatlama = r413Skor >= 75;  // skor 75+ = çok-faktörlü güçlü patlama teyidi (EDGE 86, BILL 92 tipi)
+          if (r387Hacim < 1.3 && !r413GucluPatlama) {  // anlık hacim düşük VE skor da zayıfsa → gerçek cılız, ele (MON dersi)
+            r374Olay('TOP2_RED_HACIM', String(ea.symbol), `hacim ${Number.isFinite(r387Hacim)&&r387Hacim>0 ? r387Hacim : 'ALAN-EKSİK(bug)'}x < 1.3x + skor ${r413Skor}<75 — cılız sinyal, slot verilmedi`);
             continue;
+          }
+          if (r387Hacim < 1.3 && r413GucluPatlama) {  // güçlü skor kurtardı — R413 kaçırılan-fırsat düzeltmesi
+            r374Olay('TOP2_HACIM_SKOR_KURTARDI', String(ea.symbol), `anlık hacim ${r387Hacim}x<1.3 AMA skor ${r413Skor}≥75 güçlü patlama — R413 slot verildi (EDGE dersi)`);
           }
           // ticker'dan coin objesi oluştur
           try {
