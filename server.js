@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R411_GECE_KABLO'
+const LAZARUS_BUILD = 'R412_MAKRO_KONUM'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -4097,6 +4097,23 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
         return { skor: s, seviye, nedenler: n,
           not: 'GÜÇLÜ + yapıya yakın pullback/reclaim = en yüksek beklentili DEVAM girişin; "çok koştu" tek başına red gerekçesi DEĞİLDİR (yapıya uzaklık + parabolik tepe kuralları geçerli kalır). ZAYIF + koşmuş fiyat = sürdürülemez impuls (TSLA/SLX). ŞÜPHELİ = yakıt etiketini LONG gerekçesi YAPMA; ancak salma/sweep GERÇEKLEŞİP reclaim teyidi gelirse gir. Bu skor emir değildir; hikâyenin yakıt göstergesidir.' };
       } catch(_) { return null; } })(),
+      // ═══ R412 MAKRO KONUM ÖZETİ (AI her kararda ÖNCE buna bakar) ═══
+      // Fiyatın TÜM zaman dilimlerinde gerçek konumu (0=dip, 100=tavan). parabolik1m dar penceredir (son 1 saat);
+      // bu alan makro resmi verir. DODOX/FHE/KORU dersi: 1 saatte düşünce "ucuz" sanma — 24h/4h tavandaysa
+      // bu geri çekilme DEĞİL, dağıtımdır. Giriş kuralı: 15m fırsatını al AMA konum24h/konum4h ≥ 80 ise
+      // (günlük/4h tavan) yeni LONG için sığ pullback + reclaim TEYİDİ şart; teyitsiz tepe girişi = kayıp.
+      makroKonum: (() => {
+        const k24 = data.konum24h, k4 = data.konum4h, k1 = data.konum1h;
+        const parts = [];
+        if (Number.isFinite(k24)) parts.push(`24h:%${Math.round(k24)}`);
+        if (Number.isFinite(k4))  parts.push(`4h:%${Math.round(k4)}`);
+        if (Number.isFinite(k1))  parts.push(`1h:%${Math.round(k1)}`);
+        let uyari = '';
+        if (Number.isFinite(k24) && k24 >= 80) uyari = ' ⚠️GÜNLÜK-TAVAN: teyitsiz LONG alma, pullback+reclaim bekle';
+        else if (Number.isFinite(k4) && k4 >= 85) uyari = ' ⚠️4H-TAVAN: dikkat, sığ pullback+teyit şart';
+        else if (Number.isFinite(k24) && k24 <= 25) uyari = ' ✓dip bölgesi: dönüş teyidiyle iyi giriş';
+        return parts.length ? (parts.join(' · ') + uyari) : null;
+      })(),
       // R388 SALMA RADARI: MM'in "aşağı salıp avlama" ZEMİNİNİ ölçer (tekil hamle öngörülemez, zemin ölçülür).
       // TAG 10.07 -18.3$ imzasından doğdu: fiyat koşarken OI düşüyordu (dağıtım), giriş yapıdan %5.8 uzaktı,
       // alt havuz doluydu. Bileşenler zaten payload'daki sinyaller — tek skora damıtıldı. VETO DEĞİL, karar AI'ın.
@@ -4207,7 +4224,8 @@ NASIL USTA GİBİ DAVRAN:
 - Trendi oku: Bu coin nerede — impulsun başında mı (gir), ortasında pullback mı (dip topla), yoksa parabolik tükeniş mi (bekle/dikkat)? Trendin evresini bil.
 - Konfluans: Tek sebep kumar, birkaç sebep birleşince trade. Ama mekanik sayma — usta gibi "bu tablo oturuyor mu" hisset.
 - Giriş zamanı — DENGE (kritik nüans): İki tuzak var, ikisinden de kaçın. (a) Düşen bıçağı yakalama / parabolik tükenişin tepesinden girme (reclaim yoksa bekle). (b) AMA güçlü momentum treni kalkmışken "pullback bekleyeyim" deyip SONSUZA KADAR BEKLEME — bu gainer coinler çoğu zaman geri çekilmeden düz yukarı gider (NFP %250→%450 gibi), pullback beklersen tüm hareketi kaçırırsın. KURAL: HTF yukarı + momentum güçlü + coin aktif yükseliyorsa, PULLBACK GELMESE BİLE trend yönünde LONG gir (breakout, güçlü yeşil mum, ardışık yeşil, devam formasyonu = geçerli giriş). Pullback/OTE bir bonus, ŞART değil. Tek gerçek "bekle" sebebi: parabolik tükeniş + reclaim yok (düşen bıçak) ya da HTF aşağı. Aksi halde momentumla git — treni kaçırma.
-- GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL. Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve son mumlar dikey + fiyat bacağın tepesindeyse (parabolik1dk fiyatKonumu %85+), yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, sık sık kısa vadede geri çekilir. 
+- MAKRO KONUM ÖNCE (R412 — DODOX -12.6/FHE -6.7/KORU -4.9 dersi 13.07): Her karardan ÖNCE "makroKonum" alanını oku (fiyatın 24h/4h/1h aralığında gerçek yeri, 0=dip 100=tavan). parabolik1m SADECE son 1 saatlik dar penceredir, makro tavanı GÖSTERMEZ. Kritik tuzak: coin son 1 saatte biraz düşünce parabolik1m "%26 geri çekilme elverişli" der AMA konum24h %85+ ise coin GÜNLÜK TAVANDADIR — bu geri çekilme değil dağıtımdır. "ucuz/taze impuls" sanıp LONG alma (acemi-trader hatası: dar pencerede düşüşü ucuzluk sanmak). Kural: konum24h ≥ 80 VEYA konum4h ≥ 85 ise yeni LONG için sığ pullback + 15m reclaim TEYİDİ ŞART, teyit yoksa WAIT; konum24h ≤ 25 (dip) + dönüş teyidi = en iyi giriş. 15m'de işlem alırken bile makro konumu gör: 15m fırsatı makro tavanla çelişiyorsa teyit bekle.
+- GİRİŞ YERİ — RANGE vs İMPULS (kritik ayrım): Momentum-giriş kuralı İMPULS evresi içindir, range için DEĞİL.Son 10-15 adet 15m mum YATAY BANTTAYSA (tepeler ~aynı seviyede kapaklanıyor, dipler ~aynı bölgeden dönüyor) bu RANGE'dir — bant TEPESİNDEN/ortasından LONG ALMA. Range'de sadece iki geçerli giriş var: (1) bant dibi/sweep sonrası 15m geri dönüş mumu, (2) bant tepesi 15m KAPANIŞLA kırılıp retest tuttuğunda. Ayrıca coin az önce parabolik koştuysa ve son mumlar dikey + fiyat bacağın tepesindeyse (parabolik1dk fiyatKonumu %85+), yeni LONG için sığ pullback ya da devam impulsu bekle — tepe fitili giriş değildir, sık sık kısa vadede geri çekilir. 
 - REJİM ANAYASASI (R401 — HER kararın SIFIRINCI adımı): Sinyal üretmeden ÖNCE grafiği üç rejimden birine koy ve gerekçenin İLK kelimeleri bunu söylesin: "REJİM:NORMAL·" / "REJİM:DEVAM·" / "REJİM:TÜKENİŞ·".
   · NORMAL = sağlıklı HH/HL, dengeli momentum, temiz fitiller → standart kurallar geçerli.
   · DEVAM = dikeyFazDevami DÖRT şartı birden (sığPullback<0.30 + tutunma≥3/5 + red fitili yok + devamYakiti GÜÇLÜ) → devam girişi serbest, SL mikro-taban altı.
@@ -19160,6 +19178,14 @@ async function runAutoScan(prioritySymbol=null) {
               candles: analysis?.r308RawCandles || null,
               // R366: 1dk parabolik hareket + hassas fib (LONG & SHORT fırsatları). 15m'deki parabolik pump/dump'ları yakalar.
               parabolik1m: analysis?.r366Parabolik || null,
+              // ═══ R412 MAKRO KONUM (DODOX -12.6/FHE -6.7/KORU -4.9 dersi 13.07: hepsi günlük/4h TAVANDA girildi) ═══
+              // KRİTİK SESSİZ HATA: AI'a sadece parabolik1m (SON 1 SAAT dar pencere) veriliyordu. Bot 24h/4h/1h
+              // konumu HESAPLIYOR (r29.r196) ama AI'ın önüne KOYMUYORDU. Sonuç: AI son 1 saatte fiyat düşünce
+              // "ucuz, geri çekilme" sanıp GÜNLÜK TAVANDA alıyordu (acemi trader hatası). Bu üç alan tüm zaman
+              // dilimlerinde fiyatın gerçek konumunu verir: 0=dip, 100=tavan. AI artık makroyu görüp karar verir.
+              konum24h: Number.isFinite(analysis?.r29?.r196?.long?.loc24) ? analysis.r29.r196.long.loc24 : null,  // 24h aralıkta konum (0-100)
+              konum4h: Number.isFinite(analysis?.r29?.r196?.long?.loc4h) ? analysis.r29.r196.long.loc4h : null,   // 4h aralıkta konum
+              konum1h: Number.isFinite(analysis?.r29?.r196?.long?.loc1h) ? analysis.r29.r196.long.loc1h : null,   // 1h aralıkta konum
               htfKirilim: analysis?.r384HtfKirilim || null, // R384
               // HAM METRİKLER (mumda görünmeyen gerçekler — yorum değil, sayı)
               rsi5m: analysis?.timeframes?.['5m']?.rsi, rsi15m: analysis?.timeframes?.['15m']?.rsi,
