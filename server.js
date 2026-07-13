@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R413_HACIM_SKOR'
+const LAZARUS_BUILD = 'R414_OI_FUNDING_KARSIT'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -4304,7 +4304,7 @@ Sen sıradan bir coin analiz etmiyorsun. Bu coin, TÜM Binance Futures'ta en ço
 
 4) ESKİ COİN = GEÇMİŞ İZLERİNE GİDER: Eğer coin eskiyse (günlük geçmişi varsa), fiyat genellikle günlük grafikte geçmişte bıraktığı boşluklara (gap), doldurulmamış likiditeye, uzun fitil uçlarına doğru çekilir — bunlar mıknatıstır. Günlük mumlarda bu izleri (eski tepe/dip iğneleri, gap'ler) ara; MM fiyatı oraya taşıma eğilimindedir. Hedefini (TP) bu geçmiş likidite izlerine göre ayarla.
 
-5) SPOT vs FUTURES AYRIŞMASI: TOP1/TOP2 sıralamasındaki coinin spot durumu ile futures durumu farklı olabilir (funding, OI, kaldıraçlı pozisyon baskısı). Futures'ta aşırı short funding (negatif) = short'lar kalabalık = yukarı squeeze yakıtı bol. Funding ve OI'yi bu gözle oku: negatif funding + artan OI + yükseliş = short'lar sıkışıyor, yukarı devam güçlü.
+5) SPOT vs FUTURES AYRIŞMASI: TOP1/TOP2 sıralamasındaki coinin spot durumu ile futures durumu farklı olabilir (funding, OI, kaldıraçlı pozisyon baskısı). Futures'ta aşırı short funding (negatif) = short'lar kalabalık = yukarı squeeze yakıtı bol. Funding ve OI'yi bu gözle oku: negatif funding + artan OI + yükseliş = short'lar sıkışıyor, yukarı devam güçlü. R414 KARŞIT KOŞUL (1000XEC -%10.4 dersi 13.07: funding -0.127 + OI1h -24% + delta NÖTR iken 'squeeze yakıtı' sanılıp girildi): negatif funding TEK BAŞINA squeeze yakıtı DEĞİLDİR — OI'nin YÖNÜNE bak. negatif funding + DÜŞEN OI (OI1h belirgin negatif) = short'lar sıkışmıyor, pozisyonlar KAPANIYOR = hareket tükeniyor, bu squeeze değil boşalmadır → LONG için delta pozitife dönüş + reclaim TEYİDİ şart, teyitsiz WAIT. Squeeze tezi ancak OI ARTARKEN geçerlidir; OI düşerken negatif funding bir tuzaktır.
 
 ÖZET ZİHNİYET: Bu coinde varsayılan yön YUKARI'dır, aksi kanıtlanana kadar. "Çok yükselmiş" bir SATIŞ/SHORT sebebi DEĞİL — MM'in short avladığı ortamdır, sürüyle "döner" deme. AMA kritik nüans (gerçek veriyle doğrulandı): tam parabolik TEPE FİTİLİNDEN girme de — o noktada fiyat kısa vadede %60+ ihtimalle önce biraz geri çekilir (MM son alıcıları da toplar). Yani: TREND yukarı → LONG tarafındasın, ASLA short/ters düşünme. AMA giriş noktası olarak tam dikey tepe mumunu değil, şunları seç: sığ pullback'in dibi, kırılım-retest, konsolidasyon kırılımı, devam impulsunun başı. Trenle git ama vagona tepe fitilinden değil, bir sonraki sağlıklı devam noktasından bin. Tek gerçek "bekle": parabolik tükeniş + reclaim yok. Onun dışında bu tren yukarı gider — sadece binme anını akıllı seç.
 
