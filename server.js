@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R423_ARSIV_429FIX'
+const LAZARUS_BUILD = 'R425_GUVEN_KALDIRAC'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -9913,55 +9913,6 @@ app.get('/api/futures-coins', async (req, res) => {
 });
 
 // ── PRO ANALİZ ────────────────────────────────────────────────────────────────
-// ═══ R423 ARŞİV: günlük/haftalık/aylık MD raporu — kalıcı ledger'dan (trade_ledger_live.json, restart'a dayanıklı) ═══
-// Kullanım: /api/arsiv?tip=gunluk | haftalik | aylik → .md dosyası indirir. Kullanıcı isteği 14.07:
-// karneyi kopyala-yapıştır yerine tek dosya; Fable/halef modele doğrudan yüklenebilir.
-app.get('/api/arsiv', (req, res) => {
-  try {
-    const tip = String(req.query.tip || 'gunluk').toLowerCase();
-    const simdi = Date.now(); const gunMs = 24*60*60*1000;
-    const aralik = tip === 'aylik' ? 30*gunMs : tip === 'haftalik' ? 7*gunMs : gunMs;
-    const rows = (Array.isArray(tradeLedger) ? tradeLedger : [])
-      .filter(r => Number(r.closedAt || r.openedAt || 0) >= simdi - aralik)
-      .sort((a,b) => Number(a.closedAt||a.openedAt||0) - Number(b.closedAt||b.openedAt||0));
-    const fmt = ts => { const d = new Date(Number(ts||0)); return isNaN(d.getTime()) ? '—' : d.toISOString().replace('T',' ').slice(0,16); };
-    const gunKey = ts => { const d = new Date(Number(ts||0)); return isNaN(d.getTime()) ? 'bilinmiyor' : d.toISOString().slice(0,10); };
-    const gunler = {};
-    for (const r of rows) { const k = gunKey(r.closedAt || r.openedAt); (gunler[k] = gunler[k] || []).push(r); }
-    let md = `# LAZARUS ARŞİV — ${tip.toUpperCase()}\n`;
-    md += `Build: ${LAZARUS_BUILD} · Üretim: ${fmt(simdi)} UTC · Kapsam: ${tip==='aylik'?'30 gün':tip==='haftalik'?'7 gün':'24 saat'} · ${rows.length} işlem\n\n`;
-    let topK=0, topZ=0, topNet=0;
-    for (const g of Object.keys(gunler).sort()) {
-      const list = gunler[g];
-      const k = list.filter(r => Number(r.pnlUSDT) > 0).length;
-      const z = list.filter(r => Number(r.pnlUSDT) < 0).length;
-      const net = list.reduce((s,r)=>s+(Number(r.pnlUSDT)||0),0);
-      const kSum = list.reduce((s,r)=>s+Math.max(0,Number(r.pnlUSDT)||0),0);
-      const zSum = Math.abs(list.reduce((s,r)=>s+Math.min(0,Number(r.pnlUSDT)||0),0));
-      const pf = zSum > 0 ? (kSum/zSum).toFixed(2) : '∞';
-      topK+=k; topZ+=z; topNet+=net;
-      md += `## ${g} — ${list.length} işlem · ${k}K/${z}Z · WR ${list.length?Math.round(k*100/list.length):0}% · net ${net.toFixed(2)}$ · PF ${pf}\n\n`;
-      for (const r of list) {
-        const pnl = Number(r.pnlUSDT);
-        const im = pnl > 0 ? '✅' : pnl < 0 ? '❌' : '⚪';
-        md += `- ${im} **${r.symbol||'?'} ${r.side||''}** ${Number.isFinite(pnl)?(pnl>0?'+':'')+pnl.toFixed(2)+'$':'—'}`;
-        const roi = (r.roiPct ?? r.roi); if (roi != null && Number.isFinite(Number(roi))) md += ` (${Number(roi).toFixed(1)}%)`;
-        md += ` · ${fmt(r.openedAt)} → ${fmt(r.closedAt)}\n`;
-        const neden = r.aiReason || r.reason || r.openReason || r.neden || null;
-        if (neden) md += `  - Gerekçe: ${String(neden).slice(0,220)}\n`;
-        const kapanis = r.closeReason || r.exitReason || r.kapanis || null;
-        if (kapanis) md += `  - Kapanış: ${String(kapanis).slice(0,120)}\n`;
-      }
-      md += `\n`;
-    }
-    const topT = topK + topZ;
-    md += `---\n**TOPLAM: ${topT} işlem · ${topK}K/${topZ}Z · WR ${topT?Math.round(topK*100/topT):0}% · net ${topNet.toFixed(2)}$**\n`;
-    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="lazarus_arsiv_${tip}_${gunKey(simdi)}.md"`);
-    res.send(md);
-  } catch (e) { res.status(500).json({ ok:false, hata:String(e?.message||e) }); }
-});
-
 app.get('/api/analyze/:symbol', async (req, res) => {
   const sym  = req.params.symbol.toUpperCase();
   const full = sym.endsWith('USDT') ? sym : sym+'USDT';
@@ -16574,7 +16525,7 @@ async function r385KoklamaIscisi() {
     const evren = all
       .filter(t => /USDT$/.test(String(t.symbol||'')))
       .filter(t => Number(t.quoteVolume||0) >= 8_000_000)
-      .filter(t => { const c = Number(t.priceChangePercent); return c >= 2.5 && c <= 25; }) // R422: taban -5→+2.5 (kanıt 14.07: BCH +0.15/ADA +1.22/TRX +0.64 minicik hareketle TOP2 slotu işgal etti; FOLKS skor184 +4.5/CAP +7.5/SXT +6.5/B +5.8 gerçek gainer'lar dışarıda kaldı — bu bot GAINER botu, kıpırdamayan major kırılımı slot hakkı değil)
+      .filter(t => { const c = Number(t.priceChangePercent); return c >= 2.5 && c <= 25; }) // R424: taban -5→+2.5 (kanıt 14.07: BCH+0.15/ADA+1.22/TRX+0.64 slot işgali; FOLKS/CAP/SXT gerçek gainer'lar dışarıda kalmıştı — gainer botu, kıpırdamayan major kırılımı slot hakkı değil)
       .sort((a,b) => Number(b.quoteVolume) - Number(a.quoteVolume))
       .slice(0, 60);
     const bulunan = [];
@@ -16644,7 +16595,7 @@ async function r370ErkenYukselisWorker() {
     for (const t of adaylar) {
       const full = String(t.symbol);
       try {
-        const kl = await cached(`r370kl15_${full}`, 120*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=20`)); // R423: cache 2dk — 429 weight koruması (15m mum, sık refetch israf)
+        const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=20`);
         if (!Array.isArray(kl) || kl.length < 12) continue;
         const b = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]}));
         const n = b.length;
@@ -16743,7 +16694,7 @@ async function r328PatlamaWorker() {
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
-        const kl = await cached(`r423kl5_${full}`, 60*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=12`)); // R423: cache 60sn — 429 weight koruması
+        const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=12`);
         if (!Array.isArray(kl) || kl.length < 10) continue;
         const bars = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]||0}));
         const last = bars[bars.length-1];
@@ -17620,6 +17571,53 @@ function r393SinifKarnesi() {
   out.push('', 'Okuma: DİKEY_FAZ satırı bu gecenin sınavıdır — PF>1 + ort.zirve yüksekse istisna hak etti; FLUSH ağırlıklıysa dört kilit sıkılaştırılır (önce 3-4 örnek, sonra karar). Kanıt > niyet. — Fable 5');
   return out.join('\n');
 }
+// ═══════════ R424 RAPOR/ARŞİV (kullanıcı isteği 14.07): günlük karar+işlem raporu, MD indirme ═══════════
+// Kaynak: tradeLedger (./trade_ledger_live.json — boot'ta yükleniyor, RESTART'A DAYANIKLI) + r374 olay ringi.
+// Rapor İSTEK ANINDA üretilir; sıcak trade yoluna hook YOK — sıfır trade-riski. /rapor → yeni sekme sayfası.
+function r424Tarih(ts){ try{ return new Date(Number(ts)).toLocaleString('tr-TR',{timeZone:'Europe/Istanbul'});}catch(_){return '-';} }
+function r424Gun(ts){ try{ return new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Istanbul'}).format(new Date(Number(ts)));}catch(_){return '-';} }
+function r424RaporMd(donem='gun'){
+  const gunMs=86400000, simdi=Date.now();
+  const bas = simdi - (donem==='ay'?30:donem==='hafta'?7:1)*gunMs;
+  const hepsi=(Array.isArray(tradeLedger)?tradeLedger:[]).filter(t=>Number(t.closedAt||t.openedAt||0)>=bas);
+  const gunler={};
+  for(const t of hepsi){ const g=r424Gun(t.closedAt||t.openedAt); (gunler[g]=gunler[g]||[]).push(t); }
+  let md=`# LAZARUS RAPORU — ${donem.toUpperCase()}\n`;
+  md+=`Aralık: ${r424Tarih(bas)} → ${r424Tarih(simdi)} · Build: ${LAZARUS_BUILD}\n`;
+  let tK=0,tZ=0,tPnl=0;
+  for(const g of Object.keys(gunler).sort()){
+    const list=gunler[g].sort((a,b)=>Number(a.closedAt||a.openedAt||0)-Number(b.closedAt||b.openedAt||0));
+    let k=0,z=0,pnl=0;
+    md+=`\n## 📅 ${g}\n\n| Saat | Coin | Yön | ROI | PnL$ | Kapanış | AI gerekçesi (kısa) |\n|---|---|---|---|---|---|---|\n`;
+    for(const t of list){
+      const sym=t.symbol||t.sym||'-', yon=t.side||t.yon||'-';
+      const roi=Number(t.roiPct??t.roi??NaN), p=Number(t.pnl??t.realizedPnl??t.pnlUsd??NaN);
+      if(Number.isFinite(p)&&t.closedAt){ pnl+=p; if(p>0)k++; else if(p<0)z++; }
+      const saat=(r424Tarih(t.closedAt||t.openedAt).split(' ')[1]||'-').slice(0,5);
+      const neden=String(t.aiBrain?.reasoning||t.acilisSebebi||t.openReason||t.reason||'-').replace(/\|/g,'/').replace(/\n/g,' ').slice(0,160);
+      const kap=String(t.kapanisNedeni||t.closeReason||t.exitReason||(t.closedAt?'kapandı':'🟡 AÇIK')).replace(/\|/g,'/').slice(0,60);
+      md+=`| ${saat} | ${sym} | ${yon} | ${Number.isFinite(roi)?roi.toFixed(1)+'%':'-'} | ${Number.isFinite(p)?p.toFixed(2):'-'} | ${kap} | ${neden} |\n`;
+    }
+    const wr=(k+z)?Math.round(k*100/(k+z)):0;
+    md+=`\n**Gün özeti:** ${list.length} kayıt · ${k}K/${z}Z · WR %${wr} · net ${pnl.toFixed(2)}$\n`;
+    tK+=k; tZ+=z; tPnl+=pnl;
+  }
+  const tWr=(tK+tZ)?Math.round(tK*100/(tK+tZ)):0;
+  md+=`\n---\n## TOPLAM (${donem}): ${tK+tZ} kapanan · WR %${tWr} · net ${tPnl.toFixed(2)}$\n`;
+  try{ const ol=(r374Donusum?.olaylar||[]).slice(-200);
+    if(ol.length){ md+=`\n## 🤖 BOT KARAR/OLAY AKIŞI (bellekteki son ${ol.length})\n\n`; for(const o of ol) md+=`- ${o.ts} **${o.tip}** ${o.coin} — ${String(o.detay||'').replace(/\n/g,' ').slice(0,160)}\n`; }
+  }catch(_){}
+  md+=`\n> Not: İşlemler trade_ledger_live.json'dan (restart'a dayanıklı). Olay akışı bellek ringidir; restart sonrası yeniden dolar. Bu raporu Fable'a olduğu gibi yapıştır — o okur.\n`;
+  return md;
+}
+app.get('/api/rapor.md',(req,res)=>{ try{
+  const donem=['gun','hafta','ay'].includes(String(req.query.donem))?String(req.query.donem):'gun';
+  const md=r424RaporMd(donem);
+  res.set('Content-Type','text/markdown; charset=utf-8');
+  if(String(req.query.indir)==='1') res.set('Content-Disposition',`attachment; filename="lazarus-${donem}-${r424Gun(Date.now())}.md"`);
+  res.send(md);
+}catch(e){ res.status(500).send('rapor hatası: '+String(e?.message||e)); }});
+app.get('/rapor',(_req,res)=>{ res.set('Content-Type','text/html; charset=utf-8'); res.send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lazarus Rapor Arşivi</title><style>body{background:#0d1220;color:#dce3f0;font-family:system-ui;margin:0;padding:20px}h1{font-size:17px;color:#5eb3f5}a.b{display:inline-block;background:#2d6a9f;color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:800;font-size:12px;margin:0 8px 8px 0}pre{background:#131a2c;border:1px solid #26304a;border-radius:10px;padding:14px;white-space:pre-wrap;font-size:12px;line-height:1.55}</style></head><body><h1>📚 Lazarus Rapor Arşivi — ${LAZARUS_BUILD}</h1><p><a class="b" href="/api/rapor.md?donem=gun&indir=1">⬇️ Günlük MD</a><a class="b" href="/api/rapor.md?donem=hafta&indir=1">⬇️ Haftalık MD</a><a class="b" href="/api/rapor.md?donem=ay&indir=1">⬇️ Aylık MD</a></p><pre id="p">yükleniyor…</pre><script>fetch('/api/rapor.md?donem=gun').then(r=>r.text()).then(t=>{document.getElementById('p').textContent=t}).catch(e=>{document.getElementById('p').textContent='hata: '+e});</script></body></html>`); });
 app.get('/api/r393', (req, res) => { res.set('Content-Type','text/plain; charset=utf-8'); res.send(r393SinifKarnesi()); });
 
 app.get('/api/fable5', (req, res) => {
@@ -18859,13 +18857,23 @@ async function runAutoScan(prioritySymbol=null) {
         // Tüm düşürücüler (R151 yeni-coin, R150 mikro-cap, R157/R191 valiler) çalıştıktan SONRA
         // sonucu 10x'e yükselt — scalp yapıyoruz, 3x-6x-9x gibi düşük kaldıraç kabul edilmez.
         // Binance izinli tavanı aşmaz (bracketMaxLev korunur). Güvenlik SL disiplininde: SL dar tutulur.
-        // R372 (A SEÇENEĞİ): kaldıraç tavanı 5x. Düşük kaldıraç + geniş SL = MM avı zorlaşır, likidasyon yok.
-        // Kaldıraç 5x'i AŞMASIN (geniş SL zaten koruyor). 5x'ten yüksekse 5x'e indir.
+        // R372 (A SEÇENEĞİ) → R425 GÜVEN-ÖLÇEKLİ KALDIRAÇ (backtest 16 coin-gün, 56 R421 girişi):
+        // Güven vekili tercili: YÜKSEK ort +6.59%/işlem vs DÜŞÜK +1.21% (5.4x) — güçlü sinyal BÜYÜK kazanıyor.
+        // Ölçekli 3/5/8x: PF 8.6→10.5 (sabit 5x'e karşı). KORKULUKLAR (EVAA dersi: 2dk flush -7.2% fiyat →
+        // 15x'te likidasyon ~%6.6 İÇERİDE = hesap sıfır): (a) 8x SADECE güven≥80 + ATR≤4.5 + gainer-1 DEĞİL
+        // (gainer-1 PF 0.00 sınıfı); 8x likidasyon ~%12.5 = gözlenen en kötü flush dışı; SL%5×8x=%40 (R157 sınırında).
+        // (b) güven<70 → 4x (düşük güven = küçük boyut). (c) Önceki valiler (R151/R157/bracket) aşılmaz — sadece indirir.
         if (executeLeverage > 5) {
           const _oldLevFloor = executeLeverage;
-          executeLeverage = 5;
-          leverageNote += ` · R372 A-seçeneği kaldıraç ${_oldLevFloor}x→5x (düşük kaldıraç + geniş SL)`;
-          logAuto(`⚙️ ${coin.symbol} R372 kaldıraç: ${_oldLevFloor}x→5x (A seçeneği — geniş SL ile MM avı zorlaşır)`);
+          const _g = Number(decisionChain?.brainConfidence || 0);
+          const _atr = Number(coinAtrPct || 99);
+          const _gr = Number(coin.gainerRank || 99);
+          let _hedefLev = 5;
+          if (_g >= 80 && _atr <= 4.5 && _gr !== 1) _hedefLev = 8;
+          else if (_g < 70) _hedefLev = 4;
+          executeLeverage = Math.min(_oldLevFloor, _hedefLev);
+          leverageNote += ` · R425 güven-kaldıraç ${_oldLevFloor}x→${executeLeverage}x (güven:${_g} ATR:${_atr.toFixed(1)} gainer:${_gr})`;
+          logAuto(`⚙️ ${coin.symbol} R425 kaldıraç: ${_oldLevFloor}x→${executeLeverage}x (güven ${_g}, ATR %${_atr.toFixed(1)}, gainer ${_gr} — yüksek güven+sakin ATR=8x, düşük güven=4x, aksi 5x)`);
         }
 
         // R372 (A SEÇENEĞİ): SL TABAN GENİŞLİĞİ — AI dar SL koyarsa min %5'e genişlet (MM avı koruması).
@@ -19605,18 +19613,17 @@ async function runAutoScan(prioritySymbol=null) {
                 // ama AI ihlal etti → değişmez kural KOD katmanına iner (Fable katman disiplini).
                 // Bu YÖN vetosu DEĞİL, veri-geçerliliği kapısı: gerçek satış momentumu varken
                 // (aggTrade + mum-delta) LONG açılmaz; delta ALIŞ/NÖTR'e dönünce serbest.
-                // ═══ R416→R422 ONARIM: eski blok aiData.yedekSatisKaniti okuyordu ama o alan brief İÇİNDE
-                // (satır 4048) üretiliyor, aiData'da YOK → blok hiç tetiklenmedi (ÖLÜ KOD). Canlı kanıt:
-                // ADA 14.07 gerekçesinde "yedekSatisKaniti SATIS" yazıp GİRDİ (-0.41$). R397 dersi bana da işledi.
-                // Düzeltme: aynı mantık HAM alanlardan (cvdMomentumYon 19322 + deltaTrendMum 19328 — ikisi de aiData'da).
-                const r422YedekSatis = (() => {
+                // R424 ONARIM: eski blok aiData.yedekSatisKaniti okuyordu ama o alan brief İÇİNDE üretiliyor,
+                // aiData'da YOK → blok hiç tetiklenmedi (ölü kod; canlı kanıt: ADA 14.07 "SATIS" yazıp girdi -0.63$).
+                // Aynı mantık HAM alanlardan (cvdMomentumYon + deltaTrendMum — ikisi de aiData'da, kablo doğrulandı).
+                const r424YedekSatis = (() => {
                   const m = String(aiData?.cvdMomentumYon || 'NOTR');
                   const d = String(aiData?.deltaTrendMum || 'NOTR');
                   if (m === 'SATIS' || d === 'SATIS') return 'SATIS';
                   if (m === 'ALIS' || d === 'ALIS') return 'ALIS';
                   return 'NOTR';
                 })();
-                if (ai.side === 'LONG' && r422YedekSatis === 'SATIS') {
+                if (ai.side === 'LONG' && r424YedekSatis === 'SATIS') {
                   logAuto(`⛔ ${coin.symbol} R416 MÜHÜR: yedekSatisKaniti=SATIS iken LONG REDDİ (NEAR/BEAT/OGN dersi) — momentum+mum-delta gerçek satış, VERI_YOK istisnası geçersiz. AI güven ${ai.confidence}% olsa da AÇILMADI.`);
                   markAutoSkip(coin.symbol, `R416: yedekSatisKaniti SATIS — delta-satış anında LONG bloke`, {rec:ai.side, score, aiBrain:ai});
                   continue;
