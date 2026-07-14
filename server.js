@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R422_MUHUR_ONARIM'
+const LAZARUS_BUILD = 'R423_ARSIV_429FIX'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -9913,6 +9913,55 @@ app.get('/api/futures-coins', async (req, res) => {
 });
 
 // ── PRO ANALİZ ────────────────────────────────────────────────────────────────
+// ═══ R423 ARŞİV: günlük/haftalık/aylık MD raporu — kalıcı ledger'dan (trade_ledger_live.json, restart'a dayanıklı) ═══
+// Kullanım: /api/arsiv?tip=gunluk | haftalik | aylik → .md dosyası indirir. Kullanıcı isteği 14.07:
+// karneyi kopyala-yapıştır yerine tek dosya; Fable/halef modele doğrudan yüklenebilir.
+app.get('/api/arsiv', (req, res) => {
+  try {
+    const tip = String(req.query.tip || 'gunluk').toLowerCase();
+    const simdi = Date.now(); const gunMs = 24*60*60*1000;
+    const aralik = tip === 'aylik' ? 30*gunMs : tip === 'haftalik' ? 7*gunMs : gunMs;
+    const rows = (Array.isArray(tradeLedger) ? tradeLedger : [])
+      .filter(r => Number(r.closedAt || r.openedAt || 0) >= simdi - aralik)
+      .sort((a,b) => Number(a.closedAt||a.openedAt||0) - Number(b.closedAt||b.openedAt||0));
+    const fmt = ts => { const d = new Date(Number(ts||0)); return isNaN(d.getTime()) ? '—' : d.toISOString().replace('T',' ').slice(0,16); };
+    const gunKey = ts => { const d = new Date(Number(ts||0)); return isNaN(d.getTime()) ? 'bilinmiyor' : d.toISOString().slice(0,10); };
+    const gunler = {};
+    for (const r of rows) { const k = gunKey(r.closedAt || r.openedAt); (gunler[k] = gunler[k] || []).push(r); }
+    let md = `# LAZARUS ARŞİV — ${tip.toUpperCase()}\n`;
+    md += `Build: ${LAZARUS_BUILD} · Üretim: ${fmt(simdi)} UTC · Kapsam: ${tip==='aylik'?'30 gün':tip==='haftalik'?'7 gün':'24 saat'} · ${rows.length} işlem\n\n`;
+    let topK=0, topZ=0, topNet=0;
+    for (const g of Object.keys(gunler).sort()) {
+      const list = gunler[g];
+      const k = list.filter(r => Number(r.pnlUSDT) > 0).length;
+      const z = list.filter(r => Number(r.pnlUSDT) < 0).length;
+      const net = list.reduce((s,r)=>s+(Number(r.pnlUSDT)||0),0);
+      const kSum = list.reduce((s,r)=>s+Math.max(0,Number(r.pnlUSDT)||0),0);
+      const zSum = Math.abs(list.reduce((s,r)=>s+Math.min(0,Number(r.pnlUSDT)||0),0));
+      const pf = zSum > 0 ? (kSum/zSum).toFixed(2) : '∞';
+      topK+=k; topZ+=z; topNet+=net;
+      md += `## ${g} — ${list.length} işlem · ${k}K/${z}Z · WR ${list.length?Math.round(k*100/list.length):0}% · net ${net.toFixed(2)}$ · PF ${pf}\n\n`;
+      for (const r of list) {
+        const pnl = Number(r.pnlUSDT);
+        const im = pnl > 0 ? '✅' : pnl < 0 ? '❌' : '⚪';
+        md += `- ${im} **${r.symbol||'?'} ${r.side||''}** ${Number.isFinite(pnl)?(pnl>0?'+':'')+pnl.toFixed(2)+'$':'—'}`;
+        const roi = (r.roiPct ?? r.roi); if (roi != null && Number.isFinite(Number(roi))) md += ` (${Number(roi).toFixed(1)}%)`;
+        md += ` · ${fmt(r.openedAt)} → ${fmt(r.closedAt)}\n`;
+        const neden = r.aiReason || r.reason || r.openReason || r.neden || null;
+        if (neden) md += `  - Gerekçe: ${String(neden).slice(0,220)}\n`;
+        const kapanis = r.closeReason || r.exitReason || r.kapanis || null;
+        if (kapanis) md += `  - Kapanış: ${String(kapanis).slice(0,120)}\n`;
+      }
+      md += `\n`;
+    }
+    const topT = topK + topZ;
+    md += `---\n**TOPLAM: ${topT} işlem · ${topK}K/${topZ}Z · WR ${topT?Math.round(topK*100/topT):0}% · net ${topNet.toFixed(2)}$**\n`;
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="lazarus_arsiv_${tip}_${gunKey(simdi)}.md"`);
+    res.send(md);
+  } catch (e) { res.status(500).json({ ok:false, hata:String(e?.message||e) }); }
+});
+
 app.get('/api/analyze/:symbol', async (req, res) => {
   const sym  = req.params.symbol.toUpperCase();
   const full = sym.endsWith('USDT') ? sym : sym+'USDT';
@@ -16595,7 +16644,7 @@ async function r370ErkenYukselisWorker() {
     for (const t of adaylar) {
       const full = String(t.symbol);
       try {
-        const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=20`);
+        const kl = await cached(`r370kl15_${full}`, 120*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=20`)); // R423: cache 2dk — 429 weight koruması (15m mum, sık refetch israf)
         if (!Array.isArray(kl) || kl.length < 12) continue;
         const b = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]}));
         const n = b.length;
@@ -16694,7 +16743,7 @@ async function r328PatlamaWorker() {
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
-        const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=12`);
+        const kl = await cached(`r423kl5_${full}`, 60*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=5m&limit=12`)); // R423: cache 60sn — 429 weight koruması
         if (!Array.isArray(kl) || kl.length < 10) continue;
         const bars = kl.map(r => ({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]||0}));
         const last = bars[bars.length-1];
