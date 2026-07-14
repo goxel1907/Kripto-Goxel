@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R421_GIRIS_8COIN'
+const LAZARUS_BUILD = 'R422_MUHUR_ONARIM'
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -16525,7 +16525,7 @@ async function r385KoklamaIscisi() {
     const evren = all
       .filter(t => /USDT$/.test(String(t.symbol||'')))
       .filter(t => Number(t.quoteVolume||0) >= 8_000_000)
-      .filter(t => { const c = Number(t.priceChangePercent); return c >= -5 && c <= 25; }) // zaten TOP koşucular mevcut yoldan geliyor
+      .filter(t => { const c = Number(t.priceChangePercent); return c >= 2.5 && c <= 25; }) // R422: taban -5→+2.5 (kanıt 14.07: BCH +0.15/ADA +1.22/TRX +0.64 minicik hareketle TOP2 slotu işgal etti; FOLKS skor184 +4.5/CAP +7.5/SXT +6.5/B +5.8 gerçek gainer'lar dışarıda kaldı — bu bot GAINER botu, kıpırdamayan major kırılımı slot hakkı değil)
       .sort((a,b) => Number(b.quoteVolume) - Number(a.quoteVolume))
       .slice(0, 60);
     const bulunan = [];
@@ -19556,7 +19556,18 @@ async function runAutoScan(prioritySymbol=null) {
                 // ama AI ihlal etti → değişmez kural KOD katmanına iner (Fable katman disiplini).
                 // Bu YÖN vetosu DEĞİL, veri-geçerliliği kapısı: gerçek satış momentumu varken
                 // (aggTrade + mum-delta) LONG açılmaz; delta ALIŞ/NÖTR'e dönünce serbest.
-                if (ai.side === 'LONG' && String(aiData?.yedekSatisKaniti || 'NOTR') === 'SATIS') {
+                // ═══ R416→R422 ONARIM: eski blok aiData.yedekSatisKaniti okuyordu ama o alan brief İÇİNDE
+                // (satır 4048) üretiliyor, aiData'da YOK → blok hiç tetiklenmedi (ÖLÜ KOD). Canlı kanıt:
+                // ADA 14.07 gerekçesinde "yedekSatisKaniti SATIS" yazıp GİRDİ (-0.41$). R397 dersi bana da işledi.
+                // Düzeltme: aynı mantık HAM alanlardan (cvdMomentumYon 19322 + deltaTrendMum 19328 — ikisi de aiData'da).
+                const r422YedekSatis = (() => {
+                  const m = String(aiData?.cvdMomentumYon || 'NOTR');
+                  const d = String(aiData?.deltaTrendMum || 'NOTR');
+                  if (m === 'SATIS' || d === 'SATIS') return 'SATIS';
+                  if (m === 'ALIS' || d === 'ALIS') return 'ALIS';
+                  return 'NOTR';
+                })();
+                if (ai.side === 'LONG' && r422YedekSatis === 'SATIS') {
                   logAuto(`⛔ ${coin.symbol} R416 MÜHÜR: yedekSatisKaniti=SATIS iken LONG REDDİ (NEAR/BEAT/OGN dersi) — momentum+mum-delta gerçek satış, VERI_YOK istisnası geçersiz. AI güven ${ai.confidence}% olsa da AÇILMADI.`);
                   markAutoSkip(coin.symbol, `R416: yedekSatisKaniti SATIS — delta-satış anında LONG bloke`, {rec:ai.side, score, aiBrain:ai});
                   continue;
