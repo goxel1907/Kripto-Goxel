@@ -82,7 +82,11 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R425_GUVEN_KALDIRAC'
+const LAZARUS_BUILD = 'R427_UCLU_CERRAHI'
+// ═══ R427 NON-KRİPTO PERP FİLTRESİ (kanıt: ASML -4.52$, QQQ -1.25$, CL -0.27$ + DRAM/SAMSUNG/MU/AMD slot işgali):
+// Binance hisse/emtia/endeks perp'leri kripto stratejisiyle alakasız seans+defter dinamiğinde. Env ile genişletilebilir.
+const R427_NONKRIPTO = new Set(('ASML,AMD,NVDA,META,QQQ,SPY,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,MU,SAMSUNG,DRAM,CL,BZ,NG,GC,SI,O,' + (process.env.NONKRIPTO_EK||'')).split(',').map(s=>s.trim()+'USDT').filter(s=>s.length>4));
+function r427KriptoMu(sym){ return !R427_NONKRIPTO.has(String(sym||'')); }
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
 // out+düşünce $15/M, cache-okuma $0.30/M, cache-yazma $3.75/M — yaklaşıktır, fatura değildir).
@@ -9638,7 +9642,7 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
     topLocked = r152FilterAndExtendGainers(data, onboardMap, R33_TOP_GAINER_LOCK_COUNT);
     if (Array.isArray(data)) {
       for (const t of data) {
-        if (!String(t.symbol||'').endsWith('USDT') || EXCL.has(String(t.symbol))) continue;
+        if (!String(t.symbol||'').endsWith('USDT') || EXCL.has(String(t.symbol)) || !r427KriptoMu(t.symbol)) continue; // R427 non-kripto
         const c = normalizeTickerToCoin(t);
         // Normal havuz halen 20M üstü; ama R33 Top Gainers kilidi 1M+ coinleri ayrıca ekler.
         if (c.volume <= 20000000 || !c.price) continue;
@@ -9686,13 +9690,13 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
   let rawOrdered;
   if (scanMode === 'FAST6') {
     const top3Ultra = pinned
-      .slice(0, 10)
+      .slice(0, 16)  // R427: kepçe 10→16 (frekans — kalite kapıları aynı)
       .sort((a,b) => (b.r54VolRank-a.r54VolRank) || (b.rangePct-a.rangePct) || (b.interest-a.interest))
-      .slice(0, 3)
+      .slice(0, 4)  // R427: 3→4
       .map(c => ({ ...c, r54Bucket:'TOP3_ULTRA_VOL_IN_TOP10' }));
     const candidate3 = rest
       .filter(c => Number(c.price||0) > 0)
-      .slice(0, 3)
+      .slice(0, 4)  // R427: 3→4
       .map(c => ({ ...c, r54Bucket:'TOP10_CANDIDATE_3' }));
     rawOrdered = [...top3Ultra, ...candidate3];
   } else if (scanMode === 'TOP10') {
@@ -9902,7 +9906,7 @@ app.get('/api/futures-coins', async (req, res) => {
     if (!Array.isArray(data)) return res.json({ coins:[] });
     const EXCL = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT',
       'DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
-    const coins = data.filter(t=>t.symbol.endsWith('USDT')&&!EXCL.has(t.symbol))
+    const coins = data.filter(t=>t.symbol.endsWith('USDT')&&!EXCL.has(t.symbol)&&r427KriptoMu(t.symbol)) // R427 non-kripto
       .map(t=>({ symbol:t.symbol.replace('USDT',''), fullSymbol:t.symbol,
         price:parseFloat(t.lastPrice)||0, change24h:parseFloat(t.priceChangePercent)||0,
         volume:parseFloat(t.quoteVolume)||0, high:parseFloat(t.highPrice)||0,
@@ -15605,7 +15609,14 @@ async function managePosition(apiKey, apiSecret, pos) {
   const karTasima1    = (Number(cfg.aiKT1) > 0 ? Number(cfg.aiKT1) : 1.5) * r390K;
   const karTasima2    = (Number(cfg.aiKT2) > 0 ? Number(cfg.aiKT2) : 3.0) * r390K;
   const karTasima3    = (Number(cfg.aiKT3) > 0 ? Number(cfg.aiKT3) : 5.5) * r390K;
-  trailPct = trailPct * r390K; // R390: trailing de coinin nefesine ölçekli
+  // ═══ R426 AKE DERSİ (15.07: +28% ROI'de çıktı, coin 45dk'da +112% daha yaptı = ~+500% ROI çöpe): ═══
+  // r390K Math.min(1,...) ile 1'de TAVANLI — sadece düşük-ATR'de daraltıyor, dikey pompada trailing'i
+  // GENİŞLETMİYORDU. ATR %15 coinde %2.5 trail = ilk nefeste çıkış. Düzeltme: SADECE trailing için
+  // yukarı-ölçeklenen çarpan (tavan 2.5x, mutlak trail tavanı %8 = AI aralığıyla uyumlu).
+  // Kâr-kilit merdiveni (BE/KT1-3) DOKUNULMAZ — r390K(≤1) ile kalır; gevşetme iki kez backtest'te çürüdü.
+  // Kanıt: AKE bugün, YFI(+%39'da BE), EDGE(5 erken çıkış), DEXE merdiveni; 1m-gerçek-çıkış bt: trail5>2.5 (PF2.2v1.9).
+  const r426KTrail = r390Atr > 0 ? Math.min(2.5, Math.max(0.3, r390Atr / 3.0)) : 1;
+  trailPct = Math.min(8, trailPct * r426KTrail); // R426: dikey-faz nefes payı (ATR 3%→değişmez, 7.5%→2.5x, 15%→2.5x tavan)
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
   const slPct         = safe(cfg.slPct,        2);
   const tpPct         = safe(cfg.tpPct,        10);
@@ -16525,7 +16536,7 @@ async function r385KoklamaIscisi() {
     const evren = all
       .filter(t => /USDT$/.test(String(t.symbol||'')))
       .filter(t => Number(t.quoteVolume||0) >= 8_000_000)
-      .filter(t => { const c = Number(t.priceChangePercent); return c >= 2.5 && c <= 25; }) // R424: taban -5→+2.5 (kanıt 14.07: BCH+0.15/ADA+1.22/TRX+0.64 slot işgali; FOLKS/CAP/SXT gerçek gainer'lar dışarıda kalmıştı — gainer botu, kıpırdamayan major kırılımı slot hakkı değil)
+      .filter(t => { const c = Number(t.priceChangePercent); return c >= 2.5 && c <= 25 && r427KriptoMu(t.symbol); }) // R424: taban -5→+2.5 (kanıt 14.07: BCH+0.15/ADA+1.22/TRX+0.64 slot işgali; FOLKS/CAP/SXT gerçek gainer'lar dışarıda kalmıştı — gainer botu, kıpırdamayan major kırılımı slot hakkı değil)
       .sort((a,b) => Number(b.quoteVolume) - Number(a.quoteVolume))
       .slice(0, 60);
     const bulunan = [];
@@ -19623,6 +19634,16 @@ async function runAutoScan(prioritySymbol=null) {
                   if (m === 'ALIS' || d === 'ALIS') return 'ALIS';
                   return 'NOTR';
                 })();
+                // ═══ R427 R/R KOD TABANI: prompt R408 mührü (R/R<1.3→WAIT) VAR ama AI ihlal etti —
+                // KAITO R/R 1.11 → -14.1% (testere range'inde ince kenar), BCH R/R 0.96 → flat işgal.
+                // Testere/range piyasasında ince R/R = MM yemi. Katman disiplini: çiğnenen mühür koda iner.
+                const r427RR = (Number(ai.tp)>0 && Number(ai.sl)>0 && Number(ai.entry)>0 && Number(ai.entry)>Number(ai.sl))
+                  ? (Number(ai.tp)-Number(ai.entry))/(Number(ai.entry)-Number(ai.sl)) : null;
+                if (ai.side === 'LONG' && r427RR !== null && r427RR < 1.25) {
+                  logAuto(`⛔ ${coin.symbol} R427 R/R TABANI: plan R/R ${r427RR.toFixed(2)} < 1.25 — ince kenar (KAITO 1.11→-14% dersi), giriş REDDİ. AI TP/SL'i yapısal hedefe göre yeniden kurmalı.`);
+                  markAutoSkip(coin.symbol, `R427: R/R ${r427RR.toFixed(2)} < 1.25 ince kenar`, {rec:ai.side, score, aiBrain:ai});
+                  continue;
+                }
                 if (ai.side === 'LONG' && r424YedekSatis === 'SATIS') {
                   logAuto(`⛔ ${coin.symbol} R416 MÜHÜR: yedekSatisKaniti=SATIS iken LONG REDDİ (NEAR/BEAT/OGN dersi) — momentum+mum-delta gerçek satış, VERI_YOK istisnası geçersiz. AI güven ${ai.confidence}% olsa da AÇILMADI.`);
                   markAutoSkip(coin.symbol, `R416: yedekSatisKaniti SATIS — delta-satış anında LONG bloke`, {rec:ai.side, score, aiBrain:ai});
