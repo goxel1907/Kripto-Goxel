@@ -4062,6 +4062,31 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
       atrYuzde: data.atrPct,
       slTabanOneri: data.slTabanOneri || null,   // R381: ATR×1.2 gürültü-altı SL zemini (backtest dersi) — hesaplanıyordu, iletilmiyordu
       rvol5m: data.rvol5m ?? null,               // R381: 5m göreceli hacim (>1.5 patlama, <0.6 kuru) — hesaplanıyordu, iletilmiyordu
+      // ═══ R443 SİM-SİNYAL KÖPRÜSÜ (backtest↔canlı uçurumunun ana ilacı) ═══
+      // 8 coin-günlük gerçek backtestin kârı, şu üç mekanik imzaya TEREDDÜTSÜZ girmekten geldi
+      // (sim zeki değildi, kararlıydı). Canlıda aynı imza oluştuğu an AI'a ETİKETLİ verilir —
+      // karar yine AI'ın ama imza aktifken varsayılan GİRMEKTİR, reddin kanıt yükü vardır.
+      simSinyal: (() => { try {
+        const k = data.candles?.['15m'];
+        if (!Array.isArray(k) || k.length < 15) return null;
+        const vnum = (v) => { const str = String(v); const x = parseFloat(str); return str.endsWith('M') ? x*1e6 : str.endsWith('K') ? x*1e3 : x; };
+        const son = k[k.length-1], onceki = k.slice(-13, -1);
+        const o = Number(son[0]), h = Number(son[1]), l = Number(son[2]), c = Number(son[3]);
+        const vSon = vnum(son[4]);
+        const vOrt = onceki.reduce((a,x)=>a+vnum(x[4]),0) / Math.max(1, onceki.length);
+        const maxH = Math.max(...onceki.map(x=>Number(x[1])));
+        const minL = Math.min(...onceki.map(x=>Number(x[2])));
+        const govde = Math.abs(c-o), aralik = (h-l) || 1e-12;
+        const rv = vOrt > 0 ? vSon/vOrt : 1;
+        const mumPct = (c/Number(onceki[onceki.length-1][3])-1)*100;
+        if (mumPct >= 8 && rv >= 2.5 && c > o)
+          return { tip:'PATLAMA', kanit:`son 15m mum +%${mumPct.toFixed(1)}, hacim ${rv.toFixed(1)}x`, not:'backtest: TAIKO/AKE günlerinin ana kâr kaynağı — sabit ~%8 SL ile runner değerlendir' };
+        if (c > maxH && govde/aralik > 0.55 && c > o && rv >= 1.5)
+          return { tip:'MOMENTUM_KIRILIMI', kanit:`12-bar tepe kırıldı, gövde %${(govde/aralik*100).toFixed(0)}, hacim ${rv.toFixed(1)}x`, not:'backtest 8 coin-gün: WR %72-86, ort +%1.3-2.4/işlem — varsayılan eğilim GİRMEK' };
+        if (l < minL && c > minL && c > o)
+          return { tip:'SWEEP_RECLAIM', kanit:`dip ${minL} süpürüldü, kapanış üstünde`, not:'backtest: en yüksek isabetli giriş sınıfı — reclaim mumu KAPANDI, varsayılan eğilim GİRMEK' };
+        return null;
+      } catch(_e) { return null; } })(),
       botOkumasi: null,   // R326: bot ön-okuması AI'dan GİZLENDİ (kullanıcı kararı: bot AI'ı yanıltabilir, AI sadece ham veri görür)
       patlamaUyarisi: (() => {  // R328: patlama worker bayrağı — bu coinde patlama başladıysa AI'a bildir
         try {
@@ -4260,7 +4285,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 10. İÇ TUTARLILIK: Gerekçen kararının KANITI olmalı, karşı-kanıtı değil. Bir zayıflık not ettiysen, onu YENEN somut kanıtı da göster; gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. Kendi R/R hesabın minimumun altındaysa TP/SL'i orana uydurmak için kaydırma — ya gerçek seviyelerle geçerli R/R kur ya da geç. sonIslemlerim'den ders al ama TEK kayıptan kural çıkarma; "ne değişti?" sorusunu sor.
 
-VERİ SÖZLÜĞÜ (özet): mumlar = ham OHLCV (100×5m + 20×15m + 20×1h + 12×4h + btc5m) · funding/oiDegisim/emirDefteriDengesizlik/canliDelta = akış · altSupurmeReclaimVar + supurmeKalite (q>=3 teyitli) = sweep durumu · altSupurmeSuruyorReclaimYok = av sürüyor, girme · likiditeSeviyeleri = TP/SL hedef havuzları · atrYuzde + slTabanOneri = gürültü zemini (SL bunun altına konmaz) · rvol5m = hacim patlaması (>1.5) · r370ErkenYukselis = taze impuls, RUNNER düşün · parabolik1dk = SADECE giriş zamanlaması; TP/SL her zaman 15m yapısından · makroKonum = fiyatın 24h/4h aralığındaki gerçek yeri · shortSqueeze/longSqueeze = kalabalık tuzağı · volatiliteSebep = az önceki hareketin nedeni · pozisyonDurumu/panelAyarlar = bot durumu.
+VERİ SÖZLÜĞÜ (özet): mumlar = ham OHLCV (100×5m + 20×15m + 20×1h + 12×4h + btc5m) · funding/oiDegisim/emirDefteriDengesizlik/canliDelta = akış · altSupurmeReclaimVar + supurmeKalite (q>=3 teyitli) = sweep durumu · altSupurmeSuruyorReclaimYok = av sürüyor, girme · likiditeSeviyeleri = TP/SL hedef havuzları · atrYuzde + slTabanOneri = gürültü zemini (SL bunun altına konmaz) · rvol5m = hacim patlaması (>1.5) · r370ErkenYukselis = taze impuls, RUNNER düşün · parabolik1dk = SADECE giriş zamanlaması; TP/SL her zaman 15m yapısından · makroKonum = fiyatın 24h/4h aralığındaki gerçek yeri · shortSqueeze/longSqueeze = kalabalık tuzağı · volatiliteSebep = az önceki hareketin nedeni · pozisyonDurumu/panelAyarlar = bot durumu. · simSinyal = DOLUYSA, kodun 8 coin-günlük GERÇEK backtestinde pozitif beklentili çıkan mekanik imza ŞU AN aktif demektir (tip+kanıt+backtest notu içerir) — bu alandayken varsayılan karar GİRMEKTİR; WAIT dersen simSinyal'i YENEN kanıtı sayıyla yazmak zorundasın ("emin değilim" yenmez; gerçek satış akışı, kırık yapı, SL-mesafesizlik yener).
 
 PUSU MODU (R442 — planın çöpe gitmez): WAIT verdiğinde bile "entry" alanına GERÇEK giriş seviyeni yaz (sl/tp ile birlikte) — bot fiyat o seviyeye (±%0.25) gelince seni FRENSİZ ve öncelikli uyandırır, taze veriyle son kararı yine sen verirsin. Plansız WAIT fırsatın tamamen kaybıdır; planlı WAIT kurulmuş pusudur. Plan SL altına inerse pusu otomatik iptal olur.
 
