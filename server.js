@@ -4242,11 +4242,11 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 1. YÖN: Sadece LONG ya da WAIT. SHORT kodda kapalıdır (8 coin-gün gerçek backtest: tüm short varyantları toplamda negatif, WR %0-40). BTC'nin yönü bu coinlerde İKİNCİLDİR; coinin kendi yapısı esastır — patlayan coini erken yakalayıp pozisyonda kalmak asıl işindir.
 
-2. REJİM: Karar vermeden önce grafiği evrele ve gerekçenin İLK kelimesi bu olsun: BİRİKİM / İLK-İMPULS / DEVAM / TÜKENİŞ / DAĞITIM. Birikim çıkışı, ilk impuls ve sığ-pullback'li devam = giriş evreleri. Parabolik tükenişte varsayılan DAĞITIMDIR; devamı ancak sığ pullback + 2-3 mum tutunma + yakıt (OI/delta/hacim) İSPATLAR. TOP10'dan TOP1-2'ye tırmanan aday en değerli avdır: birikim/ilk-impuls evresinde ERKEN bin, tepede seyirci kalma.
+2. REJİM: Karar vermeden önce grafiği evrele ve gerekçenin İLK kelimesi bu olsun: BİRİKİM / İLK-İMPULS / DEVAM / TÜKENİŞ / DAĞITIM. Birikim çıkışı, ilk impuls ve sığ-pullback'li devam = giriş evreleri. Parabolik tükenişte varsayılan DAĞITIMDIR; devamı ancak sığ pullback + 2-3 mum tutunma + yakıt (OI/delta/hacim) İSPATLAR. TOP10'dan TOP1-2'ye tırmanan aday en değerli avdır: birikim/ilk-impuls evresinde ERKEN bin, tepede seyirci kalma. İSTİSNA — PATLAMA/İLK-İMPULS: patlamaUyarisi aktifse ya da son 1-2 15m mumda hacim patlamalı (+%10+) kırılım varsa bu TÜKENİŞ DEĞİL İLK-İMPULS'tur; 'reclaim yok' gerekçesi burada GEÇERSİZDİR çünkü dikey harekette reclaim tanım gereği oluşmaz — teyit hacim+delta+kırılım kalıcılığıdır, ilke 5'teki PATLAMA GİRİŞİ uygulanır. (ZAMA dersi 20.07: skor 90+, hacim 6x, +%14 koşarken 'reclaim yok' diye 1 saat WAIT dendi — kaçan fırsat da hata sayılır.)
 
 3. GİRİŞ YERİ — üç soruya SAYIYLA cevap ver: (a) Yapı nerede? (kırılım/reclaim/taban — fiyat ona yaslanmış mı) (b) Yakıt var mı? (OI + delta + hacim aynı yöne mi) (c) -%2'lik doğal çalkantı beni söker mi? Üçü de olumlu → GİR ve sayıları gerekçene yaz. Biri olumsuz → hangisi, hangi sayıyla — yaz ve WAIT de.
 
-4. CANLI KORUMA GERÇEĞİ: Gerçek nefes alanın coin hareketi ~-%2'dir (Binance'teki geniş SL sadece ani çöküş yedeğidir). Girişini bu -%2'nin seni VURMAYACAĞI yerden al: teyitli dip/reclaim/retest SONRASI, yapının hemen üstü. Bacak tepesi, dikey mumun içi ve teyitsiz ilk dip giriş yeri DEĞİLDİR. ATR %4+ coinde teyitsiz giriş yok.
+4. CANLI KORUMA GERÇEĞİ: Gerçek nefes alanın coin hareketi ~-%2'dir (Binance'teki geniş SL sadece ani çöküş yedeğidir). Girişini bu -%2'nin seni VURMAYACAĞI yerden al: teyitli dip/reclaim/retest SONRASI, yapının hemen üstü. Bacak tepesi, dikey mumun içi ve teyitsiz ilk dip giriş yeri DEĞİLDİR. ATR %4+ coinde teyitsiz giriş yok. İSTİSNA: PATLAMA GİRİŞİNDE bu test sabit SL ile sağlanır — yapısal dip çok uzaksa SL ~%8 sabit konur, -%2 çalkantı hesabı aranmaz (kaldıraç valfi zaten 5x'e indirir).
 
 5. FREKANS VE MOD: Günde birden çok kaliteli fırsat NORMALDİR — kanıt eşiğini geçen HER fırsatı al, küçüğü de: küçük/hızlı fırsat → "karKosma":"NORMAL" (vur-kaç scalp: TP yakın likidite/bant tepesi, kârı al çık); gerçek trend devamı (impuls + HTF hizalı + yakıt) → "RUNNER" (TP uzak yapısal hedef, fib 1.618-2.618 — bot TP'yi trend sürdükçe OTOMATİK ileri taşır ve kârı kademeli kilitler; erken kesilme korkusuyla RUNNER fırsatına NORMAL yazma). Eşiği geçmeyene girmek DE, geçeni kaçırmak DA hatadır; ikisi de gerekçe ister. İşlem sıklığı hedef değildir, pozitif beklenti hedeftir. MEGA-KOŞU: dev koşan coinde (TOP1/TOP2) kârlı çıkış sonrası yapı yenilenirse (yeni pullback+tutunma ya da devam impulsu) YENİDEN GİR — dev koşuda tek işlemle yetinmek en pahalı hatadır; bot kârlı runner kapanışında coini öncelikli izlemede tutar, runner trailing'i de sabit yüzde değil 15m yapı dibidir (yapı kırılmadıkça pozisyon yaşar). PATLAMA GİRİŞİ: tek 15m mumda +%12+ ve hacim patlaması (rvol 2.5+) gördüğünde swing dibi çok uzak diye fırsatı ATLAMA — SL'i sabit ~%8'e koy, küçük kaldıraçla runner bin; patlamanın devamı en büyük kâr kaynağıdır (AKE +%257 dersi: yapısal SL beklerken tüm koşu kaçmıştı).
 
@@ -4254,13 +4254,15 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 7. SEVİYELER GERÇEK OLSUN: seviyeHaritasi ve yapiVeFib alanlarındaki FVG/OTE/fib/SSL-BSL ham seviyelerini kullan — entry/tp/sl uydurulmaz, grafikteki gerçek seviyelerden gelir. 1h/4h yapı yönünle çelişiyorsa teyit eşiğini yükselt. makroKonum tavandaysa (24h %80+) teyitsiz LONG alma; dip + dönüş teyidi = en iyi giriş.
 
-8. AKIŞ MÜHRÜ: canliDelta ya da yedekSatisKaniti SATIS iken LONG verme (kod zaten bloklar). canliDelta VERI_YOK + yedekSatisKaniti NOTR ise akışı nötr say ve diğer kanıtlarla karar ver — ölü stream'i "satış zayıflığı" diye okuma.
+8. AKIŞ MÜHRÜ (öncelik sırası net): canliDelta GEÇERLİYSE ESAS ODUR — canliDelta <= -15 iken LONG verme; canliDelta belirgin POZİTİFKEN (>= +10) tek başına yedekSatisKaniti SATIS seni DURDURMAZ (yedek mum renklerinden türer, koşan coinde her pullback mumu SATIS üretir — AAOI dersi 20.07: delta +14.8 ve defter +99.8 alıcıyken yedek yüzünden fırsat kaçtı). Yedek kanıt YALNIZCA canliDelta VERI_YOK iken devreye girer: VERI_YOK + yedek SATIS -> LONG verme; VERI_YOK + yedek NOTR -> akışı nötr say, diğer kanıtlarla karar ver.
 
 9. GÜVEN = BOYUT: confidence alanın doğrudan kaldıraca çevrilir (band 5-50x: güven 90+ ve sakin ATR → 50x'e kadar; 70 altı → 5x). Güvenin, kanıt sayına orantılı olsun: teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+. Hak etmeyen karara yüksek güven yazmak doğrudan para kaybettirir.
 
 10. İÇ TUTARLILIK: Gerekçen kararının KANITI olmalı, karşı-kanıtı değil. Bir zayıflık not ettiysen, onu YENEN somut kanıtı da göster; gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. Kendi R/R hesabın minimumun altındaysa TP/SL'i orana uydurmak için kaydırma — ya gerçek seviyelerle geçerli R/R kur ya da geç. sonIslemlerim'den ders al ama TEK kayıptan kural çıkarma; "ne değişti?" sorusunu sor.
 
 VERİ SÖZLÜĞÜ (özet): mumlar = ham OHLCV (100×5m + 20×15m + 20×1h + 12×4h + btc5m) · funding/oiDegisim/emirDefteriDengesizlik/canliDelta = akış · altSupurmeReclaimVar + supurmeKalite (q>=3 teyitli) = sweep durumu · altSupurmeSuruyorReclaimYok = av sürüyor, girme · likiditeSeviyeleri = TP/SL hedef havuzları · atrYuzde + slTabanOneri = gürültü zemini (SL bunun altına konmaz) · rvol5m = hacim patlaması (>1.5) · r370ErkenYukselis = taze impuls, RUNNER düşün · parabolik1dk = SADECE giriş zamanlaması; TP/SL her zaman 15m yapısından · makroKonum = fiyatın 24h/4h aralığındaki gerçek yeri · shortSqueeze/longSqueeze = kalabalık tuzağı · volatiliteSebep = az önceki hareketin nedeni · pozisyonDurumu/panelAyarlar = bot durumu.
+
+PUSU MODU (R442 — planın çöpe gitmez): WAIT verdiğinde bile "entry" alanına GERÇEK giriş seviyeni yaz (sl/tp ile birlikte) — bot fiyat o seviyeye (±%0.25) gelince seni FRENSİZ ve öncelikli uyandırır, taze veriyle son kararı yine sen verirsin. Plansız WAIT fırsatın tamamen kaybıdır; planlı WAIT kurulmuş pusudur. Plan SL altına inerse pusu otomatik iptal olur.
 
 ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı; TEK SATIR SAF JSON; markdown, açıklama, önsöz YOK. Tüm analizini "reasoning" içine 240 karaktere sığdır (hangi ilke/sayı seni geçirdi ya da durdurdu).
 {"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 240 karakter","plan":"max 120 karakter","ayar":{OPSİYONEL}}
@@ -6136,6 +6138,48 @@ const AI_BRAIN_STRICT_GATE = process.env.AI_BRAIN_STRICT_GATE !== '0';
 let r308AiSpendDay = new Date().toISOString().slice(0,10);
 let r308AiSpendCount = 0;
 const r308AiLastBySymbol = new Map();
+
+// ═══ R442 PUSU MODU (kullanıcı ilkesi 20.07): AI'ın planı çöpe atılmaz, BEKLEYEN EMRE dönüşür ═══
+// Gerçek trader seviyeye alarm kurar; fiyat gelince vurur. AI "WAIT ama planım şu: X'ten gir" dediğinde
+// ya da R437 kovalama kapısı "plana dönerse gir" dediğinde plan buraya yazılır. 20sn'de bir fiyat
+// kontrol edilir; fiyat plan bölgesine (±%0.25) gelirse AI tekrar-freni ATLANARAK anında çağrılır.
+// Plan SL altına inerse ya da 75dk geçerse pusu iptal — bayat plan işletilmez. Karar yine AI'da (tek beyin).
+const r442PusuPlanlar = new Map();  // BASE → {entry, sl, tp, conf, ts, expiresAt, kaynak}
+const r442ForceAi = new Map();      // BASE → ts (tekrar freni tek seferlik atlanır)
+function r442PusuKur(symbolFull, ai, kaynak) {
+  try {
+    const base = String(symbolFull||'').replace('USDT','').toUpperCase();
+    const entry = Number(ai?.entry || 0);
+    if (!(entry > 0) || String(ai?.side||'').toUpperCase() === 'SHORT') return;
+    r442PusuPlanlar.set(base, {
+      entry, sl: Number(ai?.sl||0) || null, tp: Number(ai?.tp||0) || null,
+      conf: Number(ai?.confidence||0), ts: Date.now(),
+      expiresAt: Date.now() + 75*60*1000, kaynak: String(kaynak||'')
+    });
+    logAuto(`🪤 ${base} R442 PUSU kuruldu (${kaynak}): fiyat ${entry} bölgesine (±%0.25) gelirse AI frensiz uyandırılır (75dk geçerli, SL ${ai?.sl||'—'} altında iptal)`);
+  } catch(_e) {}
+}
+async function r442PusuKontrol() {
+  try {
+    const now = Date.now();
+    for (const [base, p] of r442PusuPlanlar) {
+      if (now > p.expiresAt) { r442PusuPlanlar.delete(base); logAuto(`🪤 ${base} R442 pusu süresi doldu (75dk) — kaldırıldı`); continue; }
+      const full = base + 'USDT';
+      let mark = 0;
+      try { const t = await bPub('/fapi/v1/ticker/price', `symbol=${full}`); mark = Number(t?.price || 0); } catch(_e) { continue; }
+      if (!(mark > 0)) continue;
+      if (p.sl && mark <= p.sl) { r442PusuPlanlar.delete(base); logAuto(`🪤 ${base} R442 pusu İPTAL: fiyat ${mark} plan SL'inin (${p.sl}) altına indi — plan geçersizleşti, körlemesine işletilmez`); continue; }
+      const sapma = Math.abs(mark - p.entry) / p.entry * 100;
+      if (sapma <= 0.25) {
+        r442PusuPlanlar.delete(base);
+        r442ForceAi.set(base, now);
+        try { r125RegisterPriorityWake(full, 'R442_PUSU_TETIK', 95); } catch(_e) {}
+        logAuto(`🎯 ${base} R442 PUSU TETİKLENDİ: fiyat ${mark} AI planına (${p.entry}) ulaştı — AI frensiz + öncelikli değerlendirmeye çağrılıyor (taze veriyle son kararı yine AI verir)`);
+      }
+    }
+  } catch(_e) {}
+}
+setInterval(() => { r442PusuKontrol().catch(()=>{}); }, 20*1000);
 let r308LastAiDecision = null;
 function r308Round(v, d=6) { const n=Number(v); return Number.isFinite(n) ? Number(n.toFixed(d)) : null; }
 function r308AiDailyInfo(){
@@ -17079,8 +17123,20 @@ function r308ReserveAiSpend(symbol, source='R308', fingerprint='') {
   // özeti (yön+kademe+seviye). Farklıysa = yeni durum = AI'ya değer.
   const curFp = String(fingerprint||'').slice(0,120);
   const sameState = prev && curFp && String(prev.fingerprint||'') === curFp;
-  if (prev && sameState && AI_BRAIN_REVIEW_GAP_MS > 0 && now - prev.ts < AI_BRAIN_REVIEW_GAP_MS) {
-    return { ok:false, reason:`${sym} tekrar freni ${Math.ceil((AI_BRAIN_REVIEW_GAP_MS - (now-prev.ts))/1000)}sn (durum aynı)` };
+  // R440: patlama bayrağı TAZE olan coinde tekrar freni YARIYA iner — dikey koşuda 7 dk beklemek
+  // koşunun kendisini kaçırtıyordu (ZAMA 20.07 dersi: skor 90+ ile 1 saat slot aldı, işlem doğmadı).
+  let r440Gap = AI_BRAIN_REVIEW_GAP_MS;
+  try {
+    const _pf = (typeof __r328PatlamaFlags === 'object' && __r328PatlamaFlags) ? __r328PatlamaFlags[sym] : null;
+    if (_pf && _pf.detected && (now - _pf.ts < 10*60*1000)) r440Gap = Math.round(AI_BRAIN_REVIEW_GAP_MS / 2);
+  } catch(_e) {}
+  // R442: pusu tetiklendiyse tekrar freni TEK SEFERLİK atlanır — fiyat AI'ın kendi istediği yere geldi
+  const r442Force = r442ForceAi.get(sym);
+  if (r442Force && (now - r442Force < 5*60*1000)) {
+    r442ForceAi.delete(sym);
+    logAuto(`🎯 ${sym} R442: pusu tetiği — tekrar freni atlandı, AI taze veriyle karar veriyor`);
+  } else if (prev && sameState && r440Gap > 0 && now - prev.ts < r440Gap) {
+    return { ok:false, reason:`${sym} tekrar freni ${Math.ceil((r440Gap - (now-prev.ts))/1000)}sn (durum aynı)` };
   }
   r308AiSpendCount += 1;
   r308AiLastBySymbol.set(sym, { ts:now, source, fingerprint:curFp });
@@ -17297,6 +17353,7 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
               r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:`R437 kovalama: fiyat ${r437Mark} plana (${r437Entry}) %${Math.abs(r437Sapma).toFixed(2)} uzak (tolerans %${r437Tol.toFixed(2)})`});
               logAuto(`⛔ ${sym} R437 GİRİŞ KOVALAMA KAPISI: plan ${r437Entry} · şu an ${r437Mark} (%${r437Sapma.toFixed(2)}) > tolerans %${r437Tol.toFixed(2)} — MARKET ile kovalanmaz (ACE -11.6 dersi); plana dönerse girilir`);
               try { r125RegisterPriorityWake(fullSym, 'R437_PLAN_BEKLE', 70); } catch(_e) {}
+              r442PusuKur(fullSym, ai, 'R437-kovalama');  // R442: fiyat plana dönerse AI frensiz çağrılır
               continue;
             }
           }
@@ -19723,6 +19780,8 @@ async function runAutoScan(prioritySymbol=null) {
                   if (global.__aiWaitStreak >= 8) streakNot = ` ⚠️ ARDI ARDINA ${global.__aiWaitStreak} WAIT — AI fazla pasif (oran %${oran})`;
                   logAuto(`⛔ ${coin.symbol} AI PRO TRADER WAIT dedi — emir AÇILMADI: ${ai.reasoning}${streakNot}`);
                   markAutoSkip(coin.symbol, `AI WAIT: ${ai.reasoning}`, {rec:ai.side, score, aiBrain:ai});
+                  // R442: WAIT ama giriş planı VARSA plan pusuya yazılır — fiyat plana gelince AI anında tekrar bakar
+                  if (Number(ai?.entry) > 0) r442PusuKur(coin.fullSymbol, ai, 'AI-WAIT-planlı');
                   continue;
                 }
                 // R324C: GİR kararında streak sıfırla
@@ -19756,10 +19815,20 @@ async function runAutoScan(prioritySymbol=null) {
                   markAutoSkip(coin.symbol, `R427/R429: R/R ${r427RR.toFixed(2)} < ${r429RRTaban.toFixed(2)} ince kenar`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
-                if (ai.side === 'LONG' && r424YedekSatis === 'SATIS') {
-                  logAuto(`⛔ ${coin.symbol} R416 MÜHÜR: yedekSatisKaniti=SATIS iken LONG REDDİ (NEAR/BEAT/OGN dersi) — momentum+mum-delta gerçek satış, VERI_YOK istisnası geçersiz. AI güven ${ai.confidence}% olsa da AÇILMADI.`);
-                  markAutoSkip(coin.symbol, `R416: yedekSatisKaniti SATIS — delta-satış anında LONG bloke`, {rec:ai.side, score, aiBrain:ai});
+                // R441 (canlı ders 20.07 AAOI): yedek kanıt YALNIZCA canlı delta yok/zayıfken bloklar —
+                // R411'in asıl niyeti buydu. AAOI'de canlı delta +14.8 (tr:500, taze) ve emir defteri +99.8
+                // alıcı baskınken mum-bazlı yedek 'SATIS' dedi ve LONG bloklandı; koşan coinde her pullback
+                // mumu SATIS üretir. Kural: canlı delta GEÇERLİ ve >= +10 ise yedek tek başına bloklayamaz.
+                const r441CanliDelta = Number(aiData?.cvdDelta);
+                const r441CanliGecerli = (aiData?.cvdTickFresh === true || aiData?.cvdValid === true) && Number.isFinite(r441CanliDelta);
+                const r441CanliAlisGuclu = r441CanliGecerli && r441CanliDelta >= 10;
+                if (ai.side === 'LONG' && r424YedekSatis === 'SATIS' && !r441CanliAlisGuclu) {
+                  logAuto(`⛔ ${coin.symbol} R416/R441 MÜHÜR: yedekSatisKaniti=SATIS ve canlı delta desteklemiyor (${r441CanliGecerli ? r441CanliDelta.toFixed(1) : 'VERI_YOK'}) — LONG REDDİ. AI güven ${ai.confidence}% olsa da AÇILMADI.`);
+                  markAutoSkip(coin.symbol, `R416/R441: yedek SATIS + canlı delta desteksiz — LONG bloke`, {rec:ai.side, score, aiBrain:ai});
                   continue;
+                }
+                if (ai.side === 'LONG' && r424YedekSatis === 'SATIS' && r441CanliAlisGuclu) {
+                  logAuto(`✅ ${coin.symbol} R441: mum-bazlı yedek SATIS dedi AMA canlı delta +${r441CanliDelta.toFixed(1)} (taze) alıcı baskın — yedek tek başına bloklamaz, emir devam (AAOI dersi)`);
                 }
                 if (ai.side !== 'LONG' && ai.side !== 'SHORT') {
                   logAuto(`⛔ ${coin.symbol} AI geçersiz yön (${ai.side}) — emir AÇILMADI`);
@@ -20126,6 +20195,7 @@ async function runAutoScan(prioritySymbol=null) {
               logAuto(`⛔ ${coin.symbol} R437 GİRİŞ KOVALAMA KAPISI: AI plan ${r437Entry} · şu an ${r437Mark} (+%${r437Sapma.toFixed(2)}) > tolerans %${r437Tol.toFixed(2)} — MARKET ile kovalanmaz (ACE -11.6 dersi); plana dönerse girilir`);
               markAutoSkip(coin.symbol, `R437 kovalama: plandan +%${r437Sapma.toFixed(2)} uzak`, {rec:recommendation, score, aiBrain:r437Ai});
               try { r125RegisterPriorityWake(coin.fullSymbol, 'R437_PLAN_BEKLE', 70); } catch(_e) {}
+              r442PusuKur(coin.fullSymbol, r437Ai, 'R437-kovalama');  // R442: fiyat plana dönerse AI frensiz çağrılır
               continue;
             }
           }
