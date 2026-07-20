@@ -17268,6 +17268,27 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
         const margin = Number(cfg.usdtAmount || autoScanState?.settings?.usdtAmount || 0);
         if (!(margin > 0)) { r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:'Panel marjı yok'}); logAuto(`⛔ ${sym} AI canlı emir yok: panel marjı yok`); continue; }
 
+        // ═══ R437 GİRİŞ KOVALAMA KAPISI (ACE canlı dersi 20.07: plan 0.14115, market dolum 0.14264
+        // (+%1.05), 4h %91 tavanda kovalanan giriş 5 dakikada -%11.6 ile kesildi) ═══
+        // Fiyat AI'ın giriş planından tolerans üstü uzaklaştıysa MARKET ile KOVALANMAZ; öncelikli
+        // izlemeye alınır, fiyat plana dönerse sonraki turda girilir. Tolerans = max(%0.30, ATR×0.08), tavan %1.2.
+        try {
+          const r437Entry = Number(ai.entry || 0);
+          if (r437Entry > 0) {
+            const r437Tick = await bPub('/fapi/v1/ticker/price', `symbol=${fullSym}`);
+            const r437Mark = Number(r437Tick?.price || 0);
+            const r437AtrP = Number(r?.atrPct || r?.atr || 5) || 5;
+            const r437Tol = Math.min(1.2, Math.max(0.30, r437AtrP * 0.08));
+            const r437Sapma = r437Mark > 0 ? (r437Mark - r437Entry) / r437Entry * 100 : 0;
+            const r437Kovalama = ai.side === 'LONG' ? (r437Sapma > r437Tol) : (r437Sapma < -r437Tol);
+            if (r437Kovalama) {
+              r308SetLastAiDecision({status:'AI_EMİR_RED', symbol:sym, ai, quality:q, candidate:r, rejectReason:`R437 kovalama: fiyat ${r437Mark} plana (${r437Entry}) %${Math.abs(r437Sapma).toFixed(2)} uzak (tolerans %${r437Tol.toFixed(2)})`});
+              logAuto(`⛔ ${sym} R437 GİRİŞ KOVALAMA KAPISI: plan ${r437Entry} · şu an ${r437Mark} (%${r437Sapma.toFixed(2)}) > tolerans %${r437Tol.toFixed(2)} — MARKET ile kovalanmaz (ACE -11.6 dersi); plana dönerse girilir`);
+              try { r125RegisterPriorityWake(fullSym, 'R437_PLAN_BEKLE', 70); } catch(_e) {}
+              continue;
+            }
+          }
+        } catch(_e) {}
         r308SetLastAiDecision({status:'AI_EMİR_YOLDA', symbol:sym, ai, quality:q, candidate:r, order:{state:'YOLDA', margin, leverage:lev}});
         logAuto(`🚀 ${sym} AI PRO TRADER CANLI EMİR: ${ai.side} · güven:${ai.confidence}% · RR:${q.rr.toFixed(2)} · SL:${q.slPct.toFixed(2)}% · marj:${margin}USDT lev:${lev}x`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
@@ -18925,7 +18946,14 @@ async function runAutoScan(prioritySymbol=null) {
         // Not: yüksek kaldıraç boyut çarpanıdır, güven çarpanı değil — kanıt zayıfsa 5x'te kal.
         {
           const _oldLevFloor = executeLeverage;
-          const _g = Number(decisionChain?.brainConfidence || 0);
+          // R437: güven kaynağı DÜZELTİLDİ — canlı ACE dersi 20.07: AI güven 72 dedi, brainConfidence
+          // 100 okundu (eski motor skoru). Yüksek kaldıraç sadece AI'ın KENDİ güveniyle hak edilir;
+          // iki kaynak varsa KÜÇÜK olan alınır (temkinli), AI güveni yoksa eski davranış.
+          const _gAi = Number(decisionChain?.aiBrain?.confidence);
+          const _gEski = Number(decisionChain?.brainConfidence || 0);
+          const _g = (Number.isFinite(_gAi) && _gAi > 0)
+            ? ((_gEski > 0) ? Math.min(_gAi, _gEski) : _gAi)
+            : _gEski;
           const _atr = Number(coinAtrPct || 99);
           const _gr = Number(coin.gainerRank || 99);
           let _hedefLev = 5;
@@ -20065,6 +20093,24 @@ async function runAutoScan(prioritySymbol=null) {
             usdtAmount = r389Yeni;
           } else { usdtAmount = r389PanelMarj; }
         } catch(_) { usdtAmount = r389PanelMarj; }
+        // ═══ R437 GİRİŞ KOVALAMA KAPISI (tarama yolu) — ACE canlı dersi 20.07 ═══
+        try {
+          const r437Ai = decisionChain?.aiBrain;
+          const r437Entry = Number(r437Ai?.entry || 0);
+          if (r437Entry > 0 && recommendation === 'LONG') {
+            let r437Mark = Number(coin.lastPrice || 0);
+            try { const t = await bPub('/fapi/v1/ticker/price', `symbol=${coin.fullSymbol}`); if (Number(t?.price) > 0) r437Mark = Number(t.price); } catch(_e) {}
+            const r437AtrP = Number(coinAtrPct || 5) || 5;
+            const r437Tol = Math.min(1.2, Math.max(0.30, r437AtrP * 0.08));
+            const r437Sapma = r437Mark > 0 ? (r437Mark - r437Entry) / r437Entry * 100 : 0;
+            if (r437Sapma > r437Tol) {
+              logAuto(`⛔ ${coin.symbol} R437 GİRİŞ KOVALAMA KAPISI: AI plan ${r437Entry} · şu an ${r437Mark} (+%${r437Sapma.toFixed(2)}) > tolerans %${r437Tol.toFixed(2)} — MARKET ile kovalanmaz (ACE -11.6 dersi); plana dönerse girilir`);
+              markAutoSkip(coin.symbol, `R437 kovalama: plandan +%${r437Sapma.toFixed(2)} uzak`, {rec:recommendation, score, aiBrain:r437Ai});
+              try { r125RegisterPriorityWake(coin.fullSymbol, 'R437_PLAN_BEKLE', 70); } catch(_e) {}
+              continue;
+            }
+          }
+        } catch(_e) {}
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} (Binance yedek · canlı kesiş ~-%2) kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
           method:'POST',
