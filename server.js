@@ -6109,11 +6109,11 @@ const ANTHROPIC_MODEL   = String(process.env.ANTHROPIC_MODEL || process.env.AI_B
 // R377G: canlı ders 08.07 15:20 — Sonnet 5 çıktı TAM 2000'e çarptı (thinking hepsini yedi, JSON hiç
 // tamamlanamadı → "markdown döndü, güven:0"). Thinking'li modele 6000 ver; env AI_MAX_TOKENS ile ayarlanır.
 const AI_MAX_TOKENS = parseInt(process.env.AI_MAX_TOKENS || '0', 10)
-  || (/opus|fable|mythos|sonnet-5/i.test(ANTHROPIC_MODEL) ? 6000 : 450); // R377B: Sonnet 5 adaptive thinking kullanır (effort varsayılan HIGH) — thinking max_tokens'a sayılır; 450 keserdi (önceki Sonnet 5 denemesinin başarısızlık sebebi = R323 Opus dersinin tekrarı). // R367: Sonnet 600→450 (çıktı kısma, maliyet -%25). Gerekçe max 90 karakter, JSON küçük, 450 fazlasıyla yeter.
+  || (/opus|fable|mythos|sonnet-5/i.test(ANTHROPIC_MODEL) ? 4000 : 450); // R377B: Sonnet 5 adaptive thinking kullanır (effort varsayılan HIGH) — thinking max_tokens'a sayılır; 450 keserdi (önceki Sonnet 5 denemesinin başarısızlık sebebi = R323 Opus dersinin tekrarı). // R367: Sonnet 600→450 (çıktı kısma, maliyet -%25). Gerekçe max 90 karakter, JSON küçük, 450 fazlasıyla yeter.
 const AI_BRAIN_ENABLED  = process.env.AI_BRAIN_ENABLED === '1' || process.env.AI_BRAIN_ENABLED === 'true';
 const AI_BRAIN_SHADOW   = process.env.AI_BRAIN_SHADOW !== '0'; // varsayılan: gölge mod (işlem AÇMAZ, sadece gösterir)
 const AI_BRAIN_B_MODE   = process.env.AI_BRAIN_B_MODE === '1'; // R308I: VARSAYILAN KAPALI. Tek temiz kapı = ana döngü AI gate. İkinci emir yolu (çakışma kaynağı) kapatıldı.
-const AI_BRAIN_TOP_N    = Math.max(1, Math.min(2, parseInt(process.env.AI_BRAIN_TOP_N || '2', 10) || 2));
+const AI_BRAIN_TOP_N    = Math.max(1, Math.min(4, parseInt(process.env.AI_BRAIN_TOP_N || '3', 10) || 3));  // R439: 2→3 (tavan 4) — 2 saat 0 işlem dersi: AI neredeyse hep aynı coini görüyordu; huni genişletildi, maliyet R438 mum diyetiyle dengelendi
 const AI_BRAIN_REVIEW_GAP_MS = Math.max(0, (parseInt(process.env.AI_BRAIN_REVIEW_GAP_SEC || '420', 10) || 420) * 1000); // R310V: 900→300 varsayılan (aynı coine 5dk içinde 2. AI çağrısı = boşa para). Railway env AI_BRAIN_REVIEW_GAP_SEC=300 yap.
 const AI_BRAIN_MAX_DAILY_CALLS = Math.max(1, parseInt(process.env.AI_BRAIN_MAX_DAILY_CALLS || '150', 10) || 150); // R367 HİBRİT: 500→150 varsayılan (~$100-117/ay tavan). Limit dolunca R367 kod koruması devralır (bedava). Env AI_BRAIN_MAX_DAILY_CALLS ile artırılabilir.
 // R323: MALİYET-TASARRUF MODU (Opus pahalı — frekansı BOZMADAN çağrı maliyetini düşürür).
@@ -9720,9 +9720,18 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
               if (_hi24 > _lo24 && _px24 > 0) {
                 const _rp24 = (_px24 - _lo24) / (_hi24 - _lo24);
                 if (_rp24 >= 0.85) {
-                  r374Olay('TOP2_RED_TEPE', String(ea.symbol), `24h konum %${(_rp24*100).toFixed(0)} — günlük tepede, taze-aday slotu verilmedi`);
-                  logAuto(`🌱 R374-B ${ea.symbol} taze-aday REDDİ: 24h konum %${(_rp24*100).toFixed(0)} (tepeye yapışık) — slot gerçek taze coine saklandı`);
-                  continue;
+                  // R439 (canlı ders 20.07: ZAMA patlama skoru 100 iken tepe gardı 3 kez slot vermedi,
+                  // INJ %97'de 3 kez reddedildi — 2 saat 0 işlem): gainer botu TEPEDE yaşar; güçlü
+                  // patlama imzası (skor 75+ ya da hacim 3x+) tepe gardını YENER. Cılız coin yine reddedilir.
+                  const r439Patlama = (r413Skor >= 75) || (r387Hacim >= 3.0);
+                  if (r439Patlama) {
+                    r374Olay('TOP2_TEPE_PATLAMA_GECTI', String(ea.symbol), `24h konum %${(_rp24*100).toFixed(0)} tepede AMA patlama skoru ${r413Skor} / hacim ${r387Hacim}x — R439 slot verildi (ZAMA/INJ dersi)`);
+                    logAuto(`🚀 ${ea.symbol} R439: tepede ama patlama imzası güçlü (skor ${r413Skor}, hacim ${r387Hacim}x) — taze-aday slotu verildi, karar AI'ın`);
+                  } else {
+                    r374Olay('TOP2_RED_TEPE', String(ea.symbol), `24h konum %${(_rp24*100).toFixed(0)} — günlük tepede + patlama imzası zayıf (skor ${r413Skor}), taze-aday slotu verilmedi`);
+                    logAuto(`🌱 R374-B ${ea.symbol} taze-aday REDDİ: 24h konum %${(_rp24*100).toFixed(0)} (tepeye yapışık, imza zayıf) — slot gerçek taze coine saklandı`);
+                    continue;
+                  }
                 }
               }
               const coin = normalizeTickerToCoin(tk);
@@ -14276,12 +14285,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda ve KAPANMIŞTIR (oluşan mum pakete girmez). En eski en solda.',
       son15mMumYasiSn: (() => { try { const kk = (k15m||[]).filter(c => Number(c[0]) + 900000 <= Date.now());
         return kk.length ? Math.round((Date.now() - (Number(kk[kk.length-1][0]) + 900000)) / 1000) : null; } catch(_) { return null; } })(), // R402: doğrulama damgası — son kapanmış 15m mumu kaç sn önce kapandı
-      '1d':  r308PackKlines(k1d, 20, 86400000),
-      '4h':  r308PackKlines(k4h, 30, 14400000), // R401: 3 gün→5 gün (rejim sınıflandırması derinlik ister)
-      '1h':  r308PackKlines(k1h, 48, 3600000), // R401: 1 gün→2 gün
-      '15m': r308PackKlines(k15m, 96, 900000),
-      '5m':  r308PackKlines(k5m, 36, 300000), // R401: 2 saat→3 saat mikro bağlam
-      '1m':  r308PackKlines(k1m, 60, 60000), // R366: 1dk×60 (son 1 saat) — parabolik hareket için
+      // R438 MALİYET DİYETİ (canlı ölçüm 20.07: 47dk'da 0.51$ = ~8.5¢/çağrı; ana kalem ham mum paketi,
+      // her çağrıda cache'siz gider). Derinlik yarıya indirildi — karar için kritik pencereler korundu:
+      // 1d 10 gün, 4h ~2.7 gün, 1h 1 gün, 15m 12 saat, 5m 2 saat, 1m 30dk. Sistem prompt'u zaten cache'li.
+      '1d':  r308PackKlines(k1d, 10, 86400000),
+      '4h':  r308PackKlines(k4h, 16, 14400000),
+      '1h':  r308PackKlines(k1h, 24, 3600000),
+      '15m': r308PackKlines(k15m, 48, 900000),
+      '5m':  r308PackKlines(k5m, 24, 300000),
+      '1m':  r308PackKlines(k1m, 30, 60000),
       btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6, 300000)
     };
     // R366: 1dk parabolik fib analizi (LONG & SHORT) — analiz çıktısına eklenir
@@ -19230,10 +19242,17 @@ async function runAutoScan(prioritySymbol=null) {
           targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
           stopPrice   = isLong ? +(entryRef * (1 - userSLPct/100)).toFixed(8) : +(entryRef * (1 + userSLPct/100)).toFixed(8);
         } catch(_e188risk) { logAuto(`⚠️ ${coin.symbol} R188 final risk normalize hatası: ${String(_e188risk?.message||_e188risk).slice(0,80)}`); }
-        if (userRR < minRR) {
+        // R439: AI onaylı LONG'da panel-RR ön kapısı devre dışı — AI'ın KENDİ planının R/R'ı
+        // R427/R429 kapısında zaten >=1.5 zorlanıyor; panel TP/SL yüzdelerinden türeyen bu ikinci
+        // hesap AI görmeden coin eliyordu (ZAMA 1.07<1.1 — patlama skoru 100'dü, işlem hiç doğmadı).
+        const r439AiOnayli = !!(decisionChain?.aiBrain && String(decisionChain.aiBrain.side||'').toUpperCase() === 'LONG');
+        if (userRR < minRR && !r439AiOnayli) {
           logAuto(`${coin.symbol} final R/R ${userRR.toFixed(2)} < min ${minRR} — atlandı`);
           markAutoSkip(coin.symbol, `Final RR düşük ${userRR.toFixed(2)}<${minRR}`, {rec:recommendation, score});
           continue;
+        }
+        if (userRR < minRR && r439AiOnayli) {
+          logAuto(`✅ ${coin.symbol} R439: panel R/R ${userRR.toFixed(2)} düşük ama AI planı onaylı (AI R/R kapısı ayrıca çalıştı) — emir engellenmedi`);
         }
 
         // R288: FINAL GRAPH GOVERNOR — analizden kaçan R156/TOP10 bypass'ı emirden hemen önce tekrar kontrol et.
