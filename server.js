@@ -7093,6 +7093,8 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
   saveTradeLedger();
   // R181: Açılış bildirimi ledger kayıt anından direkt gider; karmaşık kart yolu bypass.
   try { r181TradeOpenCard(row, state).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_OPEN_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_) {}
+  // R466: Telegram açılış bildirimi (altyapı hazırdı, bağlı değildi)
+  try { if (typeof tgNotifyTradeOpenOnce === 'function') tgNotifyTradeOpenOnce(row, state); } catch(_) {}
   return row;
 }
 let r345SonIslemler = []; // R345: oturum-içi ders hafızası (son 12 kapanış, AI'a son 8'i gider)
@@ -15309,6 +15311,42 @@ async function r372GetBilesikMarjin(apiKey, apiSecret, fallbackMargin) {
 
 // R370-E: COIN ZARAR TAKİBİ (VANRY dersi: aynı coin üst üste kaybediyor, 3 büyük kayıp hep VANRY'di).
 // Bir coin kısa sürede 2 kez zarar yazdıysa, o coini 2 saat BLOKLA (aynı tuzağa 3. kez düşme).
+// ═══ R465 GÜNLÜK ZARAR SİGORTASI ═══
+// İlk analiz raporunda (20.07) önerilmiş ama hiç uygulanmamıştı. Amaç: kötü bir günde
+// hesabı korumak. Gün içi GERÇEKLEŞEN zarar tavanı aşınca yeni giriş durur; mevcut
+// pozisyonlar yönetilmeye devam eder (zorla kapatılmaz). Gün TSİ 00:00'da sıfırlanır.
+// Tavan: env GUNLUK_ZARAR_LIMIT_USD (sabit $) ya da GUNLUK_ZARAR_LIMIT_PCT (bakiye %'si).
+// Varsayılan: bakiyenin %15'i — 50$ hesapta 7.5$, üç ortalama kayıp kadar.
+let r465Gun = '', r465GunlukPnl = 0, r465Duruldu = false;
+function r465GunKontrol() {
+  const bugun = new Date().toISOString().slice(0,10);
+  if (r465Gun !== bugun) { r465Gun = bugun; r465GunlukPnl = 0; r465Duruldu = false; }
+}
+function r465PnlEkle(pnl) {
+  try {
+    r465GunKontrol();
+    const p = Number(pnl); if (!Number.isFinite(p)) return;
+    r465GunlukPnl += p;
+    const limit = r465Limit();
+    if (!r465Duruldu && limit > 0 && r465GunlukPnl <= -limit) {
+      r465Duruldu = true;
+      const msg = `🛑 GÜNLÜK ZARAR SİGORTASI: bugünkü net ${r465GunlukPnl.toFixed(2)}$ ≤ -${limit.toFixed(2)}$ tavanı — yeni giriş DURDURULDU (açık pozisyonlar yönetilmeye devam eder). Yarın 00:00'da sıfırlanır.`;
+      logAuto(msg);
+      try { if (typeof tgAlert === 'function') tgAlert(msg); } catch(_) {}
+    }
+  } catch(_) {}
+}
+function r465Limit() {
+  try {
+    const sabit = Number(process.env.GUNLUK_ZARAR_LIMIT_USD || 0);
+    if (sabit > 0) return sabit;
+    const pct = Number(process.env.GUNLUK_ZARAR_LIMIT_PCT || 15);
+    const bak = Number(r372BakiyeCache?.value || 0);
+    return bak > 0 ? bak * pct / 100 : 0;
+  } catch(_) { return 0; }
+}
+function r465Bloklu() { r465GunKontrol(); return r465Duruldu; }
+
 const r370CoinZararMap = new Map(); // base symbol → { count, lastLossTs, blockUntil }
 function r370CoinZararKaydet(baseSymbol) {
   try {
@@ -18406,6 +18444,12 @@ async function runAutoScan(prioritySymbol=null) {
       await sleep(900);
     } catch(_e) {}
     logAuto(`Tarama başladı: ${scanList.length} coin, max poz:${maxPositions}, mevcut:${openPos.length}`);
+    // R465: günlük zarar tavanı aşıldıysa yeni giriş yok (açık pozisyonlar yönetilir)
+    if (typeof r465Bloklu === 'function' && r465Bloklu()) {
+      logAuto(`🛑 R465 GÜNLÜK ZARAR SİGORTASI AKTİF — bugünkü net ${r465GunlukPnl.toFixed(2)}$ · yeni giriş açılmıyor, açık pozisyonlar yönetiliyor`);
+      autoScanState.lastAction = 'R465 günlük zarar sigortası — yeni giriş durduruldu';
+      return;
+    }
 
     // 3. Her coini analiz et
     // ═══ R309E: AI'YA DEVİR SAYACI ═══
@@ -18578,6 +18622,20 @@ async function runAutoScan(prioritySymbol=null) {
         let recommendation = analysis.recommendation;
         let decisionChain = analysis.decisionChain || {};
         if (isExpired || freshness === 'EXPIRED') { markAutoSkip(coin.symbol, 'Sinyal süresi geçmiş'); continue; }
+
+        // ═══ R463 COIN ZARAR BLOĞU (canlı kanıt 21.07: LA aynı gün 4 kez açıldı, 4'ü de kayıp
+        // — toplam -9.96$; günün en büyük 2 kaybı bu coinden) ═══
+        // r370CoinBlokluMu fonksiyonu KODDA VARDI ama hiçbir yerden ÇAĞRILMIYORDU (ölü kod).
+        // 60dk aynı-yön cooldown'ı yetmiyor: coin her saat başı yeniden deneniyor ve aynı
+        // tuzağa düşülüyordu. Artık 90dk içinde 2 zarar yazan coin 2 saat tamamen bloklu.
+        try {
+          const _zb = (typeof r370CoinBlokluMu === 'function') ? r370CoinBlokluMu(coin.symbol) : { blok:false };
+          if (_zb.blok) {
+            logAuto(`🚫 ${coin.symbol} R463 COIN ZARAR BLOĞU: 90dk içinde 2+ zarar yazdı — ${_zb.kalanDk}dk daha bloklu (aynı tuzağa ısrar yok)`);
+            markAutoSkip(coin.symbol, `R463 coin zarar bloğu (${_zb.kalanDk}dk kaldı)`, {rec:recommendation, score});
+            continue;
+          }
+        } catch(_zbe) {}
 
         // ═══ R455 ERKEN MEKANİK TARAMA (mimari düzeltme) ═══
         // Motor artık zincirin SONUNDA değil BAŞINDA çalışır. Sebep (21.07 canlı teşhis):
@@ -21100,6 +21158,10 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   }
   // R370-E: zarar kapanışında coini zarar-takibine kaydet (2 zarar/90dk = 2 saat blok)
   try { if (Number.isFinite(pnlVal) && pnlVal < -0.01 && typeof r370CoinZararKaydet === 'function') r370CoinZararKaydet(symbol); } catch(_) {}
+  // R465: her kapanış günlük zarar sigortasına işlenir
+  try { if (Number.isFinite(pnlVal) && typeof r465PnlEkle === 'function') r465PnlEkle(pnlVal); } catch(_) {}
+  // R466: Telegram kapanış bildirimi (altyapı hazırdı, bağlı değildi)
+  try { if (typeof tgNotifyTradeCloseOnce === 'function') tgNotifyTradeCloseOnce(row, state, cls); } catch(_) {}
   const margin = Number(state?.usdtAmount || state?.marginUSDT || autoConfig?.usdtAmount || 0);
   const roiByPnl = margin > 0 && Number.isFinite(pnlVal) ? pnlVal / margin * 100 : null;
 
