@@ -18424,7 +18424,8 @@ async function runAutoScan(prioritySymbol=null) {
         return !!(f && f.detected && (Date.now() - f.ts < 5*60*1000));
       } catch(_) { return false; }
     };
-    const r309eAiBudgetLeft = (idx, dc) => (r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
+    // R459: mekanik modda "tarama başına AI çağrı bütçesi" kavramı yok — motor bedava.
+    const r309eAiBudgetLeft = (idx, dc) => ((!AI_BRAIN_ENABLED && R447_ENABLED) || r310IsTop2(idx) || r309eAiSentCount < R309E_MAX_AI_PER_SCAN);
     // GERÇEK ADAY FİLTRESİ (R310J ruhu): Bir coin AI'ya SUNULUR eğer FİZİKSEL bir setup/canlılık işareti varsa.
     // Bu ELEME DEĞİL — AI hâlâ gelen adayda yön/giriş/WAIT'e karar verir. Sadece "ölü coin" AI'ya gitmez (para).
     // NOT: "bot her şeyi devretti" bayrağı (r309eFromWait/r300SoftReject) ARTIK aday sayılmaz — o herkese
@@ -18520,6 +18521,11 @@ async function runAutoScan(prioritySymbol=null) {
     // bayrağı olsa dahi AI'a ULAŞAMIYORDU (ERA/LA/ZHIPU gecesi bunun da payı var).
     const r311jInAiPool = (idx) => {
       if (typeof idx !== 'number') return false;
+      // R459: AI KAPALIYKEN HAVUZ LİMİTİ YOK. Bu limit AI ÇAĞRI MALİYETİNİ kısmak için vardı;
+      // mekanik motor bedava çalışır. Canlı kanıt 21.07: 12 coinden 5'i (US, UB, KERNEL, TREE...)
+      // sadece "sıra 5'ten sonra" olduğu için motora ulaşamıyordu — maliyet kaygısı olmayan bir
+      // kısıt, fırsat kesiyordu. AI açıkken eski davranış aynen korunur.
+      if (!AI_BRAIN_ENABLED && R447_ENABLED) return true;
       if (idx < R311J_AI_POOL) return true;
       try {
         const c = scanList?.[idx];
