@@ -4004,6 +4004,37 @@ function r329FibLiqMap(candles, lastPrice, liqLevels) {
 const R447_ENABLED = String(process.env.MEKANIK_GIRIS ?? '1') !== '0';
 // R451: log/panel metinlerinde karar merciini DOĞRU yaz (AI kapalıyken 'AI verecek' demek yanıltıcıydı)
 function r451Merci(){ try { return (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) ? 'AI' : (R447_ENABLED ? 'MEKANİK MOTOR' : 'KAPALI'); } catch(_e){ return 'AI'; } }
+// R456: MOTOR TEŞHİSİ — imza çıkmadığında NEDEN çıkmadığını sayıyla raporlar.
+// Sessiz try/catch yerine görünür teşhis: "hacim 0.4x (eşik 1.2)" gibi.
+function r447Teshis(symbol, data = {}) {
+  try {
+    const k = data?.candles?.['15m'];
+    if (!Array.isArray(k)) return 'mum paketi YOK (analysis.r308RawCandles boş)';
+    if (k.length < 16) return `mum sayısı yetersiz (${k.length}/16)`;
+    const vnum = (v) => { const t = String(v); const x = parseFloat(t); return t.endsWith('M') ? x*1e6 : t.endsWith('K') ? x*1e3 : x; };
+    const N = k.length, son = k[N-1];
+    const o = Number(son[0]), h = Number(son[1]), l = Number(son[2]), c = Number(son[3]);
+    const onceki = k.slice(N-13, N-1);
+    const vOrt = onceki.reduce((a,x)=>a+vnum(x[4]),0) / Math.max(1, onceki.length);
+    const rv = vOrt > 0 ? vnum(son[4])/vOrt : 1;
+    const maxH = Math.max(...onceki.map(x=>Number(x[1])));
+    const govde = Math.abs(c-o), aralik = (h-l) || 1e-12;
+    const mumPct = (c/Number(onceki[onceki.length-1][3])-1)*100;
+    const yesil = c > o;
+    const atr = Number(data.atrYuzde || 0);
+    const eksik = [];
+    if (!yesil) eksik.push('son 15m mum KIRMIZI (tüm kalıplar yeşil kapanış ister)');
+    if (rv < 1.0) eksik.push(`hacim ${rv.toFixed(2)}x — ölü bölge (kalıplar 1.0-2.0x ister)`);
+    else if (rv < 1.2) eksik.push(`hacim ${rv.toFixed(2)}x — çoğu kalıp için düşük (1.2x eşiği)`);
+    if (c <= maxH) eksik.push(`12-bar tepesi (${maxH}) aşılmadı — kırılım kalıpları pasif`);
+    if (mumPct < 6) eksik.push(`mum %${mumPct.toFixed(1)} — patlama eşiği %6`);
+    if (govde/aralik <= 0.45) eksik.push(`gövde/aralık %${(govde/aralik*100).toFixed(0)} — eşik %45`);
+    const dlt = Number(data.cvdDelta);
+    if (Number.isFinite(dlt) && dlt <= -15) eksik.push(`canlı delta ${dlt.toFixed(1)} — akış mührü LONG'u bloklar`);
+    return `hacim ${rv.toFixed(2)}x · mum %${mumPct.toFixed(1)} · gövde %${(govde/aralik*100).toFixed(0)} · ATR %${atr.toFixed(1)} → ${eksik.length ? eksik.slice(0,3).join(' | ') : 'koşullar sağlandı ama seviye/RR kapısı elemiş olabilir'}`;
+  } catch(e) { return 'teşhis hatası: ' + String(e?.message||e).slice(0,60); }
+}
+
 function r447MekanikKarar(symbol, data = {}) {
   if (!R447_ENABLED) return null;
   try {
@@ -9982,7 +10013,7 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
                   const r439Patlama = (r413Skor >= 75) || (r387Hacim >= 3.0);
                   if (r439Patlama) {
                     r374Olay('TOP2_TEPE_PATLAMA_GECTI', String(ea.symbol), `24h konum %${(_rp24*100).toFixed(0)} tepede AMA patlama skoru ${r413Skor} / hacim ${r387Hacim}x — R439 slot verildi (ZAMA/INJ dersi)`);
-                    logAuto(`🚀 ${ea.symbol} R439: tepede ama patlama imzası güçlü (skor ${r413Skor}, hacim ${r387Hacim}x) — taze-aday slotu verildi, karar AI'ın`);
+                    logAuto(`🚀 ${ea.symbol} R439: tepede ama patlama imzası güçlü (skor ${r413Skor}, hacim ${r387Hacim}x) — taze-aday slotu verildi, karar ${r451Merci()} merciinde`);
                   } else {
                     r374Olay('TOP2_RED_TEPE', String(ea.symbol), `24h konum %${(_rp24*100).toFixed(0)} — günlük tepede + patlama imzası zayıf (skor ${r413Skor}), taze-aday slotu verilmedi`);
                     logAuto(`🌱 R374-B ${ea.symbol} taze-aday REDDİ: 24h konum %${(_rp24*100).toFixed(0)} (tepeye yapışık, imza zayıf) — slot gerçek taze coine saklandı`);
@@ -15765,7 +15796,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   const pnlPct = pos.pnlPct; // Kaldıraçlı PnL %
 
   // Kaldıraçsız gerçek fiyat hareketi — break-even için bunu kullan
-  const leverage = pos.leverage || 1;
+  const leverage = Number(pos.leverage) || Number(state?.leverage) || Number(autoConfig?.leverage) || 1;  // R457: pos.leverage 1 dönerse state'ten tamamla (ROI hesabı bozulmasın)
   const realPricePct = entryPrice > 0
     ? Math.abs(curPrice - entryPrice) / entryPrice * 100
     : 0;
@@ -15842,7 +15873,20 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r426KTrail = r390Atr > 0 ? Math.min(2.5, Math.max(0.3, r390Atr / 3.0)) : 1;
   trailPct = Math.min(8, trailPct * r426KTrail); // R426: dikey-faz nefes payı (ATR 3%→değişmez, 7.5%→2.5x, 15%→2.5x tavan)
   const minRR         = safe(cfg.minRR,        1.0); // Min R/R oranı
-  const slPct         = safe(cfg.slPct,        2);
+  // ═══ R457 KRİTİK DÜZELTME (canlı kanıt LA 21.07) ═══
+  // slPct PANEL değerinden okunuyordu (%1.7) — oysa pozisyonun GERÇEK SL'i %5.66'ydı.
+  // Sonuç: acil hasar koruması eşiği -%1.95'e düştü ve pozisyon -%2.23'te kesildi;
+  // planlanan SL'e (-%5.66) hiç gidilmedi. LA o kesimden sonra 0.0577→0.0591'e geri döndü,
+  // yani gerçek SL ile pozisyon HAYATTA KALIRDI. Aynı hata her işlemde tekrar ediyordu.
+  // Öncelik: state.slPct (emir anında yazılan gerçek SL) → fiyattan hesap → panel (son çare).
+  const r457SlFromPrice = (() => {
+    try {
+      const e = Number(state.entryPrice || entryPrice || 0), sl0 = Number(state.currentSL || state.stopLoss || 0);
+      return (e > 0 && sl0 > 0) ? Math.abs(e - sl0) / e * 100 : 0;
+    } catch(_e) { return 0; }
+  })();
+  const slPct = Math.max(0.1,
+    Number(state.slPct) || Number(state.entrySLPct) || r457SlFromPrice || safe(cfg.slPct, 2));
   const tpPct         = safe(cfg.tpPct,        10);
   // BE emri sadece entry'ye değil, taker fee + olası stop-market kayması için
   // küçük kâr bölgesine taşınır. INJ örneğinde entry üstü kapanışa rağmen
@@ -18547,6 +18591,10 @@ async function runAutoScan(prioritySymbol=null) {
               likiditeSeviyeleri: analysis?.liqLevels || null
             };
             const r455 = r447MekanikKarar(coin.symbol, r455Veri);
+            if ((!r455 || !r455.ok) && scanIdx < 3) {
+              // R456: ilk 3 aday için "neden imza yok" görünür olsun (spam yapmadan)
+              logAuto(`🔬 ${coin.symbol} R456 motor teşhisi: ${r447Teshis(coin.symbol, r455Veri)}`);
+            }
             if (r455 && r455.ok) {
               decisionChain.r455MekanikImza = true;
               decisionChain.r455Karar = r455;
@@ -18555,7 +18603,7 @@ async function runAutoScan(prioritySymbol=null) {
               if (recommendation !== 'LONG') { recommendation = 'LONG'; }
             }
           }
-        } catch(_r455e) {}
+        } catch(_r455e) { try { logAuto(`⚠️ ${coin.symbol} R455 erken motor HATASI: ${String(_r455e?.message||_r455e).slice(0,110)}`); } catch(_) {} }
 
         // ── PRO TRADER KARAR ZİNCİRİ — A-Tier ana karar, toksik filtreler veto ──
         // Skor kafadan üretilmez: /api/analyze içindeki MM + CVD + OI + Funding + Tick + Sweep + Wyckoff katmanlarından gelir.
