@@ -4062,7 +4062,14 @@ function r447MekanikKarar(symbol, data = {}) {
     const dltGecerli = (data.cvdTickFresh === true || data.cvdValid === true) && Number.isFinite(dlt);
     const yedek = (() => { const m=String(data.cvdMomentumYon||'NOTR'), d=String(data.deltaTrendMum||'NOTR');
       if (m==='SATIS'||d==='SATIS') return 'SATIS'; if (m==='ALIS'||d==='ALIS') return 'ALIS'; return 'NOTR'; })();
-    if (dltGecerli && dlt <= -15) return null;                     // gerçek satış → giriş yok
+    // R462 (25 coin-günü GERÇEK delta ölçümü — taker alım/satım dengesinden hesaplandı):
+    //   δ < -10  → n=3  WR %33  ort -0.04R  ❌ tek kayıp bandı
+    //   δ -10..0 → n=9  WR %78  ort +2.06R  ✅
+    //   δ 0..10  → n=31 WR %87  ort +0.77R  ✅
+    //   δ > 10   → n=22 WR %82  ort +1.03R  ✅
+    // Eşik -15'ten -10'a çekildi: 65 sinyalin 63'ü korunur, toplam beklenti değişmez (64.7R→64.6R)
+    // ama en kötü bant elenir. Canlı kanıt: KORU delta -14.0 ile açıldı, tam bu bantta.
+    if (dltGecerli && dlt <= -10) return null;                     // gerçek satış → giriş yok
     if (!dltGecerli && yedek === 'SATIS') return null;             // veri yok + yedek satış → giriş yok
 
     // ── MAKRO KONUM (tepe kovalama koruması) ──
