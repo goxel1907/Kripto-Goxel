@@ -18450,7 +18450,13 @@ async function runAutoScan(prioritySymbol=null) {
     // ama "R190 geç/ters akış freni" AI'ya GİTMEDEN kesti. AI tek patron — yumuşak bot görüşleri AI'yı boğmasın.
     // SERT güvenlik (POOR likidite, ATR aşırı, spread, cascade) AYRI kapılarda kalır, bunlar bypass OLMAZ.
     const r309uDevirBypass = (dc, idx) => {
-      if (!AI_BRAIN_ENABLED || !r309eAiBudgetLeft(idx, dc)) return false;
+      // R455: MEKANİK ÖNCELİK — motor bu coinde imza bulduysa eski motorun yumuşak frenleri
+      // (R116 HTF gardı, skor tabanı, anti-chase, cvd köprüsü...) devreye girmez. Kanıt: SNDK
+      // mum teyidi 12/12 iken R116 gardına takıldı ve motora hiç ulaşamadı (21.07 canlı teşhis).
+      if (dc?.r455MekanikImza) return true;
+      // R455: AI kapalıyken de devir çalışmalı — mekanik motor karar mercii ise frenler onu boğmasın
+      if (!AI_BRAIN_ENABLED && !R447_ENABLED) return false;
+      if (AI_BRAIN_ENABLED && !r309eAiBudgetLeft(idx, dc)) return false;
       if (dc?.r309eFromWait || dc?.r300SoftReject) return true; // mevcut: WAIT/R300 devri
       // YENİ: bot gerçek TRADE sinyali ürettiyse ya da fiziksel aday ise → yumuşak frenler AI'ya devretsin
       const ba = String(dc?.brainAction||'').toUpperCase();
@@ -18515,6 +18521,41 @@ async function runAutoScan(prioritySymbol=null) {
         let recommendation = analysis.recommendation;
         let decisionChain = analysis.decisionChain || {};
         if (isExpired || freshness === 'EXPIRED') { markAutoSkip(coin.symbol, 'Sinyal süresi geçmiş'); continue; }
+
+        // ═══ R455 ERKEN MEKANİK TARAMA (mimari düzeltme) ═══
+        // Motor artık zincirin SONUNDA değil BAŞINDA çalışır. Sebep (21.07 canlı teşhis):
+        // SNDK mum teyidi 12/12, SOXL 9/12, KORU 8/12 — üçü de eski motorun yumuşak frenlerine
+        // (R116 HTF gardı, 5m edge kapısı, R121 WATCH) takılıp R447'yi hiç göremedi.
+        // Burada imza bulunursa decisionChain'e mühür basılır; r309uDevirBypass onu görüp
+        // tüm yumuşak frenleri geçirir. SERT güvenlik kapıları (R441 akış, R427 R/R, R437
+        // kovalama, R429 tepe, pozisyon limiti) AYNEN uygulanmaya devam eder.
+        try {
+          if (R447_ENABLED && analysis?.r308RawCandles) {
+            const r455Veri = {
+              candles: analysis.r308RawCandles,
+              atrYuzde: Number(analysis?.atrPct ?? analysis?.atr ?? decisionChain?.atrPct ?? 3),
+              fiyat: Number(coin.lastPrice || analysis?.price || 0),
+              cvdDelta: Number(decisionChain?.r125LiveDeltaPct ?? NaN),
+              cvdValid: Number.isFinite(Number(decisionChain?.r125LiveDeltaPct)),
+              cvdMomentumYon: decisionChain?.cvdMomentumYon,
+              deltaTrendMum: decisionChain?.deltaTrendMum,
+              makroKonum: analysis?.makroKonum || null,
+              oiDegisim: { '1h': Number(analysis?.openInterest?.change1h ?? 0) },
+              gainerSira: coin.gainerRank || 99,
+              rvol5m: Number(analysis?.rvol5m ?? decisionChain?.rvol ?? 1),
+              slTabanOneri: Number(analysis?.slTabanOneri || 0),
+              likiditeSeviyeleri: analysis?.liqLevels || null
+            };
+            const r455 = r447MekanikKarar(coin.symbol, r455Veri);
+            if (r455 && r455.ok) {
+              decisionChain.r455MekanikImza = true;
+              decisionChain.r455Karar = r455;
+              const _tip = (r455.reasoning.match(/MEKANİK\/(\w+)/) || [,'?'])[1];
+              logAuto(`⚙️ ${coin.symbol} R455 ERKEN MEKANİK İMZA: ${_tip} · güven ${r455.confidence}% · giriş ${r455.entry} SL ${r455.sl} TP ${r455.tp} — eski motorun yumuşak frenleri bu coinde devre dışı (sert güvenlik kapıları aynen geçerli)`);
+              if (recommendation !== 'LONG') { recommendation = 'LONG'; }
+            }
+          }
+        } catch(_r455e) {}
 
         // ── PRO TRADER KARAR ZİNCİRİ — A-Tier ana karar, toksik filtreler veto ──
         // Skor kafadan üretilmez: /api/analyze içindeki MM + CVD + OI + Funding + Tick + Sweep + Wyckoff katmanlarından gelir.
@@ -20002,7 +20043,8 @@ async function runAutoScan(prioritySymbol=null) {
             // (R441 akış, R427/R429 R/R, R437 kovalama, R429 tepe, R431 kaldıraç, R430/R434 çıkış)
             // mekanik karara da AYNEN uygulanır. İmza yoksa karar AI'a düşer.
             let ai = null;
-            const r447 = r447MekanikKarar(coin.symbol, aiData);
+            // R455: erken taramada imza bulunduysa onu kullan (aynı mumda motoru 2 kez çalıştırma)
+            const r447 = decisionChain?.r455Karar || r447MekanikKarar(coin.symbol, aiData);
             if (r447 && r447.ok) {
               ai = r447;
               logAuto(`⚙️ ${coin.symbol} R447 MEKANİK KARAR (AI çağrısı YAPILMADI — maliyet 0): ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl} · ${ai.reasoning}`);
