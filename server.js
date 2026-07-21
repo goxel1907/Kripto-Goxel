@@ -19359,7 +19359,11 @@ async function runAutoScan(prioritySymbol=null) {
           // İki skor AYNI ÖLÇEK DEĞİL: brainConfidence eski mekanik motorun skoru; AI confidence
           // prompt'ta "güven = boyut" diye tanımlanan asıl sinyal. Karıştırmak yanlıştı.
           // Kural: AI güveni VARSA tek kaynak odur (ACE bug'ı zaten eski skoru okumaktan doğmuştu).
-          const _gAi = Number(decisionChain?.aiBrain?.confidence);
+          // R460 (canlı kanıt 21.07): R431 "güven:7" okuyordu, oysa mekanik kararın güveni 79-81'di.
+          // Sebep zamanlama: R455 erken tarama kararı decisionChain.r455Karar'a yazıyor, ama R431
+          // decisionChain.aiBrain'e bakıyordu ve o alan bu noktada henüz BOŞ (sonraki adımda dolar).
+          // Sonuç: kaldıraç eski motorun skoruyla hesaplanıyor, hep taban değere düşüyordu.
+          const _gAi = Number(decisionChain?.aiBrain?.confidence ?? decisionChain?.r455Karar?.confidence);
           const _gEski = Number(decisionChain?.brainConfidence || 0);
           const _g = (Number.isFinite(_gAi) && _gAi > 0) ? _gAi : _gEski;
           const _atr = Number(coinAtrPct || 99);
@@ -20393,19 +20397,25 @@ async function runAutoScan(prioritySymbol=null) {
                         // dar SL'de (%2.5) MM tam oraya daldırıp avlıyordu (WR %61). Geniş SL (%5) + düşük kaldıraç (5x) ile
                         // MM avlaması zorlaşıyor, risk aynı (%25 marj). Bileşik backtest: 5x+%5 SL = 50$→98$/gün, 0 kaybeden gün.
                         // Kaldıraç SABİT 5x (güven fark etmez — geniş SL zaten koruyor, yüksek kaldıraca gerek yok).
-                        let aiTargetLev = 5;
+                        // ═══ R461 (kullanıcı kararı 21.07): SABİT 5x KALDIRILDI ═══
+                        // R372'nin sabit 5x'i eski bir backtestten geliyordu. YENİ ölçüm (25 coin-günü,
+                        // 15 kalıplı motor): R431 haritası (güven+ATR ölçekli, ort 7.2x) sabit 5x'e karşı
+                        // 476$ → 602$ (+%26). Valfler zaten koruyor: SL×lev≤%40 (R433), likidasyon≥ATR×2.2,
+                        // Binance bracket tavanı, gainer-1 tavanı 10x. Yani yüksek kaldıraç ancak DÜŞÜK SL +
+                        // SAKİN ATR + YÜKSEK güven birlikteyken çıkar; riskli setupta zaten 5x'te kalır.
+                        let aiTargetLev = Math.max(5, Number(executeLeverage) || 5);
                         // AI panel tavanından MUAF — Binance fiziksel izni VE 25x tavanı sınırlar.
                         let r310BinanceMax = null;
                         try {
                           r310BinanceMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * aiTargetLev).catch(()=>null);
                         } catch(_e) {}
                         const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? Math.min(25, r310BinanceMax) : 25; // R325D: 25x mutlak tavan
-                        aiTargetLev = Math.max(5, Math.min(5, Math.min(aiTargetLev, r310Ceil))); // R372: SABİT 5x (A seçeneği — düşük kaldıraç + geniş SL)
+                        aiTargetLev = Math.max(5, Math.min(aiTargetLev, r310Ceil)); // R461: R431 haritası serbest, tavan Binance izni (max 25x)
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
-                          leverageNote += ` · R325D AI güven ${aiConf} → ${oldAiLev}x→${executeLeverage}x (min10x, TAVAN 25x, Binance izin ${r310Ceil}x)`;
-                          logAuto(`🎚️ ${coin.symbol} AI güven ${aiConf}% → kaldıraç ${oldAiLev}x→${executeLeverage}x (R325D: min 10x, TAVAN 25x, Binance limit ${r310Ceil}x)`);
+                          leverageNote += ` · R461 kaldıraç ${oldAiLev}x→${executeLeverage}x (güven ${aiConf}, Binance izin ${r310Ceil}x, tavan 25x)`;
+                          logAuto(`🎚️ ${coin.symbol} R461 kaldıraç ${oldAiLev}x→${executeLeverage}x (güven ${aiConf}% · Binance limit ${r310Ceil}x · valfler: SL×lev≤%40, likidasyon≥ATR×2.2)`);
                         }
                       } catch(_aiLevE) { logAuto(`⚠️ ${coin.symbol} AI kaldıraç hatası: ${String(_aiLevE?.message||_aiLevE).slice(0,60)}`); }
                       // R308K güvenlik: AI'nın SL'i ile kaldıraç-risk sınırını YENİDEN uygula (SL×Lev ≤ maxRoiRisk)
