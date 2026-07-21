@@ -20697,6 +20697,22 @@ async function runAutoScan(prioritySymbol=null) {
               const _tf = analysis?.timeframes || {};
               // R368: AI RUNNER der VEYA bot uygun görür. R370-F: ama tepe/belirsiz setup'ta (_r370ForceNormal) RUNNER kapalı.
               _stOpen.aiRunner = ((_ai.karKosma === 'RUNNER') || r368BotRunnerUygunMu(analysis, coin).runner) && !(typeof _r370ForceNormal !== 'undefined' && _r370ForceNormal);
+              // ═══ R458 KRİTİK (canlı kanıt EPIC 21.07) ═══
+              // Bu yolda aiBrain/brainMode/slPct/leverage state'e YAZILMIYORDU → r339AiManaged=false →
+              // yeni koruma katmanının TAMAMI devre dışı kalıyordu: R430 kâr racheti, R434 yapı-bazlı
+              // trailing, R344/R370 geç-BE, divergence sıkıştırma muafiyeti. Onun yerine eski TIGHTEN_SL
+              // çalışıp +%6 kârdaki runner'ın SL'ini girişin altına çekiyordu ("CVD zayıf — sahte hareket").
+              // Ayrıca slPct/leverage eksikti; R457'nin acil-koruma düzeltmesi de bu yolda etkisizdi.
+              if (_ai && _ai.ok) {
+                _stOpen.aiBrain = _ai;
+                _stOpen.brainMode = 'R308C_AI_LIVE';
+                _stOpen.mekanik = !!_ai.mekanik;
+                _stOpen.slPct = Number(userSLPct) || Number(_stOpen.slPct) || null;
+                _stOpen.tpPct = Number(userTPPct) || Number(_stOpen.tpPct) || null;
+                _stOpen.leverage = Number(executeLeverage) || Number(_stOpen.leverage) || null;
+                _stOpen.entryPrice = Number(entryRef) || Number(_stOpen.entryPrice) || null;
+                logAuto(`🛡️ ${coin.symbol} R458: pozisyon yeni koruma katmanına bağlandı (${_ai.mekanik?'MEKANİK':'AI'} · ${_stOpen.aiRunner?'RUNNER':'NORMAL'} · SL%${_stOpen.slPct} · ${_stOpen.leverage}x) — R430 kâr racheti + R434 yapı trailing aktif, eski divergence sıkıştırması devre dışı`);
+              }
               if (typeof _r370ForceNormal !== 'undefined' && _r370ForceNormal && _stOpen.aiRunner === false) logAuto(`⚠️ ${coin.symbol} R370-F: RUNNER kapatıldı (tepe/belirsiz setup — kâr taşıma riski alınmıyor, NORMAL yönetim)`);
               _stOpen.aiSnapshot = {
                 // AI'nın kararı ve gerekçesi
