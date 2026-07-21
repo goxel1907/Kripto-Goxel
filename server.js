@@ -3990,6 +3990,121 @@ function r329FibLiqMap(candles, lastPrice, liqLevels) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════ R447 MEKANİK KARAR MOTORU (AI-SİZ GİRİŞ) ═══════════════════
+// Kullanıcı kararı 21.07: "AI'nin yaptığı görevi cerrahi hassasiyetle bota entegre et —
+// hem maliyetten kurtuluruz hem daha fazla coin yakalarız."
+// Temel: 8 coin-günlük GERÇEK backtestte pozitif beklentili çıkan ÜÇ imza (WR %72-86):
+//   (1) SWEEP+RECLAIM  (2) MOMENTUM KIRILIMI  (3) PATLAMA
+// Motor bu imzaları KAPANMIŞ 15m mumdan okur, teyitleri deterministik doğrular ve
+// AI ile AYNI BİÇİMDE karar döndürür → downstream'deki TÜM güvenlik kapıları aynen uygulanır
+// (R441 akış mührü, R427/R429 R/R tabanı, R437 kovalama, R429 tepe vetosu, R431 kaldıraç,
+//  R430/R434/R436 çıkış-koruma). Yani bu "eski mekanik motorun dönüşü" DEĞİL; backtestle
+// doğrulanmış dar bir giriş kalıbının, AI'ın güvenlik zinciri içinde çalıştırılmasıdır.
+// AI kapatılmaz: motor imza bulamazsa karar yine AI'a düşer (bütçe varsa).
+const R447_ENABLED = String(process.env.MEKANIK_GIRIS ?? '1') !== '0';
+function r447MekanikKarar(symbol, data = {}) {
+  if (!R447_ENABLED) return null;
+  try {
+    const k = data?.candles?.['15m'];
+    if (!Array.isArray(k) || k.length < 16) return null;
+    const vnum = (v) => { const t = String(v); const x = parseFloat(t); return t.endsWith('M') ? x*1e6 : t.endsWith('K') ? x*1e3 : x; };
+    const N = k.length;
+    const son = k[N-1];
+    const o = Number(son[0]), h = Number(son[1]), l = Number(son[2]), c = Number(son[3]);
+    if (!(c > 0)) return null;
+    const onceki = k.slice(N-13, N-1);
+    const vSon = vnum(son[4]);
+    const vOrt = onceki.reduce((a,x)=>a+vnum(x[4]),0) / Math.max(1, onceki.length);
+    const rv = vOrt > 0 ? vSon/vOrt : 1;
+    const maxH = Math.max(...onceki.map(x=>Number(x[1])));
+    const minL = Math.min(...onceki.map(x=>Number(x[2])));
+    const govde = Math.abs(c-o), aralik = (h-l) || 1e-12;
+    const oncekiKapanis = Number(onceki[onceki.length-1][3]) || c;
+    const mumPct = (c/oncekiKapanis-1)*100;
+    const atr = Number(data.atrYuzde || 3) || 3;
+    const fiyat = Number(data.fiyat || c) || c;
+
+    // ── AKIŞ TEYİDİ (R441 ile aynı mantık) ──
+    const dlt = Number(data.cvdDelta);
+    const dltGecerli = (data.cvdTickFresh === true || data.cvdValid === true) && Number.isFinite(dlt);
+    const yedek = (() => { const m=String(data.cvdMomentumYon||'NOTR'), d=String(data.deltaTrendMum||'NOTR');
+      if (m==='SATIS'||d==='SATIS') return 'SATIS'; if (m==='ALIS'||d==='ALIS') return 'ALIS'; return 'NOTR'; })();
+    if (dltGecerli && dlt <= -15) return null;                     // gerçek satış → giriş yok
+    if (!dltGecerli && yedek === 'SATIS') return null;             // veri yok + yedek satış → giriş yok
+
+    // ── MAKRO KONUM (tepe kovalama koruması) ──
+    const mk = data.makroKonum || {};
+    const k24 = Number(mk.konum24h ?? mk['24h'] ?? NaN);
+
+    // ── İMZA TESPİTİ ──
+    let tip = null, kanit = '', taban = 70, runner = false;
+    // R450 EŞİK KALİBRASYONU (25 coin-günü taraması 21.07): eski eşikler (patlama 8%/2.5x,
+    // gövde .55, rvol 1.5) gerçek fırsatları eliyordu — BANK 19.07'de 12-bar tepesini kıran 9 mumdan
+    // 5'i "gövde %44-51" ya da "rvol 1.4" ile reddedildi ve coin %62→%110 koşarken motor dışarıda kaldı.
+    // Tarama sonucu: sinyal 27→38, ortalama R 0.78→1.10, TOPLAM 21.0R→41.9R, WR %78→%79.
+    // Dayanıklılık: en iyi gün hariç 17.2R→32.4R · 19 coin-gününün 17'si kazançlı. Gevşetme kaliteyi
+    // düşürmedi, YÜKSELTTİ — yani eski eşikler fazla katıydı, gürültü değil fırsat kesiyordu.
+    if (mumPct >= 6 && rv >= 2.0 && c > o) {
+      tip = 'PATLAMA'; kanit = `son 15m mum +%${mumPct.toFixed(1)} · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
+    } else if (c > maxH && govde/aralik > 0.45 && c > o && rv >= 1.2) {
+      tip = 'MOMENTUM_KIRILIMI'; kanit = `12-bar tepe ${maxH} kırıldı · gövde %${(govde/aralik*100).toFixed(0)} · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
+    }
+    // R448 (15 coin-günü / 24 sinyal ölçümü): SWEEP_RECLAIM mekanik motordan ÇIKARILDI.
+    // Ölçüm: PATLAMA ort +1.85R (n=15) · MOMENTUM +1.02R (n=4) · SWEEP sadece +0.19R (n=5) = gürültü.
+    // Üstelik sweep girişleri DAR SL üretiyor → R431 haritası yüksek kaldıraç veriyordu (VANRY 1.3% SL
+    // → 25x → tek işlemde -15.77$). 7 coin-günü bakiye simülasyonu: sweep açıkken PF 0.99, kapalıyken 1.80.
+    // Sweep fırsatı kaybolmuyor — mekanik motor imza bulamayınca karar AI'a düşer, AI sweep'i değerlendirir.
+    if (!tip) return null;
+    // Tepe kovalama: patlama dışı imzalarda 24h tavanda giriş yok
+    if (Number.isFinite(k24) && k24 >= 85 && tip !== 'PATLAMA') return null;
+
+    // ── SEVİYELER (gerçek yapıdan; uydurma yok) ──
+    let sl;
+    if (tip === 'PATLAMA') sl = c * 0.92;                          // dikey harekette sabit ~%8 (R436 dersi)
+    else if (tip === 'SWEEP_RECLAIM') sl = Math.min(l, minL) * 0.997;
+    else sl = Math.min(...k.slice(N-7, N-1).map(x=>Number(x[2]))) * 0.997;
+    let slPct = (c - sl) / c * 100;
+    const slTaban = Number(data.slTabanOneri || 0);
+    if (slTaban > 0 && slTaban < c && (c-slTaban)/c*100 > slPct) { sl = slTaban; slPct = (c-sl)/c*100; }
+    if (slPct < Math.max(1.0, atr * 0.8)) { slPct = Math.max(1.0, atr * 0.8); sl = c * (1 - slPct/100); }
+    if (slPct > 10) return null;                                    // R308 max SL kapısı
+
+    // TP: üst likidite havuzu varsa oraya (1 tık önü), yoksa R-katı
+    let tp = null;
+    try {
+      const ust = data.likiditeSeviyeleri?.ust ?? data.likiditeSeviyeleri?.upper ?? null;
+      const dizi = Array.isArray(ust) ? ust.map(Number).filter(x=>x>c).sort((a,b)=>a-b) : (Number(ust)>c ? [Number(ust)] : []);
+      if (dizi.length) tp = dizi[0] * 0.999;
+    } catch(_e) {}
+    const rKat = runner ? 3.0 : 1.8;
+    if (!tp || (tp - c)/(c - sl) < 1.5) tp = c + (c - sl) * rKat;
+    const rr = (tp - c) / (c - sl);
+    if (!(rr >= 1.5)) return null;                                  // R427/R429 tabanıyla uyumlu
+
+    // ── GÜVEN (kaldıraç boyutuna çevrilir — R431) ──
+    let guven = taban;
+    if (rv >= 3) guven += 4; else if (rv >= 2) guven += 2;
+    if (dltGecerli && dlt >= 40) guven += 5; else if (dltGecerli && dlt >= 15) guven += 3;
+    if (Number(data.oiDegisim?.['1h']) > 2) guven += 2;
+    if (data.altSupurmeReclaimVar === true) guven += 3;
+    if (Number.isFinite(k24) && k24 <= 40) guven += 3;              // dipten giriş primi
+    if (atr > 6) guven -= 4;                                        // hiper-volatil: boyutu küçült
+    if (Number(data.gainerSira) === 1) guven -= 2;                  // en manipüle sınıf
+    guven = Math.max(64, Math.min(90, Math.round(guven)));
+
+    const r = (v) => { const n = Number(v); return n >= 1000 ? +n.toFixed(2) : n >= 1 ? +n.toFixed(4) : +n.toFixed(8); };
+    // R448: mekanik kararda güven tavanı 84 — AI muhakemesi olmadan 25x+ boyut açılmaz
+    // (R431 haritası: 84 → 25x zaten üst sınır; asıl koruma dar-SL sinyallerinin elenmesi).
+    guven = Math.min(guven, 84);
+    return {
+      ok: true, mekanik: true, side: 'LONG', entry: r(c), tp: r(tp), sl: r(sl),
+      confidence: guven, karKosma: runner ? 'RUNNER' : 'NORMAL',
+      reasoning: `R447 MEKANİK/${tip}: ${kanit} · delta ${dltGecerli ? (dlt>0?'+':'')+dlt.toFixed(1) : 'yedek:'+yedek} · ATR%${atr.toFixed(1)} · SL%${slPct.toFixed(2)} · R/R ${rr.toFixed(2)}${Number.isFinite(k24)?' · makro24h %'+k24.toFixed(0):''} — backtest imzası (WR %72-86), AI çağrısı yapılmadı`,
+      plan: runner ? 'RUNNER: yapı-bazlı trailing, kâr kilitleri aktif, TP trend sürdükçe ileri taşınır' : 'NORMAL vur-kaç: TP yakın likidite, kâr kilidi aktif'
+    };
+  } catch(_e) { return null; }
+}
+
 async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
   // R403 VERİ TAZELİK KAPISI: son kapanmış 15m mum 120sn'den yaşlıysa kline cache bayattır —
   // az önce kapanan mum pakette YOK demektir (sağlıklı yaş 5-40sn; bayatken ~900sn'ye sıçrar).
@@ -4273,7 +4388,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 4. CANLI KORUMA GERÇEĞİ: Gerçek nefes alanın coin hareketi ~-%2'dir (Binance'teki geniş SL sadece ani çöküş yedeğidir). Girişini bu -%2'nin seni VURMAYACAĞI yerden al: teyitli dip/reclaim/retest SONRASI, yapının hemen üstü. Bacak tepesi, dikey mumun içi ve teyitsiz ilk dip giriş yeri DEĞİLDİR. ATR %4+ coinde teyitsiz giriş yok. İSTİSNA: PATLAMA GİRİŞİNDE bu test sabit SL ile sağlanır — yapısal dip çok uzaksa SL ~%8 sabit konur, -%2 çalkantı hesabı aranmaz (kaldıraç valfi zaten 5x'e indirir).
 
-5. FREKANS VE MOD: Günde birden çok kaliteli fırsat NORMALDİR — kanıt eşiğini geçen HER fırsatı al, küçüğü de: küçük/hızlı fırsat → "karKosma":"NORMAL" (vur-kaç scalp: TP yakın likidite/bant tepesi, kârı al çık); gerçek trend devamı (impuls + HTF hizalı + yakıt) → "RUNNER" (TP uzak yapısal hedef, fib 1.618-2.618 — bot TP'yi trend sürdükçe OTOMATİK ileri taşır ve kârı kademeli kilitler; erken kesilme korkusuyla RUNNER fırsatına NORMAL yazma). Eşiği geçmeyene girmek DE, geçeni kaçırmak DA hatadır; ikisi de gerekçe ister. İşlem sıklığı hedef değildir, pozitif beklenti hedeftir. MEGA-KOŞU: dev koşan coinde (TOP1/TOP2) kârlı çıkış sonrası yapı yenilenirse (yeni pullback+tutunma ya da devam impulsu) YENİDEN GİR — dev koşuda tek işlemle yetinmek en pahalı hatadır; bot kârlı runner kapanışında coini öncelikli izlemede tutar, runner trailing'i de sabit yüzde değil 15m yapı dibidir (yapı kırılmadıkça pozisyon yaşar). PATLAMA GİRİŞİ: tek 15m mumda +%12+ ve hacim patlaması (rvol 2.5+) gördüğünde swing dibi çok uzak diye fırsatı ATLAMA — SL'i sabit ~%8'e koy, küçük kaldıraçla runner bin; patlamanın devamı en büyük kâr kaynağıdır (AKE +%257 dersi: yapısal SL beklerken tüm koşu kaçmıştı).
+5. FREKANS VE MOD: Günde birden çok kaliteli fırsat NORMALDİR — kanıt eşiğini geçen HER fırsatı al, küçüğü de: küçük/hızlı fırsat → "karKosma":"NORMAL" (vur-kaç scalp: TP yakın likidite/bant tepesi, kârı al çık); gerçek trend devamı (impuls + HTF hizalı + yakıt) → "RUNNER" (TP uzak yapısal hedef, fib 1.618-2.618 — bot TP'yi trend sürdükçe OTOMATİK ileri taşır ve kârı kademeli kilitler; erken kesilme korkusuyla RUNNER fırsatına NORMAL yazma). R444 KURALI: rejim İLK-İMPULS ya da PATLAMA ise VARSAYILAN karKosma RUNNER'dır — taze impulsun devamı en büyük kâr kaynağıdır (BLUAI dersi 20.07: NORMAL seçildi, +%0.5'te vur-kaç çıkıldı, coin hemen ardından +%5 koştu). NORMAL'i yalnız RANGE içi salınımda ya da hedefe mesafe kısayken seç ve gerekçende NEDEN runner olmadığını yaz. Eşiği geçmeyene girmek DE, geçeni kaçırmak DA hatadır; ikisi de gerekçe ister. İşlem sıklığı hedef değildir, pozitif beklenti hedeftir. MEGA-KOŞU: dev koşan coinde (TOP1/TOP2) kârlı çıkış sonrası yapı yenilenirse (yeni pullback+tutunma ya da devam impulsu) YENİDEN GİR — dev koşuda tek işlemle yetinmek en pahalı hatadır; bot kârlı runner kapanışında coini öncelikli izlemede tutar, runner trailing'i de sabit yüzde değil 15m yapı dibidir (yapı kırılmadıkça pozisyon yaşar). PATLAMA GİRİŞİ: tek 15m mumda +%12+ ve hacim patlaması (rvol 2.5+) gördüğünde swing dibi çok uzak diye fırsatı ATLAMA — SL'i sabit ~%8'e koy, küçük kaldıraçla runner bin; patlamanın devamı en büyük kâr kaynağıdır (AKE +%257 dersi: yapısal SL beklerken tüm koşu kaçmıştı).
 
 6. MM ZİHNİ: Likidite havuzları mıknatıstır; MM önce süpürür, sonra gerçek yöne gider. Sweep+reclaim senin en yüksek isabetli girişindir; sweep-sürüyor-reclaim-yok ise düşen bıçaktır, bekle. SL'ini bariz havuzun İÇİNE değil ÖTESİNE koy; TP'yi yuvarlak seviyenin/havuzun 1 tık önüne koy. "Herkes ne görüyor" değil "MM herkese ne göstermek istiyor" diye oku.
 
@@ -4281,7 +4396,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 8. AKIŞ MÜHRÜ (öncelik sırası net): canliDelta GEÇERLİYSE ESAS ODUR — canliDelta <= -15 iken LONG verme; canliDelta belirgin POZİTİFKEN (>= +10) tek başına yedekSatisKaniti SATIS seni DURDURMAZ (yedek mum renklerinden türer, koşan coinde her pullback mumu SATIS üretir — AAOI dersi 20.07: delta +14.8 ve defter +99.8 alıcıyken yedek yüzünden fırsat kaçtı). Yedek kanıt YALNIZCA canliDelta VERI_YOK iken devreye girer: VERI_YOK + yedek SATIS -> LONG verme; VERI_YOK + yedek NOTR -> akışı nötr say, diğer kanıtlarla karar ver.
 
-9. GÜVEN = BOYUT: confidence alanın doğrudan kaldıraca çevrilir (band 5-50x: güven 90+ ve sakin ATR → 50x'e kadar; 70 altı → 5x). Güvenin, kanıt sayına orantılı olsun: teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+. Hak etmeyen karara yüksek güven yazmak doğrudan para kaybettirir.
+9. GÜVEN = BOYUT: confidence alanın doğrudan kaldıraca çevrilir (band 5-50x: güven 90+ ve sakin ATR → 50x'e kadar; 70 altı → 5x). Güvenin, kanıt sayına orantılı olsun: teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+. Harita NET: 74→10x, 80→15x, 84→25x, 88→35x, 90→50x (ATR sakinliği şart). Kanıtın güçlüyken güveni ihtiyatla düşük yazmak fırsatı KÜÇÜLTMEKTİR — sayın, kararının büyüklüğüdür. Hak etmeyen karara yüksek güven yazmak doğrudan para kaybettirir.
 
 10. İÇ TUTARLILIK: Gerekçen kararının KANITI olmalı, karşı-kanıtı değil. Bir zayıflık not ettiysen, onu YENEN somut kanıtı da göster; gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. Kendi R/R hesabın minimumun altındaysa TP/SL'i orana uydurmak için kaydırma — ya gerçek seviyelerle geçerli R/R kur ya da geç. sonIslemlerim'den ders al ama TEK kayıptan kural çıkarma; "ne değişti?" sorusunu sor.
 
@@ -9866,7 +9981,23 @@ function r326ApplySingleCoinLock(orderedList) {
   const digerler      = orderedList.filter(c => !c.r370Erken && r327PatlamaScore(c) < 3);
   // Doğrulanmış taze coinler EN ÖNDE, sonra tepede-olmayan patlama adayları, sonra 12h liderleri
   const sirali = [...gercekErken, ...patlamaAdayi, ...digerler];
-  const top2 = sirali.slice(0, 2);
+  // ═══ R445 İZLEME LİSTESİ GENİŞLETME (canlı kanıt 21.07 gecesi: ERA +%62, LA +%31, ZHIPU +%33 —
+  // üçü de R370 tarafından BULUNDU ama 2-slotluk listeye giremeden koştu; 40+ aday 2 slot için
+  // yarışıyordu). Eski sabit 2, "50$ bakiye maliyet-optimal" varsayımıydı; bakiye büyüdü, kapak kalmadı.
+  // Yeni: bakiyeye göre 2-5 slot + patlama adayları için EK slot (yükselen coini kuyrukta bekletme).
+  // Maliyet freni ayrı katmanda zaten var (AI_BRAIN_TOP_N=3, günlük 350 çağrı, R438 mum diyeti).
+  // ═══ R446 TOP2 KİLİDİ VE BAKİYE KAPAĞI KALDIRILDI (kullanıcı kararı 21.07) ═══
+  // Kanıt: ERA +%62, LA +%31, ZHIPU +%33 — üçü de BULUNDU ama 2-slotluk listeye giremeden koştu.
+  // İzleme listesi ARTIK BAKİYEYE BAĞLI DEĞİL; tarama moduna bağlı (FAST6→6, TOP10→10, TOP24→12).
+  // Gerekçe: izleme UCUZDUR (yerel analiz + Binance verisi); pahalı olan AI çağrısıdır ve onun
+  // freni AYRI katmanda duruyor (AI havuzu + tarama başına çağrı + günlük 350 tavan).
+  // Workerlar artık geniş listeyi takip eder; fırsat yakalayınca kararı AI verir.
+  let r446Mod = 'TOP10';
+  try { r446Mod = normalizeR54ScanMode(autoConfig?.scanMode || 'TOP10'); } catch(_e) {}
+  let r445Slot = r446Mod === 'FAST6' ? 6 : r446Mod === 'TOP10' ? 10 : 12;
+  const r445Env = parseInt(process.env.IZLEME_SLOT || '0', 10);
+  if (r445Env > 0) r445Slot = Math.max(2, Math.min(24, r445Env));
+  const top2 = sirali.slice(0, r445Slot);
   // Patlama skoruna göre ikincil sıralama (yüksek patlama adayı öne)
   top2.sort((a,b) => r327PatlamaScore(b) - r327PatlamaScore(a));
   // İşaretle: AI'a hangisinin patlama adayı olduğunu bildir
@@ -9876,7 +10007,7 @@ function r326ApplySingleCoinLock(orderedList) {
              r327Patlama: ps >= 3 };  // 3+ = güçlü patlama adayı
   });
   const names = tagged.map(c => `${String(c.fullSymbol||'').replace('USDT','')}${c.r327Patlama?'🚀':''}`).join(', ');
-  logAuto(`🎯 R372-D TOP2 izleniyor: ${names} (patlama adayı 🚀 ile işaretli — 50$ bakiye maliyet-optimal, 2 coin)`);
+  logAuto(`🎯 R446 izleme listesi (${tagged.length}/${r445Slot} coin · mod ${r446Mod}): ${names} (🚀=patlama adayı — TOP2 kilidi kaldırıldı, bakiye kapağı yok; fırsatı AI değerlendirir)`);
   // R374 dönüşüm özeti: taze coin bulundu → TOP2'ye girdi → işleme dönüştü (genişletme kararı bu rakamlarla verilecek)
   try {
     if (r374Donusum.bulunan.size) {
@@ -18262,7 +18393,20 @@ async function runAutoScan(prioritySymbol=null) {
     // (en volatil/yüksek sıralı). Tarama TÜM listeyi görür (bot analizi), ama AI sadece en iyi havuzu değerlendirir.
     // Bu, TOP24 modunda bile maliyeti TOP6-8 seviyesinde tutar. Env ile ayarlanabilir (AI_POOL_SIZE).
     const R311J_AI_POOL = Math.max(4, Number(process.env.AI_POOL_SIZE || 5) || 5); // R311Q: 6→5 maliyet
-    const r311jInAiPool = (idx) => (typeof idx === 'number' && idx < R311J_AI_POOL);
+    // R446: patlama bayraklı / r370-taze coin sıra numarasından BAĞIMSIZ olarak havuza girer.
+    // Eski hali (idx < 5) ikinci gizli darboğazdı: liste genişlese bile 6. sıradaki patlayan coin,
+    // bayrağı olsa dahi AI'a ULAŞAMIYORDU (ERA/LA/ZHIPU gecesi bunun da payı var).
+    const r311jInAiPool = (idx) => {
+      if (typeof idx !== 'number') return false;
+      if (idx < R311J_AI_POOL) return true;
+      try {
+        const c = scanList?.[idx];
+        if (c?.r370Erken) return true;  // motor doğrulamış taze impuls
+        const base = String(c?.symbol || c?.fullSymbol || '').replace('USDT','');
+        const f = __r328PatlamaFlags[base];
+        return !!(f && f.detected && (Date.now() - f.ts < 5*60*1000));
+      } catch(_e) { return false; }
+    };
 
     for (const [scanIdx, coin] of scanList.entries()) {
       coin.gainerRank = scanIdx + 1; // 1 = en volatil/güçlü gainer (liste volatiliteye göre sıralı)
@@ -19043,11 +19187,14 @@ async function runAutoScan(prioritySymbol=null) {
           // R437: güven kaynağı DÜZELTİLDİ — canlı ACE dersi 20.07: AI güven 72 dedi, brainConfidence
           // 100 okundu (eski motor skoru). Yüksek kaldıraç sadece AI'ın KENDİ güveniyle hak edilir;
           // iki kaynak varsa KÜÇÜK olan alınır (temkinli), AI güveni yoksa eski davranış.
+          // R444 (canlı kanıt 21.07): R437'nin min() seçimi kaldıraçları 5x'e ÇİVİLEDİ —
+          // ADA AI güven 73 iken 56 okundu (8x yerine 5x), UB 76 iken 53 (10x yerine 5x).
+          // İki skor AYNI ÖLÇEK DEĞİL: brainConfidence eski mekanik motorun skoru; AI confidence
+          // prompt'ta "güven = boyut" diye tanımlanan asıl sinyal. Karıştırmak yanlıştı.
+          // Kural: AI güveni VARSA tek kaynak odur (ACE bug'ı zaten eski skoru okumaktan doğmuştu).
           const _gAi = Number(decisionChain?.aiBrain?.confidence);
           const _gEski = Number(decisionChain?.brainConfidence || 0);
-          const _g = (Number.isFinite(_gAi) && _gAi > 0)
-            ? ((_gEski > 0) ? Math.min(_gAi, _gEski) : _gAi)
-            : _gEski;
+          const _g = (Number.isFinite(_gAi) && _gAi > 0) ? _gAi : _gEski;
           const _atr = Number(coinAtrPct || 99);
           const _gr = Number(coin.gainerRank || 99);
           let _hedefLev = 5;
@@ -19485,7 +19632,9 @@ async function runAutoScan(prioritySymbol=null) {
         // Gölge modda (AI_BRAIN_SHADOW): karar gösterilir ama işlem AÇILMAZ — sen Claude vs gerçek fiyatı karşılaştır.
         // NOT (R310O): R310K skor<42 kapısı KALDIRILDI — AI'yı bot skoruna mahkum etmek "PUANSIZ, AI ham veriyi
         // kendi okur" ilkesine aykırıydı (çifte filtreleme = boğma). AI zaten WAIT diyerek kendi filtreliyor.
-        if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) {
+        // R449: kapı artık MEKANİK motoru da kapsıyor — AI_BRAIN_ENABLED=0 iken bot işlemsiz
+        // kalmasın (R325 gereği emri sadece 'aiBrain' kararı açar; mekanik karar da o kanaldan akar).
+        if ((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) {
           try {
             const aiData = {
               // ═══ R308K: PUANSIZ — AI ham veriyi okur, botun skoruna mahkum değil ═══
@@ -19776,9 +19925,24 @@ async function runAutoScan(prioritySymbol=null) {
                 return txt || 'BTC ham mumlari candles.btc5m icinde';
               })()
             };
-            r309eAiSentCount++; // R309E: bu coin AI'ya gidiyor — bütçe sayacı (tarama başına max 2)
-            logAuto(`🧠 ${coin.symbol} AI PRO TRADER'a gönderiliyor (${r309eAiSentCount}/${R309E_MAX_AI_PER_SCAN} bu taramada)`);
-            const ai = await r308AiProTraderBrain(coin.symbol, aiData);
+            // ═══ R447: ÖNCE MEKANİK MOTOR — imza varsa AI çağrısı YAPILMAZ (maliyet sıfır) ═══
+            // Motor, AI ile aynı biçimde karar üretir; downstream'deki tüm güvenlik kapıları
+            // (R441 akış, R427/R429 R/R, R437 kovalama, R429 tepe, R431 kaldıraç, R430/R434 çıkış)
+            // mekanik karara da AYNEN uygulanır. İmza yoksa karar AI'a düşer.
+            let ai = null;
+            const r447 = r447MekanikKarar(coin.symbol, aiData);
+            if (r447 && r447.ok) {
+              ai = r447;
+              logAuto(`⚙️ ${coin.symbol} R447 MEKANİK KARAR (AI çağrısı YAPILMADI — maliyet 0): ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl} · ${ai.reasoning}`);
+            } else if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) {
+              r309eAiSentCount++; // R309E: bu coin AI'ya gidiyor — bütçe sayacı (tarama başına max 2)
+              logAuto(`🧠 ${coin.symbol} AI PRO TRADER'a gönderiliyor (${r309eAiSentCount}/${R309E_MAX_AI_PER_SCAN} bu taramada · mekanik imza yok)`);
+              ai = await r308AiProTraderBrain(coin.symbol, aiData);
+            } else {
+              // R449: AI kapalı + mekanik imza yok → bu coin bu turda atlanır (boş API çağrısı yapılmaz)
+              markAutoSkip(coin.symbol, 'R449: AI kapalı, mekanik imza yok — bu turda aday değil', {rec:recommendation, score});
+              continue;
+            }
             if (ai && ai.ok) {
               const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
               logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}${ai.plan?' · PLAN: '+ai.plan:''}`);
