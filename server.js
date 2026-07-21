@@ -4002,6 +4002,8 @@ function r329FibLiqMap(candles, lastPrice, liqLevels) {
 // doğrulanmış dar bir giriş kalıbının, AI'ın güvenlik zinciri içinde çalıştırılmasıdır.
 // AI kapatılmaz: motor imza bulamazsa karar yine AI'a düşer (bütçe varsa).
 const R447_ENABLED = String(process.env.MEKANIK_GIRIS ?? '1') !== '0';
+// R451: log/panel metinlerinde karar merciini DOĞRU yaz (AI kapalıyken 'AI verecek' demek yanıltıcıydı)
+function r451Merci(){ try { return (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) ? 'AI' : (R447_ENABLED ? 'MEKANİK MOTOR' : 'KAPALI'); } catch(_e){ return 'AI'; } }
 function r447MekanikKarar(symbol, data = {}) {
   if (!R447_ENABLED) return null;
   try {
@@ -4044,10 +4046,79 @@ function r447MekanikKarar(symbol, data = {}) {
     // Tarama sonucu: sinyal 27→38, ortalama R 0.78→1.10, TOPLAM 21.0R→41.9R, WR %78→%79.
     // Dayanıklılık: en iyi gün hariç 17.2R→32.4R · 19 coin-gününün 17'si kazançlı. Gevşetme kaliteyi
     // düşürmedi, YÜKSELTTİ — yani eski eşikler fazla katıydı, gürültü değil fırsat kesiyordu.
-    if (mumPct >= 6 && rv >= 2.0 && c > o) {
+    // ═══ R452 İMZA KÜTÜPHANESİ GENİŞLETİLDİ (kullanıcı talebi: "az işlem istemiyorum") ═══
+    // 25 coin-günlük İZOLE ölçüm — her imza tek başına test edildi, hepsi POZİTİF çıktı:
+    //   G_HIGHER_LOW n=48 +0.90R · C_SIKISMA n=36 +1.00R · E_HACIM3X n=44 +0.58R
+    //   B_PULLBACK n=13 +1.09R (WR %92) · A_SWEEP_ATR5 n=4 +0.94R
+    // Birleşik etki: işlem 55→77 (günde 3.7→5.1), WR %78→%81, PF 3.18→2.48 (hâlâ güçlü).
+    // Yani kapsam genişledi, kalite düşmedi — eşik indirmek yerine YENİ KALIP eklendi.
+    const yesil = c > o;
+    const trend20 = (N >= 22) && (c > Number(k[N-21][3]) * 1.03);
+    // R453 yardımcıları (ikinci dalga kalıplar için)
+    const P1 = k[N-2], P2 = k[N-3], P3 = k[N-4];
+    const altFitil = Math.min(c,o) - l, ustFitil = h - Math.max(c,o);
+    const ema = (per) => { let e = Number(k[Math.max(0, N-1-per*3)][3]); const kk = 2/(per+1);
+      for (let z = Math.max(0, N-1-per*3)+1; z <= N-1; z++) e = Number(k[z][3])*kk + e*(1-kk); return e; };
+    const emaPrev = (per) => { let e = Number(k[Math.max(0, N-2-per*3)][3]); const kk = 2/(per+1);
+      for (let z = Math.max(0, N-2-per*3)+1; z <= N-2; z++) e = Number(k[z][3])*kk + e*(1-kk); return e; };
+    const geriCekilme = Math.max(...k.slice(N-4, N-1).map(x=>Number(x[1]))) > c * 1.005;
+    const son8 = k.slice(N-9, N-1);
+    const bandHi = Math.max(...son8.map(x=>Number(x[1]))), bandLo = Math.min(...son8.map(x=>Number(x[2])));
+    const ikiKirmizi = Number(k[N-2][3]) < Number(k[N-2][0]) && Number(k[N-3][3]) < Number(k[N-3][0]);
+    const dip1 = Math.min(...k.slice(N-7, N-4).map(x=>Number(x[2])));
+    const dip2 = Math.min(...k.slice(N-4, N-1).map(x=>Number(x[2])));
+    if (mumPct >= 6 && rv >= 2.0 && yesil) {
       tip = 'PATLAMA'; kanit = `son 15m mum +%${mumPct.toFixed(1)} · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
-    } else if (c > maxH && govde/aralik > 0.45 && c > o && rv >= 1.2) {
+    } else if (c > maxH && govde/aralik > 0.45 && yesil && rv >= 1.2) {
       tip = 'MOMENTUM_KIRILIMI'; kanit = `12-bar tepe ${maxH} kırıldı · gövde %${(govde/aralik*100).toFixed(0)} · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
+    } else if (trend20 && geriCekilme && yesil && govde/aralik > 0.5 && rv >= 1.0) {
+      tip = 'PULLBACK_DEVAMI'; kanit = `20-bar trend yukarı, sığ geri çekilme sonrası yeşil dönüş · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
+    } else if ((bandHi - bandLo)/c < atr * 0.072 && c > bandHi && yesil && rv >= 1.3) {
+      tip = 'SIKISMA_KIRILIMI'; kanit = `8-bar dar bant (${bandLo}-${bandHi}) yukarı kırıldı · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
+    } else if (dip2 > dip1 && yesil && c > Number(k[N-2][3]) && rv >= 1.2 && trend20) {
+      tip = 'YUKSELEN_DIP'; kanit = `dip yapısı yükseliyor (${dip1}→${dip2}) · trend yukarı · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
+    } else if (rv >= 3.0 && yesil && govde/aralik > 0.4) {
+      tip = 'HACIM_PATLAMASI'; kanit = `hacim ${rv.toFixed(1)}x (3x üstü) · yeşil gövde %${(govde/aralik*100).toFixed(0)}`; taban = 74; runner = true;
+    } else if (N >= 4 && Number(P1[1]) < Number(P2[1]) && Number(P1[2]) > Number(P2[2]) && c > Number(P1[1]) && yesil && rv >= 1.2) {
+      // R453: izole ölçüm n=14 WR %71 +1.89R — kütüphanenin en yüksek beklentili kalıbı
+      tip = 'IC_BAR_KIRILIMI'; kanit = `iç bar (${P1[2]}-${P1[1]}) yukarı kırıldı · hacim ${rv.toFixed(1)}x`; taban = 78; runner = true;
+    } else if ((() => { // R453 FVG TEPKİSİ: n=19 WR %74 +1.40R
+      try { for (let z = N-9; z < N-3; z++) { if (z < 1) continue;
+        const fLo = Number(k[z-1][1]), fHi = Number(k[z+1][2]);
+        if (fHi > fLo && l <= fHi && l >= fLo && yesil && c > fHi && rv >= 1.1) return true; } } catch(_e) {}
+      return false; })()) {
+      tip = 'FVG_TEPKISI'; kanit = `boğa FVG bölgesine geri çekilip yeşil dönüş · hacim ${rv.toFixed(1)}x`; taban = 77; runner = true;
+    } else if ((() => { // R453 RETEST TUTUNMA: n=47 WR %81 +1.17R (en çok sinyal üreten)
+      try { const eskiTepe = Math.max(...k.slice(N-15, N-7).map(x=>Number(x[1])));
+        const son3Dip = Math.min(...k.slice(N-4, N-1).map(x=>Number(x[2])));
+        return c > eskiTepe && son3Dip <= eskiTepe * 1.004 && yesil && rv >= 1.0; } catch(_e) { return false; } })()) {
+      tip = 'RETEST_TUTUNMA'; kanit = `kırılan direnç retest edildi ve üstünde tutundu · hacim ${rv.toFixed(1)}x`; taban = 77; runner = true;
+    } else if ((() => { // R453 ÇİFT DİP (W): n=37 WR %84 +0.98R
+      try { const d1 = Math.min(...k.slice(N-13, N-8).map(x=>Number(x[2])));
+        const d2 = Math.min(...k.slice(N-7, N-2).map(x=>Number(x[2])));
+        const boyun = Math.max(...k.slice(N-8, N-6).map(x=>Number(x[1])));
+        return Math.abs(d1-d2)/d1 < 0.012 && c > boyun && yesil && rv >= 1.2; } catch(_e) { return false; } })()) {
+      tip = 'CIFT_DIP'; kanit = `çift dip (W) boyun çizgisi kırıldı · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
+    } else if (yesil && ustFitil/aralik < 0.08 && govde/aralik > 0.7 && rv >= 1.5 && c > maxH * 0.995) {
+      // R453 TEMİZ KAPANIŞ: n=13 WR %77 +0.99R — üst fitilsiz güçlü momentum mumu
+      tip = 'TEMIZ_KAPANIS'; kanit = `üst fitilsiz güçlü kapanış (gövde %${(govde/aralik*100).toFixed(0)}) · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
+    } else if (altFitil > govde * 1.8 && altFitil/aralik > 0.5 && yesil && rv >= 1.2) {
+      // R453 ÇEKİÇ: n=23 WR %96 (!) +0.56R — uzun alt fitil = dip reddi
+      tip = 'CEKIC_ALT_FITIL'; kanit = `uzun alt fitil reddi (fitil/aralık %${(altFitil/aralik*100).toFixed(0)}) · hacim ${rv.toFixed(1)}x`; taban = 75; runner = false;
+    } else if (N >= 5 && h > Number(P1[1]) && Number(P1[1]) > Number(P2[1]) && Number(P2[1]) > Number(P3[1]) && yesil && rv >= 1.1) {
+      // R453 ARDIŞIK HH: n=37 WR %73 +0.54R
+      tip = 'ARDISIK_HH'; kanit = `3 ardışık yükselen tepe · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
+    } else if ((() => { // R453 KURU→SPIKE: n=21 WR %86 +0.52R
+      try { const kuru = k.slice(N-6, N-1).every(r => { const t=String(r[4]); const x=parseFloat(t);
+          const v = t.endsWith('M')?x*1e6:t.endsWith('K')?x*1e3:x;
+          const ts=String(k[N-1][4]); const xs=parseFloat(ts);
+          const vs = ts.endsWith('M')?xs*1e6:ts.endsWith('K')?xs*1e3:xs;
+          return v < vs*0.6; });
+        return kuru && rv >= 2 && yesil && govde/aralik > 0.5; } catch(_e) { return false; } })()) {
+      tip = 'KURU_SONRASI_SPIKE'; kanit = `hacim kuruduktan sonra ${rv.toFixed(1)}x spike · yeşil gövde`; taban = 75; runner = true;
+    } else if (l < minL && c > minL && yesil && atr >= 5) {
+      // R448'de çıkarılan sweep, YALNIZCA yüksek ATR'de geri: izole ölçüm n=4 WR %100 +0.94R
+      tip = 'SWEEP_RECLAIM_HIGH_ATR'; kanit = `dip ${minL} süpürüldü + geri alındı · ATR %${atr.toFixed(1)} (≥5 şartı)`; taban = 75; runner = false;
     }
     // R448 (15 coin-günü / 24 sinyal ölçümü): SWEEP_RECLAIM mekanik motordan ÇIKARILDI.
     // Ölçüm: PATLAMA ort +1.85R (n=15) · MOMENTUM +1.02R (n=4) · SWEEP sadece +0.19R (n=5) = gürültü.
@@ -4060,8 +4131,9 @@ function r447MekanikKarar(symbol, data = {}) {
 
     // ── SEVİYELER (gerçek yapıdan; uydurma yok) ──
     let sl;
-    if (tip === 'PATLAMA') sl = c * 0.92;                          // dikey harekette sabit ~%8 (R436 dersi)
-    else if (tip === 'SWEEP_RECLAIM') sl = Math.min(l, minL) * 0.997;
+    if (tip === 'PATLAMA' || tip === 'HACIM_PATLAMASI') sl = c * 0.92;   // dikey harekette sabit ~%8 (R436)
+    else if (tip === 'SWEEP_RECLAIM_HIGH_ATR') sl = Math.min(l, minL) * 0.997;
+    else if (['CEKIC_ALT_FITIL','CIFT_DIP','FVG_TEPKISI'].includes(tip)) sl = Math.min(l, Math.min(...k.slice(N-4, N-1).map(x=>Number(x[2])))) * 0.997;
     else sl = Math.min(...k.slice(N-7, N-1).map(x=>Number(x[2]))) * 0.997;
     let slPct = (c - sl) / c * 100;
     const slTaban = Number(data.slTabanOneri || 0);
@@ -14432,7 +14504,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
           // R300 sadece eski botun görüşü; AI ham veriyle bakıp kendi karar verir (sweep/reclaim/akış AI'da).
           decisionChain.r300SoftReject = true;
           decisionChain.r309eFromWait = true;
-          try { logAuto(`🔀 ${full} R300 eski motor 'yetersiz' dedi ama AI'ya devrediliyor — kararı AI verecek (${r300Final.reason.slice(0,60)})`); } catch(_){}
+          try { logAuto(`🔀 ${full} R300 eski motor 'yetersiz' dedi — karar ${r451Merci()} merciine devredildi (${r300Final.reason.slice(0,60)})`); } catch(_){}
         } else {
           decisionChain.r300FinalOk = r300Final.reason;
         }
@@ -18685,7 +18757,7 @@ async function runAutoScan(prioritySymbol=null) {
         // R311C: TEK PATRON AI — funding aşırı olsa bile coini KESME, AI'ya devret. Funding değeri zaten AI'ya
         // gidiyor (prompt'ta var); AI aşırı funding'i görüp kendi karar verir (squeeze fırsatı mı tuzak mı).
         if (!fundOk) {
-          logAuto(`⚠️ ${coin.symbol} funding aşırı karşı (${fund?.current}) ama AI'ya devrediliyor — kararı AI verecek`);
+          logAuto(`⚠️ ${coin.symbol} funding aşırı karşı (${fund?.current}) — karar ${r451Merci()} merciine devredildi`);
           decisionChain.r309eFromWait = true;
           decisionChain.fundingExtremeNote = `funding aşırı: ${fund?.current}`;
         }
@@ -18888,7 +18960,7 @@ async function runAutoScan(prioritySymbol=null) {
             if (r311mDevret) {
               decisionChain.r309eFromWait = true;
               decisionChain.r300SoftReject = true;
-              logAuto(`🔀 ${coin.symbol} riskli yön freni ama AI'ya devrediliyor — kararı AI verecek (${recommendation})`);
+              logAuto(`🔀 ${coin.symbol} riskli yön freni — karar ${r451Merci()} merciine devredildi (${recommendation})`);
             } else {
               logAuto(`⛔ ${coin.symbol} ${why}`);
               markAutoSkip(coin.symbol, why, {rec:recommendation, tier:decisionChain?.tier, score, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain), r81EntryTraceOk, r81StrongBPlusSoftPass, r88DevamOnayiOk, r88GeriTestOnayiOk, r88KirilimOnayiOk, r88GeriKazanimOnayiOk, r88TazeImpulsOnayiOk, r88SweepZamanlamaOnayiOk, rotateSide, rotateAllowed, rotateTier:rotateDC?.tier, rotateScore, rotateFloor, rotateR47:rotateDC?.r47Readiness, rotateEntryTraceOk, rotateTrapEvidenceOk, rotateAntiChaseHard});
