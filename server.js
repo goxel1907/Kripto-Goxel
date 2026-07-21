@@ -18629,7 +18629,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ═══ R309E: WAIT'i AI'ya DEVRET (silme) ═══
           // Eski sistem WAIT dedi diye coini çöpe atma — AI ham mumu okuyup kendi kararını versin.
           // Bütçe varsa: skoru yüksek tarafı geçici yön yap (AI zaten kendi yönünü seçer/çevirir), AI'ya bırak.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
+          if (((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             // Panel yön kısıtı korunur: panel sadece LONG/SHORT'a izin veriyorsa, geçici yön ona uymalı.
             const waitSideAllowed = (waitSide === 'LONG' && allowLong) || (waitSide === 'SHORT' && allowShort);
             // Panel karşı yöne izin veriyorsa geçici yönü ona çevir; iki yön de kapalıysa devretme.
@@ -18681,7 +18681,7 @@ async function runAutoScan(prioritySymbol=null) {
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için emir izni yok`);
           // ═══ R309E: emir izni yok → AI'ya DEVRET (silme) ═══
           // ASTER dersi: bot "izin yok" dedi ama AI'nın bayılacağı sweep+reclaim setup'ı vardı. AI okusun.
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
+          if (((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             decisionChain.r300SoftReject = `R309E entryPermission→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E AI'ya devrediyor — kararı AI verecek (${why.slice(0,80)})`);
             // continue YOK — AI'ya akar
@@ -18702,7 +18702,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r47Dbg = '';
           const why = r120AutoReason(decisionChain, `5m Fırsat Beyni izle: ${recommendation} için güven/kanıt yetersiz`);
           // ═══ R309E: tier düşük → AI'ya DEVRET (silme) ═══
-          if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
+          if (((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             decisionChain.r300SoftReject = `R309E tier→AI devir: ${why}`;
             logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E AI'ya devrediyor — kararı AI verecek`);
             // continue YOK
@@ -18956,7 +18956,7 @@ async function runAutoScan(prioritySymbol=null) {
             const why = `5m Fırsat Beyni riskli yön freni: ${recommendation} için risk ${sideCtxRisk}, bölge:${pdZone||'-'}, RSI4s:${rsi4hNow}; devam onayı:${r88DevamOnayiOk?'VAR':'YOK'}; ${rotateSide} kontrolü:${rotateAllowed?'açık':'kapalı'} skor:${rotateScore} tuzak:${rotateTrapEvidenceOk?'VAR':'YOK'} giriş-izi:${rotateEntryTraceOk?'VAR':'YOK'}`;
             // R311M: TEK PATRON AI — "riskli yön freni" botun kendi görüşü. Coin GERÇEK ADAYSA (canlı setup işareti var)
             // + AI bütçesi varsa, bu yumuşak kapı coini KESMESİN, AI'ya DEVRET. AI tepede/riskli görürse zaten WAIT der.
-            const r311mDevret = AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
+            const r311mDevret = ((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
             if (r311mDevret) {
               decisionChain.r309eFromWait = true;
               decisionChain.r300SoftReject = true;
@@ -19078,7 +19078,7 @@ async function runAutoScan(prioritySymbol=null) {
           // R310Z (kullanıcı madde1): ATR yüksek ama AŞIRI değilse (atrExtreme yok), AI bütçesi varsa coini KESME —
           // AI'ya DEVRET, son kararı AI versin. ATR bilgisi zaten AI'ya gidiyor; tepede/aşırı volatil görürse WAIT der.
           // Bot AI'dan ÖNCE TOP gainer'ı kesmesin. Sadece gerçek uç volatilite (TOP2 %30+) kesilir.
-          const atrAiDevret = !atrExtreme && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
+          const atrAiDevret = !atrExtreme && ((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
           if (atrExtreme || (!atrBridgeAllowedFinal && !atrAiDevret)) {
             logAuto(`⛔ ${coin.symbol} ATR %${coinAtrPct.toFixed(1)} >> SL %${userSLPct} — ${atrExtreme?'aşırı volatilite (düşen bıçak)':'volatilite riski'} yüksek, atlandı`);
             markAutoSkip(coin.symbol, atrExtreme ? `ATR %${coinAtrPct.toFixed(1)} aşırı (düşen bıçak güvenlik)` : `ATR %${coinAtrPct.toFixed(1)} > SL %${userSLPct}*4 volatilite`, {rec:recommendation, score, tier:decisionChain?.tier, priorityScore:decisionChain?.priorityScore, ...r119BuildAutoDiag(decisionChain)});
@@ -19101,7 +19101,7 @@ async function runAutoScan(prioritySymbol=null) {
           // TLM %0.1361 spread ile kesiliyordu (4 saat 0 işlem sebeplerinden). TOP2 için eşik %0.12→%0.25.
           const spreadCap = r310IsTop2(scanIdx) ? 0.25 : 0.12;
           const gercekKayma = lqSpread > spreadCap; // TOP2: %0.25, diğer: %0.12 üstü = gerçek geniş makas
-          const poorAiDevret = !gercekKayma && AI_BRAIN_ENABLED && ANTHROPIC_API_KEY && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
+          const poorAiDevret = !gercekKayma && ((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)));
           if (gercekKayma || !poorAiDevret) {
             logAuto(`⛔ ${coin.symbol} POOR likidite (spread:%${analysis.r15.liquidityQuality.spread}) — ${gercekKayma?'gerçek geniş makas kayma riski':'AI bütçe/aday değil'}, atlandı`);
             markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
