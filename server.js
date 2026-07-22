@@ -4076,6 +4076,15 @@ function r447MekanikKarar(symbol, data = {}) {
     const mk = data.makroKonum || {};
     const k24 = Number(mk.konum24h ?? mk['24h'] ?? NaN);
 
+    // ═══ R467 1h RSI EKSTREM KAPISI (doğru Wilder RSI ölçümü, 34 coin-günü) ═══
+    // Ölçüm: 1h RSI 80-90 hâlâ iyi (WR %83, +0.71R), ama RSI >= 90 KÖTÜ (WR %33, -0.32R).
+    // Filtre 1h RSI<90 uygulanınca: 3 kötü sinyal elenir, toplam beklenti 28.6R→29.6R, WR %86→%91.
+    // Canlı kanıt (gece 3 kayıp): SNXX/SNDK/NIGHT 1h RSI 88-89 idi — tam bu sınırın eşiğinde.
+    // 4h RSI eklenmedi ÇÜNKÜ tek günlük 15m veriyle hesaplanamaz (RSI-14 için 15 adet 4h mum =
+    // 60 saat lazım); canlıda bot 4h'ı görür ama backtest doğrulaması yapılamaz, o yüzden 1h ile sınırlı.
+    const r467Rsi1h = Number(data.rsi1h);
+    if (Number.isFinite(r467Rsi1h) && r467Rsi1h >= 90) return null;   // ekstrem aşırı alım → giriş yok
+
     // ── İMZA TESPİTİ ──
     let tip = null, kanit = '', taban = 70, runner = false;
     // R450 EŞİK KALİBRASYONU (25 coin-günü taraması 21.07): eski eşikler (patlama 8%/2.5x,
@@ -4178,6 +4187,11 @@ function r447MekanikKarar(symbol, data = {}) {
     if (slTaban > 0 && slTaban < c && (c-slTaban)/c*100 > slPct) { sl = slTaban; slPct = (c-sl)/c*100; }
     if (slPct < Math.max(1.0, atr * 0.8)) { slPct = Math.max(1.0, atr * 0.8); sl = c * (1 - slPct/100); }
     if (slPct > 10) return null;                                    // R308 max SL kapısı
+    // ═══ R469 GERİ ALINDI (out-of-sample başarısız) ═══
+    // R469 kalite kapısı Temmuz (01-20) penceresinde +61.9R→+81.7R iyileştirmişti AMA Haziran (10-30)
+    // out-of-sample testinde -12.8R zarar ettirdi (KAPALI +134.6R vs AÇIK +121.8R). Temmuz'daki
+    // ARDISIK_HH +112$'ı tek şanslı runner'mış (OOS'ta +28$). Klasik overfitting — kural pencereye
+    // fit olmuş, genellenmiyor. Baseline r447 iki pencerede de daha sağlam. Kalite kapısı kaldırıldı.
 
     // TP: üst likidite havuzu varsa oraya (1 tık önü), yoksa R-katı
     let tp = null;
@@ -4209,7 +4223,7 @@ function r447MekanikKarar(symbol, data = {}) {
     return {
       ok: true, mekanik: true, side: 'LONG', entry: r(c), tp: r(tp), sl: r(sl),
       confidence: guven, karKosma: runner ? 'RUNNER' : 'NORMAL',
-      reasoning: `R447 MEKANİK/${tip}: ${kanit} · delta ${dltGecerli ? (dlt>0?'+':'')+dlt.toFixed(1) : 'yedek:'+yedek} · ATR%${atr.toFixed(1)} · SL%${slPct.toFixed(2)} · R/R ${rr.toFixed(2)}${Number.isFinite(k24)?' · makro24h %'+k24.toFixed(0):''} — backtest imzası (WR %72-86), AI çağrısı yapılmadı`,
+      reasoning: `R447 MEKANİK/${tip}: ${kanit} · delta ${dltGecerli ? (dlt>0?'+':'')+dlt.toFixed(1) : 'yedek:'+yedek} · ATR%${atr.toFixed(1)} · SL%${slPct.toFixed(2)} · R/R ${rr.toFixed(2)}${Number.isFinite(k24)?' · makro24h %'+k24.toFixed(0):''}${Number.isFinite(r467Rsi1h)?' · 1hRSI '+r467Rsi1h.toFixed(0):''} — backtest imzası (WR %72-86), AI çağrısı yapılmadı`,
       plan: runner ? 'RUNNER: yapı-bazlı trailing, kâr kilitleri aktif, TP trend sürdükçe ileri taşınır' : 'NORMAL vur-kaç: TP yakın likidite, kâr kilidi aktif'
     };
   } catch(_e) { return null; }
@@ -9984,7 +9998,12 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
       const erken = Array.isArray(autoScanState?.r370ErkenYukselis) ? autoScanState.r370ErkenYukselis : [];
       if (erken.length) {
         const mevcutSemboller = new Set(out.map(c => String(c.symbol||c.fullSymbol||'').replace('USDT','')));
-        for (const ea of erken.slice(0, 2)) { // en güçlü 2 erken aday
+        // R468 (kullanıcı kararı 22.07: "top-2 değil, koşuya YENİ başlamış coinlere daha çok odaklan").
+        // Worker 5 taze impuls buluyordu ama sadece 2'si havuza enjekte ediliyordu → 3 taze coin kuyrukta
+        // bekliyordu. R446 slot kapağını zaten kaldırdı, R372-F taze coinleri öne alıyor; tek darboğaz buydu.
+        // Enjeksiyonu 2→4'e çıkarmak = pumped 12h-liderleri yerine taze impulslara daha çok slot. AI maliyeti
+        // AYRI katmanda kapaklı (AI_BRAIN_TOP_N, günlük 350 çağrı), o yüzden bu bedelsiz genişleme.
+        for (const ea of erken.slice(0, 4)) { // R468: en güçlü 4 erken aday (eski: 2)
           if (mevcutSemboller.has(ea.symbol)) continue; // zaten listedeyse atla
           // R375 HACİM TABANI (canlı ders 07.07: hacim 0.7-1.0x cılız sinyaller MON -3$ slot kaptı).
           // R413 DÜZELTME (EDGE kanıtı 13.07: skor 86 taze impuls, anlık hacim 0.4x ölçülüp elendi, SONRA ~%5 pump'ladı
@@ -18655,6 +18674,7 @@ async function runAutoScan(prioritySymbol=null) {
               cvdMomentumYon: decisionChain?.cvdMomentumYon,
               deltaTrendMum: decisionChain?.deltaTrendMum,
               makroKonum: analysis?.makroKonum || null,
+              rsi1h: Number(analysis?.timeframes?.['1h']?.rsi ?? NaN),   // R467: 1h RSI ekstrem kapısı
               oiDegisim: { '1h': Number(analysis?.openInterest?.change1h ?? 0) },
               gainerSira: coin.gainerRank || 99,
               rvol5m: Number(analysis?.rvol5m ?? decisionChain?.rvol ?? 1),
