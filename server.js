@@ -4172,14 +4172,53 @@ function r447MekanikKarar(symbol, data = {}) {
     // Üstelik sweep girişleri DAR SL üretiyor → R431 haritası yüksek kaldıraç veriyordu (VANRY 1.3% SL
     // → 25x → tek işlemde -15.77$). 7 coin-günü bakiye simülasyonu: sweep açıkken PF 0.99, kapalıyken 1.80.
     // Sweep fırsatı kaybolmuyor — mekanik motor imza bulamayınca karar AI'a düşer, AI sweep'i değerlendirir.
+
+    // ═══ R471 ORDER BLOCK DÖNÜŞ (ALFA CRYPTO PDF #1+#2+#14 birebir) ═══
+    // Bullish OB = fiyatın son swing-high'ı kapatarak MSB/CHoCH yaptığı yukarı-impulstan önceki SON KIRMIZI mum.
+    // Fiyat OB bölgesine dönüp boğa tepkisi verince LONG, SL OB altında. Trend-yönü filtresi (PDF#14/#24:
+    // "trend yönünde işlem tercih et") — sadece fiyat SMA40 üstündeyken. Momentum kalıbı yoksa (son öncelik) çalışır.
+    // Backtest (3 bağımsız pencere, iki parametrede de ROBUST): choppy/dönüş aylarında (Tem +20R, May +6R) yardım eder,
+    // mega-runner ayında (Haz -38R) runner'ları slot'tan atıp maliyetli. Bu yüzden env-gate'li: OB_DONUS_ENABLED=1
+    // ile açılır (choppy piyasada aç, güçlü BTC uptrend'inde kapat). Doğru ICT implementasyonu — canlı A/B için.
+    let r471ObLo = null;
+    if (!tip && process.env.OB_DONUS_ENABLED === '1') {
+      try {
+        const kc=(j)=>Number(k[j][3]),kh=(j)=>Number(k[j][1]),kl=(j)=>Number(k[j][2]),ko=(j)=>Number(k[j][0]);
+        const isSH=(idx)=>idx>=2&&idx+2<=N-1&&kh(idx)>kh(idx-1)&&kh(idx)>kh(idx-2)&&kh(idx)>kh(idx+1)&&kh(idx)>kh(idx+2);
+        let obLo=null,obHi=null;
+        for(let b=N-2;b>=8&&obLo===null;b--){
+          let sh=null;for(let s=b-1;s>=2;s--){if(isSH(s)){sh=kh(s);break;}}
+          if(sh!==null&&kc(b)>sh&&kc(b)>ko(b)){for(let j=b-1;j>=Math.max(2,b-15);j--){if(kc(j)<ko(j)){obLo=kl(j);obHi=kh(j);break;}}break;}
+        }
+        let sma=0,cnt=0;for(let j=Math.max(0,N-40);j<N;j++){sma+=kc(j);cnt++;}sma=cnt?sma/cnt:c;
+        if(obLo!==null && c>sma && l<=obHi*1.001 && c>obLo && yesil){
+          tip='ORDER_BLOCK_DONUS'; taban=76; runner=true; r471ObLo=obLo;
+          kanit=`MSB sonrası OB'ye dönüş + boğa tepkisi · trend yukarı (bölge ${obLo.toFixed(6)}-${obHi.toFixed(6)})`;
+        }
+      } catch(_e){}
+    }
     if (!tip) return null;
     // Tepe kovalama: patlama dışı imzalarda 24h tavanda giriş yok
     if (Number.isFinite(k24) && k24 >= 85 && tip !== 'PATLAMA') return null;
+    // ══ R473 TEPE-TUZAK KAPISI ══ (canlı kanıt 22.07: ZAMA -37.5% 1hRSI81 defter-7.4 · UB -22.2% 1hRSI85 defter-8.7)
+    // Yüksek-tepe kırılımı (MOMENTUM/SIKISMA/RETEST/IC_BAR) + aşırı-alım 1hRSI + SATICI-BASKIN emir defteri
+    // = likidite avı: fiyat 12-bar tepesindeki alım-stoplarını süpürür, dinlenen satış emirleri dump eder.
+    // Backtest klinede orderBookImbalance YOK → guard orada inert (rakamları değiştirmez, sadece canlıyı korur).
+    // Backtest yine de RSI>=80 momentum'un net negatif olduğunu doğruladı (Haziran 4/4 kayıp). Env ile kapatılır.
+    if (process.env.TEPE_TUZAK_OFF !== '1') {
+      const R473_KIRILIM = ['MOMENTUM_KIRILIMI','SIKISMA_KIRILIMI','RETEST_TUTUNMA','IC_BAR_KIRILIMI','ARDISIK_HH'];
+      const r473ob = Number(data.orderBookImbalance);
+      if (R473_KIRILIM.includes(tip) && Number.isFinite(r467Rsi1h) && r467Rsi1h >= 78 &&
+          Number.isFinite(r473ob) && r473ob <= -5) {
+        return null;   // tepe kırılımına satıcı defterle girme
+      }
+    }
 
     // ── SEVİYELER (gerçek yapıdan; uydurma yok) ──
     let sl;
     if (tip === 'PATLAMA' || tip === 'HACIM_PATLAMASI') sl = c * 0.92;   // dikey harekette sabit ~%8 (R436)
     else if (tip === 'SWEEP_RECLAIM_HIGH_ATR') sl = Math.min(l, minL) * 0.997;
+    else if (tip === 'ORDER_BLOCK_DONUS' && r471ObLo) sl = r471ObLo * 0.997;   // R471: SL OB bölgesinin altında
     else if (['CEKIC_ALT_FITIL','CIFT_DIP','FVG_TEPKISI'].includes(tip)) sl = Math.min(l, Math.min(...k.slice(N-4, N-1).map(x=>Number(x[2])))) * 0.997;
     else sl = Math.min(...k.slice(N-7, N-1).map(x=>Number(x[2]))) * 0.997;
     let slPct = (c - sl) / c * 100;
@@ -4264,6 +4303,9 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
       gainerSira: data.gainerRank,   // R308R: TOP24 volatil-gainer sırası (1 = en güçlü/hareketli)
       fiyat: data.lastPrice,
       mumlar: data.candles || null,   // 100×5m + 20×15m + 20×1h + 12×4h + 6×btc5m ham OHLCV (R325: derinlik artırıldı)
+      // R474 ALGI KÖPRÜSÜ: R472 sayısal mum-formasyon algısı mumlar içine gömülüydü, AI görmüyordu.
+      // Üst-seviyeye çıkarıldı ki AI kesinlikle okusun (kör-test: 8 formasyon %100 tanınıyor, gömülü kalıyordu).
+      grafikFormasyon: (data.candles && data.candles.mumFormasyon) || null, // tepe/dip dönüş + likidite süpürme algısı (konuma bağlı)
       // R366: RSI AI'a VERİLMEZ (top coinde hep 'aşırı'dır = MM'in retail tuzağı; AI ham fiyat okur).
       funding: data.funding,
       shortSqueeze: data.shortSqueeze,  // true=herkes short, MM YUKARI sıkıştırır → SHORT tehlikeli
@@ -4524,7 +4566,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 10. İÇ TUTARLILIK: Gerekçen kararının KANITI olmalı, karşı-kanıtı değil. Bir zayıflık not ettiysen, onu YENEN somut kanıtı da göster; gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. Kendi R/R hesabın minimumun altındaysa TP/SL'i orana uydurmak için kaydırma — ya gerçek seviyelerle geçerli R/R kur ya da geç. sonIslemlerim'den ders al ama TEK kayıptan kural çıkarma; "ne değişti?" sorusunu sor.
 
-VERİ SÖZLÜĞÜ (özet): mumlar = ham OHLCV (100×5m + 20×15m + 20×1h + 12×4h + btc5m) · funding/oiDegisim/emirDefteriDengesizlik/canliDelta = akış · altSupurmeReclaimVar + supurmeKalite (q>=3 teyitli) = sweep durumu · altSupurmeSuruyorReclaimYok = av sürüyor, girme · likiditeSeviyeleri = TP/SL hedef havuzları · atrYuzde + slTabanOneri = gürültü zemini (SL bunun altına konmaz) · rvol5m = hacim patlaması (>1.5) · r370ErkenYukselis = taze impuls, RUNNER düşün · parabolik1dk = SADECE giriş zamanlaması; TP/SL her zaman 15m yapısından · makroKonum = fiyatın 24h/4h aralığındaki gerçek yeri · shortSqueeze/longSqueeze = kalabalık tuzağı · volatiliteSebep = az önceki hareketin nedeni · pozisyonDurumu/panelAyarlar = bot durumu. · simSinyal = DOLUYSA, kodun 8 coin-günlük GERÇEK backtestinde pozitif beklentili çıkan mekanik imza ŞU AN aktif demektir (tip+kanıt+backtest notu içerir) — bu alandayken varsayılan karar GİRMEKTİR; WAIT dersen simSinyal'i YENEN kanıtı sayıyla yazmak zorundasın ("emin değilim" yenmez; gerçek satış akışı, kırık yapı, SL-mesafesizlik yener).
+VERİ SÖZLÜĞÜ (özet): mumlar = ham OHLCV (100×5m + 20×15m + 20×1h + 12×4h + btc5m) · funding/oiDegisim/emirDefteriDengesizlik/canliDelta = akış · altSupurmeReclaimVar + supurmeKalite (q>=3 teyitli) = sweep durumu · altSupurmeSuruyorReclaimYok = av sürüyor, girme · likiditeSeviyeleri = TP/SL hedef havuzları · atrYuzde + slTabanOneri = gürültü zemini (SL bunun altına konmaz) · rvol5m = hacim patlaması (>1.5) · r370ErkenYukselis = taze impuls, RUNNER düşün · parabolik1dk = SADECE giriş zamanlaması; TP/SL her zaman 15m yapısından · makroKonum = fiyatın 24h/4h aralığındaki gerçek yeri · grafikFormasyon = sayısal mum-algısı (fitil reddi/engulf/spike/boşalt-doldur/ikili fitil — anlamı KONUMA bağlı: tepede/dipte güçlü, trend ortasında zayıf) · shortSqueeze/longSqueeze = kalabalık tuzağı · volatiliteSebep = az önceki hareketin nedeni · pozisyonDurumu/panelAyarlar = bot durumu. · simSinyal = DOLUYSA, kodun 8 coin-günlük GERÇEK backtestinde pozitif beklentili çıkan mekanik imza ŞU AN aktif demektir (tip+kanıt+backtest notu içerir) — bu alandayken varsayılan karar GİRMEKTİR; WAIT dersen simSinyal'i YENEN kanıtı sayıyla yazmak zorundasın ("emin değilim" yenmez; gerçek satış akışı, kırık yapı, SL-mesafesizlik yener).
 
 PUSU MODU (R442 — planın çöpe gitmez): WAIT verdiğinde bile "entry" alanına GERÇEK giriş seviyeni yaz (sl/tp ile birlikte) — bot fiyat o seviyeye (±%0.25) gelince seni FRENSİZ ve öncelikli uyandırır, taze veriyle son kararı yine sen verirsin. Plansız WAIT fırsatın tamamen kaybıdır; planlı WAIT kurulmuş pusudur. Plan SL altına inerse pusu otomatik iptal olur.
 
@@ -14625,7 +14667,38 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       '15m': r308PackKlines(k15m, 48, 900000),
       '5m':  r308PackKlines(k5m, 24, 300000),
       '1m':  r308PackKlines(k1m, 30, 60000),
-      btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6, 300000)
+      btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6, 300000),
+      // ═══ R472 MUM FORMASYON ALGISI (ALFA CRYPTO PDF'leri: tepe/dip dönüş konseptleri — sayısal) ═══
+      // Perception katmanı: bot grafikte NE olduğunu görsün diye reversal/manipülasyon mumlarını sayısal
+      // tespit eder ve AI'ya besler (tekil kârlı giriş değil — kararı zenginleştiren algı). PDF #27/tepe-dönüş.
+      mumFormasyon: (() => {
+        try {
+          const K = Array.isArray(k15m) ? k15m.slice(-8) : [];
+          if (K.length < 4) return null;
+          const c = (i) => ({ o:Number(K[i][1]), h:Number(K[i][2]), l:Number(K[i][3]), cl:Number(K[i][4]), v:Number(K[i][5]) });
+          const N = K.length, L = c(N-1), P = c(N-2);
+          const body=(x)=>Math.abs(x.cl-x.o), rng=(x)=>(x.h-x.l)||1e-12, ustF=(x)=>x.h-Math.max(x.o,x.cl), altF=(x)=>Math.min(x.o,x.cl)-x.l;
+          const yesil=(x)=>x.cl>x.o, kirmizi=(x)=>x.cl<x.o;
+          const avgRng = K.slice(0,-1).reduce((a,x,i)=>a+rng(c(i)),0)/Math.max(1,N-1);
+          const f = [];
+          // Pinbar / fitil reddi
+          if (ustF(L)/rng(L) > 0.5 && ustF(L) > body(L)*1.8) f.push('UST_FITIL_REDDI(ayı: alıcılar yoruldu)');
+          if (altF(L)/rng(L) > 0.5 && altF(L) > body(L)*1.8) f.push('ALT_FITIL_REDDI(boğa: satıcılar yoruldu)');
+          // Engulf
+          if (yesil(L) && kirmizi(P) && L.o<=P.cl && L.cl>=P.o) f.push('BOGA_ENGULF');
+          if (kirmizi(L) && yesil(P) && L.o>=P.cl && L.cl<=P.o) f.push('AYI_ENGULF');
+          // Spike / Empire State
+          if (rng(L) > avgRng*2.4) f.push('SPIKE_MUM(MM heyecan tuzağı — kapanışı bekle)');
+          // Fitilsiz satış (üst fitilsiz yeşil sonrası kırmızı)
+          if (kirmizi(L) && yesil(P) && ustF(P)/rng(P) < 0.06) f.push('FITILSIZ_SATIS(saf satış bölgesi)');
+          // Boşalt-doldur: son mum dip havuzunu süpürüp güçlü geri kazandı
+          const dip6 = Math.min(...K.slice(-7,-1).map((_,i)=>c(N-7+i).l));
+          if (L.l < dip6*0.999 && L.cl > dip6 && yesil(L) && altF(L) > body(L)*0.8) f.push('BOSALT_DOLDUR(likidite süpürme + reclaim)');
+          // Ardışık pinbar (2+ üst fitil = satıcı baskısı)
+          if (ustF(L)/rng(L)>0.4 && ustF(P)/rng(P)>0.4) f.push('IKILI_UST_FITIL(satıcı grubu)');
+          return f.length ? { tespit: f, not:'Formasyon anlamı KONUMA bağlı: tepede/dipte güçlü, trend ortasında zayıf.' } : null;
+        } catch(_e) { return null; }
+      })()
     };
     // R366: 1dk parabolik fib analizi (LONG & SHORT) — analiz çıktısına eklenir
     const r366Parabolik = r366ParabolicFib1m(k1m, lastPrice);
@@ -18667,19 +18740,20 @@ async function runAutoScan(prioritySymbol=null) {
           if (R447_ENABLED && analysis?.r308RawCandles) {
             const r455Veri = {
               candles: analysis.r308RawCandles,
-              atrYuzde: Number(analysis?.atrPct ?? analysis?.atr ?? decisionChain?.atrPct ?? 3),
+              atrYuzde: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? analysis?.atr ?? decisionChain?.atrPct ?? 3),   // R477 KABLO ONARIMI: gerçek ATR leverage.atrPct'te; eskiden hep 3'e düşüyordu → atr>6 güven cezası ölüydü (fazla kaldıraç)
               fiyat: Number(coin.lastPrice || analysis?.price || 0),
               cvdDelta: Number(decisionChain?.r125LiveDeltaPct ?? NaN),
               cvdValid: Number.isFinite(Number(decisionChain?.r125LiveDeltaPct)),
               cvdMomentumYon: decisionChain?.cvdMomentumYon,
               deltaTrendMum: decisionChain?.deltaTrendMum,
-              makroKonum: analysis?.makroKonum || null,
+              makroKonum: { konum24h: Number(analysis?.r29?.r196?.long?.loc24 ?? NaN), konum4h: Number(analysis?.r29?.r196?.long?.loc4h ?? NaN) },   // R477 KABLO ONARIMI: analysis.makroKonum YOKTU → k24=NaN → 24h TEPE KAPISI (k24>=85) canlıda hiç ateşlenmiyordu (tepe-alım koruması ölü)
               rsi1h: Number(analysis?.timeframes?.['1h']?.rsi ?? NaN),   // R467: 1h RSI ekstrem kapısı
               oiDegisim: { '1h': Number(analysis?.openInterest?.change1h ?? 0) },
               gainerSira: coin.gainerRank || 99,
               rvol5m: Number(analysis?.rvol5m ?? decisionChain?.rvol ?? 1),
               slTabanOneri: Number(analysis?.slTabanOneri || 0),
-              likiditeSeviyeleri: analysis?.liqLevels || null
+              likiditeSeviyeleri: analysis?.liqLevels || null,
+              orderBookImbalance: Number(analysis?.orderBook?.imbalance ?? NaN)   // R473 KABLO ONARIMI: canlı tepe-tuzak guard'ı emir defterini bu alandan okur — yoksa guard hiç ateşlenmez
             };
             const r455 = r447MekanikKarar(coin.symbol, r455Veri);
             if ((!r455 || !r455.ok) && scanIdx < 3) {
