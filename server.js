@@ -18746,7 +18746,17 @@ async function runAutoScan(prioritySymbol=null) {
               cvdValid: Number.isFinite(Number(decisionChain?.r125LiveDeltaPct)),
               cvdMomentumYon: decisionChain?.cvdMomentumYon,
               deltaTrendMum: decisionChain?.deltaTrendMum,
-              makroKonum: { konum24h: Number(analysis?.r29?.r196?.long?.loc24 ?? NaN), konum4h: Number(analysis?.r29?.r196?.long?.loc4h ?? NaN) },   // R477 KABLO ONARIMI: analysis.makroKonum YOKTU → k24=NaN → 24h TEPE KAPISI (k24>=85) canlıda hiç ateşlenmiyordu (tepe-alım koruması ölü)
+              makroKonum: (() => {   // R477+R478: 24h tepe kapısı girdisi — r29'dan al; boşsa 15m mumlardan hesapla (kapı ASLA sessizce ölmesin)
+                let k24 = Number(analysis?.r29?.r196?.long?.loc24 ?? NaN);
+                if (!Number.isFinite(k24)) {
+                  try { const kk = analysis?.r308RawCandles?.['15m'];
+                    if (Array.isArray(kk) && kk.length >= 16) {
+                      let hi=-Infinity, lo=Infinity; for (const cc of kk){ const H=Number(cc[1]), L=Number(cc[2]); if(H>hi)hi=H; if(L<lo)lo=L; }
+                      const cl = Number(kk[kk.length-1][3]); if (hi>lo && cl>0) k24 = (cl-lo)/(hi-lo)*100;
+                    } } catch(_) {}
+                }
+                return { konum24h: k24, konum4h: Number(analysis?.r29?.r196?.long?.loc4h ?? NaN) };
+              })(),
               rsi1h: Number(analysis?.timeframes?.['1h']?.rsi ?? NaN),   // R467: 1h RSI ekstrem kapısı
               oiDegisim: { '1h': Number(analysis?.openInterest?.change1h ?? 0) },
               gainerSira: coin.gainerRank || 99,
