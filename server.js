@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R428_RAPOR_FOTO'
+const LAZARUS_BUILD = 'R481_RAW_KLINE_OOS_PRIORITY'
 // ═══ R427 NON-KRİPTO PERP FİLTRESİ (kanıt: ASML -4.52$, QQQ -1.25$, CL -0.27$ + DRAM/SAMSUNG/MU/AMD slot işgali):
 // Binance hisse/emtia/endeks perp'leri kripto stratejisiyle alakasız seans+defter dinamiğinde. Env ile genişletilebilir.
 const R427_NONKRIPTO = new Set(('ASML,AMD,NVDA,META,QQQ,SPY,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,MU,SAMSUNG,DRAM,CL,BZ,NG,GC,SI,O,' + (process.env.NONKRIPTO_EK||'')).split(',').map(s=>s.trim()+'USDT').filter(s=>s.length>4));
@@ -4035,6 +4035,43 @@ function r447Teshis(symbol, data = {}) {
   } catch(e) { return 'teşhis hatası: ' + String(e?.message||e).slice(0,60); }
 }
 
+// ═══ R481 HAM-KLINE / OOS STRATEJİ ÖNCELİĞİ ═══
+// Bu katsayılar Kasım-Haziran ham 15m klineden öğrenildi; Temmuz daha sonra bağımsız OOS test edildi.
+// Balina verisi bu sıralamaya dahil DEĞİLDİR (15m kline aggTrade taşımıyor).
+const R481_STRATEJI_ONCELIK_AKTIF = String(process.env.R481_STRATEJI_ONCELIK ?? '1') !== '0';
+const R481_TUM_ADAY_SIRALA = String(process.env.R481_TUM_ADAY_SIRALA ?? '1') !== '0';
+const R481_STRATEJI_SKOR = Object.freeze({
+  TEMIZ_KAPANIS:0.374717, IC_BAR_KIRILIMI:0.341443, KURU_SONRASI_SPIKE:0.317114,
+  FVG_TEPKISI:0.309113, CIFT_DIP:0.303532, MOMENTUM_KIRILIMI:0.269869,
+  SIKISMA_KIRILIMI:0.251792, ARDISIK_HH:0.240864, RETEST_TUTUNMA:0.228744,
+  YUKSELEN_DIP:0.200134, HACIM_PATLAMASI:0.138007, PULLBACK_DEVAMI:0.129654,
+  CEKIC_ALT_FITIL:0.091305, PATLAMA:0.018775, SWEEP_RECLAIM_HIGH_ATR:0.008056,
+  ORDER_BLOCK_DONUS:0
+});
+const R481_ESKI_IMZA_SIRASI = Object.freeze(['PATLAMA','MOMENTUM_KIRILIMI','PULLBACK_DEVAMI','SIKISMA_KIRILIMI','YUKSELEN_DIP','HACIM_PATLAMASI','IC_BAR_KIRILIMI','FVG_TEPKISI','RETEST_TUTUNMA','CIFT_DIP','TEMIZ_KAPANIS','CEKIC_ALT_FITIL','ARDISIK_HH','KURU_SONRASI_SPIKE','SWEEP_RECLAIM_HIGH_ATR']);
+function r481TipFromKarar(k){ try { return String(k?.reasoning||'').match(/MEKANİK\/([A-Z0-9_]+)/)?.[1] || null; } catch(_){ return null; } }
+function r481StrategyScore(t){ return Number(R481_STRATEJI_SKOR[String(t||'')]) || 0; }
+function r481MekanikVeri(coin, analysis, dc={}) {
+  return {
+    candles: analysis?.r308RawCandles,
+    atrYuzde: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? analysis?.atr ?? dc?.atrPct ?? 3),
+    fiyat: Number(coin?.lastPrice || analysis?.price || 0),
+    cvdDelta: Number(dc?.r125LiveDeltaPct ?? NaN),
+    cvdValid: Number.isFinite(Number(dc?.r125LiveDeltaPct)),
+    cvdTickFresh: dc?.r125LiveFresh === true,
+    cvdMomentumYon: dc?.cvdMomentumYon,
+    deltaTrendMum: dc?.deltaTrendMum,
+    makroKonum: (()=>{ let k24=Number(analysis?.r29?.r196?.long?.loc24 ?? NaN); if(!Number.isFinite(k24)){ try{ const kk=analysis?.r308RawCandles?.['15m']; if(Array.isArray(kk)&&kk.length>=16){let hi=-Infinity,lo=Infinity;for(const cc of kk){const H=Number(cc[1]),L=Number(cc[2]);if(H>hi)hi=H;if(L<lo)lo=L;}const cl=Number(kk[kk.length-1][3]);if(hi>lo&&cl>0)k24=(cl-lo)/(hi-lo)*100;}}catch(_){}} return {konum24h:k24,konum4h:Number(analysis?.r29?.r196?.long?.loc4h ?? NaN)}; })(),
+    rsi1h: Number(analysis?.timeframes?.['1h']?.rsi ?? NaN),
+    oiDegisim:{'1h':Number(analysis?.openInterest?.change1h ?? 0)},
+    gainerSira:Number(coin?.r481OriginalRank || coin?.gainerRank || 99),
+    rvol5m:Number(analysis?.rvol5m ?? dc?.rvol ?? 1),
+    slTabanOneri:Number(analysis?.slTabanOneri || 0),
+    likiditeSeviyeleri:analysis?.liqLevels || null,
+    orderBookImbalance:Number(analysis?.orderBook?.imbalance ?? NaN)
+  };
+}
+
 function r447MekanikKarar(symbol, data = {}) {
   if (!R447_ENABLED) return null;
   try {
@@ -4114,58 +4151,50 @@ function r447MekanikKarar(symbol, data = {}) {
     const ikiKirmizi = Number(k[N-2][3]) < Number(k[N-2][0]) && Number(k[N-3][3]) < Number(k[N-3][0]);
     const dip1 = Math.min(...k.slice(N-7, N-4).map(x=>Number(x[2])));
     const dip2 = Math.min(...k.slice(N-4, N-1).map(x=>Number(x[2])));
-    if (mumPct >= 6 && rv >= 2.0 && yesil) {
-      tip = 'PATLAMA'; kanit = `son 15m mum +%${mumPct.toFixed(1)} · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
-    } else if (c > maxH && govde/aralik > 0.45 && yesil && rv >= 1.2) {
-      tip = 'MOMENTUM_KIRILIMI'; kanit = `12-bar tepe ${maxH} kırıldı · gövde %${(govde/aralik*100).toFixed(0)} · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
-    } else if (trend20 && geriCekilme && yesil && govde/aralik > 0.5 && rv >= 1.0) {
-      tip = 'PULLBACK_DEVAMI'; kanit = `20-bar trend yukarı, sığ geri çekilme sonrası yeşil dönüş · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
-    } else if ((bandHi - bandLo)/c < atr * 0.072 && c > bandHi && yesil && rv >= 1.3) {
-      tip = 'SIKISMA_KIRILIMI'; kanit = `8-bar dar bant (${bandLo}-${bandHi}) yukarı kırıldı · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
-    } else if (dip2 > dip1 && yesil && c > Number(k[N-2][3]) && rv >= 1.2 && trend20) {
-      tip = 'YUKSELEN_DIP'; kanit = `dip yapısı yükseliyor (${dip1}→${dip2}) · trend yukarı · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
-    } else if (rv >= 3.0 && yesil && govde/aralik > 0.4) {
-      tip = 'HACIM_PATLAMASI'; kanit = `hacim ${rv.toFixed(1)}x (3x üstü) · yeşil gövde %${(govde/aralik*100).toFixed(0)}`; taban = 74; runner = true;
-    } else if (N >= 4 && Number(P1[1]) < Number(P2[1]) && Number(P1[2]) > Number(P2[2]) && c > Number(P1[1]) && yesil && rv >= 1.2) {
-      // R453: izole ölçüm n=14 WR %71 +1.89R — kütüphanenin en yüksek beklentili kalıbı
-      tip = 'IC_BAR_KIRILIMI'; kanit = `iç bar (${P1[2]}-${P1[1]}) yukarı kırıldı · hacim ${rv.toFixed(1)}x`; taban = 78; runner = true;
-    } else if ((() => { // R453 FVG TEPKİSİ: n=19 WR %74 +1.40R
-      try { for (let z = N-9; z < N-3; z++) { if (z < 1) continue;
-        const fLo = Number(k[z-1][1]), fHi = Number(k[z+1][2]);
-        if (fHi > fLo && l <= fHi && l >= fLo && yesil && c > fHi && rv >= 1.1) return true; } } catch(_e) {}
-      return false; })()) {
-      tip = 'FVG_TEPKISI'; kanit = `boğa FVG bölgesine geri çekilip yeşil dönüş · hacim ${rv.toFixed(1)}x`; taban = 77; runner = true;
-    } else if ((() => { // R453 RETEST TUTUNMA: n=47 WR %81 +1.17R (en çok sinyal üreten)
-      try { const eskiTepe = Math.max(...k.slice(N-15, N-7).map(x=>Number(x[1])));
-        const son3Dip = Math.min(...k.slice(N-4, N-1).map(x=>Number(x[2])));
-        return c > eskiTepe && son3Dip <= eskiTepe * 1.004 && yesil && rv >= 1.0; } catch(_e) { return false; } })()) {
-      tip = 'RETEST_TUTUNMA'; kanit = `kırılan direnç retest edildi ve üstünde tutundu · hacim ${rv.toFixed(1)}x`; taban = 77; runner = true;
-    } else if ((() => { // R453 ÇİFT DİP (W): n=37 WR %84 +0.98R
-      try { const d1 = Math.min(...k.slice(N-13, N-8).map(x=>Number(x[2])));
-        const d2 = Math.min(...k.slice(N-7, N-2).map(x=>Number(x[2])));
-        const boyun = Math.max(...k.slice(N-8, N-6).map(x=>Number(x[1])));
-        return Math.abs(d1-d2)/d1 < 0.012 && c > boyun && yesil && rv >= 1.2; } catch(_e) { return false; } })()) {
-      tip = 'CIFT_DIP'; kanit = `çift dip (W) boyun çizgisi kırıldı · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
-    } else if (yesil && ustFitil/aralik < 0.08 && govde/aralik > 0.7 && rv >= 1.5 && c > maxH * 0.995) {
-      // R453 TEMİZ KAPANIŞ: n=13 WR %77 +0.99R — üst fitilsiz güçlü momentum mumu
-      tip = 'TEMIZ_KAPANIS'; kanit = `üst fitilsiz güçlü kapanış (gövde %${(govde/aralik*100).toFixed(0)}) · hacim ${rv.toFixed(1)}x`; taban = 76; runner = true;
-    } else if (altFitil > govde * 1.8 && altFitil/aralik > 0.5 && yesil && rv >= 1.2) {
-      // R453 ÇEKİÇ: n=23 WR %96 (!) +0.56R — uzun alt fitil = dip reddi
-      tip = 'CEKIC_ALT_FITIL'; kanit = `uzun alt fitil reddi (fitil/aralık %${(altFitil/aralik*100).toFixed(0)}) · hacim ${rv.toFixed(1)}x`; taban = 75; runner = false;
-    } else if (N >= 5 && h > Number(P1[1]) && Number(P1[1]) > Number(P2[1]) && Number(P2[1]) > Number(P3[1]) && yesil && rv >= 1.1) {
-      // R453 ARDIŞIK HH: n=37 WR %73 +0.54R
-      tip = 'ARDISIK_HH'; kanit = `3 ardışık yükselen tepe · hacim ${rv.toFixed(1)}x`; taban = 74; runner = true;
-    } else if ((() => { // R453 KURU→SPIKE: n=21 WR %86 +0.52R
-      try { const kuru = k.slice(N-6, N-1).every(r => { const t=String(r[4]); const x=parseFloat(t);
-          const v = t.endsWith('M')?x*1e6:t.endsWith('K')?x*1e3:x;
-          const ts=String(k[N-1][4]); const xs=parseFloat(ts);
-          const vs = ts.endsWith('M')?xs*1e6:ts.endsWith('K')?xs*1e3:xs;
-          return v < vs*0.6; });
-        return kuru && rv >= 2 && yesil && govde/aralik > 0.5; } catch(_e) { return false; } })()) {
-      tip = 'KURU_SONRASI_SPIKE'; kanit = `hacim kuruduktan sonra ${rv.toFixed(1)}x spike · yeşil gövde`; taban = 75; runner = true;
-    } else if (l < minL && c > minL && yesil && atr >= 5) {
-      // R448'de çıkarılan sweep, YALNIZCA yüksek ATR'de geri: izole ölçüm n=4 WR %100 +0.94R
-      tip = 'SWEEP_RECLAIM_HIGH_ATR'; kanit = `dip ${minL} süpürüldü + geri alındı · ATR %${atr.toFixed(1)} (≥5 şartı)`; taban = 75; runner = false;
+    // R481: Aynı mum birden fazla imzaya uyabilir. Önce TÜM imzaları üret, sonra
+    // yalnız geçmiş pencerelerden öğrenilmiş sabit OOS öncelik puanıyla en iyisini seç.
+    // R481 kapalıysa R428'in eski ilk-eşleşme sırası birebir korunur.
+    const r481Adaylar = [];
+    const r481Ekle = (kosul, _tip, _kanit, _taban, _runner) => { if (kosul) r481Adaylar.push({tip:_tip,kanit:_kanit,taban:_taban,runner:_runner}); };
+    r481Ekle(mumPct >= 6 && rv >= 2.0 && yesil,
+      'PATLAMA', `son 15m mum +%${mumPct.toFixed(1)} · hacim ${rv.toFixed(1)}x`, 76, true);
+    r481Ekle(c > maxH && govde/aralik > 0.45 && yesil && rv >= 1.2,
+      'MOMENTUM_KIRILIMI', `12-bar tepe ${maxH} kırıldı · gövde %${(govde/aralik*100).toFixed(0)} · hacim ${rv.toFixed(1)}x`, 74, true);
+    r481Ekle(trend20 && geriCekilme && yesil && govde/aralik > 0.5 && rv >= 1.0,
+      'PULLBACK_DEVAMI', `20-bar trend yukarı, sığ geri çekilme sonrası yeşil dönüş · hacim ${rv.toFixed(1)}x`, 76, true);
+    r481Ekle((bandHi-bandLo)/c < atr*0.072 && c > bandHi && yesil && rv >= 1.3,
+      'SIKISMA_KIRILIMI', `8-bar dar bant (${bandLo}-${bandHi}) yukarı kırıldı · hacim ${rv.toFixed(1)}x`, 76, true);
+    r481Ekle(dip2 > dip1 && yesil && c > Number(k[N-2][3]) && rv >= 1.2 && trend20,
+      'YUKSELEN_DIP', `dip yapısı yükseliyor (${dip1}→${dip2}) · trend yukarı · hacim ${rv.toFixed(1)}x`, 74, true);
+    r481Ekle(rv >= 3.0 && yesil && govde/aralik > 0.4,
+      'HACIM_PATLAMASI', `hacim ${rv.toFixed(1)}x (3x üstü) · yeşil gövde %${(govde/aralik*100).toFixed(0)}`, 74, true);
+    r481Ekle(N >= 4 && Number(P1[1]) < Number(P2[1]) && Number(P1[2]) > Number(P2[2]) && c > Number(P1[1]) && yesil && rv >= 1.2,
+      'IC_BAR_KIRILIMI', `iç bar (${P1[2]}-${P1[1]}) yukarı kırıldı · hacim ${rv.toFixed(1)}x`, 78, true);
+    const r481Fvg = (()=>{ try{ for(let z=N-9;z<N-3;z++){ if(z<1)continue; const fLo=Number(k[z-1][1]),fHi=Number(k[z+1][2]); if(fHi>fLo&&l<=fHi&&l>=fLo&&yesil&&c>fHi&&rv>=1.1)return true; } }catch(_){} return false; })();
+    r481Ekle(r481Fvg, 'FVG_TEPKISI', `boğa FVG bölgesine geri çekilip yeşil dönüş · hacim ${rv.toFixed(1)}x`, 77, true);
+    const r481Retest = (()=>{ try{ const eskiTepe=Math.max(...k.slice(N-15,N-7).map(x=>Number(x[1]))); const son3Dip=Math.min(...k.slice(N-4,N-1).map(x=>Number(x[2]))); return c>eskiTepe&&son3Dip<=eskiTepe*1.004&&yesil&&rv>=1.0; }catch(_){return false;} })();
+    r481Ekle(r481Retest, 'RETEST_TUTUNMA', `kırılan direnç retest edildi ve üstünde tutundu · hacim ${rv.toFixed(1)}x`, 77, true);
+    const r481Cift = (()=>{ try{ const d1=Math.min(...k.slice(N-13,N-8).map(x=>Number(x[2]))),d2=Math.min(...k.slice(N-7,N-2).map(x=>Number(x[2]))),boyun=Math.max(...k.slice(N-8,N-6).map(x=>Number(x[1]))); return d1>0&&Math.abs(d1-d2)/d1<0.012&&c>boyun&&yesil&&rv>=1.2; }catch(_){return false;} })();
+    r481Ekle(r481Cift, 'CIFT_DIP', `çift dip (W) boyun çizgisi kırıldı · hacim ${rv.toFixed(1)}x`, 76, true);
+    r481Ekle(yesil && ustFitil/aralik < 0.08 && govde/aralik > 0.7 && rv >= 1.5 && c > maxH*0.995,
+      'TEMIZ_KAPANIS', `üst fitilsiz güçlü kapanış (gövde %${(govde/aralik*100).toFixed(0)}) · hacim ${rv.toFixed(1)}x`, 76, true);
+    r481Ekle(altFitil > govde*1.8 && altFitil/aralik > 0.5 && yesil && rv >= 1.2,
+      'CEKIC_ALT_FITIL', `uzun alt fitil reddi (fitil/aralık %${(altFitil/aralik*100).toFixed(0)}) · hacim ${rv.toFixed(1)}x`, 75, false);
+    r481Ekle(N >= 5 && h > Number(P1[1]) && Number(P1[1]) > Number(P2[1]) && Number(P2[1]) > Number(P3[1]) && yesil && rv >= 1.1,
+      'ARDISIK_HH', `3 ardışık yükselen tepe · hacim ${rv.toFixed(1)}x`, 74, true);
+    const r481Kuru = (()=>{ try{ return k.slice(N-6,N-1).every(row=>vnum(row[4])<vSon*0.6) && rv>=2 && yesil && govde/aralik>0.5; }catch(_){return false;} })();
+    r481Ekle(r481Kuru, 'KURU_SONRASI_SPIKE', `hacim kuruduktan sonra ${rv.toFixed(1)}x spike · yeşil gövde`, 75, true);
+    r481Ekle(l < minL && c > minL && yesil && atr >= 5,
+      'SWEEP_RECLAIM_HIGH_ATR', `dip ${minL} süpürüldü + geri alındı · ATR %${atr.toFixed(1)} (≥5 şartı)`, 75, false);
+
+    let r481Uygun = r481Adaylar.filter(a => !(Number.isFinite(k24) && k24 >= 85 && a.tip !== 'PATLAMA'));
+    if (r481Uygun.length) {
+      if (R481_STRATEJI_ONCELIK_AKTIF) {
+        r481Uygun.sort((a,b)=> (r481StrategyScore(b.tip)-r481StrategyScore(a.tip)) || (R481_ESKI_IMZA_SIRASI.indexOf(a.tip)-R481_ESKI_IMZA_SIRASI.indexOf(b.tip)));
+      } else {
+        r481Uygun.sort((a,b)=>R481_ESKI_IMZA_SIRASI.indexOf(a.tip)-R481_ESKI_IMZA_SIRASI.indexOf(b.tip));
+      }
+      ({tip,kanit,taban,runner}=r481Uygun[0]);
     }
     // R448 (15 coin-günü / 24 sinyal ölçümü): SWEEP_RECLAIM mekanik motordan ÇIKARILDI.
     // Ölçüm: PATLAMA ort +1.85R (n=15) · MOMENTUM +1.02R (n=4) · SWEEP sadece +0.19R (n=5) = gürültü.
@@ -6140,12 +6169,25 @@ function getTickAnalysis(symbol) {
   const recentRaw30s = (Array.isArray(engine.lastTicks)?engine.lastTicks:[]).filter(t=>nowTick-r125Num(t.ts,0)<30*1000);
   const recent30Buy = recentRaw30s.filter(t=>t.isBuy).reduce((s,t)=>s+r125Num(t.usdt),0);
   const recent30Sell = recentRaw30s.filter(t=>!t.isBuy).reduce((s,t)=>s+r125Num(t.usdt),0);
-  const recent2m = engine.bigTrades.filter(t=>Date.now()-t.ts<2*60*1000);
-  const bigBuy  = recent2m.filter(t=>t.side==='BUY').reduce((s,t)=>s+t.usdt,0);
-  const bigSell = recent2m.filter(t=>t.side==='SELL').reduce((s,t)=>s+t.usdt,0);
-  // Whale bias — sadece büyük işlemler ($50K+ zaten filtrelendi)
-  const whaleBias = bigBuy > bigSell * 1.5 ? 'WHALE_BUY' :
-                    bigSell > bigBuy * 1.5 ? 'WHALE_SELL' : 'NEUTRAL';
+  // R481 BALİNA V2: sabit $50K yerine coin'in kendi canlı akışına göre dinamik eşik.
+  // Sinyal varsayılan SHADOW'dur; tek başına giriş/veto üretmez ve kline backtestine dahil değildir.
+  const recent2mTicks = (Array.isArray(engine.lastTicks)?engine.lastTicks:[]).filter(t=>nowTick-r125Num(t.ts,0)<2*60*1000 && r125Num(t.usdt,0)>0);
+  const amounts = recent2mTicks.map(t=>r125Num(t.usdt,0)).sort((a,b)=>a-b);
+  const med = amounts.length ? amounts[Math.floor(amounts.length/2)] : 0;
+  const q90 = amounts.length ? amounts[Math.min(amounts.length-1,Math.floor(amounts.length*0.90))] : 0;
+  const baseThr = full.startsWith('BTC') ? 120000 : full.startsWith('ETH') ? 60000 : 8000;
+  const whaleThreshold = Math.max(baseThr, med*8, q90*1.8);
+  const whaleTrades = recent2mTicks.filter(t=>r125Num(t.usdt,0)>=whaleThreshold);
+  const bigBuy  = whaleTrades.filter(t=>t.isBuy).reduce((s,t)=>s+r125Num(t.usdt,0),0);
+  const bigSell = whaleTrades.filter(t=>!t.isBuy).reduce((s,t)=>s+r125Num(t.usdt,0),0);
+  const whaleLastTs = whaleTrades.reduce((m,t)=>Math.max(m,r125Num(t.ts,0)),0);
+  const whaleAgeMs = whaleLastTs ? nowTick-whaleLastTs : Infinity;
+  const whaleTotal = bigBuy+bigSell;
+  const whaleValid = whaleTrades.length>=2 && whaleTotal>=whaleThreshold*2 && whaleAgeMs<=45000;
+  const whaleRatio = Math.max(bigBuy,bigSell)/Math.max(1,Math.min(bigBuy||Infinity,bigSell||Infinity));
+  const whaleBias = whaleValid && bigBuy > bigSell*1.35 ? 'WHALE_BUY' :
+                    whaleValid && bigSell > bigBuy*1.35 ? 'WHALE_SELL' : 'NEUTRAL';
+  const whaleStatus = !amounts.length?'NO_TICKS':!whaleTrades.length?'NO_LARGE_TRADES':whaleAgeMs>45000?'STALE':whaleTrades.length<2?'ONE_PRINT_ONLY':whaleTotal<whaleThreshold*2?'LOW_NOTIONAL':whaleBias==='NEUTRAL'?'BALANCED':'VALID';
 
   // Delta momentum — son 3 mum
   let deltaFlip = 'NONE';
@@ -6182,6 +6224,7 @@ function getTickAnalysis(symbol) {
     whaleBias,
     bigBuy:  +bigBuy.toFixed(0),
     bigSell: +bigSell.toFixed(0),
+    whaleValid, whaleStatus, whaleThreshold:+whaleThreshold.toFixed(0), whaleTrades:whaleTrades.length, whaleAgeMs:Number.isFinite(whaleAgeMs)?Math.round(whaleAgeMs):null, whaleRatio:Number.isFinite(whaleRatio)?+whaleRatio.toFixed(2):null,
     tickSweep: tickSweep || null,
     currentCandle: engine.currentCandle ? {
       ts:engine.currentCandle.ts, open:engine.currentCandle.open, buy:+engine.currentCandle.buy.toFixed(0), sell:+engine.currentCandle.sell.toFixed(0),
@@ -11446,11 +11489,12 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         {longScore+=18;signals.long.push(`📊 Stacked Imbalance Bull (${tickData.imbalance.bullStrength})`);}
       if(tickData.imbalance?.bear&&tickData.imbalance.bearStrength>=4)
         {shortScore+=18;signals.short.push(`📊 Stacked Imbalance Bear (${tickData.imbalance.bearStrength})`);}
-      // Whale bias (son 2dk büyük işlemler)
-      if(tickData.whaleBias==='WHALE_BUY')
-        {longScore+=15;signals.long.push(`🐋 Whale Buy $${(tickData.bigBuy/1000).toFixed(0)}K`);}
-      if(tickData.whaleBias==='WHALE_SELL')
-        {shortScore+=15;signals.short.push(`🐋 Whale Sell $${(tickData.bigSell/1000).toFixed(0)}K`);}
+      // R481: balina varsayılan SHADOW. Canlı doğrulama sonrası R481_BALINA_SKOR=1 ile en fazla +5.
+      const r481WhaleScoreOn = String(process.env.R481_BALINA_SKOR || '0') === '1';
+      if(tickData.whaleValid && tickData.whaleBias==='WHALE_BUY')
+        {if(r481WhaleScoreOn) longScore+=5;signals.long.push(`🐋 Whale Buy $${(tickData.bigBuy/1000).toFixed(0)}K [${tickData.whaleStatus||'VALID'}${r481WhaleScoreOn?' +5':' SHADOW'}]`);}
+      if(tickData.whaleValid && tickData.whaleBias==='WHALE_SELL')
+        {if(r481WhaleScoreOn) shortScore+=5;signals.short.push(`🐋 Whale Sell $${(tickData.bigSell/1000).toFixed(0)}K [${tickData.whaleStatus||'VALID'}${r481WhaleScoreOn?' +5':' SHADOW'}]`);}
       // Delta flip — momentum değişimi (acil çıkış/giriş sinyali)
       if(tickData.deltaFlip==='BEAR_TO_BULL'){longScore+=12;signals.long.push('⚡ Delta Flip ↑');}
       if(tickData.deltaFlip==='BULL_TO_BEAR'){shortScore+=12;signals.short.push('⚡ Delta Flip ↓');}
@@ -18220,6 +18264,13 @@ app.get('/api/r374', (req, res) => {
   } catch (e) { res.status(500).json({ ok:false, error:String(e?.message||e) }); }
 });
 
+app.get('/api/r481-status', (req,res)=>{
+  try{
+    const tick={}; for(const sym of (autoScanState?.scanList||[]).slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+  }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
+});
+
 app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning, build:LAZARUS_BUILD,
     config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
@@ -18679,8 +18730,34 @@ async function runAutoScan(prioritySymbol=null) {
       } catch(_e) { return false; }
     };
 
+    // ═══ R481 GERÇEK ADAY ALLOCATOR ═══
+    // Önce tüm coinleri analiz eder; sonra mekanik imzanın yalnız geçmişten öğrenilmiş puanına,
+    // güvene ve orijinal gainer sırasına göre sıralar. Böylece listedeki ilk B-adayı slotu alıp
+    // daha sonra gelen güçlü imzayı boğamaz. Analiz sonucu ana döngüde cache'ten tekrar kullanılır.
+    if (R481_TUM_ADAY_SIRALA && R447_ENABLED && Array.isArray(scanList) && scanList.length>1) {
+      try {
+        scanList.forEach((c,i)=>{ c.r481OriginalRank=i+1; c.gainerRank=i+1; });
+        const q=[...scanList]; const workers=[]; const conc=Math.max(1,Math.min(6,Number(process.env.R481_PREPASS_CONCURRENCY||3)||3));
+        const worker=async()=>{ while(q.length){ const coin=q.shift(); if(!coin)break; try{
+          const analysis=await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`).then(r=>r.json());
+          coin.__r481Analysis=analysis;
+          if(analysis?.ok && !analysis?.isExpired && analysis?.freshness!=='EXPIRED'){
+            const dc=analysis.decisionChain||{}; const karar=r447MekanikKarar(coin.symbol,r481MekanikVeri(coin,analysis,dc));
+            coin.__r481Karar=karar;
+            coin.__r481Tip=r481TipFromKarar(karar);
+            coin.__r481Score=karar?.ok?r481StrategyScore(coin.__r481Tip):-999;
+            coin.__r481Confidence=Number(karar?.confidence||0);
+          } else { coin.__r481Score=-999; coin.__r481Confidence=0; }
+        }catch(e){ coin.__r481Score=-999; coin.__r481PrepassError=String(e?.message||e).slice(0,90); } } };
+        for(let i=0;i<conc;i++)workers.push(worker()); await Promise.all(workers);
+        scanList.sort((a,b)=> (Number(b.__r481Score||-999)-Number(a.__r481Score||-999)) || (Number(b.__r481Confidence||0)-Number(a.__r481Confidence||0)) || (Number(a.r481OriginalRank||99)-Number(b.r481OriginalRank||99)));
+        autoScanState.r481Oncelik = scanList.slice(0,12).map((c,i)=>({sira:i+1,coin:String(c.symbol||c.fullSymbol||'').replace('USDT',''),orijinalSira:c.r481OriginalRank||null,tip:c.__r481Tip||null,stratejiSkor:Number(c.__r481Score)>-900?+Number(c.__r481Score).toFixed(6):null,guven:c.__r481Confidence||0}));
+        logAuto(`🧭 R481 tüm-aday sırası: ${autoScanState.r481Oncelik.map(x=>`${x.coin}:${x.tip||'YOK'}(${x.stratejiSkor??'-'})`).join(' · ')}`);
+      } catch(e) { logAuto(`⚠️ R481 ön-sıralama hata verdi, R428 sırası korunuyor: ${String(e?.message||e).slice(0,120)}`); }
+    } else { try{ scanList.forEach((c,i)=>{c.r481OriginalRank=i+1;}); }catch(_){} }
+
     for (const [scanIdx, coin] of scanList.entries()) {
-      coin.gainerRank = scanIdx + 1; // 1 = en volatil/güçlü gainer (liste volatiliteye göre sıralı)
+      coin.gainerRank = Number(coin.r481OriginalRank || scanIdx + 1); // R481: sıralama değişse de piyasa gainer sırası korunur
       if ((await getNewPosCount()) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
       autoScanState.currentSymbol = String(coin.symbol||coin.fullSymbol||'').replace('USDT','');
       autoScanState.checked = (autoScanState.checked||0) + 1;
@@ -18701,7 +18778,7 @@ async function runAutoScan(prioritySymbol=null) {
       }
 
       try {
-        const analysis = await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`)
+        const analysis = coin.__r481Analysis || await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`)
           .then(r=>r.json());
         if (!analysis.ok) {
           const emsg = String(analysis.error || analysis.code || 'Analiz OK değil').slice(0,90);
@@ -18765,7 +18842,7 @@ async function runAutoScan(prioritySymbol=null) {
               likiditeSeviyeleri: analysis?.liqLevels || null,
               orderBookImbalance: Number(analysis?.orderBook?.imbalance ?? NaN)   // R473 KABLO ONARIMI: canlı tepe-tuzak guard'ı emir defterini bu alandan okur — yoksa guard hiç ateşlenmez
             };
-            const r455 = r447MekanikKarar(coin.symbol, r455Veri);
+            const r455 = coin.__r481Karar || r447MekanikKarar(coin.symbol, r455Veri);
             if ((!r455 || !r455.ok) && scanIdx < 3) {
               // R456: ilk 3 aday için "neden imza yok" görünür olsun (spam yapmadan)
               logAuto(`🔬 ${coin.symbol} R456 motor teşhisi: ${r447Teshis(coin.symbol, r455Veri)}`);
