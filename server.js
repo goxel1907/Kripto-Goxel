@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R481_RAW_KLINE_OOS_PRIORITY'
+const LAZARUS_BUILD = 'R482_SERVER5_FULL_MECHANICAL_SOURCE_PRIORITY'
 // ═══ R427 NON-KRİPTO PERP FİLTRESİ (kanıt: ASML -4.52$, QQQ -1.25$, CL -0.27$ + DRAM/SAMSUNG/MU/AMD slot işgali):
 // Binance hisse/emtia/endeks perp'leri kripto stratejisiyle alakasız seans+defter dinamiğinde. Env ile genişletilebilir.
 const R427_NONKRIPTO = new Set(('ASML,AMD,NVDA,META,QQQ,SPY,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,MU,SAMSUNG,DRAM,CL,BZ,NG,GC,SI,O,' + (process.env.NONKRIPTO_EK||'')).split(',').map(s=>s.trim()+'USDT').filter(s=>s.length>4));
@@ -4051,6 +4051,28 @@ const R481_STRATEJI_SKOR = Object.freeze({
 const R481_ESKI_IMZA_SIRASI = Object.freeze(['PATLAMA','MOMENTUM_KIRILIMI','PULLBACK_DEVAMI','SIKISMA_KIRILIMI','YUKSELEN_DIP','HACIM_PATLAMASI','IC_BAR_KIRILIMI','FVG_TEPKISI','RETEST_TUTUNMA','CIFT_DIP','TEMIZ_KAPANIS','CEKIC_ALT_FITIL','ARDISIK_HH','KURU_SONRASI_SPIKE','SWEEP_RECLAIM_HIGH_ATR']);
 function r481TipFromKarar(k){ try { return String(k?.reasoning||'').match(/MEKANİK\/([A-Z0-9_]+)/)?.[1] || null; } catch(_){ return null; } }
 function r481StrategyScore(t){ return Number(R481_STRATEJI_SKOR[String(t||'')]) || 0; }
+// R482: Server5 aday üretici mimarisini koru. R370/R385/R343 worker adayları ana listenin
+// sıradan TOP10 elemanı değildir; kendi kaynak kanıtlarıyla önce değerlendirilir. R481 OOS puanı
+// yalnız AYNI kaynak şeridinde öncelik verir, kaynak şeritlerini ezmez.
+const R482_KAYNAK_ONCELIGI_AKTIF = String(process.env.R482_KAYNAK_ONCELIGI ?? '1') !== '0';
+function r482AdayKaynakSeridi(c={}) {
+  try {
+    const bucket = String(c?.r54Bucket || '');
+    const source = String(c?.source || '');
+    const sebep = String(c?.r370Sebep || '');
+    const base = String(c?.symbol || c?.fullSymbol || '').replace('USDT','').toUpperCase();
+    const pf = (typeof __r328PatlamaFlags === 'object' && __r328PatlamaFlags) ? __r328PatlamaFlags[base] : null;
+    if (c?.r370Erken || /r370_erken/i.test(source) || /R385/i.test(sebep)) return 0; // tüm-piyasa erken/HTF worker
+    if (/R343_PATLAMA_ADAY/i.test(bucket) || c?.r327Patlama || (pf?.detected && Date.now()-Number(pf.ts||0)<5*60*1000)) return 1; // canlı patlama worker
+    if (/R126_PRIORITY_WAKE/i.test(bucket)) return 2; // canlı orderflow uyanışı
+    return 3; // birleşik normal evren: top gainer + volatilite + ilgi
+  } catch(_) { return 3; }
+}
+function r482AdayKaynakPuani(c={}) {
+  const r370 = Number(c?.r370Skor || 0);
+  const r327 = Number(c?.r327PatlamaScore || 0);
+  return Math.max(r370, r327);
+}
 function r481MekanikVeri(coin, analysis, dc={}) {
   return {
     candles: analysis?.r308RawCandles,
@@ -18267,7 +18289,7 @@ app.get('/api/r374', (req, res) => {
 app.get('/api/r481-status', (req,res)=>{
   try{
     const tick={}; for(const sym of (autoScanState?.scanList||[]).slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,scanMode:autoConfig?.scanMode||null,workers:{r370:'60sn tüm piyasa taze impuls',r385:'5dk 60 sembol HTF kırılım',r328:'45sn patlama radarı',r366:'30sn volatilite nedeni'},minLeverage:5,whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -18750,9 +18772,19 @@ async function runAutoScan(prioritySymbol=null) {
           } else { coin.__r481Score=-999; coin.__r481Confidence=0; }
         }catch(e){ coin.__r481Score=-999; coin.__r481PrepassError=String(e?.message||e).slice(0,90); } } };
         for(let i=0;i<conc;i++)workers.push(worker()); await Promise.all(workers);
-        scanList.sort((a,b)=> (Number(b.__r481Score||-999)-Number(a.__r481Score||-999)) || (Number(b.__r481Confidence||0)-Number(a.__r481Confidence||0)) || (Number(a.r481OriginalRank||99)-Number(b.r481OriginalRank||99)));
-        autoScanState.r481Oncelik = scanList.slice(0,12).map((c,i)=>({sira:i+1,coin:String(c.symbol||c.fullSymbol||'').replace('USDT',''),orijinalSira:c.r481OriginalRank||null,tip:c.__r481Tip||null,stratejiSkor:Number(c.__r481Score)>-900?+Number(c.__r481Score).toFixed(6):null,guven:c.__r481Confidence||0}));
-        logAuto(`🧭 R481 tüm-aday sırası: ${autoScanState.r481Oncelik.map(x=>`${x.coin}:${x.tip||'YOK'}(${x.stratejiSkor??'-'})`).join(' · ')}`);
+        scanList.sort((a,b)=> {
+          if (R482_KAYNAK_ONCELIGI_AKTIF) {
+            const laneDiff = r482AdayKaynakSeridi(a) - r482AdayKaynakSeridi(b);
+            if (laneDiff) return laneDiff;
+            const sourceDiff = r482AdayKaynakPuani(b) - r482AdayKaynakPuani(a);
+            if (sourceDiff) return sourceDiff;
+          }
+          return (Number(b.__r481Score||-999)-Number(a.__r481Score||-999)) ||
+                 (Number(b.__r481Confidence||0)-Number(a.__r481Confidence||0)) ||
+                 (Number(a.r481OriginalRank||99)-Number(b.r481OriginalRank||99));
+        });
+        autoScanState.r481Oncelik = scanList.slice(0,12).map((c,i)=>({sira:i+1,coin:String(c.symbol||c.fullSymbol||'').replace('USDT',''),orijinalSira:c.r481OriginalRank||null,kaynakSeridi:r482AdayKaynakSeridi(c),kaynakPuani:r482AdayKaynakPuani(c),kaynak:c.r54Bucket||c.source||null,tip:c.__r481Tip||null,stratejiSkor:Number(c.__r481Score)>-900?+Number(c.__r481Score).toFixed(6):null,guven:c.__r481Confidence||0}));
+        logAuto(`🧭 R482 kaynak-korumalı sıra: ${autoScanState.r481Oncelik.map(x=>`${x.coin}[K${x.kaynakSeridi}]:${x.tip||'YOK'}(${x.stratejiSkor??'-'})`).join(' · ')}`);
       } catch(e) { logAuto(`⚠️ R481 ön-sıralama hata verdi, R428 sırası korunuyor: ${String(e?.message||e).slice(0,120)}`); }
     } else { try{ scanList.forEach((c,i)=>{c.r481OriginalRank=i+1;}); }catch(_){} }
 
@@ -19993,6 +20025,8 @@ async function runAutoScan(prioritySymbol=null) {
         // R285/R291/R287/R283 dâhil hangi yoldan gelirse gelsin, emir buradan geçer.
         // 6 kural geçmezse emir AÇILMAZ. RSI/rangePos METİNDEN DEĞİL, güvenilir sayısaldan.
         let r308LastRangePos = 0.5;
+        decisionChain.r482R300Approved = false;
+        decisionChain.r482R300Reason = 'R300 henüz çalışmadı';
         try {
           const r300Rsi5m = Number(analysis?.timeframes?.['5m']?.rsi);
           const r300Rsi4h = Number(analysis?.timeframes?.['4h']?.rsi);
@@ -20021,6 +20055,7 @@ async function runAutoScan(prioritySymbol=null) {
             atrExtreme: !!(decisionChain?.atrExtreme || (Number(decisionChain?.coinAtrPct||0) > 12)),
             rrLow: !!(Number(userRR||99) < Number(minRR||1.2))
           }, { minScore: Number(effectiveMinScore || 70) });
+          decisionChain.r482R300Reason = String(r300Gate.reason || '');
           if (!r300Gate.allow) {
             // R308I TEK TEMİZ KAPI: R300-0 GÜVENLİK redleri (spread/sahte pump/ATR aşırı/grafik tuzağı/RR düşük)
             // gerçek tehlikedir → AI'ya bile sorulmaz, kesilir. Diğer "yetersiz/İZLE" redleri ise AI'ya gider,
@@ -20041,6 +20076,7 @@ async function runAutoScan(prioritySymbol=null) {
             logAuto(`🔍 ${coin.symbol} R300 yumuşak red (${r300Gate.reason}) — AI PRO TRADER'a devrediliyor, son kararı AI verecek`);
             decisionChain.r300SoftReject = r300Gate.reason;
           } else {
+            decisionChain.r482R300Approved = true;
             logAuto(`✅ ${coin.symbol} R300 SON KAPI ONAY: ${r300Gate.reason} (RSI5m:${r300RsiUse.toFixed(0)} range:${r300Range.toFixed(2)})`);
           }
         } catch(_r300gE) { logAuto(`⚠️ ${coin.symbol} R300 kapı hatası: ${String(_r300gE?.message||_r300gE).slice(0,80)}`); }
@@ -20350,25 +20386,79 @@ async function runAutoScan(prioritySymbol=null) {
             // R455: erken taramada imza bulunduysa onu kullan (aynı mumda motoru 2 kez çalıştırma)
             const r447 = decisionChain?.r455Karar || r447MekanikKarar(coin.symbol, aiData);
             if (r447 && r447.ok) {
-              ai = r447;
+              ai = {...r447, mekanik:true, motor:'R447_15M_IMZA', aiCallMade:false};
               logAuto(`⚙️ ${coin.symbol} R447 MEKANİK KARAR (AI çağrısı YAPILMADI — maliyet 0): ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl} · ${ai.reasoning}`);
+            } else if (!AI_BRAIN_ENABLED) {
+              // R482: AI kapalıyken Server5'in TAM teknik karar zincirini yürüt.
+              // FVG/IFVG, OTE/Fib, ICT sweep-reclaim, OB/mitigation, BOS/ChoCH/MSS, mum formasyonları,
+              // 5m playbook, orderflow/CVD/OI/funding ve HTF kırılım motorları yalnız sensör olarak kalmasın.
+              // Ancak R300 son kapı açık onay vermediyse mekanik motor AI gibi yumuşak red EZEMEZ.
+              const mechSide = String(recommendation || decisionChain?.side || '').toUpperCase();
+              const mechTier = String(decisionChain?.tier || '');
+              const mechTrigger = !!(
+                String(decisionChain?.brainAction||'').toUpperCase() === 'TRADE' ||
+                decisionChain?.r160TraderDecision || decisionChain?.r159MomentumPass ||
+                decisionChain?.r156FastBypass || decisionChain?.r284WaitUpgradeOk ||
+                decisionChain?.r274SafeEntryPass || decisionChain?.r190Edge?.ok
+              );
+              const mechPermission = !!(
+                decisionChain?.autoOk === true || decisionChain?.entryPermissionOk === true ||
+                r162BrainBypassActive || r121BrainTradeOk || decisionChain?.r284WaitUpgradeOk
+              );
+              const mechHardBlock = !!(
+                decisionChain?.r68CriticalHardBlock || decisionChain?.r65ScalperCoreHardVeto ||
+                decisionChain?.poorLiquidity || decisionChain?.atrExtremeBlock ||
+                decisionChain?.r41FallingKnifeBlock || decisionChain?.r41RisingKnifeBlock
+              );
+              const planDirectionOk = mechSide === 'LONG'
+                ? (Number(targetPrice)>Number(entryRef) && Number(stopPrice)<Number(entryRef))
+                : mechSide === 'SHORT'
+                  ? (Number(targetPrice)<Number(entryRef) && Number(stopPrice)>Number(entryRef))
+                  : false;
+              const fullMechanicalOk = ['LONG','SHORT'].includes(mechSide) && mechTrigger && mechPermission &&
+                !mechHardBlock && decisionChain?.r482R300Approved === true && planDirectionOk &&
+                Number(userRR||0) >= Number(minRR||1.0);
+              if (fullMechanicalOk) {
+                const rawConf = Math.max(Number(decisionChain?.brainConfidence||0), Number(decisionChain?.priorityScore||0), Number(score||0));
+                const mechConf = Math.max(64, Math.min(90, Math.round(rawConf || 64)));
+                const setupNames = [
+                  decisionChain?.brainMode, decisionChain?.r289Playbook?.setup, decisionChain?.r281ProMap?.setup,
+                  decisionChain?.r190Edge?.mode, decisionChain?.r274Signal?.setup
+                ].filter(Boolean).map(String);
+                const setup = [...new Set(setupNames)].slice(0,3).join('+') || mechTier || 'SERVER5_FULL_STACK';
+                ai = {
+                  ok:true, mekanik:true, motor:'R482_SERVER5_FULL_STACK', aiCallMade:false, side:mechSide,
+                  entry:Number(entryRef), tp:Number(targetPrice), sl:Number(stopPrice), confidence:mechConf,
+                  karKosma:String(r282TradePlan?.mode || decisionChain?.r283Recipe?.mode || 'NORMAL'),
+                  reasoning:`R482 TAM MEKANİK/${setup}: ${String(decisionChain?.brainSummary || decisionChain?.reason || 'Server5 teknik zinciri TRADE onayı').slice(0,520)} · R300 ONAY · R/R ${Number(userRR||0).toFixed(2)}`,
+                  plan:`Server5 tam teknik motoru: yapı+likidite+akış+HTF planı; min kaldıraç 5x, mevcut risk valileri ve canlı yönetim aynen aktif`
+                };
+                logAuto(`⚙️ ${coin.symbol} R482 TAM MEKANİK KARAR: ${mechSide} güven:${mechConf}% · kaynak:${setup} · R300 onaylı · AI çağrısı yok`);
+              } else {
+                const why = !mechTrigger ? 'tam teknik TRADE tetikleyicisi yok' :
+                            !mechPermission ? 'emir izni/autoOk yok' :
+                            mechHardBlock ? 'sert güvenlik bloğu' :
+                            decisionChain?.r482R300Approved !== true ? `R300 onayı yok: ${decisionChain?.r482R300Reason||'—'}` :
+                            !planDirectionOk ? 'TP/SL yön planı geçersiz' : `R/R ${Number(userRR||0).toFixed(2)} düşük`;
+                markAutoSkip(coin.symbol, `R482 tam mekanik aday değil: ${why}`, {rec:recommendation, score, tier:mechTier, brainMode:decisionChain?.brainMode});
+                continue;
+              }
             } else if (AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) {
               r309eAiSentCount++; // R309E: bu coin AI'ya gidiyor — bütçe sayacı (tarama başına max 2)
               logAuto(`🧠 ${coin.symbol} AI PRO TRADER'a gönderiliyor (${r309eAiSentCount}/${R309E_MAX_AI_PER_SCAN} bu taramada · mekanik imza yok)`);
               ai = await r308AiProTraderBrain(coin.symbol, aiData);
             } else {
-              // R449: AI kapalı + mekanik imza yok → bu coin bu turda atlanır (boş API çağrısı yapılmaz)
-              markAutoSkip(coin.symbol, 'R449: AI kapalı, mekanik imza yok — bu turda aday değil', {rec:recommendation, score});
+              markAutoSkip(coin.symbol, 'R482: ne AI ne de tam mekanik karar oluştu', {rec:recommendation, score});
               continue;
             }
             if (ai && ai.ok) {
               const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
-              logAuto(`🤖 ${coin.symbol} AI PRO TRADER: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}${ai.plan?' · PLAN: '+ai.plan:''}`);
+              logAuto(`${ai.mekanik?'⚙️':'🤖'} ${coin.symbol} ${ai.mekanik?'MEKANİK KARAR MOTORU':'AI PRO TRADER'}: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}${ai.plan?' · PLAN: '+ai.plan:''}`);
               decisionChain.aiBrain = ai;
               // R308J: AI kararını dashboard kartına yaz (B-mode kapandığı için buraya taşındı)
               const _q = r308AiPlanQuality(ai);  // R308Y: try dışına alındı — emir kapısı (aşağıda) bunu görmeli
               try {
-                r308SetLastAiDecision({status: ai.side==='WAIT'?'AI_BEKLE':'AI_CANLI_KARAR', symbol:coin.symbol, ai, quality:_q, candidate:{symbol:coin.symbol, rec:recommendation, score, tier:decisionChain?.tier||'AI'}});
+                r308SetLastAiDecision({status: ai.side==='WAIT'?(ai.mekanik?'MEKANIK_BEKLE':'AI_BEKLE'):(ai.mekanik?'MEKANIK_CANLI_KARAR':'AI_CANLI_KARAR'), symbol:coin.symbol, ai, quality:_q, candidate:{symbol:coin.symbol, rec:recommendation, score, tier:decisionChain?.tier||(ai.mekanik?'MEKANIK':'AI'), source:coin.r54Bucket||coin.source||null}});
               } catch(_setE) {}
               if (AI_BRAIN_SHADOW) {
                 logAuto(`👁️ ${coin.symbol} GÖLGE MOD: AI kararı kaydedildi, işlem AÇILMADI (gerçek fiyatla karşılaştır). Bot ${recommendation} açacaktı.`);
@@ -20720,7 +20810,7 @@ async function runAutoScan(prioritySymbol=null) {
                   markAutoSkip(coin.symbol, `Panel SHORT kapalı (AI SHORT dedi)`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
-                logAuto(`✅ ${coin.symbol} AI PRO TRADER ONAY: ${ai.side} güven ${ai.confidence}% — emir açılıyor`);
+                logAuto(`✅ ${coin.symbol} ${ai.mekanik?'MEKANİK KARAR MOTORU':'AI PRO TRADER'} ONAY: ${ai.side} güven ${ai.confidence}% — emir açılıyor`);
               }
             } else if (AI_BRAIN_SHADOW) {
               logAuto(`⚪ ${coin.symbol} GÖLGE MOD: AI kararı alınamadı (API/parse), işlem yine de AÇILMADI`);
@@ -20766,11 +20856,11 @@ async function runAutoScan(prioritySymbol=null) {
                              (aiSideUp === 'LONG') && /* R327: sadece LONG, SHORT kapalı */
                              !AI_BRAIN_SHADOW;
           if (!aiApproved) {
-            const why = !AI_BRAIN_ENABLED ? 'AI kapalı' :
+            const why = !AI_BRAIN_ENABLED ? 'tam mekanik karar onayı yok' :
                         (!decisionChain.aiBrain ? 'AI çağrılmadı/limit doldu' :
                          (aiSideUp === 'WAIT' ? 'AI WAIT dedi' : 'AI açık LONG/SHORT onayı yok'));
-            logAuto(`⛔ ${coin.symbol} R325 TEK BEYİN: eski motor emir AÇAMAZ — ${why} (sadece AI açar)`);
-            markAutoSkip(coin.symbol, `R325 tek beyin: ${why}`, {rec:recommendation, score, aiBrain:decisionChain.aiBrain});
+            logAuto(`⛔ ${coin.symbol} R325 TEK KARAR KANALI: emir AÇILMADI — ${why} (AI açıkken AI, AI kapalıyken R447/R482 tam mekanik açar)`);
+            markAutoSkip(coin.symbol, `R325 tek karar kanalı: ${why}`, {rec:recommendation, score, aiBrain:decisionChain.aiBrain});
             continue;
           }
           // AI onayladı — recommendation'ı AI yönüne ZORLA (eski motor yönü değil, AI yönü kazanır)
