@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R486_3_FULL_MARKET_WORKER_TRUTH_10X'
+const LAZARUS_BUILD = 'R486_3_1_BINANCE_AUTH_TRUTH_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -753,7 +753,12 @@ async function bPub(path, qs='') {
 }
 
 // ── İMZA + BINANCE SAAT SENKRON ───────────────────────────────────────────────
-function sign(qs,secret){return crypto.createHmac('sha256',String(secret||'').trim()).update(qs).digest('hex');}
+function cleanBinanceCredential(v){
+  let x=String(v??'').replace(/^\uFEFF/,'').trim();
+  if((x.startsWith('\"')&&x.endsWith('\"'))||(x.startsWith("'")&&x.endsWith("'"))) x=x.slice(1,-1).trim();
+  return x;
+}
+function sign(qs,secret){return crypto.createHmac('sha256',cleanBinanceCredential(secret)).update(qs).digest('hex');}
 function signedQueryString(params, apiSecret) {
   const qs = Object.entries(params || {})
     .filter(([,v]) => v !== undefined && v !== null && v !== '')
@@ -802,6 +807,9 @@ function r405Nobetci(text) { try {
   }
 } catch(_) {} }
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
+  apiKey=cleanBinanceCredential(apiKey);
+  apiSecret=cleanBinanceCredential(apiSecret);
+  if(!apiKey||!apiSecret) throw new Error('Binance API key/secret boş veya maskeli');
   // R9: Ana Binance signed request tekrar çalışan eski gövdeye alındı.
   // GET/DELETE query string, POST form body. AlgoOrder ayrı bAlgo ile query-string çalışır.
   // R145: reduceOnly acil kapanış emirleri merkezi backoff beklemesine takılmasın.
@@ -890,9 +898,11 @@ const POS_RISK_TTL_ACTIVE = 25000;   // R308J: 15sn→25sn. TOP24'te 429 baskıs
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
 
-function keyFingerprint(apiKey) {
-  const k = String(apiKey || '').trim();
-  return k ? `${k.slice(0,6)}:${k.length}` : 'no-key';
+function keyFingerprint(apiKey, apiSecret='') {
+  const k=cleanBinanceCredential(apiKey), sec=cleanBinanceCredential(apiSecret);
+  if(!k) return 'no-key';
+  const h=crypto.createHash('sha256').update(`${k}\0${sec}`).digest('hex').slice(0,16);
+  return `${k.slice(0,6)}:${k.length}:${h}`;
 }
 function isPositionRiskRateLimitError(err) {
   const m = String(err && (err.message || err) || '');
@@ -947,7 +957,7 @@ async function getPositionRisk(apiKey, apiSecret, params={}) {
 async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   resetStuckPositionRiskInflight('getPositionRiskCached');
   const now = Date.now();
-  const apiFp = keyFingerprint(apiKey);
+  const apiFp = keyFingerprint(apiKey, apiSecret);
 
   // R95: Binance 418/429 merkezi istek freni aktifken yeni positionRisk isteği açma.
   if (isBinanceBackoffActive()) {
@@ -15248,8 +15258,8 @@ app.get('/api/my-ip', async (_req, res) => {
 // - İmzalı bağlantı başarılı ama USDT satırı yoksa bunu açık diagnostik olarak döndürür
 app.post('/api/account', async (req, res) => {
   let { apiKey, apiSecret } = req.body || {};
-  apiKey = String(apiKey || '').trim();
-  apiSecret = String(apiSecret || '').trim();
+  apiKey = cleanBinanceCredential(apiKey);
+  apiSecret = cleanBinanceCredential(apiSecret);
   if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'API key gerekli' });
 
   const errors = [];
@@ -15364,10 +15374,10 @@ app.post('/api/account', async (req, res) => {
     return true;
   }
 
-  async function trySigned(label, fn) {
+  async function trySigned(label, fn, {proof=true}={}) {
     try {
       const data = await fn();
-      signedOk = true;
+      if(proof) signedOk = true;
       debugOk(label, data);
       return data;
     } catch(e) {
@@ -15391,24 +15401,31 @@ app.post('/api/account', async (req, res) => {
     const bal2 = await trySigned('v2/balance', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v2/balance'));
     if (Array.isArray(bal2) && !setBalanceArray(bal2, 'v2/balance')) errors.push('v2/balance: USDT/stable satırı yok');
 
-    const acc1 = await trySigned('v1/account', () => bReq(apiKey, apiSecret, 'GET', '/fapi/v1/account'));
-    if (acc1) { setAccount(acc1, 'v1/account'); setPositions(acc1.positions || [], 'v1/account.positions'); }
-
     // R18: /api/account içinde de positionRisk cache kullanılır; API sekmesi açıkken
     // aynı endpoint'i tekrar tekrar dövüp -1003 üretmez. Balance/account okuma sırası R14 gibi kalır.
-    const pr = await trySigned('positionRisk/cache', () => getPositionRiskCached(apiKey, apiSecret));
+    const pr = await trySigned('positionRisk/cache', () => getPositionRiskCached(apiKey, apiSecret), {proof:false});
     if (pr) setPositions(pr, positionRiskState.lastSource || 'positionRisk/cache');
 
     if ((!Number.isFinite(w) || w === 0) && Number.isFinite(a) && a > 0) w = a;
     if (!Number.isFinite(u)) u = 0;
 
     if (!signedOk) {
+      const joined=errors.join(' | ');
+      const has1022=joined.includes('-1022')||/signature for this request is not valid/i.test(joined);
+      const has2015=joined.includes('-2015')||/invalid api-key, ip, or permissions/i.test(joined);
+      const code=has1022&&has2015?'CREDENTIAL_SOURCE_MISMATCH':has1022?'SIGNATURE_INVALID':has2015?'API_KEY_IP_PERMISSION':'SIGNED_ENDPOINT_FAILED';
+      const hint=has1022&&has2015
+        ? 'İki farklı kimlik çifti kullanılıyor olabilir: formdaki yeni değerler ile tarayıcıda kayıtlı eski değerleri temizle. Sonra aynı API key + gerçek secretı tırnaksız yapıştır; Railway çıkış IPsini whitelistte doğrula.'
+        : has1022
+          ? 'API key tanınıyor fakat HMAC secret eşleşmiyor. Secretı yeniden üret/yapıştır; baş/son tırnak, boşluk, satır sonu veya maskeli değer kullanma.'
+          : has2015
+            ? 'API key, USD-M Futures yetkisi veya Railway çıkış IP whitelisti geçersiz. Logdaki request ip adresini Binance API Management listesine ekle.'
+            : 'API key/secret, Futures yetkisi ve IP whitelistini kontrol et.';
       return res.status(400).json({
-        ok:false,
-        error:'Binance Futures imzalı bağlantı kurulamadı. API key/secret, Futures yetkisi ve IP whitelist kontrol edilmeli.',
-        errors: errors.slice(-12),
-        debug,
-        hint:'Sıfırla yapıp API Key + gerçek API Secretı yeniden yapıştır. Binance tarafında görünen Railway IP whitelistte olmalı.'
+        ok:false, signedOk:false, authCode:code,
+        error:'Binance Futures imzalı bağlantı kurulamadı.',
+        credentialFingerprint:keyFingerprint(apiKey,apiSecret),
+        errors: errors.slice(-12), debug, hint
       });
     }
 
@@ -15416,7 +15433,8 @@ app.post('/api/account', async (req, res) => {
       return res.status(400).json({
         ok:false,
         signedOk:true,
-        error:'Binance imzalı bağlantı var ama balance/account endpointlerinden bakiye alanı parse edilemedi.',
+        credentialFingerprint:keyFingerprint(apiKey,apiSecret),
+        error:'Binance balance/account isteği doğrulandı fakat bakiye alanı parse edilemedi.',
         errors: errors.slice(-14),
         debug,
         hint:sawUsdtAsset
