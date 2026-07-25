@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R486_2_ENTRY_STORY_EXECUTION_TRUTH_10X'
+const LAZARUS_BUILD = 'R486_3_FULL_MARKET_WORKER_TRUTH_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -4912,7 +4912,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 8. AKIŞ MÜHRÜ (öncelik sırası net): canliDelta GEÇERLİYSE ESAS ODUR — canliDelta <= -15 iken LONG verme; canliDelta belirgin POZİTİFKEN (>= +10) tek başına yedekSatisKaniti SATIS seni DURDURMAZ (yedek mum renklerinden türer, koşan coinde her pullback mumu SATIS üretir — AAOI dersi 20.07: delta +14.8 ve defter +99.8 alıcıyken yedek yüzünden fırsat kaçtı). Yedek kanıt YALNIZCA canliDelta VERI_YOK iken devreye girer: VERI_YOK + yedek SATIS -> LONG verme; VERI_YOK + yedek NOTR -> akışı nötr say, diğer kanıtlarla karar ver.
 
-9. GÜVEN = BOYUT: confidence alanın doğrudan kaldıraca çevrilir (band 5-50x: güven 90+ ve sakin ATR → 50x'e kadar; 70 altı → 5x). Güvenin, kanıt sayına orantılı olsun: teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+. Harita NET: 74→10x, 80→15x, 84→25x, 88→35x, 90→50x (ATR sakinliği şart). Kanıtın güçlüyken güveni ihtiyatla düşük yazmak fırsatı KÜÇÜLTMEKTİR — sayın, kararının büyüklüğüdür. Hak etmeyen karara yüksek güven yazmak doğrudan para kaybettirir.
+9. GÜVEN = BOYUT: confidence alanın doğrudan kaldıraca çevrilir (band 10x-BinanceMax: güven 90+ ve sakin ATR → 50x'e kadar; 70 altı → 5x). Güvenin, kanıt sayına orantılı olsun: teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+. Harita NET: 74→10x, 80→15x, 84→25x, 88→35x, 90→50x (ATR sakinliği şart). Kanıtın güçlüyken güveni ihtiyatla düşük yazmak fırsatı KÜÇÜLTMEKTİR — sayın, kararının büyüklüğüdür. Hak etmeyen karara yüksek güven yazmak doğrudan para kaybettirir.
 
 10. İÇ TUTARLILIK: Gerekçen kararının KANITI olmalı, karşı-kanıtı değil. Bir zayıflık not ettiysen, onu YENEN somut kanıtı da göster; gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. Kendi R/R hesabın minimumun altındaysa TP/SL'i orana uydurmak için kaydırma — ya gerçek seviyelerle geçerli R/R kur ya da geç. sonIslemlerim'den ders al ama TEK kayıptan kural çıkarma; "ne değişti?" sorusunu sor.
 
@@ -6826,7 +6826,7 @@ function r442PusuKur(symbolFull, ai, kaynak) {
       conf: Number(ai?.confidence||0), ts: Date.now(),
       expiresAt: Date.now() + 75*60*1000, kaynak: String(kaynak||'')
     });
-    logAuto(`🪤 ${base} R442 PUSU kuruldu (${kaynak}): fiyat ${entry} bölgesine (±%0.25) gelirse AI frensiz uyandırılır (75dk geçerli, SL ${ai?.sl||'—'} altında iptal)`);
+    logAuto(`🪤 ${base} R442 PUSU kuruldu (${kaynak}): fiyat ${entry} bölgesine (±%0.25) gelirse ${r451Merci()} frensiz uyandırılır (75dk geçerli, SL ${ai?.sl||'—'} altında iptal)`);
   } catch(_e) {}
 }
 async function r442PusuKontrol() {
@@ -6844,7 +6844,7 @@ async function r442PusuKontrol() {
         r442PusuPlanlar.delete(base);
         r442ForceAi.set(base, now);
         try { r125RegisterPriorityWake(full, 'R442_PUSU_TETIK', 95); } catch(_e) {}
-        logAuto(`🎯 ${base} R442 PUSU TETİKLENDİ: fiyat ${mark} AI planına (${p.entry}) ulaştı — AI frensiz + öncelikli değerlendirmeye çağrılıyor (taze veriyle son kararı yine AI verir)`);
+        logAuto(`🎯 ${base} R442 PUSU TETİKLENDİ: fiyat ${mark} pusu planına (${p.entry}) ulaştı — ${r451Merci()} frensiz + öncelikli değerlendirmeye çağrılıyor (taze veriyle son kararı karar motoru verir)`);
       }
     }
   } catch(_e) {}
@@ -6868,7 +6868,7 @@ function r308SetLastAiDecision(p={}) {
       build: LAZARUS_BUILD,
       enabled: !!AI_BRAIN_ENABLED,
       shadow: !!AI_BRAIN_SHADOW,
-      mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
+      mode: !AI_BRAIN_ENABLED ? 'MEKANİK' : (AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI'),
       model: ANTHROPIC_MODEL,
       status: String(p.status || 'AI_İZLEME'),
       symbol: String(p.symbol || ai.symbol || '').replace('USDT','').toUpperCase(),
@@ -6896,7 +6896,7 @@ function r308SetLastAiDecision(p={}) {
 }
 function r308AiDashboardStatus(){
   return {
-    enabled: !!AI_BRAIN_ENABLED, keySet: !!ANTHROPIC_API_KEY, shadow: !!AI_BRAIN_SHADOW, mode: AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI',
+    enabled: !!AI_BRAIN_ENABLED, keySet: !!ANTHROPIC_API_KEY, shadow: !!AI_BRAIN_SHADOW, mode: !AI_BRAIN_ENABLED ? 'MEKANİK' : (AI_BRAIN_SHADOW ? 'GÖLGE' : 'CANLI'),
     model: ANTHROPIC_MODEL, bMode: false, topN: AI_BRAIN_TOP_N, daily: r308AiDailyInfo(),
     // R399: günlük AI masrafı — panelde ve /api/r393 kuyruğunda görünür
     masraf: { gun:r399Masraf.gun, cagri:r399Masraf.cagri, usd:+r399Masraf.usd.toFixed(2),
@@ -10428,7 +10428,7 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
         // bekliyordu. R446 slot kapağını zaten kaldırdı, R372-F taze coinleri öne alıyor; tek darboğaz buydu.
         // Enjeksiyonu 2→4'e çıkarmak = pumped 12h-liderleri yerine taze impulslara daha çok slot. AI maliyeti
         // AYRI katmanda kapaklı (AI_BRAIN_TOP_N, günlük 350 çağrı), o yüzden bu bedelsiz genişleme.
-        for (const ea of erken.slice(0, 4)) { // R468: en güçlü 4 erken aday (eski: 2)
+        for (const ea of erken.slice(0, 10)) { // R468: en güçlü 4 erken aday (eski: 2)
           if (mevcutSemboller.has(ea.symbol)) continue; // zaten listedeyse atla
           // R375 HACİM TABANI (canlı ders 07.07: hacim 0.7-1.0x cılız sinyaller MON -3$ slot kaptı).
           // R413 DÜZELTME (EDGE kanıtı 13.07: skor 86 taze impuls, anlık hacim 0.4x ölçülüp elendi, SONRA ~%5 pump'ladı
@@ -10477,6 +10477,9 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
               const coin = normalizeTickerToCoin(tk);
               coin.source = 'r370_erken';
               coin.r370Erken = true;
+              coin.r385Koklama = String(ea.worker||ea.sourceWorker||'').toUpperCase()==='R385';
+              coin.r4863Worker = coin.r385Koklama ? 'R385' : 'R370';
+              coin.sourceWorker = coin.r4863Worker;
               coin.r370Skor = ea.skor;
               try { if(!r374Donusum.top2Giren.has(String(ea.symbol))) r374Olay('TOP2_GIRDI', String(ea.symbol), ea.sebep||''); r374Donusum.top2Giren.add(String(ea.symbol)); } catch(_) {} // R374 izleme
               coin.r370Sebep = ea.sebep;
@@ -10550,20 +10553,32 @@ function r326ApplySingleCoinLock(orderedList) {
   // Workerlar artık geniş listeyi takip eder; fırsat yakalayınca kararı AI verir.
   let r446Mod = 'TOP10';
   try { r446Mod = normalizeR54ScanMode(autoConfig?.scanMode || 'TOP10'); } catch(_e) {}
-  let r445Slot = r446Mod === 'FAST6' ? 6 : r446Mod === 'TOP10' ? 10 : 12;
+  let r445Slot = r446Mod === 'FAST6' ? 6 : r446Mod === 'TOP10' ? 10 : 24;
   const r445Env = parseInt(process.env.IZLEME_SLOT || '0', 10);
-  if (r445Env > 0) r445Slot = Math.max(2, Math.min(24, r445Env));
-  const top2 = sirali.slice(0, r445Slot);
-  // Patlama skoruna göre ikincil sıralama (yüksek patlama adayı öne)
-  top2.sort((a,b) => r327PatlamaScore(b) - r327PatlamaScore(a));
-  // İşaretle: AI'a hangisinin patlama adayı olduğunu bildir
-  const tagged = top2.map((c,idx) => {
-    const ps = r327PatlamaScore(c);
-    return { ...c, r327Top2: true, r327Rank: idx+1, r327PatlamaScore: ps,
-             r327Patlama: ps >= 3 };  // 3+ = güçlü patlama adayı
+  if (r445Env > 0) r445Slot = Math.max(2, Math.min(48, r445Env));
+  const workerPool=sirali.filter(c=>c.r370Erken||c.r385Koklama||c.r4863Worker);
+  const corePool=sirali.filter(c=>!(c.r370Erken||c.r385Koklama||c.r4863Worker));
+  const core=corePool.slice(0,r445Slot);
+  const coreKeys=new Set(core.map(c=>String(c.fullSymbol||c.symbol||'')));
+  const workerExtra=workerPool.filter(c=>!coreKeys.has(String(c.fullSymbol||c.symbol||''))).slice(0,16);
+  const top2=[...workerExtra,...core]; // worker adayları 24 ana havuz kotasından yemez
+  top2.sort((a,b)=>{
+    const aw=(a.r370Erken||a.r385Koklama||a.r4863Worker)?1:0, bw=(b.r370Erken||b.r385Koklama||b.r4863Worker)?1:0;
+    return (bw-aw)||(r327PatlamaScore(b)-r327PatlamaScore(a));
   });
-  const names = tagged.map(c => `${String(c.fullSymbol||'').replace('USDT','')}${c.r327Patlama?'🚀':''}`).join(', ');
-  logAuto(`🎯 R446 izleme listesi (${tagged.length}/${r445Slot} coin · mod ${r446Mod}): ${names} (🚀=patlama adayı — TOP2 kilidi kaldırıldı, bakiye kapağı yok; fırsatı AI değerlendirir)`);
+  const tagged = top2.map((c,idx) => {
+    const ps = r327PatlamaScore(c), workerSource=c.r385Koklama?'R385':(c.r4863Worker||c.sourceWorker||(c.r370Erken?'R370':null));
+    return { ...c, r327Top2: true, r327Rank: idx+1, r327PatlamaScore: ps,
+             r327Patlama: ps >= 3, r4863Lane:workerSource?'WORKER':'CORE', workerSource:workerSource||null };
+  });
+  const names = tagged.slice(0,32).map(c => `${String(c.fullSymbol||'').replace('USDT','')}${c.workerSource?'['+c.workerSource+']':''}${c.r327Patlama?'🚀':''}`).join(', ');
+  try{
+    autoScanState.coreScanLimit=r445Slot;
+    autoScanState.coreScanList=tagged.filter(c=>c.r4863Lane==='CORE').map(c=>String(c.fullSymbol||c.symbol||'').replace('USDT',''));
+    autoScanState.workerInjected=tagged.filter(c=>c.r4863Lane==='WORKER').map(c=>({coin:String(c.fullSymbol||c.symbol||'').replace('USDT',''),worker:c.workerSource||'WORKER'}));
+    autoScanState.effectiveScanCount=tagged.length;
+  }catch(_){}
+  logAuto(`🎯 R446 etkin analiz listesi ${tagged.length}: ana ${core.length}/${r445Slot} + worker ${workerExtra.length} · mod ${r446Mod}: ${names} — karar ${r451Merci()} merciinde`);
   // R374 dönüşüm özeti: taze coin bulundu → TOP2'ye girdi → işleme dönüştü (genişletme kararı bu rakamlarla verilecek)
   try {
     if (r374Donusum.bulunan.size) {
@@ -17472,10 +17487,10 @@ const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // R330: 15m moduna geçiş — 7.5dk 
 // AI, karar JSON'una opsiyonel "ayar" objesi ekleyerek panel ayarlarını değiştirebilir.
 // Beyaz liste + sınır: marj (usdtAmount), API anahtarları, SHORT izni ve enabled ASLA değişmez.
 const R342_AYAR_LIMITS = {
-  leverage:      [3, 25],   maxPositions: [1, 3],    minScore: [40, 90],
+  leverage:      [10, 125],   maxPositions: [1, 3],    minScore: [40, 90],
   trailingPct:   [0.8, 8],  trailStep:    [0.2, 3],  breakEvenPct: [0.3, 4],
   slPct:         [0.8, 9],  tpPct:        [1.5, 15], minRR: [0.8, 2.5],
-  vurKacMaxLev:  [5, 50],   aiKT1: [0.4, 5], aiKT2: [1, 8], aiKT3: [2, 12], aiBE: [0.3, 4]
+  vurKacMaxLev:  [10, 125],   aiKT1: [0.4, 5], aiKT2: [1, 8], aiKT3: [2, 12], aiBE: [0.3, 4]
 };
 function r342ApplyAiPanelAyar(ayar, coinLabel) {
   try {
@@ -17511,6 +17526,70 @@ let __r328Potansiyel = { ts:0, list:[], lastLogTs:0, lastLeader:'' }; // R339: b
 // Saf kod, AI çağırmaz, bedava. 60sn'de bir çalışır. Sonuç autoScanState.r370ErkenYukselis'e yazılır.
 let r370ErkenAdaylar = []; // {symbol, skor, sebep, change15m, impulsMum}
 
+// ═══ R486.3 FULL-MARKET WORKER UNIVERSE ═════════════════════════════════════
+// TOP24 yalnız ana/deep-analysis havuzunun tabanıdır. R370/R385/R328/R366,
+// Binance USDⓈ-M Futures'taki potansiyeli yüksek tüm uygun kripto sözleşmelerini
+// ticker üzerinden puanlar; kline-ağır incelemeyi dönen partilerle yapar.
+// Böylece 24'e mahkûm olmaz, fakat aynı dakikada yüzlerce REST isteği yığılmaz.
+const R4863_WORKER_MIN_QUOTE = Math.max(1_000_000, Number(process.env.R4863_WORKER_MIN_QUOTE||3_000_000));
+const R4863_WORKER_MAX_UNIVERSE = Math.max(40, Math.min(500, Number(process.env.R4863_WORKER_MAX_UNIVERSE||350)));
+const R4863_R370_BATCH = Math.max(24, Math.min(80, Number(process.env.R4863_R370_BATCH||48)));
+const R4863_R385_BATCH = Math.max(36, Math.min(100, Number(process.env.R4863_R385_BATCH||72)));
+const R4863_R328_BATCH = Math.max(12, Math.min(48, Number(process.env.R4863_R328_BATCH||24)));
+const R4863_R366_BATCH = Math.max(10, Math.min(40, Number(process.env.R4863_R366_BATCH||20)));
+let r4863WorkerUniverseState = {ts:0,totalFutures:0,eligible:0,hot:[],rows:[],cursors:{r370:0,r385:0,r328:0,r366:0},lastBatch:{},workers:{}};
+function r4863PotentialScore(t){
+  try{
+    const q=Math.max(0,Number(t.quoteVolume||0));
+    const ch=Number(t.priceChangePercent||0);
+    const hi=Number(t.highPrice||0), lo=Number(t.lowPrice||0), px=Number(t.lastPrice||0);
+    const range=(lo>0&&hi>lo)?(hi-lo)/lo*100:0;
+    const trades=Math.max(0,Number(t.count||0));
+    const volScore=Math.max(0,Math.log10(q+1)-6)*12;
+    const trendScore=Math.max(-4,Math.min(35,ch))*1.6;
+    const rangeScore=Math.min(18,range)*2.2;
+    const tradeScore=Math.max(0,Math.log10(trades+1)-3)*5;
+    const latePenalty=ch>45?(ch-45)*1.4:0;
+    return +(volScore+trendScore+rangeScore+tradeScore-latePenalty).toFixed(2);
+  }catch(_){return 0;}
+}
+async function r4863GetWorkerUniverse(){
+  const now=Date.now();
+  if(Array.isArray(r4863WorkerUniverseState.rows)&&r4863WorkerUniverseState.rows.length&&now-r4863WorkerUniverseState.ts<45_000) return r4863WorkerUniverseState.rows;
+  const all=await cached('r4863_worker_ticker24',45*1000,()=>bPub('/fapi/v1/ticker/24hr',''));
+  if(!Array.isArray(all)) return r4863WorkerUniverseState.rows||[];
+  const totalFutures=all.filter(t=>/USDT$/.test(String(t.symbol||''))).length;
+  const rows=all
+    .filter(t=>/USDT$/.test(String(t.symbol||''))&&r427KriptoMu(t.symbol))
+    .filter(t=>Number(t.lastPrice)>0&&Number(t.quoteVolume||0)>=R4863_WORKER_MIN_QUOTE)
+    .filter(t=>{const ch=Number(t.priceChangePercent||0);return ch>=-4&&ch<=80;})
+    .map(t=>({...t,r4863Score:r4863PotentialScore(t)}))
+    .sort((a,b)=>Number(b.r4863Score||0)-Number(a.r4863Score||0))
+    .slice(0,R4863_WORKER_MAX_UNIVERSE);
+  r4863WorkerUniverseState={...r4863WorkerUniverseState,ts:now,totalFutures,eligible:rows.length,hot:rows.slice(0,12).map(t=>String(t.symbol).replace('USDT','')),rows};
+  try{autoScanState.workerUniverse={totalFutures,eligible:rows.length,minQuote:R4863_WORKER_MIN_QUOTE,hot:r4863WorkerUniverseState.hot,lastRefresh:now};}catch(_){}
+  return rows;
+}
+function r4863RotateBatch(rows,worker,size){
+  const arr=Array.isArray(rows)?rows:[]; if(!arr.length)return [];
+  const n=Math.min(size,arr.length), hotN=Math.min(8,n), hot=arr.slice(0,hotN), tail=arr.slice(hotN);
+  const take=n-hotN, out=[...hot];
+  if(take>0&&tail.length){
+    let cur=Number(r4863WorkerUniverseState.cursors?.[worker]||0)%tail.length;
+    for(let k=0;k<take;k++) out.push(tail[(cur+k)%tail.length]);
+    r4863WorkerUniverseState.cursors[worker]=(cur+take)%tail.length;
+  }
+  const ded=[]; const seen=new Set(); for(const x of out){const key=String(x.symbol||'');if(key&&!seen.has(key)){seen.add(key);ded.push(x);}}
+  r4863WorkerUniverseState.lastBatch[worker]={ts:Date.now(),size:ded.length,symbols:ded.map(x=>String(x.symbol).replace('USDT',''))};
+  return ded;
+}
+function r4863WorkerTelemetry(worker,patch={}){
+  try{
+    r4863WorkerUniverseState.workers[worker]={...(r4863WorkerUniverseState.workers[worker]||{}),...patch,ts:Date.now()};
+    autoScanState.workerTelemetry=JSON.parse(JSON.stringify(r4863WorkerUniverseState.workers));
+  }catch(_){}
+}
+
 // ═══ R385: KOKLAMA İŞÇİSİ — tüm piyasada HTF yapısal kırılım avı (saf kod, AI çağırmaz) ═══
 // Kullanıcı isteği (09.07): "coin gainer listesine girmeden 4h kırılımlarını kokla."
 // Kalıp = r370 işçisiyle aynı: ticker (60sn cache, w40 zaten ödeniyor) → hacim filtreli ilk 60 sembol →
@@ -17534,14 +17613,13 @@ async function r385KoklamaIscisi() {
   try {
     if (!R385_ENABLED || !autoConfig?.enabled) return;
     if (typeof isBinanceBackoffActive === 'function' && isBinanceBackoffActive()) return;
-    const all = await cached('r370_ticker', 60*1000, () => bPub('/fapi/v1/ticker/24hr', ''));
+    const all = await r4863GetWorkerUniverse();
     if (!Array.isArray(all)) return;
-    const evren = all
-      .filter(t => /USDT$/.test(String(t.symbol||'')))
-      .filter(t => Number(t.quoteVolume||0) >= 8_000_000)
-      .filter(t => { const c = Number(t.priceChangePercent); return c >= 2.5 && c <= 25 && r427KriptoMu(t.symbol); }) // R424: taban -5→+2.5 (kanıt 14.07: BCH+0.15/ADA+1.22/TRX+0.64 slot işgali; FOLKS/CAP/SXT gerçek gainer'lar dışarıda kalmıştı — gainer botu, kıpırdamayan major kırılımı slot hakkı değil)
-      .sort((a,b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-      .slice(0, 60);
+    const uygun = all
+      .filter(t => Number(t.quoteVolume||0) >= 5_000_000)
+      .filter(t => { const c = Number(t.priceChangePercent); return c >= 0.5 && c <= 35; });
+    const evren = r4863RotateBatch(uygun,'r385',R4863_R385_BATCH);
+    r4863WorkerTelemetry('r385',{eligible:uygun.length,batch:evren.length,coverage:'ROTATING_FULL_MARKET'});
     const bulunan = [];
     let istek = 0;
     for (const t of evren) {
@@ -17570,6 +17648,7 @@ async function r385KoklamaIscisi() {
               // (10.07: 12.6 saatte 20 bulundu → 0 TOP2). Koklama zaten hacimTeyit>=1.8x ister —
               // adaylar şartı fazlasıyla sağlıyordu, etiketi cebinde değildi.
               hacimArtis: +Number(d.hacimKati || 0).toFixed(1),
+              worker:'R385', sourceWorker:'R385',
               sebep: `R385 ${tf} yapısal kırılım: ${d.dusenTrendKirildi ? 'düşen trend kırıldı' : 'baz tepesi aşıldı'} · hacim ${d.hacimKati}x · seviyeye mesafe %${d.mesafeYuzde}`
             });
             break; // sembol başına tek aday yeter
@@ -17578,7 +17657,8 @@ async function r385KoklamaIscisi() {
       } catch(_) { continue; }
     }
     bulunan.sort((a,b) => b.skor - a.skor);
-    r385KirilimAdaylari = bulunan.slice(0, 4);
+    r385KirilimAdaylari = bulunan.slice(0, 8);
+    r4863WorkerTelemetry('r385',{found:bulunan.length,selected:r385KirilimAdaylari.map(x=>x.symbol)});
     if (r385KirilimAdaylari.length) {
       logAuto(`👃 R385 KOKLAMA: ${r385KirilimAdaylari.map(x => x.symbol + '(' + x.skor + '·%' + x.change15m + ')').join(' · ')} — HTF kırılım adayları r370 kanalına veriliyor`);
     }
@@ -17590,20 +17670,15 @@ setTimeout(r385KoklamaIscisi, 45*1000);    // açılıştan 45sn sonra ilk koku
 async function r370ErkenYukselisWorker() {
   try {
     if (!autoConfig?.enabled) return;
-    // Tüm USDT perpetual'ların 24h ticker'ını al (bedava, cache'li)
-    const all = await cached('r370_ticker', 60*1000, () => bPub('/fapi/v1/ticker/24hr', ''));
+    // R486.3: bütün uygun Futures evrenini puanla; kline incelemesini dönen partiyle yap.
+    const all = await r4863GetWorkerUniverse();
     if (!Array.isArray(all)) return;
-    // Ön filtre: pozitif değişim + makul hacim, ama AŞIRI yükselmiş (zaten TOP) olanları DEĞİL —
-    // yükselişine YENİ başlamış olanları arıyoruz (24h değişim %2-%15 arası = taze, %40+ = geç kalmış)
-    const adaylar = all
-      .filter(t => /USDT$/.test(String(t.symbol||'')))
-      .filter(t => {
-        const chg = Number(t.priceChangePercent);
-        const vol = Number(t.quoteVolume||0);
-        return chg >= 2 && chg <= 20 && vol >= 5_000_000; // taze yükseliş bandı + likidite
-      })
-      .sort((a,b) => Number(b.quoteVolume) - Number(a.quoteVolume)) // hacimli olanlar öncelikli
-      .slice(0, 30); // ilk 30 adayı 15m ile incele
+    const uygun = all.filter(t => {
+      const chg=Number(t.priceChangePercent), vol=Number(t.quoteVolume||0);
+      return chg>=1 && chg<=25 && vol>=3_000_000;
+    });
+    const adaylar = r4863RotateBatch(uygun,'r370',R4863_R370_BATCH);
+    r4863WorkerTelemetry('r370',{eligible:uygun.length,batch:adaylar.length,coverage:'ROTATING_FULL_MARKET'});
 
     const bulunan = [];
     for (const t of adaylar) {
@@ -17657,6 +17732,7 @@ async function r370ErkenYukselisWorker() {
         const skor = Math.round(son6Net*4 + hacimArtis*15 + yesilSay*5 + (100-pos)*0.3);
         bulunan.push({
           symbol: full.replace('USDT',''),
+          worker:'R370', sourceWorker:'R370',
           skor,
           change15m: +son6Net.toFixed(1),
           hacimArtis: +hacimArtis.toFixed(1),
@@ -17675,7 +17751,8 @@ async function r370ErkenYukselisWorker() {
       }
     } catch(_) {}
     bulunan.sort((a,b)=>b.skor-a.skor);
-    r370ErkenAdaylar = bulunan.slice(0, 5);
+    r370ErkenAdaylar = bulunan.slice(0, 10);
+    r4863WorkerTelemetry('r370',{found:bulunan.length,selected:r370ErkenAdaylar.map(x=>x.symbol)});
     autoScanState.r370ErkenYukselis = r370ErkenAdaylar;
     try { for (const x of r370ErkenAdaylar) { if(!r374Donusum.bulunan.has(String(x.symbol))) r374Olay('BULUNDU', String(x.symbol), `skor ${x.skor} +%${x.change15m}`); r374Donusum.bulunan.add(String(x.symbol)); } } catch(_) {} // R374 izleme
     if (r370ErkenAdaylar.length) {
@@ -17686,25 +17763,28 @@ async function r370ErkenYukselisWorker() {
 }
 setInterval(r370ErkenYukselisWorker, 60*1000); // 60sn'de bir, bedava (AI çağırmaz)
 
-async function r343RadarUniverse() {
-  // R343: radar evreni — aday üretici (yeşil+min hareket filtresi) gece 1-2 coine düşebiliyor.
-  // Radar bundan bağımsız, Binance ham ticker'dan pozitif değişimli ilk 10 coini izler (5dk cache, bedava).
+async function r343RadarUniverse(worker='r328') {
+  // R486.3: patlama/1m neden workerları TOP10'a kilitli değildir. Tüm uygun Futures
+  // evreninin en sıcak bölümü + dönen kuyruğu taranır; aktif R370/R385 adayları da daima eklenir.
   try {
-    const list = (autoScanState.genisListe || []).slice(0, 10);
-    if (list.length >= 10) return list;
-    const all = await cached('r343_ticker24', 5*60*1000, () => bPub('/fapi/v1/ticker/24hr', ''));
-    const top = (Array.isArray(all) ? all : [])
-      .filter(t => /USDT$/.test(String(t.symbol||'')) && Number(t.lastPrice) > 0 && Number(t.priceChangePercent) > 0)
-      .sort((a,b) => Number(b.priceChangePercent) - Number(a.priceChangePercent))
-      .slice(0, 12).map(t => String(t.symbol).replace('USDT',''));
-    return [...new Set([...list, ...top])].slice(0, 10);
-  } catch(_) { return (autoScanState.genisListe || autoScanState.scanList || []).slice(0, 10); }
+    const all=await r4863GetWorkerUniverse();
+    const uygun=(Array.isArray(all)?all:[]).filter(t=>Number(t.priceChangePercent||0)>=-1&&Number(t.priceChangePercent||0)<=55);
+    const batchSize=worker==='r366'?R4863_R366_BATCH:R4863_R328_BATCH;
+    const batch=r4863RotateBatch(uygun,worker,batchSize).map(t=>String(t.symbol).replace('USDT',''));
+    const active=[...(autoScanState.scanList||[]).slice(0,12),
+      ...(r370ErkenAdaylar||[]).map(x=>x.symbol),
+      ...(r385KirilimAdaylari||[]).map(x=>x.symbol),
+      ...Object.entries(__r328PatlamaFlags||{}).filter(([,f])=>f&&f.detected&&Date.now()-f.ts<5*60*1000).map(([b])=>b)];
+    const out=[...new Set([...active,...batch])].slice(0,batchSize+12);
+    r4863WorkerTelemetry(worker,{eligible:uygun.length,batch:out.length,coverage:'HOT_PLUS_ROTATING_FULL_MARKET'});
+    return out;
+  } catch(_) { return (autoScanState.scanList||[]).slice(0,12); }
 }
 async function r328PatlamaWorker() {
   const __r328PotRows = []; // R339: bu turun potansiyel skorları
   try {
     if (!autoConfig?.enabled) return;
-    const coins = await r343RadarUniverse(); // R343: aday filtresinden bağımsız gerçek TOP10 gainer evreni
+    const coins = await r343RadarUniverse('r328'); // R486.3: hot + rotating full-market worker evreni
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
@@ -17728,7 +17808,7 @@ async function r328PatlamaWorker() {
         if (volSurge >= 1.8 && body >= 0.4 && last.c > last.o && delta > 0) {  // R328C: eşik biraz gevşetildi (canlı gürültü)
           const wasNew = !__r328PatlamaFlags[base] || (Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000);
           __r328PatlamaFlags[base] = { ts: Date.now(), volSurge:+volSurge.toFixed(1), body:+body.toFixed(2), delta:+delta.toFixed(0), detected:true };
-          if (wasNew) logAuto(`🚀 PATLAMA TESPİT: ${base} — hacim ${volSurge.toFixed(1)}x + yeşil mum %${body.toFixed(1)} + alıcı ${delta.toFixed(0)} — AI'a öncelikli bildirilecek`);
+          if (wasNew) logAuto(`🚀 PATLAMA TESPİT: ${base} — hacim ${volSurge.toFixed(1)}x + yeşil mum %${body.toFixed(1)} + alıcı ${delta.toFixed(0)} — mekanik karar motoruna öncelikli bildirilecek`);
         } else {
           // Patlama söndü → bayrağı eskit (5dk sonra temizlenir)
           if (__r328PatlamaFlags[base] && Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000) {
@@ -17747,7 +17827,7 @@ async function r328PatlamaWorker() {
       const leaderChanged = top.coin !== __r328Potansiyel.lastLeader;
       const heartbeat = Date.now() - __r328Potansiyel.lastLogTs > 5*60*1000;
       if (top.skor >= 30 && (leaderChanged || heartbeat)) {
-        logAuto(`🔮 PATLAMA POTANSİYELİ (TOP10 bedava izleme): ${__r328PotRows.slice(0,3).map((r,i)=>`${i+1}) ${r.coin} ${r.skor} (hacim ${r.vol}x·mum %${r.mum}·delta ${r.delta})`).join(' · ')} — en güçlü aday: ${top.coin}`);
+        logAuto(`🔮 PATLAMA POTANSİYELİ (FULL-MARKET worker): ${__r328PotRows.slice(0,3).map((r,i)=>`${i+1}) ${r.coin} ${r.skor} (hacim ${r.vol}x·mum %${r.mum}·delta ${r.delta})`).join(' · ')} — en güçlü aday: ${top.coin}`);
         __r328Potansiyel.lastLogTs = Date.now();
         __r328Potansiyel.lastLeader = top.coin;
       } else if (Date.now() - __r328Potansiyel.lastLogTs > 15*60*1000) {
@@ -17755,6 +17835,7 @@ async function r328PatlamaWorker() {
         __r328Potansiyel.lastLogTs = Date.now();
       }
       try { autoScanState.patlamaPotansiyel = __r328Potansiyel.list; } catch(_) {}
+      r4863WorkerTelemetry('r328',{found:Object.keys(__r328PatlamaFlags||{}).length,selected:__r328Potansiyel.list.map(x=>x.coin)});
     }
   } catch(_) {}
 }
@@ -17768,7 +17849,7 @@ let __r366VolSebep = {}; // { COIN: { ts, yon, sebepler[], hiz, ivme } }
 async function r366VolatiliteWorker() {
   try {
     if (!autoConfig?.enabled) return;
-    const coins = await r343RadarUniverse();
+    const coins = await r343RadarUniverse('r366');
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
@@ -17826,6 +17907,7 @@ async function r366VolatiliteWorker() {
     }
     // Panele/AI'a aktar
     try { autoScanState.volatiliteSebep = __r366VolSebep; } catch(_) {}
+    r4863WorkerTelemetry('r366',{active:Object.keys(__r366VolSebep||{}).length,selected:Object.keys(__r366VolSebep||{}).slice(0,20)});
   } catch(_) {}
 }
 setInterval(r366VolatiliteWorker, 30*1000); // 30sn'de bir — tarama arası sürekli izleme (bedava, AI çağırmaz)
@@ -18046,7 +18128,7 @@ function r308ReserveAiSpend(symbol, source='R308', fingerprint='') {
   const r442Force = r442ForceAi.get(sym);
   if (r442Force && (now - r442Force < 5*60*1000)) {
     r442ForceAi.delete(sym);
-    logAuto(`🎯 ${sym} R442: pusu tetiği — tekrar freni atlandı, AI taze veriyle karar veriyor`);
+    logAuto(`🎯 ${sym} R442: pusu tetiği — tekrar freni atlandı, ${r451Merci()} taze veriyle karar veriyor`);
   } else if (prev && sameState && r440Gap > 0 && now - prev.ts < r440Gap) {
     return { ok:false, reason:`${sym} tekrar freni ${Math.ceil((r440Gap - (now-prev.ts))/1000)}sn (durum aynı)` };
   }
@@ -18504,8 +18586,12 @@ app.post('/api/auto/config', (req, res) => {
   }
   // R282: Panelde seçilen tarama modu server tarafında da amir olsun.
   // Eski/local kayıt TOP24 taşıyorsa veya scanLimit=24 gelmişse normalize edip görünür log basar.
-  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP24'); // R323: TOP24 varsayılan (kullanıcı isteği — volatilite-bazlı, yön-bağımsız, günde ~77 işlem hedefi). Maliyet ~$40-50/gün (Sonnet). Tasarruf modu + sweep şartı maliyeti kısar.
+  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP24'); // R486.3: bu yalnız ANA havuz genişliğidir; full-market worker evreni ayrı çalışır.
   autoConfig.scanLimit = r54ScanLimitForMode(autoConfig.scanMode, autoConfig.scanLimit);
+  autoConfig.allowShort = false;
+  autoConfig.leverage = Math.max(R486_MIN_LEVERAGE, Number(autoConfig.leverage||R486_MIN_LEVERAGE));
+  if (autoConfig.vurKacAutoLev) autoConfig.vurKacMaxLev = 125;
+  else autoConfig.vurKacMaxLev = Math.max(R486_MIN_LEVERAGE, Math.min(125, Number(autoConfig.vurKacMaxLev||125)));
   logAuto(`⚙️ R282 auto ayar: tarama modu ${autoConfig.scanMode}/${autoConfig.scanLimit}, max poz:${autoConfig.maxPositions}, min skor:${autoConfig.minScore}`);
   if (autoConfig.enabled) {
     startAutoTrader();
@@ -18727,7 +18813,7 @@ app.get('/api/r374', (req, res) => {
 app.get('/api/r481-status', (req,res)=>{
   try{
     const tick={}; for(const sym of (autoScanState?.scanList||[]).slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.2: giriş-hikâye sözleşmesi + 15m merkez; 1m/5m mikro yapı; 1h/4h/1d bağlam; MTF FVG/IFVG/OB, mitigation, ChoCH/MSS, sweep-reclaim, diyagonal trend, ana-bacak Fib/OTE ve profesyonel order-flow',scanMode:autoConfig?.scanMode||null,workers:{r370:'60sn tüm piyasa taze impuls',r385:'5dk 60 sembol HTF kırılım',r328:'45sn patlama radarı',r366:'30sn volatilite nedeni'},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3: giriş-hikâye sözleşmesi + 15m merkez; 1m/5m mikro yapı; 1h/4h/1d bağlam; MTF FVG/IFVG/OB, mitigation, ChoCH/MSS, sweep-reclaim, diyagonal trend, ana-bacak Fib/OTE ve profesyonel order-flow',scanMode:autoConfig?.scanMode||null,workers:{r370:'60sn full-market ticker + dönen 15m batch taze impuls',r385:'5dk full-market ticker + dönen 1h/4h batch kırılım',r328:'45sn hot+rotating full-market patlama radarı',r366:'30sn hot+rotating 1m hareket nedeni'},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,hot:r4863WorkerUniverseState.hot,lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:autoScanState?.coreScanList||[]},effectiveScan:{count:autoScanState?.effectiveScanCount||autoScanState?.scanList?.length||0,list:autoScanState?.scanList||[],workerInjected:autoScanState?.workerInjected||[]},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -18738,13 +18824,14 @@ app.get('/api/auto/status', (req, res) => {
     r486:{
       longOnly:true, allowShort:false, minLeverage:R486_MIN_LEVERAGE,
       leveragePolicy:'Fırsat önemine göre Binance leverageBracket sınırına kadar; 10x altına izin yok',
-      harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI}
+      harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI},
+      scanArchitecture:{coreMode:autoScanState?.scanMode||autoConfig?.scanMode||'TOP24',coreLimit:autoScanState?.coreScanLimit||24,effectiveCount:autoScanState?.effectiveScanCount||autoScanState?.scanList?.length||0,workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible},workerInjected:autoScanState?.workerInjected||[],workerTelemetry:autoScanState?.workerTelemetry||{}}
     },
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
       sonIslem: toTurkishText(autoScanState?.lastAction || ''),
       kisaDinlenme:{aktif:isAutoPauseActive(), kalanSaniye:Math.ceil(getAutoPauseRemainMs()/1000), sebep:autoPauseReason||''},
-      aciklama:'R486: 15m ana grafik hikâyesi + otonom kâr hasadı; 1m/5m mikro zamanlama; saat-hizalı 30m ve 1h/4h/1d bağlam. 5m/15m/1h/4h FVG-IFVG, OB-mitigation, BOS-ChoCH-MSS, equal high/low, sweep-reclaim, diyagonal trend, ana-bacak Fib/OTE, absorption/iceberg/aggTrade/taker, OI ve funding tek kararda yorumlanır.'
+      aciklama:'R486.3: TOP24 yalnız ana havuzdur; full-market R370/R385/R328/R366 workerları bağımsız dönen evren tarar. 15m ana grafik hikâyesi + otonom kâr hasadı; 1m/5m mikro zamanlama; saat-hizalı 30m ve 1h/4h/1d bağlam. 5m/15m/1h/4h FVG-IFVG, OB-mitigation, BOS-ChoCH-MSS, equal high/low, sweep-reclaim, diyagonal trend, ana-bacak Fib/OTE, absorption/iceberg/aggTrade/taker, OI ve funding tek kararda yorumlanır.'
     } });
 });
 
@@ -18822,7 +18909,7 @@ async function runAutoScan(prioritySymbol=null) {
       maxPositions:rawMaxPositions=3, minScore=70, allowLong=true, allowShort=true,
       sweepOnly=false, scanMode='TOP10', scanLimit=null,
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[],
-      vurKacEnabled=false, vurKacAutoLev=false, vurKacMaxLev=50 } = cfg;
+      vurKacEnabled=false, vurKacAutoLev=false, vurKacMaxLev=125 } = cfg;
 
     // ═══ R372-E OTOMATİK BİLEŞİK MARJİN ═══
     // Panel marjını (sabit) yerine güncel bakiyeye göre marjin kullan (kâr eklendikçe pozisyon büyür).
@@ -18842,7 +18929,7 @@ async function runAutoScan(prioritySymbol=null) {
     const maxPositions = normalizeUserMaxPositions(rawMaxPositions, 3);
     const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'TOP10');
     const r54ScanLimit = r54ScanLimitForMode(r54ScanMode, scanLimit || (r54ScanMode === 'TOP10' ? 10 : 6));
-    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:Number(vurKacMaxLev||50)};
+    autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:(vurKacAutoLev?125:Math.max(R486_MIN_LEVERAGE,Number(vurKacMaxLev||125)))};
     autoScanState.scanMode = r54ScanMode;
     autoScanState.maxPositions = Number(maxPositions||0);
     autoScanState.phase = 'POZİSYON_KONTROL';
@@ -18936,7 +19023,7 @@ async function runAutoScan(prioritySymbol=null) {
         logAuto(`Max pozisyon (${maxPositions}) doldu, yeni sinyal taranmıyor`);
         return;
       }
-      logAuto(`🚀 R347: max pozisyon dolu AMA taze patlama bayrağı var — bayraklı coin AI'a danışılacak (yer açmak AI'ın ayar yetkisinde)`);
+      logAuto(`🚀 R347: max pozisyon dolu AMA taze patlama bayrağı var — bayraklı coin ${r451Merci()} merciine danışılacak`);
     }
 
     // 2. Kill zone kaldırıldı — kripto 24/7, saat bazlı tarama seyreltilmez.
@@ -18972,20 +19059,17 @@ async function runAutoScan(prioritySymbol=null) {
     } catch(_) {}
     if (symbols.length > 0) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
-      // R341: patlama bayraklı coin TOP2 filtresinden düşmesin — bayrak "TOP2 muamelesi" demektir,
-      // ama coin taramaya giremezse bayrağın hükmü yoktu (radar yakalasa bile AI'a ulaşamıyordu).
       try { for (const [b,f] of Object.entries(__r328PatlamaFlags)) { if (f && f.detected && Date.now()-f.ts < 5*60*1000) wanted.add(String(b).toUpperCase()); } } catch(_) {}
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
-      // R343: bayraklı coin aday üreticide HİÇ yoksa (filtre dışı kaldıysa) taramaya öne enjekte et —
-      // radar TOP3-10 dışından patlama yakaladığında coin gerçekten AI'a ulaşsın.
-      try {
-        for (const [b,f] of Object.entries(__r328PatlamaFlags)) {
-          if (!(f && f.detected && Date.now()-f.ts < 5*60*1000)) continue;
-          const varMi = scanList.some(c => String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase() === String(b).toUpperCase());
-          if (!varMi) { scanList.unshift({ symbol:String(b).toUpperCase(), fullSymbol:String(b).toUpperCase()+'USDT', r54Bucket:'R343_PATLAMA_ADAY' }); logAuto(`🚀 R343: ${b} patlama bayrağıyla tarama listesine enjekte edildi — AI'a gidiyor`); }
-        }
-      } catch(_) {}
     }
+    // R486.3: full-market R328 bayrağı kullanıcı sembol filtresi olmasa da ana 24 kotasından bağımsız enjekte edilir.
+    try {
+      for (const [b,f] of Object.entries(__r328PatlamaFlags)) {
+        if (!(f && f.detected && Date.now()-f.ts < 5*60*1000)) continue;
+        const varMi = scanList.some(c => String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase() === String(b).toUpperCase());
+        if (!varMi) { scanList.unshift({ symbol:String(b).toUpperCase(), fullSymbol:String(b).toUpperCase()+'USDT', r54Bucket:'R343_PATLAMA_ADAY', r4863Lane:'WORKER', workerSource:'R328', r4863Worker:'R328' }); logAuto(`🚀 R343/R328: ${b} full-market patlama bayrağıyla etkin analiz listesine enjekte edildi — ${r451Merci()} kararına gidiyor`); }
+      }
+    } catch(_) {}
     if (!scanList?.length) return;
     logAuto(`🔥 5m Fırsat Beyni ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
@@ -19024,7 +19108,11 @@ async function runAutoScan(prioritySymbol=null) {
     } catch(_) {}
 
     autoScanState.phase = 'TARIYOR';
-    autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,60);
+    autoScanState.scanList = (scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,80);
+    autoScanState.effectiveScanCount=(scanList||[]).length;
+    autoScanState.workerInjected=(scanList||[]).filter(c=>c.r4863Lane==='WORKER'||c.workerSource||c.r4863Worker||c.r370Erken||c.r385Koklama||String(c.r54Bucket||'').includes('PATLAMA')).map(c=>({coin:String(c.symbol||c.fullSymbol||'').replace('USDT',''),worker:c.workerSource||c.r4863Worker||(c.r385Koklama?'R385':c.r370Erken?'R370':'R328')}));
+    autoScanState.coreScanList=(scanList||[]).filter(c=>!(c.r4863Lane==='WORKER'||c.workerSource||c.r4863Worker||c.r370Erken||c.r385Koklama||String(c.r54Bucket||'').includes('PATLAMA'))).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,effectiveScanLimit);
+    autoScanState.coreScanLimit=effectiveScanLimit;
     // R310D: ZENGİN TOP24 LİSTESİ (dashboard canlı kartı için) — sıra, 12h%, 24h%, grup, fiyat. Binance'den 45sn taze ticker + 15dk 12h.
     autoScanState.top24Detay = (scanList||[]).slice(0,24).map((c,idx)=>({
       sira: idx+1,
@@ -19177,7 +19265,7 @@ async function runAutoScan(prioritySymbol=null) {
     const R311J_AI_POOL = Math.max(4, Number(process.env.AI_POOL_SIZE || 5) || 5); // R311Q: 6→5 maliyet
     // R446: patlama bayraklı / r370-taze coin sıra numarasından BAĞIMSIZ olarak havuza girer.
     // Eski hali (idx < 5) ikinci gizli darboğazdı: liste genişlese bile 6. sıradaki patlayan coin,
-    // bayrağı olsa dahi AI'a ULAŞAMIYORDU (ERA/LA/ZHIPU gecesi bunun da payı var).
+    // bayrağı olsa dahi karar motoruna ULAŞAMIYORDU (ERA/LA/ZHIPU gecesi bunun da payı var).
     const r311jInAiPool = (idx) => {
       if (typeof idx !== 'number') return false;
       // R459: AI KAPALIYKEN HAVUZ LİMİTİ YOK. Bu limit AI ÇAĞRI MALİYETİNİ kısmak için vardı;
@@ -19436,7 +19524,7 @@ async function runAutoScan(prioritySymbol=null) {
               score   = devirSide === 'LONG' ? Number(longScore||0) : Number(shortScore||0);
               decisionChain.r309eFromWait = true;
               decisionChain.r300SoftReject = `R309E WAIT→AI devir: ${waitReason}`;
-              logAuto(`🔀 ${coin.symbol} eski sistem WAIT — R309E AI'ya devrediyor (geçici yön ${devirSide}, skor ${score}); kararı AI verecek`);
+              logAuto(`🔀 ${coin.symbol} eski sistem WAIT — R309E ${r451Merci()} merciine devrediyor (geçici yön ${devirSide}, skor ${score}); son kararı ${r451Merci()} verir`);
               // continue YOK — aşağı akıp AI'ya ulaşır
             } else {
               markAutoSkip(coin.symbol, 'WAIT + panel iki yön kapalı', {rec:'WAIT', tier:'WAIT', score:waitScore, longScore, shortScore, reason:waitReason});
@@ -19473,7 +19561,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ASTER dersi: bot "izin yok" dedi ama AI'nın bayılacağı sweep+reclaim setup'ı vardı. AI okusun.
           if (((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             decisionChain.r300SoftReject = `R309E entryPermission→AI devir: ${why}`;
-            logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E AI'ya devrediyor — kararı AI verecek (${why.slice(0,80)})`);
+            logAuto(`🔀 ${coin.symbol} emir izni yok ama R309E ${r451Merci()} merciine devrediyor — son kararı ${r451Merci()} verir (${why.slice(0,80)})`);
             // continue YOK — AI'ya akar
           } else {
             logAuto(`⛔ ${coin.symbol} ${why}`);
@@ -19494,7 +19582,7 @@ async function runAutoScan(prioritySymbol=null) {
           // ═══ R309E: tier düşük → AI'ya DEVRET (silme) ═══
           if (((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) && r311jInAiPool(scanIdx) && r309eAiBudgetLeft(scanIdx, decisionChain) && (r310IsTop2(scanIdx) || (r310vCanliMi(decisionChain, analysis) && !r317AsikarBos(decisionChain, analysis)))) {
             decisionChain.r300SoftReject = `R309E tier→AI devir: ${why}`;
-            logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E AI'ya devrediyor — kararı AI verecek`);
+            logAuto(`🔀 ${coin.symbol} tier ${decisionChain?.tier||'?'} (otomatik açmaz) ama R309E ${r451Merci()} merciine devrediyor — son kararı ${r451Merci()} verir`);
             // continue YOK
           } else {
             logAuto(`📊 ${coin.symbol} ${why} — otomatik açılmıyor`);
@@ -19807,7 +19895,7 @@ async function runAutoScan(prioritySymbol=null) {
           const adverseCascade = isLong
             ? liq.cascade.direction==='LONG_CASCADE'
             : liq.cascade.direction==='SHORT_CASCADE';
-          if (adverseCascade && !r310IsTop2(scanIdx) /* R336: TOP2 muaf — cascade bilgisi AI'a gidiyor, kararı o verir */) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); markAutoSkip(coin.symbol, `Adverse cascade ${liq.cascade.direction}`, {rec:recommendation, score}); continue; }
+          if (adverseCascade && !r310IsTop2(scanIdx) /* R336: TOP2 muaf — cascade bilgisi mekanik karar motoruna gidiyor, kararı o verir */) { logAuto(`${coin.symbol} adverse cascade (${liq.cascade.direction}) — atlandı`); markAutoSkip(coin.symbol, `Adverse cascade ${liq.cascade.direction}`, {rec:recommendation, score}); continue; }
         }
 
         // ── R97 VUR-KAÇ PİYASA GÜVENLİĞİ ─────────────────────────────────────
@@ -19875,7 +19963,7 @@ async function runAutoScan(prioritySymbol=null) {
             continue;
           }
           if (atrAiDevret && !atrBridgeAllowedFinal) {
-            logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama AŞIRI değil — AI PRO TRADER'a devrediliyor, kararı AI verecek (TOP gainer doğal volatilite)`);
+            logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama AŞIRI değil — ${r451Merci()} merciine devrediliyor, son kararı karar motoru verir (TOP gainer doğal volatilite)`);
           } else {
             logAuto(`⚠️ ${coin.symbol} ATR yüksek (%${coinAtrPct.toFixed(1)}) ama 5m Fırsat Beyni kontrollü girişe izin verdi — user SL/TP korunarak devam`);
           }
@@ -19897,7 +19985,7 @@ async function runAutoScan(prioritySymbol=null) {
             markAutoSkip(coin.symbol, `POOR likidite spread:${analysis.r15?.liquidityQuality?.spread}`, {rec:recommendation, score});
             continue;
           }
-          logAuto(`🔀 ${coin.symbol} POOR ama spread kabul (%${analysis.r15.liquidityQuality.spread}) — gerçek kayma YOK, R335 AI'ya devrediyor (ince defteri AI kendi tartar)`);
+          logAuto(`🔀 ${coin.symbol} POOR ama spread kabul (%${analysis.r15.liquidityQuality.spread}) — gerçek kayma YOK, R335 ${r451Merci()} merciine devrediyor (ince defteri karar motoru tartar)`);
         }
         const minRR     = parseFloat(cfg.minRR ?? 1.0) || 1.0;
 
@@ -19951,7 +20039,7 @@ async function runAutoScan(prioritySymbol=null) {
           if (structuralAutoLevOk) {
             // R163: panel/vurKacMaxLev değeri korunur; 20x hard cap kaldırıldı.
             // Binance izinli maksimum yine okunur. Aşırı SL×kaldıraç riski aşağıdaki guard ile sınırlanır.
-            const userMaxLev = Math.max(1, parseInt(cfg.vurKacMaxLev || leverage || 20) || 20);
+            const userMaxLev = cfg.vurKacAutoLev ? 125 : Math.max(R486_MIN_LEVERAGE, parseInt(cfg.vurKacMaxLev || leverage || 125) || 125);
             const bracketMaxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * userMaxLev);
             if (bracketMaxLev) {
               executeLeverage = Math.max(executeLeverage, Math.min(userMaxLev, bracketMaxLev));
@@ -19971,7 +20059,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r157MaxRisk = 40; // R163: panel 15x/SL%2 korunur; sadece aşırı kaldıraçlı risk düşürülür
           if (r157SlPct * executeLeverage > r157MaxRisk) {
             const oldLev = executeLeverage;
-            executeLeverage = Math.max(1, Math.floor(r157MaxRisk / r157SlPct));
+            executeLeverage = Math.max(R486_MIN_LEVERAGE, Math.floor(r157MaxRisk / r157SlPct));
             leverageNote += ` · R157 SL×Kaldıraç guard ${oldLev}x→${executeLeverage}x (SL%${r157SlPct}×lev≤40%)`;
             logAuto(`🛡️ ${coin.symbol} SL${r157SlPct}%×${oldLev}x=%${(r157SlPct*oldLev).toFixed(0)} risk → ${executeLeverage}x'e düşürüldü`);
           }
@@ -19987,8 +20075,8 @@ async function runAutoScan(prioritySymbol=null) {
           const r150FastOnly = /momentum|mikro|scalp|hızlı|R134|R135|R144/i.test(String(decisionChain?.reason||'') + ' ' + String(decisionChain?.entryPermissionReason||'') + ' ' + String(decisionChain?.brainMode||''));
           if (r150MicroCap && r150AtrHot && !r150RealStructure && r150FastOnly) {
             const oldLev = executeLeverage;
-            const capLev = Number(coinAtrPct||0) >= 10 ? 6 : 8;
-            executeLeverage = Math.max(3, Math.min(executeLeverage, capLev));
+            const capLev = R486_MIN_LEVERAGE;
+            executeLeverage = Math.max(R486_MIN_LEVERAGE, Math.min(executeLeverage, capLev));
             if (executeLeverage < oldLev) leverageNote += ` · R150 mikro-cap ATR eşitleme ${oldLev}x→${executeLeverage}x`;
           }
         } catch(_e) {}
@@ -20003,7 +20091,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r151HasStructure = !!(decisionChain?.r117HtfReverseOk || decisionChain?.r110IctKoprusuOk || decisionChain?.r111KoprusuOk || decisionChain?.r111SiksmaOk);
           if (r151NewCoin && !r151HasStructure) {
             const oldLev = executeLeverage;
-            const capLev = Math.max(5, Math.round(executeLeverage * 0.6));
+            const capLev = Math.max(R486_MIN_LEVERAGE, Math.round(executeLeverage * 0.6));
             executeLeverage = Math.min(executeLeverage, capLev);
             if (executeLeverage < oldLev) {
               leverageNote += ` · R151 yeni coin (${Number(r151Mem?.same?.n||0)} geçmiş) kaldıraç ${oldLev}x→${executeLeverage}x`;
@@ -20021,7 +20109,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r191FastOrWeak = !!(decisionChain?.r159MomentumPass || decisionChain?.r133FastScalpOverride || decisionChain?.r191ForecastOnlyProof || String(decisionChain?.brainMode||'').includes('COUNTER_TRAP') || Number(score||0) < Number(effectiveMinScore||minScore||70));
           const r191EarlyFuel = !!(decisionChain?.r190Edge?.earlyContinuation || decisionChain?.r190Edge?.squeeze || decisionChain?.r190Edge?.r192FuelOk);
           const maxRoiRisk = r191PerfBad && r191FastOrWeak && !r191EarlyFuel ? 18 : (r191FastOrWeak && !r191EarlyFuel ? 24 : 32);
-          const capByRisk = Math.max(3, Math.floor(maxRoiRisk / Math.max(0.5, Number(userSLPct||1.5))));
+          const capByRisk = Math.max(R486_MIN_LEVERAGE, Math.floor(maxRoiRisk / Math.max(0.5, Number(userSLPct||1.5))));
           const oldLev = executeLeverage;
           executeLeverage = Math.min(executeLeverage, capByRisk);
           if (executeLeverage < oldLev) {
@@ -20043,9 +20131,9 @@ async function runAutoScan(prioritySymbol=null) {
         // R431 (kullanıcı talebi 20.07): KALDIRAÇ BANDI 5-50x — fırsat kalitesiyle ölçekli.
         // Eski R425 (4-8x) yerine: güven + ATR sakinliği hedef kaldıracı belirler; Binance bracket
         // tavanı ve HAYATTA KALMA valileri (SL×lev ≤ %60 ROI, likidasyon mesafesi ≥ ATR×2.2) aşılamaz.
-        // Not: yüksek kaldıraç boyut çarpanıdır, güven çarpanı değil — kanıt zayıfsa 5x'te kal.
+        // Not: yüksek kaldıraç boyut çarpanıdır, güven çarpanı değil — kanıt zayıfsa 10x tabanda kal.
         {
-          const _oldLevFloor = executeLeverage;
+          const _oldLevFloor = Math.max(R486_MIN_LEVERAGE,executeLeverage);
           // R437: güven kaynağı DÜZELTİLDİ — canlı ACE dersi 20.07: AI güven 72 dedi, brainConfidence
           // 100 okundu (eski motor skoru). Yüksek kaldıraç sadece AI'ın KENDİ güveniyle hak edilir;
           // iki kaynak varsa KÜÇÜK olan alınır (temkinli), AI güveni yoksa eski davranış.
@@ -20063,27 +20151,28 @@ async function runAutoScan(prioritySymbol=null) {
           const _g = (Number.isFinite(_gAi) && _gAi > 0) ? _gAi : _gEski;
           const _atr = Number(coinAtrPct || 99);
           const _gr = Number(coin.gainerRank || 99);
-          let _hedefLev = 5;
-          if      (_g >= 90 && _atr <= 2.5) _hedefLev = 50;
-          else if (_g >= 88 && _atr <= 3.0) _hedefLev = 35;
-          else if (_g >= 84 && _atr <= 3.5) _hedefLev = 25;
-          else if (_g >= 80 && _atr <= 4.5) _hedefLev = 15;
-          else if (_g >= 74 && _atr <= 6.0) _hedefLev = 10;
-          else if (_g >= 70) _hedefLev = 8;
+          let _hedefLev = R486_MIN_LEVERAGE;
+          if      (_g >= 94 && _atr <= 2.0) _hedefLev = 125;
+          else if (_g >= 90 && _atr <= 2.5) _hedefLev = 75;
+          else if (_g >= 88 && _atr <= 3.0) _hedefLev = 50;
+          else if (_g >= 84 && _atr <= 3.5) _hedefLev = 35;
+          else if (_g >= 80 && _atr <= 4.5) _hedefLev = 25;
+          else if (_g >= 74 && _atr <= 6.0) _hedefLev = 15;
+          else if (_g >= 70) _hedefLev = 12;
           if (_gr === 1) _hedefLev = Math.min(_hedefLev, 10);  // gainer-1 en manipüle sınıf — tavan 10x
           // Hayatta kalma valileri:
           const _slp = Math.max(0.5, Number(userSLPct || cfg.slPct || 2));
           _hedefLev = Math.min(_hedefLev, Math.floor(40 / _slp));                                  // R433: SL'de max -%40 ROI (5 coin-gün sim: 60→40 valfi bakiyeyi +%95→+%132 yaptı — büyük tek-işlem darbesi kesildi)
-          _hedefLev = Math.min(_hedefLev, Math.max(5, Math.floor(100 / Math.max(0.8, _atr * 2.2)))); // likidasyon ≥ ATR×2.2 uzakta
-          _hedefLev = Math.max(5, Math.min(50, _hedefLev));
+          _hedefLev = Math.min(_hedefLev, Math.max(R486_MIN_LEVERAGE, Math.floor(100 / Math.max(0.8, _atr * 2.2)))); // likidasyon ≥ ATR×2.2 uzakta
+          _hedefLev = Math.max(R486_MIN_LEVERAGE, Math.min(125, _hedefLev));
           // Binance'in bu sembol/nominal için izin verdiği tavanı oku (coinin izin verdiği max):
           try {
             const _brMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||30) * _hedefLev);
             if (_brMax) _hedefLev = Math.min(_hedefLev, _brMax);
           } catch(_e) {}
-          executeLeverage = _hedefLev;
+          executeLeverage = Math.max(R486_MIN_LEVERAGE,_hedefLev);
           leverageNote += ` · R431 fırsat-kaldıraç ${_oldLevFloor}x→${executeLeverage}x (güven:${_g} ATR:${_atr.toFixed(1)} gainer:${_gr})`;
-          logAuto(`⚙️ ${coin.symbol} R431 kaldıraç: ${_oldLevFloor}x→${executeLeverage}x (güven ${_g}, ATR %${_atr.toFixed(1)}, gainer ${_gr} — band 5-50x, SL×lev≤%40, likidasyon≥ATR×2.2)`);
+          logAuto(`⚙️ ${coin.symbol} R431 kaldıraç: ${_oldLevFloor}x→${executeLeverage}x (güven ${_g}, ATR %${_atr.toFixed(1)}, gainer ${_gr} — band 10x-BinanceMax, SL×lev≤%40, likidasyon≥ATR×2.2)`);
         }
 
         // R372 (A SEÇENEĞİ): SL TABAN GENİŞLİĞİ — AI dar SL koyarsa min %5'e genişlet (MM avı koruması).
@@ -20103,7 +20192,7 @@ async function runAutoScan(prioritySymbol=null) {
           try {
             const _flow = (typeof r371GetFlowAnalysis === 'function') ? r371GetFlowAnalysis(coin.symbol, entryRef) : null;
             if (_flow && _flow.veriTazeMi) {
-              logAuto(`🚂 ${coin.symbol} R371 ORDER FLOW (AI'a bilgi, kod müdahale etmez): akış ${_flow.akisYonu} ${_flow.ivme} · delta ${_flow.gercekDelta30sn}$/30sn · ${_flow.akisYonu==='ALIŞ'?'MM alıyor ✓':_flow.akisYonu==='SATIŞ'?'MM satıyor, AI değerlendirsin':'denge'}`);
+              logAuto(`🚂 ${coin.symbol} R371 ORDER FLOW (karar motoruna canlı bilgi): akış ${_flow.akisYonu} ${_flow.ivme} · delta ${_flow.gercekDelta30sn}$/30sn · ${_flow.akisYonu==='ALIŞ'?'MM alıyor ✓':_flow.akisYonu==='SATIŞ'?'MM satıyor, AI değerlendirsin':'denge'}`);
             }
           } catch(_r371e) {}
         }
@@ -20219,7 +20308,7 @@ async function runAutoScan(prioritySymbol=null) {
         try {
           if (userSLPct * executeLeverage > 40) {
             const oldLev2 = executeLeverage;
-            executeLeverage = Math.max(1, Math.floor(40 / Math.max(0.1, userSLPct)));
+            executeLeverage = Math.max(R486_MIN_LEVERAGE, Math.floor(40 / Math.max(0.1, userSLPct)));
             if (executeLeverage < oldLev2) leverageNote += ` · R167 adaptif SL risk guard ${oldLev2}x→${executeLeverage}x`;
           }
           targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
@@ -20313,7 +20402,7 @@ async function runAutoScan(prioritySymbol=null) {
             const oldSL281 = Number(userSLPct||0), oldTP281 = Number(userTPPct||0), oldLev281 = Number(executeLeverage||0);
             userSLPct = Math.max(0.55, Math.min(userSLPct, Math.max(0.70, Number(cfg.slPct||userSLPct||1.5) * 0.82)));
             userTPPct = Math.max(userTPPct, Math.min(6.0, Math.max(userSLPct * 2.1, 2.4)));
-            const capLev281 = Math.max(3, Math.floor(26 / Math.max(0.5, userSLPct)));
+            const capLev281 = Math.max(R486_MIN_LEVERAGE, Math.floor(26 / Math.max(0.5, userSLPct)));
             executeLeverage = Math.min(executeLeverage, capLev281);
             r281ExitPlanNote = ` · R281 PROTECT SL ${oldSL281}→${userSLPct} TP ${oldTP281}→${userTPPct}${executeLeverage<oldLev281?` Lev ${oldLev281}x→${executeLeverage}x`:''}`;
             logAuto(`🛡️ ${coin.symbol}${r281ExitPlanNote} — ${r281p.summary||''}`);
@@ -20331,7 +20420,7 @@ async function runAutoScan(prioritySymbol=null) {
           userRR = userTPPct / Math.max(0.05, userSLPct);
           if (userSLPct * executeLeverage > 40) {
             const oldLev188 = executeLeverage;
-            executeLeverage = Math.max(1, Math.floor(40 / Math.max(0.1, userSLPct)));
+            executeLeverage = Math.max(R486_MIN_LEVERAGE, Math.floor(40 / Math.max(0.1, userSLPct)));
             if (executeLeverage < oldLev188) leverageNote += ` · R188 final SL risk guard ${oldLev188}x→${executeLeverage}x`;
           }
           targetPrice = isLong ? +(entryRef * (1 + userTPPct/100)).toFixed(8) : +(entryRef * (1 - userTPPct/100)).toFixed(8);
@@ -20479,7 +20568,7 @@ async function runAutoScan(prioritySymbol=null) {
             // nihai kararı AI verir. Böylece hiçbir şey AI'sız açılmaz AMA AI güçlü adayı da değerlendirir.
             const isSafetyBlock = /R300-0 GÜVENLİK/i.test(String(r300Gate.reason||''));
             // R336: TOP2 için R300-0 güvenlik redleri de AI'ya DEVREDİLİR (kesilmez). Sebep: bu "tehlike" sinyalleri
-            // (sahte pump, ATR, spread, tuzak) TOP2 gainer'ın DOĞAL halidir; bilgi zaten AI'a gidiyor, kararı AI verir.
+            // (sahte pump, ATR, spread, tuzak) TOP2 gainer'ın DOĞAL halidir; bilgi zaten mekanik karar motoruna gidiyor, kararı AI verir.
             // TAIKO %115→%400 kaçarken bu kapıda "AI'ya sorulmaz" kesiliyordu — kullanıcı: TOP2 ham AI'a gitsin.
             if (isSafetyBlock && !r310IsTop2(scanIdx)) {
               logAuto(`⛔ ${coin.symbol} R300 GÜVENLİK RED (AI'ya sorulmaz): ${r300Gate.reason} — emir AÇILMADI`);
@@ -20487,10 +20576,10 @@ async function runAutoScan(prioritySymbol=null) {
               continue;
             }
             if (isSafetyBlock) {
-              logAuto(`🔀 ${coin.symbol} R300-0 güvenlik uyarısı (${r300Gate.reason}) ama TOP2 — R336 AI'ya devrediliyor, kararı AI verecek`);
+              logAuto(`🔀 ${coin.symbol} R300-0 güvenlik uyarısı (${r300Gate.reason}) ama öncelikli aday — R336 ${r451Merci()} merciine devrediliyor, son kararı karar motoru verir`);
             }
             // Yumuşak red: AI'ya devret. Bayrak koy, aşağıdaki AI gate kesin kararı versin.
-            logAuto(`🔍 ${coin.symbol} R300 yumuşak red (${r300Gate.reason}) — AI PRO TRADER'a devrediliyor, son kararı AI verecek`);
+            logAuto(`🔍 ${coin.symbol} R300 yumuşak red (${r300Gate.reason}) — ${r451Merci()} merciine devrediliyor, son kararı karar motoru verir`);
             decisionChain.r300SoftReject = r300Gate.reason;
           } else {
             decisionChain.r482R300Approved = true;
@@ -21146,7 +21235,7 @@ async function runAutoScan(prioritySymbol=null) {
                       // Sonraki SL×kaldıraç güvenlik guard'ı yine üstte çalışır — geniş SL'de hedef kısılır.
                       try {
                         const aiConf = Number(ai.confidence || 0);
-                        const panelMax = Math.max(1, parseInt(cfg.vurKacMaxLev || leverage || 20) || 20);
+                        const panelMax = cfg.vurKacAutoLev ? 125 : Math.max(R486_MIN_LEVERAGE, parseInt(cfg.vurKacMaxLev || leverage || 125) || 125);
                         // R309B: AI tabanı R151 'yeni coin' düşüşünü EZER (kullanıcı talimatı: AI 64+ güvenle açtıysa min 10x).
                         // binancePanelCap'i AI tabanından ÇIKARDIK — sadece panelMax (kullanıcı tavanı) + Binance gerçek limiti korunur.
                         // Binance'in o coin için fiziksel max kaldıracı (örn bazı coinlerde 25x) panelMax ile zaten sınırlı.
@@ -21163,14 +21252,14 @@ async function runAutoScan(prioritySymbol=null) {
                         // 476$ → 602$ (+%26). Valfler zaten koruyor: SL×lev≤%40 (R433), likidasyon≥ATR×2.2,
                         // Binance bracket tavanı, gainer-1 tavanı 10x. Yani yüksek kaldıraç ancak DÜŞÜK SL +
                         // SAKİN ATR + YÜKSEK güven birlikteyken çıkar; riskli setupta zaten 5x'te kalır.
-                        let aiTargetLev = Math.max(5, Number(executeLeverage) || 5);
+                        let aiTargetLev = Math.max(R486_MIN_LEVERAGE, Number(executeLeverage) || R486_MIN_LEVERAGE);
                         // AI panel tavanından MUAF — Binance fiziksel izni VE 25x tavanı sınırlar.
                         let r310BinanceMax = null;
                         try {
                           r310BinanceMax = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||0) * aiTargetLev).catch(()=>null);
                         } catch(_e) {}
                         const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? Math.min(25, r310BinanceMax) : 25; // R325D: 25x mutlak tavan
-                        aiTargetLev = Math.max(5, Math.min(aiTargetLev, r310Ceil)); // R461: R431 haritası serbest, tavan Binance izni (max 25x)
+                        aiTargetLev = Math.max(R486_MIN_LEVERAGE, Math.min(aiTargetLev, r310Ceil)); // R461: R431 haritası serbest, tavan Binance izni (max 25x)
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
@@ -21282,7 +21371,7 @@ async function runAutoScan(prioritySymbol=null) {
           if (!aiApproved) {
             const why = !AI_BRAIN_ENABLED ? 'tam mekanik karar onayı yok' :
                         (!decisionChain.aiBrain ? 'AI çağrılmadı/limit doldu' :
-                         (aiSideUp === 'WAIT' ? 'AI WAIT dedi' : 'AI açık LONG/SHORT onayı yok'));
+                         (aiSideUp === 'WAIT' ? 'karar motoru WAIT dedi' : 'AI açık LONG/SHORT onayı yok'));
             logAuto(`⛔ ${coin.symbol} R325 TEK KARAR KANALI: emir AÇILMADI — ${why} (AI açıkken AI, AI kapalıyken R447/R482 tam mekanik açar)`);
             markAutoSkip(coin.symbol, `R325 tek karar kanalı: ${why}`, {rec:recommendation, score, aiBrain:decisionChain.aiBrain});
             continue;
@@ -21711,7 +21800,7 @@ function startAutoTrader() {
             // R336: KREDİ KATİLİ DÜZELTMESİ — FastWake artık runAutoScan TETİKLEMEZ.
             // Eski davranış: volatil TOP2'de orderflow spike sürekli → tarama ~30sn'de dönüyordu → 335 AI çağrısı/gün
             // → $10.5 kredi 1 günde bitti. Tarama SADECE R331 mum-senkron zamanlayıcıda döner (7.5dk: kapanış+orta).
-            // Spike bilgisi patlama-worker bayrağıyla zaten AI'a gidiyor; ekstra tarama = ekstra maliyet, kazanç yok.
+            // Spike bilgisi patlama-worker bayrağıyla zaten mekanik karar motoruna gidiyor; ekstra tarama = ekstra maliyet, kazanç yok.
             autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 spike (not edildi, mum-senkron tarama bekleniyor)':'R151 orderflow spike (not)'}: ${sym.replace('USDT','')} ${ev.reason}`;
             r125PriorityWake.delete(sym);
             // runAutoScan(sym); ← R336: KAPALI — mum-senkron dışı tarama yok
