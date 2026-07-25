@@ -82,10 +82,23 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R482_SERVER5_FULL_MECHANICAL_SOURCE_PRIORITY'
+const LAZARUS_BUILD = 'R486_1_SERVER5_UI_ENV_TRUTH_10X'
+
+// ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
+// Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
+// backtest 25x muhafazakâr ana tavanla raporlanmıştır. 10x altı ASLA kullanılmaz;
+// sembol 10x izin vermiyorsa işlem açılmaz. Geniş SL'de leverage düşürmek yerine marjin
+// risk-normalize edilir. Kâr-hasat motoru varsayılan SHADOW'dur; R486_HARVEST_ACTIVE=1
+// verilmedikçe market kapatma yapmaz, yalnız karar/SL önerisini telemetriye yazar.
+const R486_MIN_LEVERAGE = 10;
+const R486_HARVEST_ACTIVE = String(process.env.R486_HARVEST_ACTIVE || '0') === '1';
+const R486_HARVEST_SHADOW = !R486_HARVEST_ACTIVE;
+const R486_RISK_BUDGET_PCT = Math.max(4, Math.min(25, Number(process.env.R486_RISK_BUDGET_PCT || 12)));
+const R486_HARVEST_PRESSURE = Math.max(1.8, Math.min(5, Number(process.env.R486_HARVEST_PRESSURE || 2.8)));
+const R486_HARVEST_MATURE_ROI = Math.max(7, Math.min(32, Number(process.env.R486_HARVEST_MATURE_ROI || 14)));
 // ═══ R427 NON-KRİPTO PERP FİLTRESİ (kanıt: ASML -4.52$, QQQ -1.25$, CL -0.27$ + DRAM/SAMSUNG/MU/AMD slot işgali):
 // Binance hisse/emtia/endeks perp'leri kripto stratejisiyle alakasız seans+defter dinamiğinde. Env ile genişletilebilir.
-const R427_NONKRIPTO = new Set(('ASML,AMD,NVDA,META,QQQ,SPY,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,MU,SAMSUNG,DRAM,CL,BZ,NG,GC,SI,O,' + (process.env.NONKRIPTO_EK||'')).split(',').map(s=>s.trim()+'USDT').filter(s=>s.length>4));
+const R427_NONKRIPTO = new Set(('ASML,AMD,NVDA,META,QQQ,SPY,SOXS,SOXL,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,INTC,MU,SAMSUNG,DRAM,CL,BZ,NG,NATGAS,GC,SI,O,' + (process.env.NONKRIPTO_EK||'')).split(',').map(s=>s.trim()+'USDT').filter(s=>s.length>4));
 function r427KriptoMu(sym){ return !R427_NONKRIPTO.has(String(sym||'')); }
 // R399 MASRAF SAYACI: "krediyi ne yiyor?" sorusu artık tahminle değil sayaçla cevaplanır.
 // Her AI cevabındaki usage toplanır; yaklaşık USD, Sonnet fiyatlarıyla hesaplanır (in $3/M,
@@ -493,15 +506,20 @@ async function getSymbolMaxInitialLeverage(apiKey, apiSecret, symbol, targetNoti
 // ── R137: Binance sembol kaldıraç sınırı / -4028 fallback ───────────────────
 function normalizeRequestedLeverage(v, fallback=1) {
   const n = Math.floor(Number(v || fallback));
-  return Math.max(1, Math.min(125, Number.isFinite(n) ? n : fallback));
+  return Math.max(R486_MIN_LEVERAGE, Math.min(125, Number.isFinite(n) ? n : Math.max(R486_MIN_LEVERAGE, fallback)));
 }
 
 async function setSymbolLeverageSafe(apiKey, apiSecret, symbol, requestedLeverage, targetNotional=0) {
   const sym = normalizeSymbol(symbol);
   const requested = normalizeRequestedLeverage(requestedLeverage, 1);
   const maxLev = await getSymbolMaxInitialLeverage(apiKey, apiSecret, sym, targetNotional).catch(()=>null);
+  if (maxLev && Number(maxLev) < R486_MIN_LEVERAGE) {
+    const e = new Error(`${sym}: Binance izinli maksimum ${maxLev}x; R486 minimum ${R486_MIN_LEVERAGE}x altında — işlem açılmadı`);
+    e.code = 'R486_MIN_LEVERAGE_UNAVAILABLE';
+    throw e;
+  }
   const first = maxLev ? Math.min(requested, normalizeRequestedLeverage(maxLev, requested)) : requested;
-  const ladder = [125,100,75,50,40,30,25,20,15,12,10,8,7,6,5,4,3,2,1];
+  const ladder = [125,100,75,50,40,30,25,20,15,12,10];
   const candidates = [];
   const add = (x) => {
     const n = normalizeRequestedLeverage(x, 1);
@@ -511,7 +529,6 @@ async function setSymbolLeverageSafe(apiKey, apiSecret, symbol, requestedLeverag
   };
   add(first);
   for (const x of ladder) add(Math.min(x, first));
-  add(1);
 
   let lastErr = null;
   for (const lev of candidates) {
@@ -4090,8 +4107,202 @@ function r481MekanikVeri(coin, analysis, dc={}) {
     rvol5m:Number(analysis?.rvol5m ?? dc?.rvol ?? 1),
     slTabanOneri:Number(analysis?.slTabanOneri || 0),
     likiditeSeviyeleri:analysis?.liqLevels || null,
-    orderBookImbalance:Number(analysis?.orderBook?.imbalance ?? NaN)
+    orderBookImbalance:Number(analysis?.orderBook?.imbalance ?? NaN),
+    fundingRate:Number(analysis?.funding?.current ?? analysis?.fundingRate ?? NaN),
+    fundingSignal:String(analysis?.funding?.signal ?? analysis?.funding?.trend ?? ''),
+    oiChange1h:Number(analysis?.openInterest?.change1h ?? dc?.r111OiChgPct ?? 0),
+    oiChange4h:Number(analysis?.openInterest?.change4h ?? 0),
+    rsi5m:Number(analysis?.timeframes?.['5m']?.rsi ?? NaN),
+    rsi15m:Number(analysis?.timeframes?.['15m']?.rsi ?? NaN),
+    rsi4h:Number(analysis?.timeframes?.['4h']?.rsi ?? NaN),
+    rsi1d:Number(analysis?.timeframes?.['1d']?.rsi ?? NaN),
+    orderFlowSummary:String(dc?.r125OrderflowSummary || dc?.r126FlowSummary || ''),
+    takerRatio:Number(analysis?.taker?.ratio ?? analysis?.takerRatio ?? NaN),
+    takerSeries:analysis?.takerSeries || analysis?.taker?.series || analysis?.takerArr || null,
+    cvd:analysis?.cvd || null,
+    tickData:analysis?.tickData || null,
+    iceberg:analysis?.iceberg || null,
+    r125OrderFlow:analysis?.r125OrderFlow || null,
+    aggTrades:analysis?.tickData?.recentTrades || analysis?.tickData?.trades || null,
+    ictDashboard:String(dc?.ictDashboard || ''),
+    proMap:dc?.r281ProMap || dc?.r281Map || null,
+    sourceLane:r482AdayKaynakSeridi(coin),
+    sourceLabel:String(coin?.r54Bucket || coin?.source || ''),
+    htfBreak:analysis?.r384HtfKirilim || null,
+    trendBreak:analysis?.r316Trend || null,
+    chartPattern:analysis?.r316ChartPat || null
   };
+}
+
+// ═══ R484 ÇOKLU-ZAMAN PROFESYONEL GRAFİK OKUMA MOTORU ════════════════════════
+// Server5 ana gövdesini değiştirmez. 15m ana sahne; 1m/5m zamanlama;
+// 1h/4h/1d bağlam. Ham fiyat/yapı, FVG/IFVG, OB/mitigation, BOS/ChoCH/MSS,
+// likidite sweep-reclaim, equal high/low, diyagonal trend, ana-bacak Fib/OTE,
+// order-flow/OI/funding tek hikâyede toplanır. Amaç frekansı boğmak değil,
+// aynı aday evreninde market-order/retest/teyit zamanlamasını daha doğru seçmektir.
+const R483_CHART_STORY_ENABLED = String(process.env.R484_CHART_STORY ?? process.env.R483_CHART_STORY ?? '1') !== '0';
+const R483_STORY_ACTIVE = String(process.env.R484_STORY_ACTIVE ?? process.env.R483_STORY_ACTIVE ?? '1') !== '0';
+const R483_DEFER_TOP_TRAP = String(process.env.R484_DEFER_TOP_TRAP ?? process.env.R483_DEFER_TOP_TRAP ?? '1') !== '0';
+const R484_TF_WEIGHTS = Object.freeze({'1m':1.15,'5m':2.45,'15m':5.0,'30m':2.0,'1h':3.8,'4h':3.0,'1d':1.55});
+function r483Vol(v){ const t=String(v??'0'); const n=parseFloat(t); return Number.isFinite(n)?(t.endsWith('M')?n*1e6:t.endsWith('K')?n*1e3:n):0; }
+function r483Rows(raw=[],times=[]){
+  return Array.isArray(raw)?raw.map((x,i)=>({
+    i,ts:Number(x?.[5]??times?.[i]??0)||0,
+    o:Number(x?.[0]),h:Number(x?.[1]),l:Number(x?.[2]),c:Number(x?.[3]),v:r483Vol(x?.[4])
+  })).filter(x=>x.o>0&&x.h>=x.l&&x.c>0):[];
+}
+function r484Median(xs=[]){ const a=xs.filter(Number.isFinite).sort((x,y)=>x-y); if(!a.length)return 0; const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2; }
+function r484Atr(rs=[],n=14){ if(rs.length<2)return 0; const tr=[]; for(let i=Math.max(1,rs.length-n);i<rs.length;i++){const p=rs[i-1],x=rs[i];tr.push(Math.max(x.h-x.l,Math.abs(x.h-p.c),Math.abs(x.l-p.c)));}return tr.length?tr.reduce((a,x)=>a+x,0)/tr.length:0; }
+function r484Body(x){return Math.abs(Number(x?.c||0)-Number(x?.o||0));}
+function r484Range(x){return Math.max(1e-12,Number(x?.h||0)-Number(x?.l||0));}
+function r484Rvol(rs=[],i=rs.length-1,n=12){ if(i<0||!rs[i])return 1; const a=rs.slice(Math.max(0,i-n),i).map(x=>x.v).filter(x=>x>0); const av=a.length?a.reduce((s,x)=>s+x,0)/a.length:0; return av>0?rs[i].v/av:1; }
+function r483Agg(rs=[],n=2){
+  // Timestamp varsa gerçek UTC zaman sınırına hizala. Yoksa eski davranışa geri dön ama aligned=false damgası taşı.
+  if(!Array.isArray(rs)||!rs.length)return [];
+  const periodMs=n*15*60*1000;
+  if(rs.some(x=>Number(x.ts)>0)){
+    const m=new Map();
+    for(const x of rs){const key=Math.floor(Number(x.ts||0)/periodMs)*periodMs; if(!m.has(key))m.set(key,[]);m.get(key).push(x);}
+    return [...m.entries()].sort((a,b)=>a[0]-b[0]).map(([ts,g],idx)=>({i:idx,ts,o:g[0].o,h:Math.max(...g.map(x=>x.h)),l:Math.min(...g.map(x=>x.l)),c:g.at(-1).c,v:g.reduce((a,x)=>a+x.v,0),aligned:true,count:g.length})).filter(x=>x.count===n);
+  }
+  const out=[];for(let i=0;i+n<=rs.length;i+=n){const g=rs.slice(i,i+n);out.push({i:out.length,ts:0,o:g[0].o,h:Math.max(...g.map(x=>x.h)),l:Math.min(...g.map(x=>x.l)),c:g.at(-1).c,v:g.reduce((a,x)=>a+x.v,0),aligned:false,count:g.length});}return out;
+}
+function r483Pivots(rs=[],span=2){
+  const H=[],L=[],atr=r484Atr(rs,14)||1;
+  for(let i=span;i<rs.length-span;i++){
+    let hi=true,lo=true;for(let j=i-span;j<=i+span;j++)if(j!==i){if(rs[j].h>=rs[i].h)hi=false;if(rs[j].l<=rs[i].l)lo=false;}
+    if(hi){const neigh=Math.max(...rs.slice(i-span,i+span+1).filter((_,k)=>k!==span).map(x=>x.h));H.push({i,ts:rs[i].ts||0,price:rs[i].h,strength:+Math.max(1,(rs[i].h-neigh)/atr+1+r484Rvol(rs,i)*.25).toFixed(2)});}
+    if(lo){const neigh=Math.min(...rs.slice(i-span,i+span+1).filter((_,k)=>k!==span).map(x=>x.l));L.push({i,ts:rs[i].ts||0,price:rs[i].l,strength:+Math.max(1,(neigh-rs[i].l)/atr+1+r484Rvol(rs,i)*.25).toFixed(2)});}
+  }
+  return {H,L};
+}
+function r484Regression(points=[]){
+  if(points.length<2)return null;const n=points.length,sx=points.reduce((a,p)=>a+p.i,0),sy=points.reduce((a,p)=>a+p.price,0),sxx=points.reduce((a,p)=>a+p.i*p.i,0),sxy=points.reduce((a,p)=>a+p.i*p.price,0),den=n*sxx-sx*sx;if(Math.abs(den)<1e-12)return null;const slope=(n*sxy-sx*sy)/den,intercept=(sy-slope*sx)/n;return {slope,intercept,valueAt:i=>intercept+slope*i};
+}
+function r484Trendline(rs=[],piv=null){
+  // R485 gerçek-grafik sürümü: eğik trend çizgisi, son pivot regresyonu değil;
+  // çoklu pivot-çifti, temas/ihlal, ATR-normalize eğim, güncellik ve kabul mesafesiyle seçilir.
+  if(!Array.isArray(rs)||rs.length<12)return {ok:false,reason:'YETERSIZ_MUM'};
+  let p=piv||r483Pivots(rs,2);if((p.H||[]).length<2||(p.L||[]).length<2)p=r483Pivots(rs,1);
+  const atr=r484Atr(rs)||Math.max(1e-12,rs.at(-1).c*.002),last=rs.at(-1),cut=Math.max(3,rs.length-3);
+  const fit=(pts,kind)=>{
+    const pp=(pts||[]).filter(x=>x.i<cut).slice(-12),cand=[];
+    for(let a=0;a<pp.length-1;a++)for(let b=a+1;b<pp.length;b++){
+      const A=pp[a],B=pp[b],span=B.i-A.i;if(span<5)continue;const slope=(B.price-A.price)/span;
+      if(kind==='RESISTANCE'&&slope>=-atr*.005)continue;if(kind==='SUPPORT'&&slope<=atr*.005)continue;
+      const valueAt=i=>A.price+slope*(i-A.i),tol=Math.max(atr*.20,last.c*.00065);let touches=0,viol=0,pivotErr=0;
+      for(const q of pp.filter(q=>q.i>=A.i&&q.i<=cut)){const e=Math.abs(q.price-valueAt(q.i));if(e<=tol)touches++;pivotErr+=Math.min(3,e/tol);}
+      for(let i=A.i;i<cut;i++){const line=valueAt(i),x=rs[i];if(kind==='RESISTANCE'&&x.h>line+tol)viol++;if(kind==='SUPPORT'&&x.l<line-tol)viol++;}
+      // Uzun çizgide iki ankraj tek başına yeterli değildir; üçüncü temas veya çok temiz ihlalsiz yapı ister.
+      if(touches<2||((span>=18&&touches<3)&&viol>0)||viol>Math.max(2,Math.floor(span*.10)))continue;
+      const recency=B.i/Math.max(1,rs.length-1),slopeAtr=Math.abs(slope)/atr,proximity=Math.abs(last.c-valueAt(rs.length-1))/atr;
+      // Güncel fiyattan aşırı uzakta kalan tarihî çizgi karar çizgisi değildir.
+      if(proximity>4.5)continue;
+      const score=touches*3.5+Math.min(4,span/9)+recency*2.4+Math.min(3,slopeAtr*18)-viol*2.7-pivotErr*.15-Math.min(2,proximity*.22);
+      cand.push({kind,score,slope,slopeAtr,intercept:A.price-slope*A.i,valueAt,points:[A,B],touches,violations:viol,tolerance:tol,span,lastAnchor:B.i,proximity});
+    }
+    return cand.sort((x,y)=>y.score-x.score)[0]||null;
+  };
+  const res=fit(p.H,'RESISTANCE'),sup=fit(p.L,'SUPPORT');
+  const out={ok:true,breakUp:false,breakDown:false,retestUp:false,retestDown:false,falseBreakUp:false,falseBreakDown:false,resistance:null,support:null};
+  const scan=(line,dir)=>{
+    if(!line)return null;const tol=line.tolerance,accept=Math.max(tol*.35,atr*.10),from=Math.max(line.lastAnchor+1,rs.length-9),events=[];
+    for(let i=Math.max(1,from);i<rs.length;i++){
+      const x=rs[i],pr=rs[i-1],lv=line.valueAt(i),plv=line.valueAt(i-1),body=r484Body(x),bodyRatio=body/r484Range(x),histMed=r484Median(rs.slice(Math.max(0,i-12),i).map(r484Body))||atr*.25,disp=body>=Math.max(atr*.42,histMed*.95);
+      if(dir==='UP'&&pr.c<=plv+tol*.15&&x.c>lv+accept)events.push({i,price:x.c,line:lv,strong:disp&&(r484Rvol(rs,i)>=1.08||bodyRatio>=.58)});
+      if(dir==='DOWN'&&pr.c>=plv-tol*.15&&x.c<lv-accept)events.push({i,price:x.c,line:lv,strong:disp&&(r484Rvol(rs,i)>=1.08||bodyRatio>=.58)});
+    }
+    const br=events.at(-1)||null;let retest=false,falseBreak=false,retestIndex=null;
+    if(br){for(let i=br.i+1;i<rs.length;i++){const x=rs[i],lv=line.valueAt(i),hold=Math.max(tol*.18,atr*.06);if(dir==='UP'&&x.l<=lv+tol&&x.c>lv+hold){const next=rs[i+1];if(!next||next.c>line.valueAt(i+1)-tol*.05){retest=true;retestIndex=i;}}if(dir==='DOWN'&&x.h>=lv-tol&&x.c<lv-hold){const next=rs[i+1];if(!next||next.c<line.valueAt(i+1)+tol*.05){retest=true;retestIndex=i;}}}
+      const now=line.valueAt(rs.length-1),hold=Math.max(tol*.12,atr*.05);if(dir==='UP'&&last.c<now+hold)falseBreak=true;if(dir==='DOWN'&&last.c>now-hold)falseBreak=true;}
+    return {break:br,retest:retest&&!falseBreak,retestIndex,falseBreak,lineNow:line.valueAt(rs.length-1)};
+  };
+  if(res){const z=scan(res,'UP');out.resistance={slope:res.slope,slopeAtr:res.slopeAtr,linePrice:z.lineNow,points:res.points,touches:res.touches,violations:res.violations,score:+res.score.toFixed(2),tolerance:res.tolerance,proximity:+res.proximity.toFixed(2)};out.breakUp=!!z.break&&!z.falseBreak;out.breakUpStrong=!!z.break?.strong&&!z.falseBreak;out.retestUp=!!z.retest;out.falseBreakUp=!!z.falseBreak;out.breakUpIndex=z.break?.i??null;out.retestUpIndex=z.retestIndex;}
+  if(sup){const z=scan(sup,'DOWN');out.support={slope:sup.slope,slopeAtr:sup.slopeAtr,linePrice:z.lineNow,points:sup.points,touches:sup.touches,violations:sup.violations,score:+sup.score.toFixed(2),tolerance:sup.tolerance,proximity:+sup.proximity.toFixed(2)};out.breakDown=!!z.break&&!z.falseBreak;out.breakDownStrong=!!z.break?.strong&&!z.falseBreak;out.retestDown=!!z.retest;out.falseBreakDown=!!z.falseBreak;out.breakDownIndex=z.break?.i??null;out.retestDownIndex=z.retestIndex;}
+  out.state=out.retestUp?'DESCENDING_BREAK_RETEST_HOLD':out.retestDown?'ASCENDING_BREAK_RETEST_HOLD':out.breakUp?'DESCENDING_TREND_BREAK_UP':out.breakDown?'ASCENDING_TREND_BREAK_DOWN':out.falseBreakUp?'DESCENDING_FALSE_BREAK':out.falseBreakDown?'ASCENDING_FALSE_BREAK':'NO_BREAK';return out;
+}
+function r484Structure(rs=[],tf='15m'){
+  if(rs.length<7)return {tf,ok:false,trend:'YETERSIZ',events:[],rangePos:.5,ret1:0,ret6:0,rvol:1};
+  let p=r483Pivots(rs,rs.length>=14?2:1); if((p.H||[]).length<2||(p.L||[]).length<2)p=r483Pivots(rs,1); const hs=p.H.slice(-4),ls=p.L.slice(-4),h1=hs.at(-1),h0=hs.at(-2),l1=ls.at(-1),l0=ls.at(-2),last=rs.at(-1),prev=rs.at(-2),atr=r484Atr(rs),rv=r484Rvol(rs);
+  const hh=!!(h1&&h0&&h1.price>h0.price*(1+Math.max(.0006,atr/Math.max(last.c,1)*.08))),lh=!!(h1&&h0&&h1.price<h0.price*(1-Math.max(.0006,atr/Math.max(last.c,1)*.08))),hl=!!(l1&&l0&&l1.price>l0.price*(1+Math.max(.0006,atr/Math.max(last.c,1)*.08))),ll=!!(l1&&l0&&l1.price<l0.price*(1-Math.max(.0006,atr/Math.max(last.c,1)*.08)));
+  const priorUp=!!(hh&&hl),priorDown=!!(lh&&ll);const trend=priorUp?'UP_HH_HL':priorDown?'DOWN_LH_LL':hh&&ll?'EXPANSION':lh&&hl?'COMPRESSION':'RANGE_MIXED';
+  const breakUp=!!(h1&&prev.c<=h1.price&&last.c>h1.price),breakDown=!!(l1&&prev.c>=l1.price&&last.c<l1.price);const events=[];
+  const avgBody=r484Median(rs.slice(-14,-1).map(r484Body))||atr*.35;const displacement=r484Body(last)>=Math.max(avgBody*1.35,atr*.62)&&rv>=1.1;
+  if(breakUp)events.push({type:priorDown?'CHOCH_UP':'BOS_UP',side:'LONG',level:h1.price,strong:displacement});
+  if(breakDown)events.push({type:priorUp?'CHOCH_DOWN':'BOS_DOWN',side:'SHORT',level:l1.price,strong:displacement});
+  if(breakUp&&priorDown&&displacement)events.push({type:'MSS_UP',side:'LONG',level:h1.price,strong:true});
+  if(breakDown&&priorUp&&displacement)events.push({type:'MSS_DOWN',side:'SHORT',level:l1.price,strong:true});
+  const tl=r484Trendline(rs,p);
+  if(tl.breakUp)events.push({type:'DESCENDING_TREND_BREAK_UP',side:'LONG',level:tl.resistance?.linePrice,strong:!!tl.breakUpStrong,index:tl.breakUpIndex});
+  if(tl.retestUp)events.push({type:'DESCENDING_TREND_RETEST_HOLD',side:'LONG',level:tl.resistance?.linePrice,strong:true,index:tl.breakUpIndex});
+  if(tl.breakDown)events.push({type:'ASCENDING_TREND_BREAK_DOWN',side:'SHORT',level:tl.support?.linePrice,strong:!!tl.breakDownStrong,index:tl.breakDownIndex});
+  if(tl.retestDown)events.push({type:'ASCENDING_TREND_RETEST_HOLD',side:'SHORT',level:tl.support?.linePrice,strong:true,index:tl.breakDownIndex});
+  if(tl.falseBreakUp)events.push({type:'DESCENDING_TREND_FALSE_BREAK',side:'SHORT',level:tl.resistance?.linePrice,strong:false});
+  if(tl.falseBreakDown)events.push({type:'ASCENDING_TREND_FALSE_BREAK',side:'LONG',level:tl.support?.linePrice,strong:false});
+  const win=rs.slice(-Math.min(48,rs.length)),hi=Math.max(...win.map(x=>x.h)),lo=Math.min(...win.map(x=>x.l)),old=rs[Math.max(0,rs.length-7)];
+  return {tf,ok:true,trend,hh,hl,lh,ll,breakUp,breakDown,chochUp:events.some(x=>x.type==='CHOCH_UP'),chochDown:events.some(x=>x.type==='CHOCH_DOWN'),mssUp:events.some(x=>x.type==='MSS_UP'),mssDown:events.some(x=>x.type==='MSS_DOWN'),rangePos:hi>lo?+(last.c-lo)/(hi-lo):.5,ret1:prev.c>0?+(last.c/prev.c-1)*100:0,ret6:old.c>0?+(last.c/old.c-1)*100:0,rvol:+rv.toFixed(2),lastHigh:h1?.price||null,lastLow:l1?.price||null,events,trendline:tl,pivots:p};
+}
+function r483TfState(rs=[],tf='15m'){return r484Structure(rs,tf);}
+function r484ZoneDistance(z,price){return z&&price>0?Math.min(Math.abs(z.low-price),Math.abs(z.high-price))/price*100:99;}
+function r483Fvg(rs=[],price=0){
+  const zones=[];for(let i=Math.max(0,rs.length-90);i<rs.length-2;i++){const a=rs[i],b=rs[i+1],c=rs[i+2];let side=null,low=0,high=0;if(a.h<c.l){side='BULL';low=a.h;high=c.l;}else if(a.l>c.h){side='BEAR';low=c.h;high=a.l;}if(!side)continue;const mid=(low+high)/2,after=rs.slice(i+3);let state='OPEN',touchIndex=null,reaction=false,inverted=false,filled=false;for(let j=0;j<after.length;j++){const x=after[j],idx=i+3+j;if(side==='BULL'){if(x.l<=high&&touchIndex==null)touchIndex=idx;if(x.l<=low)filled=true;if(x.c<low){inverted=true;state='IFVG_BEAR';break;}if(touchIndex!=null&&x.l<=high&&x.c>mid&&x.c>x.o)reaction=true;}else{if(x.h>=low&&touchIndex==null)touchIndex=idx;if(x.h>=high)filled=true;if(x.c>high){inverted=true;state='IFVG_BULL';break;}if(touchIndex!=null&&x.h>=low&&x.c<mid&&x.c<x.o)reaction=true;}}
+    if(!inverted){if(reaction)state='MITIGATED';else if(filled)state='FILLED';else if(touchIndex!=null)state='PARTIAL';}
+    zones.push({side,low,high,mid,origin:i+1,age:rs.length-1-(i+2),state,touchIndex,reaction,inverted,filled,dist:r484ZoneDistance({low,high},price),inZone:price>=low&&price<=high});
+  }
+  const nearest=(fn)=>zones.filter(fn).sort((a,b)=>(a.inZone===b.inZone?0:a.inZone?-1:1)||a.dist-b.dist||a.age-b.age)[0]||null;
+  return {zones,bull:nearest(z=>z.side==='BULL'&&!z.inverted&&z.state!=='FILLED'),bear:nearest(z=>z.side==='BEAR'&&!z.inverted&&z.state!=='FILLED'),ifvgBull:nearest(z=>z.state==='IFVG_BULL'),ifvgBear:nearest(z=>z.state==='IFVG_BEAR'),mitigatedBull:nearest(z=>z.side==='BULL'&&z.state==='MITIGATED'),mitigatedBear:nearest(z=>z.side==='BEAR'&&z.state==='MITIGATED')};
+}
+function r483Ob(rs=[],price=0){
+  if(rs.length<8)return {demand:null,supply:null,zones:[]};const atr=r484Atr(rs)||1,zones=[];
+  for(let i=Math.max(1,rs.length-70);i<rs.length-2;i++){const x=rs[i],future=rs.slice(i+1,Math.min(rs.length,i+7)),maxH=Math.max(...future.map(y=>y.h)),minL=Math.min(...future.map(y=>y.l)),dispUp=maxH-x.h>=atr*1.15,dispDn=x.l-minL>=atr*1.15;let side=null;if(x.c<x.o&&dispUp)side='DEMAND';if(x.c>x.o&&dispDn)side='SUPPLY';if(!side)continue;const low=x.l,high=x.h,mid=(low+high)/2,after=rs.slice(i+1);let state='FRESH',touchIndex=null,reaction=false,invalidated=false,breaker=false;for(let j=0;j<after.length;j++){const y=after[j],idx=i+1+j;if(side==='DEMAND'){if(y.l<=high&&idx>i+1&&touchIndex==null)touchIndex=idx;if(y.c<low){invalidated=true;state='INVALIDATED';}if(touchIndex!=null&&y.l<=high&&y.c>mid&&y.c>y.o)reaction=true;if(invalidated&&y.h>=low&&y.c<low)breaker=true;}else{if(y.h>=low&&idx>i+1&&touchIndex==null)touchIndex=idx;if(y.c>high){invalidated=true;state='INVALIDATED';}if(touchIndex!=null&&y.h>=low&&y.c<mid&&y.c<y.o)reaction=true;if(invalidated&&y.l<=high&&y.c>high)breaker=true;}}
+    if(breaker)state='BREAKER';else if(!invalidated&&reaction)state='MITIGATED';else if(!invalidated&&touchIndex!=null)state='TOUCHED';
+    zones.push({side,low,high,mid,origin:i,age:rs.length-1-i,state,touchIndex,reaction,invalidated,breaker,dist:r484ZoneDistance({low,high},price),inZone:price>=low&&price<=high});
+  }
+  const nearest=side=>zones.filter(z=>z.side===side&&!z.invalidated).sort((a,b)=>(a.inZone===b.inZone?0:a.inZone?-1:1)||a.dist-b.dist||a.age-b.age)[0]||null;
+  return {demand:nearest('DEMAND'),supply:nearest('SUPPLY'),mitigatedDemand:zones.filter(z=>z.side==='DEMAND'&&z.state==='MITIGATED').at(-1)||null,mitigatedSupply:zones.filter(z=>z.side==='SUPPLY'&&z.state==='MITIGATED').at(-1)||null,breakerDemand:zones.filter(z=>z.side==='DEMAND'&&z.state==='BREAKER').at(-1)||null,breakerSupply:zones.filter(z=>z.side==='SUPPLY'&&z.state==='BREAKER').at(-1)||null,zones};
+}
+function r484ClusterLevels(points=[],tolPct=.0015){
+  const clusters=[];for(const p of points){let c=clusters.find(x=>Math.abs(x.price-p.price)/Math.max(x.price,p.price)<=tolPct);if(!c){c={price:p.price,points:[],touches:0};clusters.push(c);}c.points.push(p);c.touches=c.points.length;c.price=c.points.reduce((a,x)=>a+x.price,0)/c.points.length;}return clusters.filter(x=>x.touches>=2).sort((a,b)=>b.touches-a.touches||b.points.at(-1).i-a.points.at(-1).i);
+}
+function r484EqualLevels(rs=[],price=0){const p=r483Pivots(rs,2),atr=r484Atr(rs),tolPct=Math.max(.0008,Math.min(.003,atr/Math.max(price||rs.at(-1)?.c||1,1)*.18));const eqHigh=r484ClusterLevels(p.H,tolPct).map(x=>({...x,type:'EQH',dist:price?Math.abs(x.price-price)/price*100:99})),eqLow=r484ClusterLevels(p.L,tolPct).map(x=>({...x,type:'EQL',dist:price?Math.abs(x.price-price)/price*100:99}));return {eqHigh:eqHigh[0]||null,eqLow:eqLow[0]||null,highs:eqHigh,lows:eqLow,tolerancePct:tolPct*100};}
+function r483Liquidity(rs=[],price=0){
+  const p=r483Pivots(rs,2),eq=r484EqualLevels(rs,price),levelsAbove=[...p.H.map(x=>({price:x.price,type:'SWING_HIGH',strength:x.strength})),...eq.highs.map(x=>({price:x.price,type:'EQH',strength:x.touches+1}))].filter(x=>x.price>price).sort((a,b)=>a.price-b.price),levelsBelow=[...p.L.map(x=>({price:x.price,type:'SWING_LOW',strength:x.strength})),...eq.lows.map(x=>({price:x.price,type:'EQL',strength:x.touches+1}))].filter(x=>x.price<price).sort((a,b)=>b.price-a.price);const events=[];const recent=rs.slice(-8);const eps=Math.max(.00025,(r484Atr(rs)/Math.max(price||1,1))*.05);
+  for(const lev of [...eq.highs,...p.H.slice(-4)]){for(let j=0;j<recent.length;j++){const x=recent[j];if(x.h>lev.price*(1+eps)&&x.c<lev.price){events.push({type:'BSL_SWEEP_RECLAIM',side:'SHORT',level:lev.price,index:rs.length-recent.length+j,strong:x.c<x.o});break;}}}
+  for(const lev of [...eq.lows,...p.L.slice(-4)]){for(let j=0;j<recent.length;j++){const x=recent[j];if(x.l<lev.price*(1-eps)&&x.c>lev.price){events.push({type:'SSL_SWEEP_RECLAIM',side:'LONG',level:lev.price,index:rs.length-recent.length+j,strong:x.c>x.o});break;}}}
+  const above=levelsAbove[0]||null,below=levelsBelow[0]||null;return {above:above?.price||null,below:below?.price||null,aboveType:above?.type||null,belowType:below?.type||null,aboveDist:above&&price?((above.price-price)/price*100):null,belowDist:below&&price?((price-below.price)/price*100):null,equalHigh:eq.eqHigh,equalLow:eq.eqLow,events,sweepBull:events.filter(x=>x.side==='LONG').at(-1)||null,sweepBear:events.filter(x=>x.side==='SHORT').at(-1)||null};
+}
+function r484PathEfficiency(rs=[],a=0,b=0){if(b<=a)return 0;let path=0;for(let i=a+1;i<=b;i++)path+=Math.abs(rs[i].c-rs[i-1].c);const net=Math.abs(rs[b].c-rs[a].c);return path>0?net/path:0;}
+function r483Fib(rs=[],price=0){
+  const p=r483Pivots(rs,2),pts=[...p.H.map(x=>({...x,t:'H'})),...p.L.map(x=>({...x,t:'L'}))].sort((a,b)=>a.i-b.i),atr=r484Atr(rs)||1,candidates=[];
+  for(let ai=0;ai<pts.length-1;ai++)for(let bi=ai+1;bi<pts.length;bi++){const a=pts[ai],b=pts[bi];if(a.t===b.t||b.i-a.i<3||b.i-a.i>80)continue;const up=a.t==='L'&&b.t==='H',down=a.t==='H'&&b.t==='L';if(!up&&!down)continue;const amp=Math.abs(b.price-a.price),eff=r484PathEfficiency(rs,a.i,b.i),bars=b.i-a.i,rv=Math.max(...rs.slice(a.i,Math.min(rs.length,b.i+1)).map((_,k)=>r484Rvol(rs,a.i+k))),post=rs.slice(b.i+1),bos=up?post.some(x=>x.c>b.price):post.some(x=>x.c<b.price);const score=amp/atr*2.2+eff*5+Math.min(2.5,rv*.7)+(bos?2:0)+Math.min(2,bars/16)+b.i/Math.max(1,rs.length)*1.2;candidates.push({a,b,side:up?'LONG':'SHORT',score,amp,eff,bars,bos});}
+  if(!candidates.length)return {ok:false,candidates:[]};const trend=r484Structure(rs,'FIB').trend;let pool=candidates;if(trend==='UP_HH_HL')pool=candidates.filter(x=>x.side==='LONG').length?candidates.filter(x=>x.side==='LONG'):candidates;if(trend==='DOWN_LH_LL')pool=candidates.filter(x=>x.side==='SHORT').length?candidates.filter(x=>x.side==='SHORT'):candidates;const best=pool.sort((a,b)=>b.score-a.score)[0],lo=Math.min(best.a.price,best.b.price),hi=Math.max(best.a.price,best.b.price),rng=hi-lo,up=best.side==='LONG';const zLow=up?hi-rng*.786:lo+rng*.618,zHigh=up?hi-rng*.618:lo+rng*.786;return {ok:true,side:best.side,low:zLow,high:zHigh,mid:(zLow+zHigh)/2,inZone:price>=zLow&&price<=zHigh,depth:up?(hi-price)/rng:(price-lo)/rng,legLow:lo,legHigh:hi,startIndex:best.a.i,endIndex:best.b.i,score:+best.score.toFixed(2),efficiency:+best.eff.toFixed(3),bars:best.bars,bos:best.bos,extension1272:up?hi+rng*.272:lo-rng*.272,extension1618:up?hi+rng*.618:lo-rng*.618,candidates:candidates.sort((a,b)=>b.score-a.score).slice(0,5).map(x=>({side:x.side,start:x.a.i,end:x.b.i,score:+x.score.toFixed(2)}))};
+}
+function r484NormalizeTrade(t={}){const side=String(t.side||t.S||(!t.m?'BUY':'SELL')).toUpperCase();return {side:side.includes('BUY')?'BUY':'SELL',qty:Number(t.qty??t.q??t.volume??0),price:Number(t.price??t.p??0),ts:Number(t.ts??t.T??Date.now())};}
+function r484OrderFlow(data={},microRows=[]){
+  const raw=Array.isArray(data.aggTrades)?data.aggTrades:Array.isArray(data.tickData?.recentTrades)?data.tickData.recentTrades:Array.isArray(data.tickData?.trades)?data.tickData.trades:[];const trades=raw.slice(-160).map(r484NormalizeTrade).filter(x=>x.qty>0);let buy=0,sell=0;for(const t of trades){if(t.side==='BUY')buy+=t.qty;else sell+=t.qty;}const total=buy+sell,aggDelta=total>0?(buy-sell)/total*100:NaN;const cvd=Number(data.cvdDelta),book=Number(data.orderBookImbalance),taker=Number(data.takerRatio),ice=String(data.iceberg?.signal||data.icebergSignal||''),r125=data.r125OrderFlow||{};const last=microRows.at(-1),first=microRows[Math.max(0,microRows.length-8)],priceMove=first?.c>0?(last.c/first.c-1)*100:0,rangePct=first?.c>0?(Math.max(...microRows.slice(-8).map(x=>x.h))-Math.min(...microRows.slice(-8).map(x=>x.l)))/first.c*100:99;const sellPressure=(Number.isFinite(aggDelta)&&aggDelta<-18)||(Number.isFinite(taker)&&taker<.84)||(Number.isFinite(cvd)&&cvd<-18),buyPressure=(Number.isFinite(aggDelta)&&aggDelta>18)||(Number.isFinite(taker)&&taker>1.18)||(Number.isFinite(cvd)&&cvd>18);const sellAbsorption=sellPressure&&priceMove>=-.12&&rangePct<Math.max(.45,Math.abs(priceMove)*2.5+.2);const buyAbsorption=buyPressure&&priceMove<=.12&&rangePct<Math.max(.45,Math.abs(priceMove)*2.5+.2);const icebergBull=/HIDDEN_BUY|STRONG_HIDDEN_BUY|BUY_ICEBERG/i.test(ice),icebergBear=/HIDDEN_SELL|STRONG_HIDDEN_SELL|SELL_ICEBERG/i.test(ice);let state='BALANCED_FLOW';if(sellAbsorption||icebergBull)state='SELL_ABSORPTION_BULL';else if(buyAbsorption||icebergBear)state='BUY_ABSORPTION_BEAR';else if((buyPressure||book>8)&&!(sellPressure||book<-8))state='BUYERS_CONTROL';else if((sellPressure||book<-8)&&!(buyPressure||book>8))state='SELLERS_CONTROL';else if((Number.isFinite(cvd)&&Number.isFinite(book)&&cvd*book<0)||(Number.isFinite(aggDelta)&&Number.isFinite(book)&&aggDelta*book<0))state='FLOW_DIVERGENCE';const confidence=Math.min(100,Math.round(35+Math.abs(Number.isFinite(aggDelta)?aggDelta:cvd||0)*.55+Math.abs(book||0)*.5+(ice?12:0)+(sellAbsorption||buyAbsorption?18:0)));return {state,confidence,buy:+buy.toFixed(3),sell:+sell.toFixed(3),aggDelta:Number.isFinite(aggDelta)?+aggDelta.toFixed(1):null,cvdDelta:Number.isFinite(cvd)?+cvd.toFixed(1):null,book:Number.isFinite(book)?+book.toFixed(1):null,takerRatio:Number.isFinite(taker)?+taker.toFixed(3):null,priceMove:+priceMove.toFixed(3),rangePct:+rangePct.toFixed(3),sellAbsorption,buyAbsorption,iceberg:ice||null,icebergBull,icebergBear,r125Summary:String(data.orderFlowSummary||r125.summary||r125.label||'')};
+}
+function r483OiFunding(data={},p15=0,flow={}){const oi1=Number(data.oiChange1h??data.oiDegisim?.['1h']??0),oi4=Number(data.oiChange4h??0),fund=Number(data.fundingRate),delta=Number(flow.aggDelta??flow.cvdDelta??data.cvdDelta),taker=Number(flow.takerRatio??data.takerRatio),book=Number(data.orderBookImbalance);let state='NEUTRAL';if(p15>.15&&oi1>.35)state='LONG_BUILD';else if(p15<-.15&&oi1>.35)state='SHORT_BUILD';else if(p15>.15&&oi1<-.25)state='SHORT_SQUEEZE';else if(p15<-.15&&oi1<-.25)state='LONG_LIQUIDATION';else if(Math.abs(p15)<.15&&oi1<-.35)state='POSITION_UNWIND';const crowdedLong=Number.isFinite(fund)&&fund>=.08,crowdedShort=Number.isFinite(fund)&&fund<=-.08;const flowAgainstLong=(Number.isFinite(delta)&&delta<-10)||(Number.isFinite(book)&&book<-8)||(Number.isFinite(taker)&&taker<.9);const flowAgainstShort=(Number.isFinite(delta)&&delta>10)||(Number.isFinite(book)&&book>8)||(Number.isFinite(taker)&&taker>1.1);if(state==='LONG_BUILD'&&flowAgainstLong)state='TRAP_BUILDUP';if(state==='SHORT_BUILD'&&flowAgainstShort)state='TRAP_BUILDUP_SHORT';let crowd='BALANCED';if(crowdedLong)crowd='LONG_CROWDED';if(crowdedShort)crowd='SHORT_CROWDED';let narrative=state;if(state==='SHORT_SQUEEZE'&&crowdedShort)narrative='SHORT_CROWD_COVERING';if(state==='LONG_LIQUIDATION'&&crowdedLong)narrative='LONG_CROWD_LIQUIDATION';return {state,narrative,crowd,oi1:+oi1.toFixed(2),oi4:+oi4.toFixed(2),funding:Number.isFinite(fund)?+fund.toFixed(4):null,crowdedLong,crowdedShort,delta:Number.isFinite(delta)?+delta.toFixed(1):null,taker:Number.isFinite(taker)?+taker.toFixed(3):null,book:Number.isFinite(book)?+book.toFixed(1):null,flowAgainstLong,flowAgainstShort};}
+function r484Near(z,price,limit){return !!(z&&(z.inZone||Number(z.dist)<=limit));}
+function r483ChartStory(symbol,data={}){
+  try{
+    const c=data.candles||{},times=c._times||{},price=Number(data.fiyat||0),tf={},rows={};for(const k of ['1m','5m','15m','1h','4h','1d']){rows[k]=r483Rows(c[k],times[k]);tf[k]=r484Structure(rows[k],k);}rows['30m']=r483Agg(rows['15m'],2);tf['30m']=r484Structure(rows['30m'],'30m');
+    const fvg={},ob={},fib={},liq={};for(const k of ['1m','5m','15m','30m','1h','4h','1d']){fvg[k]=r483Fvg(rows[k],price);ob[k]=r483Ob(rows[k],price);fib[k]=r483Fib(rows[k],price);liq[k]=r483Liquidity(rows[k],price);}
+    const flow=r484OrderFlow(data,rows['1m'].length?rows['1m']:rows['5m']),oi=r483OiFunding(data,tf['15m']?.ret1||0,flow),bull=[],bear=[],risks=[],evidence=[];let long=0,short=0;
+    const add=(side,pts,label,meta={})=>{if(side==='LONG'){long+=pts;bull.push(label);}else{short+=pts;bear.push(label);}evidence.push({side,pts:+pts.toFixed(2),label,...meta});};
+    for(const [k,w] of Object.entries(R484_TF_WEIGHTS)){const x=tf[k]||{};if(x.trend==='UP_HH_HL')add('LONG',w,`${k} HH/HL`,{tf:k,kind:'STRUCTURE'});if(x.trend==='DOWN_LH_LL')add('SHORT',w,`${k} LH/LL`,{tf:k,kind:'STRUCTURE'});for(const ev of x.events||[]){const m=ev.strong?1.25:1;const pts=(ev.type.startsWith('MSS')?w*1.25:ev.type.startsWith('CHOCH')?w:ev.type.includes('TREND_RETEST')?w*.98:ev.type.includes('TREND_BREAK')?w*.9:ev.type.includes('FALSE_BREAK')?w*.62:w*.72)*m;add(ev.side,pts,`${k} ${ev.type}`,{tf:k,kind:ev.type,level:ev.level});}}
+    for(const k of ['5m','15m','1h','4h']){const w=R484_TF_WEIGHTS[k]||1,fg=fvg[k],oo=ob[k],ll=liq[k],ff=fib[k],near=Math.max(.6,Math.min(2.2,Number(data.atrYuzde||3)*.42));if(r484Near(fg.bull,price,near))add('LONG',w*.62,`${k} bull FVG ${fg.bull.state}`,{tf:k,kind:'FVG',zone:fg.bull});if(r484Near(fg.bear,price,near))add('SHORT',w*.62,`${k} bear FVG ${fg.bear.state}`,{tf:k,kind:'FVG',zone:fg.bear});if(r484Near(fg.ifvgBull,price,near*1.5))add('LONG',w*.82,`${k} bullish IFVG`,{tf:k,kind:'IFVG',zone:fg.ifvgBull});if(r484Near(fg.ifvgBear,price,near*1.5))add('SHORT',w*.82,`${k} bearish IFVG`,{tf:k,kind:'IFVG',zone:fg.ifvgBear});if(fg.mitigatedBull&&r484Near(fg.mitigatedBull,price,near*1.5))add('LONG',w*.45,`${k} FVG mitigation↑`,{tf:k,kind:'FVG_MITIGATION'});if(fg.mitigatedBear&&r484Near(fg.mitigatedBear,price,near*1.5))add('SHORT',w*.45,`${k} FVG mitigation↓`,{tf:k,kind:'FVG_MITIGATION'});if(r484Near(oo.demand,price,near*1.2))add('LONG',w*.58,`${k} demand OB ${oo.demand.state}`,{tf:k,kind:'ORDER_BLOCK',zone:oo.demand});if(r484Near(oo.supply,price,near*1.2))add('SHORT',w*.58,`${k} supply OB ${oo.supply.state}`,{tf:k,kind:'ORDER_BLOCK',zone:oo.supply});if(oo.mitigatedDemand&&r484Near(oo.mitigatedDemand,price,near*1.6))add('LONG',w*.42,`${k} OB mitigation↑`,{tf:k,kind:'OB_MITIGATION'});if(oo.mitigatedSupply&&r484Near(oo.mitigatedSupply,price,near*1.6))add('SHORT',w*.42,`${k} OB mitigation↓`,{tf:k,kind:'OB_MITIGATION'});if(ff?.ok&&ff.inZone)add(ff.side,w*.52,`${k} ana-bacak OTE ${ff.side}`,{tf:k,kind:'FIB_OTE',fibScore:ff.score});if(ll.sweepBull)add('LONG',w*.78,`${k} SSL sweep+reclaim`,{tf:k,kind:'SWEEP_RECLAIM',level:ll.sweepBull.level});if(ll.sweepBear)add('SHORT',w*.78,`${k} BSL sweep+reclaim`,{tf:k,kind:'SWEEP_RECLAIM',level:ll.sweepBear.level});}
+    if(['BUYERS_CONTROL','SELL_ABSORPTION_BULL'].includes(flow.state))add('LONG',2.3,`order-flow ${flow.state}`,{kind:'ORDER_FLOW'});if(['SELLERS_CONTROL','BUY_ABSORPTION_BEAR'].includes(flow.state))add('SHORT',2.3,`order-flow ${flow.state}`,{kind:'ORDER_FLOW'});if(flow.state==='FLOW_DIVERGENCE')risks.push('order-flow kaynakları ayrışıyor');
+    if(['LONG_BUILD','SHORT_SQUEEZE'].includes(oi.state))add('LONG',2.1,`OI ${oi.state}`,{kind:'OI'});if(['SHORT_BUILD','LONG_LIQUIDATION'].includes(oi.state))add('SHORT',2.1,`OI ${oi.state}`,{kind:'OI'});if(String(oi.state).startsWith('TRAP_BUILDUP'))risks.push(`OI/fiyat/akış tuzağı: ${oi.state}`);
+    const t15=tf['15m']||{},t1=tf['1h']||{},t4=tf['4h']||{},atrPct=Math.max(.3,Number(data.atrYuzde||3)),upper=[t15.rangePos>.82,t1.rangePos>.80,t4.rangePos>.78].filter(Boolean).length,nearHtfSupply=['15m','1h','4h'].some(k=>r484Near(ob[k]?.supply,price,Math.max(1.0,atrPct*.48))||r484Near(fvg[k]?.bear,price,Math.max(1.0,atrPct*.48))||r484Near(fvg[k]?.ifvgBear,price,Math.max(1.0,atrPct*.55))),nearUpperLiquidity=['15m','1h','4h'].map(k=>liq[k]?.aboveDist).filter(Number.isFinite).some(d=>d<=Math.max(.65,Math.min(2.4,atrPct*.34))),impulseChase=t15.ret1>=Math.max(1.2,atrPct*.72)&&t15.rvol>=1.45,trendEvent=(k,pat)=>Array.isArray(tf[k]?.events)&&tf[k].events.some(e=>pat.test(String(e.type||''))),trendBreakBull=['1m','5m','15m','1h'].some(k=>trendEvent(k,/DESCENDING_TREND_(BREAK_UP|RETEST_HOLD)/)),trendBreakBear=['1m','5m','15m','1h'].some(k=>trendEvent(k,/ASCENDING_TREND_(BREAK_DOWN|RETEST_HOLD)/)),microBull=(tf['1m']?.mssUp||tf['5m']?.mssUp||tf['5m']?.chochUp||tf['5m']?.trend==='UP_HH_HL'||liq['1m']?.sweepBull||liq['5m']?.sweepBull||trendEvent('1m',/DESCENDING_TREND_(BREAK_UP|RETEST_HOLD)/)||trendEvent('5m',/DESCENDING_TREND_(BREAK_UP|RETEST_HOLD)/)),microBear=(tf['1m']?.mssDown||tf['5m']?.mssDown||tf['5m']?.chochDown||tf['5m']?.trend==='DOWN_LH_LL'||liq['1m']?.sweepBear||liq['5m']?.sweepBear||trendEvent('1m',/ASCENDING_TREND_(BREAK_DOWN|RETEST_HOLD)/)||trendEvent('5m',/ASCENDING_TREND_(BREAK_DOWN|RETEST_HOLD)/)),oiConflict=['TRAP_BUILDUP','POSITION_UNWIND','LONG_LIQUIDATION'].includes(oi.state),flowConflict=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR'].includes(flow.state);
+    let topRisk=upper*1.35+(nearHtfSupply?2.6:0)+(nearUpperLiquidity?1.5:0)+(impulseChase?1.5:0)+(oi.crowdedLong?1.1:0)+(oiConflict?1.8:0)+(microBear?1.8:0)+(trendBreakBear?1.65:0)+(flowConflict?1.5:0);if(nearHtfSupply)risks.push('15m/1h/4h supply OB veya bearish FVG/IFVG yakın');if(nearUpperLiquidity)risks.push('üst likiditeye alan dar');if(impulseChase)risks.push('15m impuls sonrası market-order kovalamaca');if(microBear)risks.push('1m/5m mikro yapı aşağı dönüş gösteriyor');if(trendBreakBear)risks.push('yükselen trend desteği kırıldı/retest aşağı tuttu');if(flowConflict)risks.push(`order-flow ${flow.state}`);if(oiConflict)risks.push(`OI ${oi.state}`);
+    const structuralTopEvidence=[upper>=2,nearHtfSupply,nearUpperLiquidity,impulseChase].filter(Boolean).length,trapEvidence=[microBear,oiConflict,flowConflict,oi.crowdedLong].filter(Boolean).length,bias=long>short+2.2?'LONG':short>long+2.2?'SHORT':'MIXED';
+    const candidates=[fvg['5m']?.bull?.mid,ob['5m']?.demand?.high,fvg['15m']?.bull?.mid,ob['15m']?.demand?.high,fib['15m']?.side==='LONG'?fib['15m'].mid:null,liq['15m']?.below,liq['1h']?.below].map(Number).filter(x=>x>0&&x<price).sort((a,b)=>b-a),retestEntry=candidates[0]||null;let timing=bias==='LONG'?'JOIN':bias==='SHORT'?'AVOID_LONG':'MIXED',entryMode='MARKET';const retestNeeded=R483_DEFER_TOP_TRAP&&bias==='LONG'&&retestEntry&&structuralTopEvidence>=2&&trapEvidence>=1;if(retestNeeded){timing='WAIT_RETEST';entryMode='RETEST';}if(retestNeeded&&structuralTopEvidence>=3&&trapEvidence>=2){timing='TRAP';entryMode='CONFIRM_RECLAIM';}if(bias==='MIXED'&&((structuralTopEvidence>=2&&trapEvidence>=2)||(trapEvidence>=3&&topRisk>=5))){timing='TRAP';entryMode='CONFIRM_RECLAIM';}if(bias==='LONG'&&!retestNeeded&&!microBull&&upper>=1){timing='WAIT_CONFIRM';entryMode='MICRO_CONFIRM';}
+    if(bias==='LONG'&&trendBreakBull&&microBull&&!trendBreakBear){timing=tf['15m']?.trendline?.retestUp?'JOIN':'WAIT_RETEST';entryMode=tf['15m']?.trendline?.retestUp?'TREND_RETEST_HOLD':'TREND_BREAK_RETEST';}
+    if(bias==='LONG'&&trendBreakBear){timing=(microBear||upper>=2)?'TRAP':'WAIT_CONFIRM';entryMode='STRUCTURE_RECLAIM';}
+    const quality=Math.max(0,Math.min(100,Math.round(50+(long-short)*3.4-topRisk*2.15+(microBull?5:0)+(flow.state==='SELL_ABSORPTION_BULL'?4:0)))),qualityAdj=Math.max(-9,Math.min(8,Math.round((quality-55)/7.5))),targetLiquidity=liq['15m']?.above||liq['1h']?.above||liq['4h']?.above||fib['15m']?.extension1272||null,invalidation=ob['15m']?.demand?.low||fvg['15m']?.bull?.low||liq['15m']?.below||null,support=liq['15m']?.below||ob['15m']?.demand?.high||fvg['15m']?.bull?.low||null,resistance=liq['15m']?.above||ob['15m']?.supply?.low||fvg['15m']?.bear?.high||null;let mmScenario='UNRESOLVED';if(trendBreakBull&&microBull)mmScenario='DESCENDING_TREND_BROKEN_RETEST_OR_MARKUP';else if(trendBreakBear)mmScenario='ASCENDING_TREND_BROKEN_DISTRIBUTION_RISK';else if(timing==='TRAP')mmScenario='UPPER_LIQUIDITY_GRAB_OR_DISTRIBUTION';else if(oi.state==='SHORT_SQUEEZE'&&targetLiquidity)mmScenario='SHORT_COVER_TO_UPPER_LIQUIDITY';else if(oi.state==='LONG_BUILD'&&bias==='LONG'&&['BUYERS_CONTROL','SELL_ABSORPTION_BULL'].includes(flow.state))mmScenario='MARKUP_WITH_NEW_LONGS';else if(liq['15m']?.sweepBull||liq['5m']?.sweepBull)mmScenario='SELL_SIDE_LIQUIDITY_TAKEN_REPRICING_UP';else if((fib['15m']?.inZone&&fib['15m'].side==='LONG')||ob['15m']?.demand?.inZone||fvg['15m']?.bull?.inZone)mmScenario='DISCOUNT_REPRICING_FROM_DEMAND';else if(bias==='LONG'&&targetLiquidity)mmScenario='MARKUP_TO_BUY_SIDE_LIQUIDITY';
+    const storyParts=[`15m ${t15.trend||'?'}`,`5m ${tf['5m']?.trend||'?'}`,`1h ${t1.trend||'?'}`,`4h ${t4.trend||'?'}`,`1d ${tf['1d']?.trend||'?'}`,`mikro ${microBull?'LONG teyit':microBear?'ters':'nötr'}`,`akış ${flow.state}`,`OI ${oi.state}`,`MM ${mmScenario}`,`trend ${tf['15m']?.trendline?.state||'NO_BREAK'}`];if(targetLiquidity)storyParts.push(`hedefLik ${Number(targetLiquidity)}`);if(retestNeeded)storyParts.push(`market kovalanmaz; retest ${Number(retestEntry)}`);
+    return {version:'R485',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,targetLiquidity,invalidation,support,resistance,flowState:flow.state,orderFlow:flow,mmScenario,structuralTopEvidence,trapEvidence,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},source:{lane:data.sourceLane,label:data.sourceLabel}};
+  }catch(e){return {version:'R485',bias:'MIXED',timing:'MIXED',entryMode:'NONE',quality:50,qualityAdj:0,topRisk:0,summary:`hikâye hesaplanamadı: ${String(e?.message||e).slice(0,100)}`,error:true};}
 }
 
 function r447MekanikKarar(symbol, data = {}) {
@@ -4143,6 +4354,7 @@ function r447MekanikKarar(symbol, data = {}) {
     // 60 saat lazım); canlıda bot 4h'ı görür ama backtest doğrulaması yapılamaz, o yüzden 1h ile sınırlı.
     const r467Rsi1h = Number(data.rsi1h);
     if (Number.isFinite(r467Rsi1h) && r467Rsi1h >= 90) return null;   // ekstrem aşırı alım → giriş yok
+    const r483Story = R483_CHART_STORY_ENABLED ? r483ChartStory(symbol, data) : null;
 
     // ── İMZA TESPİTİ ──
     let tip = null, kanit = '', taban = 70, runner = false;
@@ -4304,16 +4516,30 @@ function r447MekanikKarar(symbol, data = {}) {
     if (Number.isFinite(k24) && k24 <= 40) guven += 3;              // dipten giriş primi
     if (atr > 6) guven -= 4;                                        // hiper-volatil: boyutu küçült
     if (Number(data.gainerSira) === 1) guven -= 2;                  // en manipüle sınıf
+    if (r483Story && Number.isFinite(Number(r483Story.qualityAdj))) guven += Number(r483Story.qualityAdj);
     guven = Math.max(64, Math.min(90, Math.round(guven)));
 
     const r = (v) => { const n = Number(v); return n >= 1000 ? +n.toFixed(2) : n >= 1 ? +n.toFixed(4) : +n.toFixed(8); };
-    // R448: mekanik kararda güven tavanı 84 — AI muhakemesi olmadan 25x+ boyut açılmaz
-    // (R431 haritası: 84 → 25x zaten üst sınır; asıl koruma dar-SL sinyallerinin elenmesi).
     guven = Math.min(guven, 84);
+    const storyText = r483Story?.summary ? ` · HİKÂYE: ${r483Story.summary}` : '';
+    if (R483_STORY_ACTIVE && r483Story && ['WAIT_RETEST','TRAP'].includes(r483Story.timing)) {
+      const pe = Number(r483Story.retestEntry || 0);
+      const plannedEntry = pe > 0 && pe < c ? pe : c;
+      const plannedRisk = Math.max(c-sl, c*0.01);
+      const plannedSl = Math.min(sl, plannedEntry - plannedRisk*0.75);
+      const plannedTp = plannedEntry + Math.max(plannedRisk*2.2, (tp-c));
+      return {
+        ok:true, mekanik:true, side:'WAIT', plannedSide:'LONG', defer:true, motor:'R484_STORY_RETEST',
+        entry:r(plannedEntry), tp:r(plannedTp), sl:r(plannedSl), confidence:Math.max(64,guven-4),
+        karKosma:'NORMAL', story:r483Story,
+        reasoning:`R447 MEKANİK/${tip}: imza var fakat market-order yerine retest bekleniyor · ${kanit}${storyText} · AI çağrısı yapılmadı`,
+        plan:`R483 HİKÂYE: 15m setup korunuyor; 1m/5m reclaim ve ${r(plannedEntry)} bölgesine retest gelirse yeniden değerlendir. Fırsat çöpe atılmaz, tepe fiyatından kovalanmaz.`
+      };
+    }
     return {
       ok: true, mekanik: true, side: 'LONG', entry: r(c), tp: r(tp), sl: r(sl),
-      confidence: guven, karKosma: runner ? 'RUNNER' : 'NORMAL',
-      reasoning: `R447 MEKANİK/${tip}: ${kanit} · delta ${dltGecerli ? (dlt>0?'+':'')+dlt.toFixed(1) : 'yedek:'+yedek} · ATR%${atr.toFixed(1)} · SL%${slPct.toFixed(2)} · R/R ${rr.toFixed(2)}${Number.isFinite(k24)?' · makro24h %'+k24.toFixed(0):''}${Number.isFinite(r467Rsi1h)?' · 1hRSI '+r467Rsi1h.toFixed(0):''} — backtest imzası (WR %72-86), AI çağrısı yapılmadı`,
+      confidence: guven, karKosma: runner ? 'RUNNER' : 'NORMAL', story:r483Story,
+      reasoning: `R447 MEKANİK/${tip}: ${kanit} · delta ${dltGecerli ? (dlt>0?'+':'')+dlt.toFixed(1) : 'yedek:'+yedek} · ATR%${atr.toFixed(1)} · SL%${slPct.toFixed(2)} · R/R ${rr.toFixed(2)}${Number.isFinite(k24)?' · makro24h %'+k24.toFixed(0):''}${Number.isFinite(r467Rsi1h)?' · 1hRSI '+r467Rsi1h.toFixed(0):''}${storyText} — ham-kline imzası, AI çağrısı yapılmadı`,
       plan: runner ? 'RUNNER: yapı-bazlı trailing, kâr kilitleri aktif, TP trend sürdükçe ileri taşınır' : 'NORMAL vur-kaç: TP yakın likidite, kâr kilidi aktif'
     };
   } catch(_e) { return null; }
@@ -7168,6 +7394,7 @@ function rememberOpenPositionForReentry(p, state={}) {
     leverage:Number(p.leverage || state.leverage || old.leverage || 5), // R379: panel fallback kaldırıldı
     openedAt:Number(state.openedAt || old.openedAt || Date.now()),
     currentSL:safeNum(state.currentSL || state.slPrice || old.currentSL || old.slPrice, 10),
+    initialSL:safeNum(state.initialSL || state.slPrice || old.initialSL || old.slPrice, 10),
     targetTP:safeNum(state.targetTP || state.tpPrice || old.targetTP || old.tpPrice, 10),
     sltpVerified:!!(state.sltpVerified || old.sltpVerified),
     usdtAmount:safeNum(state.usdtAmount || autoConfig?.usdtAmount || old.usdtAmount, 2),
@@ -7177,6 +7404,8 @@ function rememberOpenPositionForReentry(p, state={}) {
     tpPct:safeNum(state.tpPct || old.tpPct, 4),
     aiRunner:!!(state.aiRunner || old.aiRunner),
     brainMode: state.brainMode || old.brainMode || null,
+    ledgerTradeId: state.ledgerTradeId || old.ledgerTradeId || null,
+    entryOrderId: state.entryOrderId || old.entryOrderId || null,
     entryReason:state.openReason || old.entryReason || null, lastSeen:Date.now()
   };
 }
@@ -7199,16 +7428,18 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
   const sym = normalizeSymbol(symbol);
   const openedAt = Number(state?.openedAt||Date.now());
   const id = makeTradeId(sym, openedAt);
+  try { state.ledgerTradeId = id; state.initialSL = Number(state.initialSL || state.currentSL || state.slPrice || 0) || null; } catch(_) {}
   const row = {
-    id, symbol:sym.replace('USDT',''), side:normalizeSide(side), status:'OPEN',
+    id, build:LAZARUS_BUILD, symbol:sym.replace('USDT',''), side:normalizeSide(side), status:'OPEN',
     openedAt, openedAtTR:trTime(openedAt), entryPrice:safeNum(entryPrice,10),
     leverage:Number(state?.leverage||autoConfig?.leverage||0)||null,
-    marginUSDT:safeNum(autoConfig?.usdtAmount,2),
+    marginUSDT:safeNum(state?.usdtAmount || state?.marginUSDT || autoConfig?.usdtAmount,2),
     entryReason:state?.openReason||`${normalizeSide(side)} açıldı`,
     aiSnapshot: state?.aiSnapshot || null,  // R308X: AI'nın açılış anındaki kararı + piyasa durumu (karne detayı)
     score:state?.score||null, tier:state?.tier||null,
     exitReason:null,resultNote:null,pnlUSDT:null,roiPct:null,
     closedAt:null,closedAtTR:null,cooldownMin:null,
+    metricSource:'LIVE_ORDER_STATE', ledgerTradeId:id, entryOrderId:state?.entryOrderId||null,
   };
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
   saveTradeLedger();
@@ -7221,9 +7452,12 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
 let r345SonIslemler = []; // R345: oturum-içi ders hafızası (son 12 kapanış, AI'a son 8'i gider)
 function recordTradeClose(symbol, state={}, cls={}) {
   const sym = normalizeSymbol(symbol);
-  const openedAt = Number(state?.openedAt||0);
-  const id = openedAt ? makeTradeId(sym,openedAt) : null;
-  let row = tradeLedger.find(x=>(id&&x.id===id)||(x.symbol===sym.replace('USDT','')&&x.status==='OPEN'));
+  const openedAt = Number(state?.openedAt||state?.openTs||0);
+  const id = state?.ledgerTradeId || (openedAt ? makeTradeId(sym,openedAt) : null);
+  const openRows = tradeLedger.filter(x=>x && x.symbol===sym.replace('USDT','') && x.status==='OPEN');
+  let row = id ? tradeLedger.find(x=>x.id===id || x.ledgerTradeId===id) : null;
+  if (!row && openedAt && openRows.length) row = openRows.sort((a,b)=>Math.abs(Number(a.openedAt||0)-openedAt)-Math.abs(Number(b.openedAt||0)-openedAt))[0];
+  if (!row && openRows.length) row = openRows.sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0))[0];
   if (!row) row = recordTradeOpen(sym, state?.side||'UNKNOWN', state?.entryPrice||null, null, state);
   const closedAt = Date.now();
   const entry = Number(row.entryPrice||state?.entryPrice||0);
@@ -7231,10 +7465,19 @@ function recordTradeClose(symbol, state={}, cls={}) {
   const rawMove = entry>0&&close>0?((close-entry)/entry*100*(normalizeSide(row.side)==='SHORT'?-1:1)):null;
   const lev = Number(row.leverage||1)||1;
   const cdMs = Number(cls.cooldownMs||0);
+  const hasPnlTruth = cls.realizedPnl !== null && cls.realizedPnl !== undefined && cls.realizedPnl !== '' && Number.isFinite(Number(cls.realizedPnl));
+  const pnlTruth = hasPnlTruth ? Number(cls.realizedPnl) : NaN;
+  const marginTruth = Number(row.marginUSDT || state?.usdtAmount || state?.marginUSDT || 0);
+  const priceRoi = Number.isFinite(rawMove) ? rawMove*lev : null;
+  const pnlRoi = Number.isFinite(pnlTruth) && marginTruth>0 ? pnlTruth/marginTruth*100 : null;
+  const finalRoi = Number.isFinite(pnlRoi) ? pnlRoi : (Number.isFinite(Number(cls.roiPct))?Number(cls.roiPct):priceRoi);
+  const metricWarning = Number.isFinite(pnlRoi) && Number.isFinite(priceRoi) && Math.abs(pnlRoi-priceRoi)>6 ? `PnL-ROI farkı ${Math.abs(pnlRoi-priceRoi).toFixed(1)} puan; Binance PnL esas alındı` : null;
   Object.assign(row, {
     status:'CLOSED', closedAt, closedAtTR:trTime(closedAt), closePrice:safeNum(close,10),
-    pnlUSDT:Number.isFinite(Number(cls.realizedPnl))?safeNum(cls.realizedPnl,4):null,
-    roiPct:Number.isFinite(rawMove)?safeNum(rawMove*lev,2):(Number.isFinite(Number(cls.roiPct))?safeNum(cls.roiPct,2):null),
+    pnlUSDT:Number.isFinite(pnlTruth)?safeNum(pnlTruth,4):null,
+    roiPct:Number.isFinite(finalRoi)?safeNum(finalRoi,2):null,
+    priceRoiPct:Number.isFinite(priceRoi)?safeNum(priceRoi,2):null,
+    metricSource:cls.metricSource||'BINANCE_REALIZED_PNL_OR_PRICE', metricWarning,
     exitReason:cls.code||'CLOSED', exitLabel:cls.label||'Binance kapanışı',
     resultNote:buildResultNote(cls,state),
     sl:cls.sl||state?.currentSL||null, tp:cls.tp||state?.targetTP||null,
@@ -14720,19 +14963,33 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       const fv = (v) => { const x = parseFloat(v); return x >= 1e6 ? +(x/1e6).toFixed(2)+'M' : x >= 1e3 ? +(x/1e3).toFixed(1)+'K' : +x.toFixed(0); };
       return slice.map(c => [f(c[1]), f(c[2]), f(c[3]), f(c[4]), fv(c[5])]);
     }
+    function r484PackTimes(kl, n, perMs) {
+      if (!Array.isArray(kl) || !kl.length) return [];
+      if (perMs > 0) { const now = Date.now(); kl = kl.filter(c => Number(c[0]) + perMs <= now); if (!kl.length) return []; }
+      return kl.slice(-n).map(c => Number(c[0]) || 0);
+    }
+    const r483DeepCandles = String(process.env.R483_DEEP_CANDLES ?? '1') !== '0';
     const r308RawCandles = {
-      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda ve KAPANMIŞTIR (oluşan mum pakete girmez). En eski en solda.',
+      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda ve KAPANMIŞTIR. R483 derin bağlam: 1m=60, 5m=60, 15m=96, 1h=72, 4h=42, 1d=30.',
       son15mMumYasiSn: (() => { try { const kk = (k15m||[]).filter(c => Number(c[0]) + 900000 <= Date.now());
         return kk.length ? Math.round((Date.now() - (Number(kk[kk.length-1][0]) + 900000)) / 1000) : null; } catch(_) { return null; } })(), // R402: doğrulama damgası — son kapanmış 15m mumu kaç sn önce kapandı
+      _times: {
+        '1d': r484PackTimes(k1d, r483DeepCandles ? 30 : 10, 86400000),
+        '4h': r484PackTimes(k4h, r483DeepCandles ? 42 : 16, 14400000),
+        '1h': r484PackTimes(k1h, r483DeepCandles ? 72 : 24, 3600000),
+        '15m': r484PackTimes(k15m, r483DeepCandles ? 96 : 48, 900000),
+        '5m': r484PackTimes(k5m, r483DeepCandles ? 60 : 24, 300000),
+        '1m': r484PackTimes(k1m, r483DeepCandles ? 60 : 30, 60000)
+      },
       // R438 MALİYET DİYETİ (canlı ölçüm 20.07: 47dk'da 0.51$ = ~8.5¢/çağrı; ana kalem ham mum paketi,
       // her çağrıda cache'siz gider). Derinlik yarıya indirildi — karar için kritik pencereler korundu:
       // 1d 10 gün, 4h ~2.7 gün, 1h 1 gün, 15m 12 saat, 5m 2 saat, 1m 30dk. Sistem prompt'u zaten cache'li.
-      '1d':  r308PackKlines(k1d, 10, 86400000),
-      '4h':  r308PackKlines(k4h, 16, 14400000),
-      '1h':  r308PackKlines(k1h, 24, 3600000),
-      '15m': r308PackKlines(k15m, 48, 900000),
-      '5m':  r308PackKlines(k5m, 24, 300000),
-      '1m':  r308PackKlines(k1m, 30, 60000),
+      '1d':  r308PackKlines(k1d,  r483DeepCandles ? 30 : 10, 86400000),
+      '4h':  r308PackKlines(k4h,  r483DeepCandles ? 42 : 16, 14400000),
+      '1h':  r308PackKlines(k1h,  r483DeepCandles ? 72 : 24, 3600000),
+      '15m': r308PackKlines(k15m, r483DeepCandles ? 96 : 48, 900000),
+      '5m':  r308PackKlines(k5m,  r483DeepCandles ? 60 : 24, 300000),
+      '1m':  r308PackKlines(k1m,  r483DeepCandles ? 60 : 30, 60000),
       btc5m: r308PackKlines((rBtc5m.status==='fulfilled'&&Array.isArray(rBtc5m.value))?rBtc5m.value:[], 6, 300000),
       // ═══ R472 MUM FORMASYON ALGISI (ALFA CRYPTO PDF'leri: tepe/dip dönüş konseptleri — sayısal) ═══
       // Perception katmanı: bot grafikte NE olduğunu görsün diye reversal/manipülasyon mumlarını sayısal
@@ -14800,6 +15057,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       orderBlocks:{'1h':ob1h,'4h':ob4h},
       // WS gerçek zamanlı veriler
       cvd, iceberg, tickData,
+      takerSeries: Array.isArray(takerArr) ? takerArr.slice(-12) : [],
       vpin: tickData?.vpin, microstructure: tickData?.microstructure,
       // Coinglass likidite haritası
       coinglass: cgData,
@@ -15989,6 +16247,70 @@ function detectAdverseCascade(symbol, side) {
   return { adverse:false };
 }
 
+// ── R486 OTONOM KÂR HASADI ───────────────────────────────────────────────────
+function r486N(v,d=0){ const n=Number(v); return Number.isFinite(n)?n:d; }
+function r486Clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function r486AutonomousProfitBrain({sym,side,pnlPct,realProfitPct,entryPrice,curPrice,leverage,state,tickSnap,r91Brain}) {
+  try {
+    const isLong=String(side).toUpperCase()==='LONG';
+    const snap=state?.aiSnapshot||{}, story=snap?.chartStory||{}, cvd=getCVD(sym)||{}, ice=getIceberg(sym)||{};
+    const peakRoi=Math.max(r486N(state?.peakPnl),r486N(pnlPct));
+    const peakReal=Math.max(r486N(state?.peakRealPct),r486N(realProfitPct));
+    const giveback=Math.max(0,peakRoi-r486N(pnlPct));
+    const confidence=r486N(snap.aiConfidence,state?.aiBrain?.confidence||70);
+    const storyQuality=r486N(story.quality,50);
+    const funding=r486N(snap.funding,0), oi1h=r486N(snap.oiChange1h,0);
+    const deltaRatio=r486N(tickSnap?.deltaRatio,50), recentDelta=r486N(tickSnap?.recent30s?.delta,0);
+    const recentTotal=Math.max(1,r486N(tickSnap?.recent30s?.total,1));
+    const aggDeltaPct=recentDelta/recentTotal*100;
+    const cvdRatio=r486N(cvd.ratio,50), cvdMom=String(cvd.momentum||'UNKNOWN');
+    const micro=tickSnap?.microstructure||{}, vpin=tickSnap?.vpin||{};
+    const hiddenSell=r486N(ice.hiddenSell), hiddenBuy=r486N(ice.hiddenBuy);
+    const icebergBear=/SELL/i.test(String(ice.signal||'')) && hiddenSell>hiddenBuy*1.15;
+    const icebergBull=/BUY/i.test(String(ice.signal||'')) && hiddenBuy>hiddenSell*1.15;
+    const flowAgainst=isLong ? (deltaRatio<45 || aggDeltaPct<-12 || cvdRatio<46 || tickSnap?.deltaFlip==='BULL_TO_BEAR')
+                             : (deltaRatio>55 || aggDeltaPct>12 || cvdRatio>54 || tickSnap?.deltaFlip==='BEAR_TO_BULL');
+    const flowWith=isLong ? (deltaRatio>55 || aggDeltaPct>12 || cvdRatio>56 || /BULL|POSITIVE/i.test(cvdMom))
+                          : (deltaRatio<45 || aggDeltaPct<-12 || cvdRatio<44 || /BEAR|NEGATIVE/i.test(cvdMom));
+    let continuation=0, pressure=0;
+    if(flowWith) continuation+=1.25; if(!flowAgainst) continuation+=.35;
+    if(tickSnap?.deltaTrend===(isLong?'BULL':'BEAR')) continuation+=.55;
+    if(isLong?icebergBull:icebergBear) continuation+=.70;
+    if(r486N(tickSnap?.whaleValid)&&tickSnap?.whaleBias===(isLong?'WHALE_BUY':'WHALE_SELL')) continuation+=.65;
+    if(r486N(r91Brain?.exitScore)<2.3 && r91Brain?.devamGucu) continuation+=.75;
+    if(flowAgainst) pressure+=1.35;
+    if(micro.exhaustion && micro.exhaustionDir===(isLong?'BULL_EXHAUST':'BEAR_EXHAUST')) pressure+=.95;
+    if(micro.trapped) pressure+=.85;
+    if(isLong?icebergBear:icebergBull) pressure+=.85;
+    if(vpin.toxicity==='EXTREME') pressure+=.55;
+    if(r486N(r91Brain?.exitScore)>=3) pressure+=.85;
+    if(isLong && funding > .08) pressure+=.45;
+    if(funding<-.08 && !isLong) pressure+=.45;
+    if(isLong && oi1h>1.5 && realProfitPct<peakReal*.55 && flowAgainst) pressure+=.75;
+    if(!isLong && oi1h>1.5 && realProfitPct<peakReal*.55 && flowAgainst) pressure+=.75;
+    const targets=[];
+    const add=x=>{ const n=Number(x); if(n>0 && ((isLong&&n>entryPrice)||(!isLong&&n<entryPrice))) targets.push(n); };
+    add(story.targetLiquidity); add(story.resistance); add(story.support);
+    for(const x of (snap?.liqLevels?.ust||[])) if(isLong)add(x); for(const x of (snap?.liqLevels?.alt||[])) if(!isLong)add(x);
+    const target=targets.length ? (isLong?Math.min(...targets):Math.max(...targets)) : 0;
+    const targetProgress=target>0 ? r486Clamp(isLong?(curPrice-entryPrice)/(target-entryPrice):(entryPrice-curPrice)/(entryPrice-target),0,1.5) : 0;
+    const targetHit=target>0 && targetProgress>=.96;
+    if(targetHit) pressure+=1.10;
+    const opp=r486Clamp(.42*confidence+.38*storyQuality+8*continuation-7*pressure,0,100);
+    const matureRoi=r486Clamp(R486_HARVEST_MATURE_ROI+.16*(opp-60),7,32);
+    const maturity=r486Clamp((Math.max(0,pnlPct)/Math.max(1,matureRoi))*1.25 + targetProgress + (targetHit ? .45 : 0),0,4);
+    let close=false, reason='';
+    if(pnlPct>=matureRoi && maturity>=2 && pressure>=R486_HARVEST_PRESSURE && continuation<2.7){ close=true; reason='MATURE_PRESSURE'; }
+    else if(pnlPct>=Math.max(6,matureRoi*.65) && targetHit && pressure>=2 && continuation<2.8){ close=true; reason='TARGET_REJECTION'; }
+    else if(peakRoi>=matureRoi*1.25 && giveback>=Math.max(4,peakRoi*.24) && pressure>=1.7 && continuation<2.8){ close=true; reason='PEAK_GIVEBACK'; }
+    else if(pnlPct>=matureRoi*1.55 && continuation<2.95){ close=true; reason='SATISFYING_PROFIT'; }
+    const retain = continuation>=2.7 && pressure<1.8 ? .28 : pressure>=3.4 ? .72 : pressure>=2.2 ? .60 : .48;
+    const lockRoi=peakRoi>=5?Math.max(1.8,peakRoi*retain):0;
+    const lockRealPct=lockRoi/Math.max(R486_MIN_LEVERAGE,r486N(leverage,R486_MIN_LEVERAGE));
+    return {active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,close,reason,continuation:+continuation.toFixed(2),pressure:+pressure.toFixed(2),maturity:+maturity.toFixed(2),opportunity:+opp.toFixed(1),matureRoi:+matureRoi.toFixed(1),target:target||null,targetProgress:+targetProgress.toFixed(2),peakRoi:+peakRoi.toFixed(1),giveback:+giveback.toFixed(1),lockRoi:+lockRoi.toFixed(1),lockRealPct:+lockRealPct.toFixed(3),funding,oi1h,flowAgainst,flowWith,iceberg:String(ice.signal||'NEUTRAL')};
+  } catch(e) { return {active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,close:false,error:String(e?.message||e).slice(0,100)}; }
+}
+
 // Ana pozisyon yöneticisi
 async function managePosition(apiKey, apiSecret, pos) {
   const sym = pos.symbol;
@@ -15999,7 +16321,8 @@ async function managePosition(apiKey, apiSecret, pos) {
   const pnlPct = pos.pnlPct; // Kaldıraçlı PnL %
 
   // Kaldıraçsız gerçek fiyat hareketi — break-even için bunu kullan
-  const leverage = Number(pos.leverage) || Number(state?.leverage) || Number(autoConfig?.leverage) || 1;  // R457: pos.leverage 1 dönerse state'ten tamamla (ROI hesabı bozulmasın)
+  const priorState = trailingState.get(sym) || {};
+  const leverage = Number(pos.leverage) > 1 ? Number(pos.leverage) : (Number(priorState.leverage) || Number(autoConfig?.leverage) || R486_MIN_LEVERAGE);  // R486: state TDZ hatası yok; 1x placeholder gerçek state leverage ile tamamlanır
   const realPricePct = entryPrice > 0
     ? Math.abs(curPrice - entryPrice) / entryPrice * 100
     : 0;
@@ -16041,7 +16364,8 @@ async function managePosition(apiKey, apiSecret, pos) {
       currentSL:state.currentSL||null, targetTP:state.targetTP||null, lastCheck:state.lastCheck,
       r91Exit: state.r91Exit || null,
       exitMode: state.exitMode || null,
-      profitLockLevel: state.profitLockLevel || null
+      profitLockLevel: state.profitLockLevel || null,
+      r486Harvest: state.r486Harvest || null
     };
     trailingState.set(sym, state);
   };
@@ -16358,6 +16682,31 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r91Brain = calcR91ExitBrain({ cvdFlip, tickSnap, tickFlip, exhaustExit, trappedExit, cascade });
   state.r91Exit = r91Brain;
   state.exitMode = r91Brain.mode;
+
+  // R486: OI/funding/order-flow/order-book/aggTrade/absorption/iceberg + grafik hedeflerinden
+  // otonom kâr olgunluğu çıkar. SHADOW modunda yalnız telemetri/SL önerisi; ACTIVE=1 ise
+  // olgun kârda TP beklemeden reduce-only market çıkışı.
+  const r486Harvest = r486AutonomousProfitBrain({sym,side,pnlPct,realProfitPct,entryPrice,curPrice,leverage,state,tickSnap,r91Brain});
+  state.r486Harvest = r486Harvest;
+  if (R486_HARVEST_ACTIVE && !action && inProfit && Number(r486Harvest?.lockRealPct||0) > 0) {
+    const lockSL = isLong
+      ? +(entryPrice*(1+Number(r486Harvest.lockRealPct)/100)).toFixed(8)
+      : +(entryPrice*(1-Number(r486Harvest.lockRealPct)/100)).toFixed(8);
+    const currentSLNum=Number(state.currentSL||0);
+    const better=isLong?(!currentSLNum||lockSL>currentSLNum):(!currentSLNum||lockSL<currentSLNum);
+    if (better) action={type:'R486_HARVEST_LOCK',urgency:'LOW',newSL:lockSL,
+      reason:`R486 otonom kâr tabanı: zirve ROI %${Number(r486Harvest.peakRoi||0).toFixed(1)} · devam ${r486Harvest.continuation} · baskı ${r486Harvest.pressure} → %${Number(r486Harvest.lockRoi||0).toFixed(1)} ROI korunuyor`,
+      stateUpdates:{r486HarvestLock:true,profitLockLevel:Math.max(Number(state.profitLockLevel||0),5)}};
+  }
+  if (!action && r486Harvest?.close) {
+    if (R486_HARVEST_ACTIVE) {
+      action={type:'R486_AUTONOMOUS_PROFIT_EXIT',urgency:'HIGH',
+        reason:`R486 otonom hasat ${r486Harvest.reason}: ROI %${Number(pnlPct||0).toFixed(1)} · hedef ilerleme %${(Number(r486Harvest.targetProgress||0)*100).toFixed(0)} · devam ${r486Harvest.continuation} · çıkış baskısı ${r486Harvest.pressure}`};
+    } else if (Date.now()-Number(state.r486ShadowLogTs||0)>60_000) {
+      state.r486ShadowLogTs=Date.now();
+      logAuto(`🧪 ${sym} R486 SHADOW hasat: ${r486Harvest.reason} · ROI %${Number(pnlPct||0).toFixed(1)} · devam ${r486Harvest.continuation} · baskı ${r486Harvest.pressure} — market çıkışı yapılmadı`);
+    }
+  }
 
   // R283: Kârı erken boğma yok. Normal trader küçük yeşili hemen cebine atmaz;
   // setup çalışıyorsa hedef/FVG/likidite yoluna nefes verir. Sadece fikir bozulursa hasar keser.
@@ -16890,7 +17239,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   stampManager(action.type, action.reason, action.urgency||'LOW');
   logAuto(`[${sym}] ${action.type} (${action.urgency}): ${action.reason}`);
 
-  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT' || action.type === 'R147_TERS_AKIS_HASAR_KAPAT' || action.type === 'R281_PROTECT_HASAR_KAPAT' || action.type === 'R282_ROI_HASAR_KAPAT' || action.type === 'R282_FIKIR_BOZULDU_KAPAT' || action.type === 'R282_WINNER_SCRATCH_KAPAT' || action.type === 'R282_PROFIT_TAKE_KAPAT' || action.type === 'R149_PROFIT_GIVEBACK_KAPAT' || action.type === 'R165_WINNER_NEVER_LOSER_KAPAT') {
+  if (action.type === 'EMERGENCY_EXIT' || action.type === 'MAX_SURE_KAPAT' || action.type === 'R97_VUR_KAC_KAPAT' || action.type === 'R97_FIKIR_BOZULDU_KAPAT' || action.type === 'R144_HASAR_KONTROL_KAPAT' || action.type === 'R147_TERS_AKIS_HASAR_KAPAT' || action.type === 'R281_PROTECT_HASAR_KAPAT' || action.type === 'R282_ROI_HASAR_KAPAT' || action.type === 'R282_FIKIR_BOZULDU_KAPAT' || action.type === 'R282_WINNER_SCRATCH_KAPAT' || action.type === 'R282_PROFIT_TAKE_KAPAT' || action.type === 'R149_PROFIT_GIVEBACK_KAPAT' || action.type === 'R165_WINNER_NEVER_LOSER_KAPAT' || action.type === 'R486_AUTONOMOUS_PROFIT_EXIT') {
     // Hem normal hem algo emirleri iptal et (2025-12-09 sonrası)
     try {
       await cancelAlgoOrders(apiKey, apiSecret, sym, true);
@@ -16901,7 +17250,7 @@ async function managePosition(apiKey, apiSecret, pos) {
         type:'MARKET', quantity:qty,
         reduceOnly:'true', positionSide:'BOTH', __emergency:true
       });
-      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R147_TERS_AKIS_HASAR_KAPAT'?'R147 TERS AKIŞ ÇIKIŞI':action.type==='R281_PROTECT_HASAR_KAPAT'?'R281 PROTECT ÇIKIŞI':String(action.type||'').startsWith('R282_')?'R282 TECRÜBELİ TRADER ÇIKIŞI':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':action.type==='R165_WINNER_NEVER_LOSER_KAPAT'?'R165 KÂR ZARARA DÖNMESİN ÇIKIŞI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
+      logAuto(`✅ ${sym} ${action.type==='R97_VUR_KAC_KAPAT'?'TEK BEYİN ÇIKIŞI':action.type==='R97_FIKIR_BOZULDU_KAPAT'?'TEK BEYİN FİKİR BOZULDU':action.type==='R147_TERS_AKIS_HASAR_KAPAT'?'R147 TERS AKIŞ ÇIKIŞI':action.type==='R281_PROTECT_HASAR_KAPAT'?'R281 PROTECT ÇIKIŞI':String(action.type||'').startsWith('R282_')?'R282 TECRÜBELİ TRADER ÇIKIŞI':action.type==='R149_PROFIT_GIVEBACK_KAPAT'?'R149 KÂR KORUMA ÇIKIŞI':action.type==='R165_WINNER_NEVER_LOSER_KAPAT'?'R165 KÂR ZARARA DÖNMESİN ÇIKIŞI':action.type==='R486_AUTONOMOUS_PROFIT_EXIT'?'R486 OTONOM KÂR HASADI':'ACİL ÇIKIŞ'}: PnL %${pnlPct.toFixed(2)} — ${r.orderId}`);
       trailingState.delete(sym);
       return { action:'CLOSED', pnl:pnlPct, reason:action.reason };
     } catch(e) {
@@ -16910,7 +17259,7 @@ async function managePosition(apiKey, apiSecret, pos) {
   }
 
   if (action.type === 'BREAK_EVEN' || action.type === 'TRAIL_SL' || action.type === 'TIGHTEN_SL'
-      || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK' || action.type === 'R165_KAR_KILIDI') {
+      || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK' || action.type === 'R165_KAR_KILIDI' || action.type === 'R486_HARVEST_LOCK') {
     const newSL = action.newSL;
     if (!newSL) return null;
     const upd = await updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, action.type);
@@ -17932,6 +18281,7 @@ app.get('/api/diagnostics/status', (_req, res) => {
     ok: true,
     build: LAZARUS_BUILD,
     hasCritical: recent.some(e => e.level === 'CRITICAL'),
+    hasSafety: recent.some(e => e.level === 'SAFETY'),
     count: criticalEvents.length,
     lastCritical,
     recent,
@@ -18289,7 +18639,7 @@ app.get('/api/r374', (req, res) => {
 app.get('/api/r481-status', (req,res)=>{
   try{
     const tick={}; for(const sym of (autoScanState?.scanList||[]).slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,scanMode:autoConfig?.scanMode||null,workers:{r370:'60sn tüm piyasa taze impuls',r385:'5dk 60 sembol HTF kırılım',r328:'45sn patlama radarı',r366:'30sn volatilite nedeni'},minLeverage:5,whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486: 15m merkez; 1m/5m mikro yapı; 1h/4h/1d bağlam; MTF FVG/IFVG/OB, mitigation, ChoCH/MSS, sweep-reclaim, diyagonal trend, ana-bacak Fib/OTE ve profesyonel order-flow',scanMode:autoConfig?.scanMode||null,workers:{r370:'60sn tüm piyasa taze impuls',r385:'5dk 60 sembol HTF kırılım',r328:'45sn patlama radarı',r366:'30sn volatilite nedeni'},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -18297,11 +18647,16 @@ app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning, build:LAZARUS_BUILD,
     config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(), saverMode: AI_SAVER_MODE,
+    r486:{
+      longOnly:true, allowShort:false, minLeverage:R486_MIN_LEVERAGE,
+      leveragePolicy:'Fırsat önemine göre Binance leverageBracket sınırına kadar; 10x altına izin yok',
+      harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI}
+    },
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
       sonIslem: toTurkishText(autoScanState?.lastAction || ''),
       kisaDinlenme:{aktif:isAutoPauseActive(), kalanSaniye:Math.ceil(getAutoPauseRemainMs()/1000), sebep:autoPauseReason||''},
-      aciklama:'Bot tüm sensörleri tek beyin içinde birleştirir: HTF likidite haritası, 5m mum, akış/OI/funding, orderbook ve volatilite birlikte okunur. Eski katmanlar emir vermez; sadece veri sağlar.'
+      aciklama:'R486: 15m ana grafik hikâyesi + otonom kâr hasadı; 1m/5m mikro zamanlama; saat-hizalı 30m ve 1h/4h/1d bağlam. 5m/15m/1h/4h FVG-IFVG, OB-mitigation, BOS-ChoCH-MSS, equal high/low, sweep-reclaim, diyagonal trend, ana-bacak Fib/OTE, absorption/iceberg/aggTrade/taker, OI ve funding tek kararda yorumlanır.'
     } });
 });
 
@@ -18847,33 +19202,7 @@ async function runAutoScan(prioritySymbol=null) {
         // kovalama, R429 tepe, pozisyon limiti) AYNEN uygulanmaya devam eder.
         try {
           if (R447_ENABLED && analysis?.r308RawCandles) {
-            const r455Veri = {
-              candles: analysis.r308RawCandles,
-              atrYuzde: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? analysis?.atr ?? decisionChain?.atrPct ?? 3),   // R477 KABLO ONARIMI: gerçek ATR leverage.atrPct'te; eskiden hep 3'e düşüyordu → atr>6 güven cezası ölüydü (fazla kaldıraç)
-              fiyat: Number(coin.lastPrice || analysis?.price || 0),
-              cvdDelta: Number(decisionChain?.r125LiveDeltaPct ?? NaN),
-              cvdValid: Number.isFinite(Number(decisionChain?.r125LiveDeltaPct)),
-              cvdMomentumYon: decisionChain?.cvdMomentumYon,
-              deltaTrendMum: decisionChain?.deltaTrendMum,
-              makroKonum: (() => {   // R477+R478: 24h tepe kapısı girdisi — r29'dan al; boşsa 15m mumlardan hesapla (kapı ASLA sessizce ölmesin)
-                let k24 = Number(analysis?.r29?.r196?.long?.loc24 ?? NaN);
-                if (!Number.isFinite(k24)) {
-                  try { const kk = analysis?.r308RawCandles?.['15m'];
-                    if (Array.isArray(kk) && kk.length >= 16) {
-                      let hi=-Infinity, lo=Infinity; for (const cc of kk){ const H=Number(cc[1]), L=Number(cc[2]); if(H>hi)hi=H; if(L<lo)lo=L; }
-                      const cl = Number(kk[kk.length-1][3]); if (hi>lo && cl>0) k24 = (cl-lo)/(hi-lo)*100;
-                    } } catch(_) {}
-                }
-                return { konum24h: k24, konum4h: Number(analysis?.r29?.r196?.long?.loc4h ?? NaN) };
-              })(),
-              rsi1h: Number(analysis?.timeframes?.['1h']?.rsi ?? NaN),   // R467: 1h RSI ekstrem kapısı
-              oiDegisim: { '1h': Number(analysis?.openInterest?.change1h ?? 0) },
-              gainerSira: coin.gainerRank || 99,
-              rvol5m: Number(analysis?.rvol5m ?? decisionChain?.rvol ?? 1),
-              slTabanOneri: Number(analysis?.slTabanOneri || 0),
-              likiditeSeviyeleri: analysis?.liqLevels || null,
-              orderBookImbalance: Number(analysis?.orderBook?.imbalance ?? NaN)   // R473 KABLO ONARIMI: canlı tepe-tuzak guard'ı emir defterini bu alandan okur — yoksa guard hiç ateşlenmez
-            };
+            const r455Veri = r481MekanikVeri(coin, analysis, decisionChain);
             const r455 = coin.__r481Karar || r447MekanikKarar(coin.symbol, r455Veri);
             if ((!r455 || !r455.ok) && scanIdx < 3) {
               // R456: ilk 3 aday için "neden imza yok" görünür olsun (spam yapmadan)
@@ -20419,6 +20748,8 @@ async function runAutoScan(prioritySymbol=null) {
                 !mechHardBlock && decisionChain?.r482R300Approved === true && planDirectionOk &&
                 Number(userRR||0) >= Number(minRR||1.0);
               if (fullMechanicalOk) {
+                const r483Story = R483_CHART_STORY_ENABLED ? r483ChartStory(coin.symbol, r481MekanikVeri(coin,analysis,decisionChain)) : null;
+                decisionChain.r483Story = r483Story;
                 const rawConf = Math.max(Number(decisionChain?.brainConfidence||0), Number(decisionChain?.priorityScore||0), Number(score||0));
                 const mechConf = Math.max(64, Math.min(90, Math.round(rawConf || 64)));
                 const setupNames = [
@@ -20426,14 +20757,17 @@ async function runAutoScan(prioritySymbol=null) {
                   decisionChain?.r190Edge?.mode, decisionChain?.r274Signal?.setup
                 ].filter(Boolean).map(String);
                 const setup = [...new Set(setupNames)].slice(0,3).join('+') || mechTier || 'SERVER5_FULL_STACK';
+                const storyAdj = Number(r483Story?.qualityAdj||0);
+                const storyConf = Math.max(64,Math.min(90,mechConf+storyAdj));
+                const storyWait = R483_STORY_ACTIVE && mechSide==='LONG' && r483Story && ['WAIT_RETEST','TRAP'].includes(r483Story.timing);
                 ai = {
-                  ok:true, mekanik:true, motor:'R482_SERVER5_FULL_STACK', aiCallMade:false, side:mechSide,
-                  entry:Number(entryRef), tp:Number(targetPrice), sl:Number(stopPrice), confidence:mechConf,
-                  karKosma:String(r282TradePlan?.mode || decisionChain?.r283Recipe?.mode || 'NORMAL'),
-                  reasoning:`R482 TAM MEKANİK/${setup}: ${String(decisionChain?.brainSummary || decisionChain?.reason || 'Server5 teknik zinciri TRADE onayı').slice(0,520)} · R300 ONAY · R/R ${Number(userRR||0).toFixed(2)}`,
-                  plan:`Server5 tam teknik motoru: yapı+likidite+akış+HTF planı; min kaldıraç 5x, mevcut risk valileri ve canlı yönetim aynen aktif`
+                  ok:true, mekanik:true, motor:storyWait?'R485_SERVER5_STORY_RETEST':'R485_SERVER5_FULL_STACK', aiCallMade:false, side:storyWait?'WAIT':mechSide, plannedSide:mechSide,
+                  entry:Number(storyWait && r483Story?.retestEntry ? r483Story.retestEntry : entryRef), tp:Number(targetPrice), sl:Number(stopPrice), confidence:storyConf,
+                  karKosma:String(storyWait?'NORMAL':(r282TradePlan?.mode || decisionChain?.r283Recipe?.mode || 'NORMAL')), story:r483Story,
+                  reasoning:`R485 TAM MEKANİK/${setup}: ${String(decisionChain?.brainSummary || decisionChain?.reason || 'Server5 teknik zinciri TRADE onayı').slice(0,430)} · R300 ONAY · R/R ${Number(userRR||0).toFixed(2)}${r483Story?.summary?' · HİKÂYE: '+r483Story.summary:''}`,
+                  plan:storyWait?`15m setup kaybolmadı; tepe market-order yerine ${Number(r483Story?.retestEntry||entryRef)} retest + 1m/5m reclaim bekleniyor.`:`Server5 tam teknik motoru: 15m hikâye + 1m/5m zamanlama + 1h/4h/1d bağlam; minimum kaldıraç 10x; R486 otonom kâr hasadı ve risk-normalize marjin aktiftir.`
                 };
-                logAuto(`⚙️ ${coin.symbol} R482 TAM MEKANİK KARAR: ${mechSide} güven:${mechConf}% · kaynak:${setup} · R300 onaylı · AI çağrısı yok`);
+                logAuto(`⚙️ ${coin.symbol} R485 TAM MEKANİK ${storyWait?'RETEST BEKLE':'KARAR'}: ${ai.side} güven:${storyConf}% · kaynak:${setup} · R300 onaylı · AI çağrısı yok`);
               } else {
                 const why = !mechTrigger ? 'tam teknik TRADE tetikleyicisi yok' :
                             !mechPermission ? 'emir izni/autoOk yok' :
@@ -20475,10 +20809,10 @@ async function runAutoScan(prioritySymbol=null) {
                   const oran = Math.round(global.__aiTotalWait / global.__aiTotalDecisions * 100);
                   let streakNot = '';
                   if (global.__aiWaitStreak >= 8) streakNot = ` ⚠️ ARDI ARDINA ${global.__aiWaitStreak} WAIT — AI fazla pasif (oran %${oran})`;
-                  logAuto(`⛔ ${coin.symbol} AI PRO TRADER WAIT dedi — emir AÇILMADI: ${ai.reasoning}${streakNot}`);
-                  markAutoSkip(coin.symbol, `AI WAIT: ${ai.reasoning}`, {rec:ai.side, score, aiBrain:ai});
+                  logAuto(`⛔ ${coin.symbol} ${ai.mekanik?'MEKANİK HİKÂYE MOTORU':'AI PRO TRADER'} WAIT dedi — market emir açılmadı, plan varsa pusu kurulur: ${ai.reasoning}${streakNot}`);
+                  markAutoSkip(coin.symbol, `${ai.mekanik?'MEKANİK':'AI'} WAIT: ${ai.reasoning}`, {rec:ai.side, score, aiBrain:ai});
                   // R442: WAIT ama giriş planı VARSA plan pusuya yazılır — fiyat plana gelince AI anında tekrar bakar
-                  if (Number(ai?.entry) > 0) r442PusuKur(coin.fullSymbol, ai, 'AI-WAIT-planlı');
+                  if (Number(ai?.entry) > 0) r442PusuKur(coin.fullSymbol, ai, ai.mekanik?'MEKANİK-HİKÂYE-RETEST':'AI-WAIT-planlı');
                   continue;
                 }
                 // R324C: GİR kararında streak sıfırla
@@ -20528,8 +20862,8 @@ async function runAutoScan(prioritySymbol=null) {
                   logAuto(`✅ ${coin.symbol} R441: mum-bazlı yedek SATIS dedi AMA canlı delta +${r441CanliDelta.toFixed(1)} (taze) alıcı baskın — yedek tek başına bloklamaz, emir devam (AAOI dersi)`);
                 }
                 if (ai.side !== 'LONG' && ai.side !== 'SHORT') {
-                  logAuto(`⛔ ${coin.symbol} AI geçersiz yön (${ai.side}) — emir AÇILMADI`);
-                  markAutoSkip(coin.symbol, `AI geçersiz yön: ${ai.side}`, {rec:ai.side, score, aiBrain:ai});
+                  logAuto(`⛔ ${coin.symbol} ${ai.mekanik?'mekanik':'AI'} karar geçersiz yön (${ai.side}) — emir AÇILMADI`);
+                  markAutoSkip(coin.symbol, `${ai.mekanik?'Mekanik':'AI'} geçersiz yön: ${ai.side}`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
                 // ═══ R308Y: GÜVEN TABANI + PLAN GEÇERLİLİK KAPISI (emirden ÖNCE) ═══
@@ -20537,7 +20871,7 @@ async function runAutoScan(prioritySymbol=null) {
                 // Bu kapı eksikti — 64 tabanı sadece burada uygulanırsa gerçekten işler.
                 if (!_q.ok) {
                   logAuto(`⛔ ${coin.symbol} AI emir reddi: ${_q.reason} — AÇILMADI`);
-                  markAutoSkip(coin.symbol, `AI kalite/güven reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
+                  markAutoSkip(coin.symbol, `${ai.mekanik?'Mekanik':'AI'} kalite/güven reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
                 // ═══ R370: UYARI SAYACI — 2+ ciddi uyarı birikirse VETO (kullanıcı dersi: BEL'de 3 uyarı vardı, açıldı, kaybetti) ═══
@@ -20696,7 +21030,7 @@ async function runAutoScan(prioritySymbol=null) {
                 // AI kendi yönünü seçti — bot ne derse desin AI'nın yönü uygulanır
                 let r308AiFlippedDir = false;
                 if (ai.side !== recommendation) {
-                  logAuto(`🔄 ${coin.symbol} AI bağımsız yön: bot ${recommendation} demişti, AI ${ai.side} okudu — AI'nın kararı uygulanıyor`);
+                  logAuto(`🔄 ${coin.symbol} ${ai.mekanik?'mekanik motor':'AI'} bağımsız yön: önceki öneri ${recommendation}, nihai ${ai.side} — nihai karar uygulanıyor`);
                   recommendation = ai.side; // R308K: AI yön otoritesi
                   isLong = ai.side === 'LONG'; isShort = ai.side === 'SHORT';
                   score = ai.side === 'LONG' ? longScore : shortScore;
@@ -20716,7 +21050,7 @@ async function runAutoScan(prioritySymbol=null) {
                       userTPPct = +(Math.abs(aiTp-aiEntry)/aiEntry*100).toFixed(3);
                       userSLPct = +(Math.abs(aiEntry-aiSl)/aiEntry*100).toFixed(3);
                       userRR = userTPPct / Math.max(0.05, userSLPct);
-                      logAuto(`🎯 ${coin.symbol} AI planı uygulandı: giriş${aiEntry} TP${aiTp}(%${userTPPct}) SL${aiSl}(%${userSLPct}) R:R≈${userRR.toFixed(2)}`);
+                      logAuto(`🎯 ${coin.symbol} ${ai.mekanik?'mekanik':'AI'} plan uygulandı: giriş${aiEntry} TP${aiTp}(%${userTPPct}) SL${aiSl}(%${userSLPct}) R:R≈${userRR.toFixed(2)}`);
                       // ═══ R308M: AI GÜVENİNE GÖRE KALDIRAÇ (max 20x) ═══
                       // AI ne kadar eminse o kadar agresif. Mükemmel setup 20x, zayıf 6x.
                       // Sonraki SL×kaldıraç güvenlik guard'ı yine üstte çalışır — geniş SL'de hedef kısılır.
@@ -20867,6 +21201,31 @@ async function runAutoScan(prioritySymbol=null) {
           recommendation = aiSideUp;
         }
 
+        // ═══ R486 NİHAİ KALDIRAÇ — minimum 10x, fırsata göre Binance izinli maksimuma kadar ═══
+        try {
+          const r486Br = await getSymbolMaxInitialLeverage(apiKey, apiSecret, coin.fullSymbol, Number(usdtAmount||30)*Math.max(R486_MIN_LEVERAGE,executeLeverage));
+          if (r486Br && Number(r486Br) < R486_MIN_LEVERAGE) {
+            const why=`R486: ${coin.symbol} Binance maksimum ${r486Br}x < minimum ${R486_MIN_LEVERAGE}x`;
+            logAuto(`⛔ ${why} — işlem açılmadı`); markAutoSkip(coin.symbol,why,{rec:recommendation,score}); continue;
+          }
+          const maxAllowed=Math.max(R486_MIN_LEVERAGE,Number(r486Br||125));
+          const stq=Number(decisionChain?.r483Story?.quality ?? decisionChain?.r455Karar?.story?.quality ?? 50);
+          const conf=Number(decisionChain?.aiBrain?.confidence ?? decisionChain?.r455Karar?.confidence ?? decisionChain?.brainConfidence ?? score ?? 70);
+          const cats=Number(decisionChain?.r483Story?.evidence?.length||0);
+          const trap=Number(decisionChain?.r483Story?.topRisk||0);
+          const fuel=decisionChain?.r190Edge?.r192FuelOk||decisionChain?.r190Edge?.squeeze||decisionChain?.r190Edge?.earlyContinuation?8:0;
+          const opp=Math.max(0,Math.min(100,.42*conf+.34*stq+Math.min(10,cats*.7)+fuel-trap*2));
+          const frac=opp>=94?1:opp>=88?.88:opp>=78?.70:opp>=68?.45:opp>=58?.25:0;
+          const desired=Math.round(R486_MIN_LEVERAGE+(maxAllowed-R486_MIN_LEVERAGE)*frac);
+          const old=executeLeverage;
+          executeLeverage=Math.max(R486_MIN_LEVERAGE,Math.min(maxAllowed,desired));
+          leverageNote+=` · R486 fırsat ${opp.toFixed(0)}/100 ${old}x→${executeLeverage}x (Binance max ${maxAllowed}x, taban 10x)`;
+        } catch(e) {
+          if (String(e?.code||'')==='R486_MIN_LEVERAGE_UNAVAILABLE') { logAuto(`⛔ ${coin.symbol} ${e.message}`); markAutoSkip(coin.symbol,e.message,{rec:recommendation,score}); continue; }
+          executeLeverage=Math.max(R486_MIN_LEVERAGE,Number(executeLeverage||R486_MIN_LEVERAGE));
+          leverageNote+=` · R486 bracket okunamadı, güvenli taban ${executeLeverage}x`;
+        }
+
         // ═══ R389 RİSK-NORMALİZE BOYUT (SKYAI -11.8 + TAG -18.3 panzehiri; ChatGPT'nin de bağımsız
         // işaret ettiği eksik). env RISK_BAZLI_BOYUT=1 ile açılır — KAPALIYKEN DAVRANIŞ BİREBİR AYNI.
         // Mantık: her işlemin DOLAR riski sabitlenir → marj = riskUSD ÷ (SL% × kaldıraç).
@@ -20884,6 +21243,16 @@ async function runAutoScan(prioritySymbol=null) {
             usdtAmount = r389Yeni;
           } else { usdtAmount = r389PanelMarj; }
         } catch(_) { usdtAmount = r389PanelMarj; }
+        // R486: 10x altına inmek yerine marjı risk-normalize et. Panel marjı tavan;
+        // hedef tek-işlem özsermaye riski varsayılan %12 (panel marjının yaklaşık %30'u).
+        try {
+          const lev486=Math.max(R486_MIN_LEVERAGE,Number(executeLeverage||R486_MIN_LEVERAGE));
+          const sl486=Math.max(.5,Number(userSLPct||5));
+          const riskUsd486=Math.max(1,Number(r389PanelMarj||usdtAmount||30)*(R486_RISK_BUDGET_PCT/40));
+          const margin486=Math.min(Number(r389PanelMarj||usdtAmount),Math.max(5,+(riskUsd486/(sl486/100*lev486)).toFixed(2)));
+          if (margin486<Number(usdtAmount||0)-.25) logAuto(`⚖️ ${coin.symbol} R486 10x+ risk-boyut: marj ${usdtAmount}$→${margin486}$ · risk bütçesi ${riskUsd486.toFixed(2)}$ · SL%${sl486} · ${lev486}x`);
+          usdtAmount=margin486;
+        } catch(_) {}
         // ═══ R437 GİRİŞ KOVALAMA KAPISI (tarama yolu) — ACE canlı dersi 20.07 ═══
         try {
           const r437Ai = decisionChain?.aiBrain;
@@ -21007,7 +21376,7 @@ async function runAutoScan(prioritySymbol=null) {
             sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
             openedAt: Date.now(),
                 openReason: (decisionChain?.aiBrain?.ok && decisionChain.aiBrain.reasoning)
-                  ? `AI ${decisionChain.aiBrain.side} güven ${decisionChain.aiBrain.confidence}%: ${decisionChain.aiBrain.reasoning}${decisionChain.aiBrain.plan?' | PLAN: '+decisionChain.aiBrain.plan:''}`
+                  ? `${decisionChain.aiBrain.mekanik?'MEKANİK':'AI'} ${decisionChain.aiBrain.side} güven ${decisionChain.aiBrain.confidence}%: ${decisionChain.aiBrain.reasoning}${decisionChain.aiBrain.plan?' | PLAN: '+decisionChain.aiBrain.plan:''}`
                   : (decisionChain?.reason || ''),
                 brainMode: decisionChain?.brainMode || '',
                 entryPermissionReason: decisionChain?.entryPermissionReason || '',
@@ -21024,7 +21393,7 @@ async function runAutoScan(prioritySymbol=null) {
               score, longScore, shortScore,
               // R370: açılış sebebi AI gerekçesi olsun (eski '5m Fırsat Beyni İZLE' motor metni değil — kullanıcı kafası karışıyordu)
               reason: (decisionChain?.aiBrain?.ok && decisionChain.aiBrain.reasoning)
-                ? `🤖 AI ${decisionChain.aiBrain.side} (güven %${decisionChain.aiBrain.confidence}): ${decisionChain.aiBrain.reasoning}`
+                ? `${decisionChain.aiBrain.mekanik?'⚙️ MEKANİK':'🤖 AI'} ${decisionChain.aiBrain.side} (güven %${decisionChain.aiBrain.confidence}): ${decisionChain.aiBrain.reasoning}`
                 : (decisionChain?.reason || `${recommendation} A-Tier`),
               aiKarar: decisionChain?.aiBrain?.ok ? {
                 side: decisionChain.aiBrain.side, confidence: decisionChain.aiBrain.confidence,
@@ -21057,12 +21426,16 @@ async function runAutoScan(prioritySymbol=null) {
               // Ayrıca slPct/leverage eksikti; R457'nin acil-koruma düzeltmesi de bu yolda etkisizdi.
               if (_ai && _ai.ok) {
                 _stOpen.aiBrain = _ai;
-                _stOpen.brainMode = 'R308C_AI_LIVE';
+                _stOpen.brainMode = _ai.mekanik ? 'R484_MECHANICAL_LIVE' : 'R308C_AI_LIVE';
                 _stOpen.mekanik = !!_ai.mekanik;
                 _stOpen.slPct = Number(userSLPct) || Number(_stOpen.slPct) || null;
+                _stOpen.initialSL = Number(_stOpen.initialSL || stopPrice || _ai.sl || 0) || null;
                 _stOpen.tpPct = Number(userTPPct) || Number(_stOpen.tpPct) || null;
                 _stOpen.leverage = Number(executeLeverage) || Number(_stOpen.leverage) || null;
-                _stOpen.entryPrice = Number(entryRef) || Number(_stOpen.entryPrice) || null;
+                _stOpen.entryPrice = Number(orderResp.executedPrice || entryRef) || Number(_stOpen.entryPrice) || null;
+                _stOpen.usdtAmount = Number(usdtAmount) || Number(_stOpen.usdtAmount) || null;
+                _stOpen.marginUSDT = Number(usdtAmount) || Number(_stOpen.marginUSDT) || null;
+                _stOpen.entryOrderId = orderResp.mainOrderId || _stOpen.entryOrderId || null;
                 logAuto(`🛡️ ${coin.symbol} R458: pozisyon yeni koruma katmanına bağlandı (${_ai.mekanik?'MEKANİK':'AI'} · ${_stOpen.aiRunner?'RUNNER':'NORMAL'} · SL%${_stOpen.slPct} · ${_stOpen.leverage}x) — R430 kâr racheti + R434 yapı trailing aktif, eski divergence sıkıştırması devre dışı`);
               }
               if (typeof _r370ForceNormal !== 'undefined' && _r370ForceNormal && _stOpen.aiRunner === false) logAuto(`⚠️ ${coin.symbol} R370-F: RUNNER kapatıldı (tepe/belirsiz setup — kâr taşıma riski alınmıyor, NORMAL yönetim)`);
@@ -21074,6 +21447,9 @@ async function runAutoScan(prioritySymbol=null) {
                 aiPlan: String(_ai.plan || '').slice(0, 400),  // R308Y: AI'nın timing/TP/SL/risk mantığı
                 aiEntry: _ai.entry ?? null, aiTp: _ai.tp ?? null, aiSl: _ai.sl ?? null,
                 aiKarKosma: _ai.karKosma || 'NORMAL',  // R310H: AI kâr koşma modu
+                mekanik: !!_ai.mekanik,
+                decisionKind: _ai.mekanik ? 'MEKANIK' : 'AI',
+                chartStory: _ai.story || decisionChain?.r483Story || null,
                 aiFlippedBotDir: (_ai.side && _ai.side !== recommendation) ? `bot ${recommendation}→AI ${_ai.side}` : null,
                 // Açılış anındaki HAM PİYASA DURUMU (AI bunlara bakarak karar verdi)
                 rsi: { '5m': _tf['5m']?.rsi ?? null, '15m': _tf['15m']?.rsi ?? null, '1h': _tf['1h']?.rsi ?? null, '4h': _tf['4h']?.rsi ?? null },
@@ -21322,7 +21698,11 @@ function weightedAvgTradePrice(trades) {
 }
 
 async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
-  const ledgerOpenRow = (tradeLedger || []).find(x => x && x.symbol === String(symbol).replace('USDT','') && x.status === 'OPEN');
+  const _symBase = String(symbol).replace('USDT','');
+  const _openedRef = Number(state?.openedAt||state?.openTs||0);
+  const _openCandidates = (tradeLedger || []).filter(x => x && x.symbol === _symBase && x.status === 'OPEN');
+  const ledgerOpenRow = (state?.ledgerTradeId ? _openCandidates.find(x=>x.id===state.ledgerTradeId||x.ledgerTradeId===state.ledgerTradeId) : null) ||
+    (_openedRef ? _openCandidates.sort((a,b)=>Math.abs(Number(a.openedAt||0)-_openedRef)-Math.abs(Number(b.openedAt||0)-_openedRef))[0] : _openCandidates.sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0))[0]);
   const side = inferStateSide(state) || normalizeSide(ledgerOpenRow?.side);
   const isLong = side === 'LONG';
   const closeTradeSide = isLong ? 'SELL' : side === 'SHORT' ? 'BUY' : '';
@@ -21442,6 +21822,7 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
     realizedPnl: Number.isFinite(pnlVal) ? +pnlVal.toFixed(6) : null,
     roiPct: Number.isFinite(roiByPnl) ? +roiByPnl.toFixed(2) : null,
     tradeCount: closeTrades.length || trades.length || 0,
+    metricSource: Number.isFinite(realPnlFromIncome) ? 'BINANCE_REALIZED_PNL' : (Number.isFinite(wa.pnl)&&Math.abs(wa.pnl)>0.000001 ? 'BINANCE_USER_TRADES' : 'PRICE_QTY_FALLBACK'),
     sl: sl || null,
     tp: tp || null,
   };
@@ -21554,6 +21935,7 @@ async function syncPositions() {
           leverage:      lastKnown.leverage || lev,
           usdtAmount:    lastKnown.usdtAmount || parseFloat(autoConfig?.usdtAmount || 10),
           currentSL:      lastKnown.currentSL || lastKnown.slPrice || r379SL || 0,
+          initialSL:      lastKnown.initialSL || lastKnown.slPrice || r379SL || 0,
           targetTP:      lastKnown.targetTP || lastKnown.tpPrice || r379TP || 0,
           slPrice:       lastKnown.currentSL || lastKnown.slPrice || r379SL || 0,
           tpPrice:       lastKnown.targetTP || lastKnown.tpPrice || r379TP || 0,
@@ -21565,6 +21947,8 @@ async function syncPositions() {
           tpPct:         Number(lastKnown.tpPct || autoConfig?.tpPct || 0),
           aiRunner:      !!(lastKnown.aiRunner),                    // R338: RUNNER modu restart'ta kaybolmasın
           brainMode:     lastKnown.brainMode || null,               // R338: AI pozisyonu restart'ta AI pozisyonu kalsın
+          ledgerTradeId: lastKnown.ledgerTradeId || null,
+          entryOrderId: lastKnown.entryOrderId || null,
           openedAt:      lastKnown.openedAt || lastKnown.openTs || Date.now(),
           openTs:        lastKnown.openedAt || lastKnown.openTs || Date.now(),
           openReason:    lastKnown.entryReason || 'restart sonrası restore',
@@ -21593,16 +21977,20 @@ async function syncPositions() {
         // R338 GUARD FIX-2: restart-restore sonrası stGuard.slPct kayboluyordu (lastKnown slPct saklamıyordu)
         // → panel varsayılanı %2'ye düşüp AI'ın geniş SL'inden ÖNCE kesiyordu ("bot AI'ı kesmesin" ihlali).
         // En sağlam kaynak: gerçek SL fiyatından türet (currentSL restore'da korunuyor).
-        const slFromPriceGuard = (() => {
-          const slp = parseFloat(stGuard.currentSL || stGuard.slPrice || 0);
-          return (slp > 0 && ep > 0) ? Math.abs(ep - slp) / ep * 100 : 0;
-        })();
-        // R345: AI planındaki SL de kaynak — state alanları kaybolsa bile AI'ın gerçek SL mesafesi kullanılır.
-        const slFromAiGuard = (() => {
-          const s = parseFloat(stGuard.aiBrain?.sl || 0);
-          return (s > 0 && ep > 0) ? Math.abs(ep - s) / ep * 100 : 0;
-        })();
-        const slPctGuard = Math.max(0.1, parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || slFromPriceGuard || slFromAiGuard || parseFloat(autoConfig.slPct || 2));
+        let liveSLGuard = 0;
+        try {
+          if (!isBinanceBackoffActive()) {
+            const _guardOrders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
+            liveSLGuard = orderTriggerPrice(_guardOrders.find(x=>orderKind(x)==='SL')) || 0;
+          }
+        } catch(_) {}
+        const stateSLGuard = parseFloat(stGuard.currentSL || stGuard.slPrice || 0) || 0;
+        const aiSLGuard = parseFloat(stGuard.aiBrain?.sl || 0) || 0;
+        const initialSLGuard = parseFloat(stGuard.initialSL || 0) || 0;
+        const slPriceGuard = liveSLGuard || stateSLGuard || aiSLGuard || initialSLGuard || 0;
+        const slSourceGuard = liveSLGuard ? 'BINANCE_LIVE_SL' : stateSLGuard ? 'STATE_CURRENT_SL' : aiSLGuard ? 'PLAN_SL' : initialSLGuard ? 'INITIAL_SL' : 'SL_PCT_FALLBACK';
+        const slFromPriceGuard = (slPriceGuard > 0 && ep > 0) ? Math.abs(ep-slPriceGuard)/ep*100 : 0;
+        const slPctGuard = Math.max(0.1, slFromPriceGuard || parseFloat(stGuard.slPct || stGuard.entrySLPct || 0) || parseFloat(autoConfig.slPct || 2));
         const realMoveGuard = ep > 0 && mp > 0
           ? ((mp - ep) / ep * 100 * (isLongGuard ? 1 : -1))
           : 0;
@@ -21615,7 +22003,7 @@ async function syncPositions() {
         const hardLossRoiGuard  = -Math.max((slPctGuard * lev) + 2, 16);
         if (ep > 0 && mp > 0 && (realMoveGuard <= hardLossRealGuard || roiGuard <= hardLossRoiGuard)) {
           try {
-            pushCritical('R14_HARD_LOSS_GUARD', `${sym}: SL ötesi zarar yakalandı; market reduceOnly kapatılıyor. move=${realMoveGuard.toFixed(2)}% roi=${roiGuard.toFixed(1)}%`, {symbol:sym, entry:ep, mark:mp, leverage:lev});
+            pushCritical('R14_HARD_LOSS_GUARD', `${sym}: SL ötesi zarar yakalandı; market reduceOnly kapatılıyor. move=${realMoveGuard.toFixed(2)}% roi=${roiGuard.toFixed(1)}%`, {symbol:sym, entry:ep, mark:mp, leverage:lev, liveSL:liveSLGuard||null, stateSL:stateSLGuard||null, planSL:aiSLGuard||null, initialSL:initialSLGuard||null, slSource:slSourceGuard, slPct:+slPctGuard.toFixed(3), hardLossReal:+hardLossRealGuard.toFixed(3), hardLossRoi:+hardLossRoiGuard.toFixed(2)}, 'SAFETY');
             const closeR = await safeMarketClosePosition(autoConfig.apiKey, autoConfig.apiSecret, sym, {reason:'R14_HARD_LOSS_GUARD'});
             if (!closeR.ok) throw new Error(closeR.error || 'safe close başarısız');
             logAuto(`🛑 ${sym.replace('USDT','')} acil hasar koruması kapattı: move ${realMoveGuard.toFixed(2)}% ROI ${roiGuard.toFixed(1)}%${closeR.fallback?' · fallback':''}`);
@@ -21722,11 +22110,11 @@ app.post('/api/trade-ledger-import', express.json({limit:'2mb'}), (req, res) => 
 });
 
 app.get('/api/trade-ledger', (_req, res) => {
-  res.json({ ok:true, time:trTime(), timeZone:'Europe/Istanbul', trades:tradeLedger.slice(0,120), count:tradeLedger.length });
+  res.json({ ok:true, build:LAZARUS_BUILD, time:trTime(), timeZone:'Europe/Istanbul', trades:tradeLedger.slice(0,120), count:tradeLedger.length });
 });
 // Geriye dönük uyum için alias
 app.get('/api/trade-history', (_req, res) => {
-  res.json({ ok:true, trades:tradeLedger.slice(0,120), count:tradeLedger.length });
+  res.json({ ok:true, build:LAZARUS_BUILD, trades:tradeLedger.slice(0,120), count:tradeLedger.length });
 });
 
 // ── R166: TAM OTOMATİK BAŞLANGIÇ ────────────────────────────────────────────
