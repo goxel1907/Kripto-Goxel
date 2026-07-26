@@ -82,7 +82,7 @@ async function cached(key, ttl, fn) {
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R486_3_6_STORY_AUTHORITY_COMPOUND_TRUTH_10X'
+const LAZARUS_BUILD = 'R486_3_8_INTRABAR_ADAPTIVE_REACTION_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -213,6 +213,22 @@ function _resetGovWindowIfNeeded() {
     binanceGov.usedOrders = 0;
   }
 }
+// R486.3.8: Binance'in gerçek kullanım başlıklarını governor'a geri besle.
+// Böylece sabit süreyle kör frenlemek yerine mevcut REST yüküne göre adaptif reaksiyon verilir.
+function r48638SyncGovHeaders(res) {
+  try {
+    if (!res?.headers) return;
+    _resetGovWindowIfNeeded();
+    const w = Number(res.headers.get('x-mbx-used-weight-1m') || res.headers.get('X-MBX-USED-WEIGHT-1M'));
+    const o = Number(res.headers.get('x-mbx-order-count-1m') || res.headers.get('X-MBX-ORDER-COUNT-1M'));
+    if (Number.isFinite(w) && w >= 0) binanceGov.usedWeight = Math.max(Number(binanceGov.usedWeight||0), w);
+    if (Number.isFinite(o) && o >= 0) binanceGov.usedOrders = Math.max(Number(binanceGov.usedOrders||0), o);
+  } catch(_) {}
+}
+function r48638GovLoadRatio() {
+  _resetGovWindowIfNeeded();
+  return Math.max(0, Math.min(1.25, Number(binanceGov.usedWeight||0) / 1800));
+}
 async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
   const job = async () => {
     _resetGovWindowIfNeeded();
@@ -286,6 +302,7 @@ async function bAlgo(apiKey, apiSecret, params, _retry=false) {
     headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
     signal: AbortSignal.timeout(10000),
   });
+  r48638SyncGovHeaders(res);
   if (res.status === 429 || res.status === 418) {
     registerHttpBackoffAndThrow('algoOrder', res.status, res.headers.get('Retry-After'));
   }
@@ -758,6 +775,7 @@ async function bPub(path, qs='') {
   await binanceThrottle('PUBLIC_REST', r310qWeight, 0);
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
+  r48638SyncGovHeaders(r);
   if(r.status===429||r.status===418){registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'));}
   const text=await r.text();
   try{
@@ -863,6 +881,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
       const res = await fetch(finalUrl, options);
+      r48638SyncGovHeaders(res);
       if (res.status === 429 || res.status === 418) {
         registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
       }
@@ -4123,7 +4142,7 @@ function r482AdayKaynakSeridi(c={}) {
     const base = String(c?.symbol || c?.fullSymbol || '').replace('USDT','').toUpperCase();
     const pf = (typeof __r328PatlamaFlags === 'object' && __r328PatlamaFlags) ? __r328PatlamaFlags[base] : null;
     if (c?.r370Erken || /r370_erken/i.test(source) || /R385/i.test(sebep)) return 0; // tüm-piyasa erken/HTF worker
-    if (/R343_PATLAMA_ADAY/i.test(bucket) || c?.r327Patlama || (pf?.detected && Date.now()-Number(pf.ts||0)<5*60*1000)) return 1; // canlı patlama worker
+    if (/R343_PATLAMA_ADAY|R48637_GHOST_ADAY|R48637_TARGETED_WAKE/i.test(bucket) || c?.r327Patlama || (pf?.detected && Date.now()-Number(pf.ts||0)<5*60*1000)) return 1; // canlı patlama worker
     if (/R126_PRIORITY_WAKE/i.test(bucket)) return 2; // canlı orderflow uyanışı
     return 3; // birleşik normal evren: top gainer + volatilite + ilgi
   } catch(_) { return 3; }
@@ -4136,6 +4155,7 @@ function r482AdayKaynakPuani(c={}) {
 function r481MekanikVeri(coin, analysis, dc={}) {
   return {
     candles: analysis?.r308RawCandles,
+    liveCandles: analysis?.r308RawCandles?._live || null,
     atrYuzde: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? analysis?.atr ?? dc?.atrPct ?? 3),
     fiyat: Number(coin?.lastPrice || analysis?.price || 0),
     cvdDelta: Number(dc?.r125LiveDeltaPct ?? NaN),
@@ -4175,6 +4195,7 @@ function r481MekanikVeri(coin, analysis, dc={}) {
     proMap:dc?.r281ProMap || dc?.r281Map || null,
     sourceLane:r482AdayKaynakSeridi(coin),
     sourceLabel:String(coin?.r54Bucket || coin?.source || ''),
+    workerPulse:coin?.workerSignal || (coin?.ghostPreBreakout?{ts:Date.now(),score:Number(coin?.ghostScore||coin?.r370Skor||0),mode:'PRE_BREAKOUT_GHOST',ghost:{distCeilingAtr:coin?.distCeilAtr,buy3:coin?.buyNow}}:null) || ((typeof __r328PatlamaFlags==='object'&&__r328PatlamaFlags)?__r328PatlamaFlags[String(coin?.symbol||coin?.fullSymbol||'').replace('USDT','').toUpperCase()]:null),
     htfBreak:analysis?.r384HtfKirilim || null,
     trendBreak:analysis?.r316Trend || null,
     chartPattern:analysis?.r316ChartPat || null
@@ -4198,7 +4219,7 @@ const R486_EARLY_INVALIDATION_ACTIVE = String(process.env.R486_EARLY_INVALIDATIO
 const R486_EARLY_INVALIDATION_MIN_ROI = Math.max(-4.0, Math.min(-0.5, Number(process.env.R486_EARLY_INVALIDATION_MIN_ROI || -1.2)));
 const R486_EARLY_INVALIDATION_PRESSURE = Math.max(2.0, Math.min(5.0, Number(process.env.R486_EARLY_INVALIDATION_PRESSURE || 2.7)));
 const R486_EARLY_INVALIDATION_EXIT_SCORE = Math.max(3.5, Math.min(8.0, Number(process.env.R486_EARLY_INVALIDATION_EXIT_SCORE || 5.0)));
-// R486.3.6: TEK OTORİTE — grafik hikâyesi nihai giriş kararını verir.
+// R486.3.8: TEK OTORİTE — grafik hikâyesi nihai giriş kararını verir.
 // Eski tier/skor/R300/geç-giriş katmanları veri ve uyarı üretir; aynı adayı art arda veto edemez.
 // Operasyonel güvenlik (gerçek spread, aşırı ATR, TP/SL yönü, pozisyon/hesap/emir) değişmez.
 const R486_SINGLE_AUTHORITY_ACTIVE = String(process.env.R486_SINGLE_AUTHORITY_ACTIVE ?? '1') !== '0';
@@ -4206,13 +4227,13 @@ const R486_STORY_MARKET_MIN_QUALITY = Math.max(45, Math.min(80, Number(process.e
 const R486_STORY_TACTICAL_MIN_QUALITY = Math.max(40, Math.min(72, Number(process.env.R486_STORY_TACTICAL_MIN_QUALITY || 50)));
 const R486_STORY_TACTICAL_MIN_FIRST_RR = Math.max(0.45, Math.min(1.20, Number(process.env.R486_STORY_TACTICAL_MIN_FIRST_RR || 0.65)));
 const R486_STORY_NEAR_RETEST_ATR = Math.max(0.20, Math.min(0.90, Number(process.env.R486_STORY_NEAR_RETEST_ATR || 0.45)));
-// R486.3.6: WAIT/RETEST hikayesi market emrine köprülenmez; pusu olarak canlı tutulur.
+// R486.3.8: WAIT/RETEST hikayesi market emrine köprülenmez; pusu olarak canlı tutulur.
 const R486_WAIT_STORY_MARKET_BRIDGE = String(process.env.R486_WAIT_STORY_MARKET_BRIDGE || '0') === '1';
 // RUNNER yalnız ROI büyüdü diye tam kapanmaz; yapı/akış dönüşü veya gerçek giveback gerekir.
 const R486_RUNNER_ROI_CAP_EXIT = String(process.env.R486_RUNNER_ROI_CAP_EXIT || '0') === '1';
 // Analiz yönü, grafik hikayesi ve emir yönü aynı olmalıdır.
 const R486_STORY_DIRECTION_LOCK = String(process.env.R486_STORY_DIRECTION_LOCK ?? '1') !== '0';
-// R486.3.6: 1m+3m erken ateşleme, 5m yapı devamı ve patlama-sonrası reclaim ayrımı.
+// R486.3.8: 1m+3m erken ateşleme, 5m yapı devamı ve patlama-sonrası reclaim ayrımı.
 // Bunlar yeni veto yığını değildir: güçlü erken setup TACTICAL, üçlü teyit MARKET, teyitsiz dikey patlama PRIORITY_PUSU olur.
 const R486_MICRO_3M_ACTIVE = String(process.env.R486_MICRO_3M_ACTIVE ?? '1') !== '0';
 const R486_MICRO_CONSENSUS_ACTIVE = String(process.env.R486_MICRO_CONSENSUS_ACTIVE ?? '1') !== '0';
@@ -4221,10 +4242,46 @@ const R486_VERTICAL_IMPULSE_PROOF_REQUIRED = String(process.env.R486_VERTICAL_IM
 const R486_MICRO_MARKET_MIN_VOTES = Math.max(2, Math.min(3, Number(process.env.R486_MICRO_MARKET_MIN_VOTES || 3)));
 const R486_EARLY_IGNITION_RISK_SCALE = Math.max(.30, Math.min(.70, Number(process.env.R486_EARLY_IGNITION_RISK_SCALE || .45)));
 const R486_PRIORITY_PUSU_POLL_SEC = Math.max(8, Math.min(20, Number(process.env.R486_PRIORITY_PUSU_POLL_SEC || 12)));
-// R486.3.6: R447 imzası da grafik hikâyesi otoritesinden geçer; doğrudan MARKET kaçış yolu yoktur.
+// R486.3.8: R447 imzası da grafik hikâyesi otoritesinden geçer; doğrudan MARKET kaçış yolu yoktur.
 const R486_R447_STORY_AUTHORITY_BRIDGE = String(process.env.R486_R447_STORY_AUTHORITY_BRIDGE ?? '1') !== '0';
 // Q tipi erken short-squeeze: iki mikro zaman + alıcı akışıyla patlamanın başında TACTICAL yol açık kalır.
 const R486_SQUEEZE_IGNITION_TACTICAL = String(process.env.R486_SQUEEZE_IGNITION_TACTICAL ?? '1') !== '0';
+
+// R486.3.8: MTF GHOST / SATRANÇ motoru. Amaç tamamlanmış yeşil mum saymak değil;
+// sıkışma, yükselen taban, taker ivmesi, absorpsiyon ve HTF seviye geometrisinden
+// kırılım ÖNCESİ olasılığı puanlamak. Bunlar hard gate değildir: pozitif öncelik ve
+// TACTICAL/PUSU zamanlaması üretir; operasyonel safety dışında adayı boğmaz.
+const R486_MTF_GHOST_ACTIVE = String(process.env.R486_MTF_GHOST_ACTIVE ?? '1') !== '0';
+const R486_GHOST_SCORE_MIN = Math.max(55, Math.min(90, Number(process.env.R486_GHOST_SCORE_MIN || 68)));
+const R486_GHOST_TACTICAL_MIN = Math.max(60, Math.min(95, Number(process.env.R486_GHOST_TACTICAL_MIN || 74)));
+const R486_RETEST_PROOF_REQUIRED = String(process.env.R486_RETEST_PROOF_REQUIRED ?? '1') !== '0';
+const R486_FLOW_CONFLICT_TACTICAL = String(process.env.R486_FLOW_CONFLICT_TACTICAL ?? '1') !== '0';
+const R486_HTF_COUNTERTREND_TACTICAL = String(process.env.R486_HTF_COUNTERTREND_TACTICAL ?? '1') !== '0';
+const R486_FIRST_OBSTACLE_RESOLVE = String(process.env.R486_FIRST_OBSTACLE_RESOLVE ?? '1') !== '0';
+const R486_LATE_BREAKOUT_ATR = Math.max(.75, Math.min(2.5, Number(process.env.R486_LATE_BREAKOUT_ATR || 1.35)));
+// R486.3.8: 15m kapanışını zorunlu kapı yapma. Kapanmış HTF bağlamı korunur;
+// oluşan 15m mum yalnız 1m+3m+5m ve 1h/4h bağlamıyla bariz uyum varsa pozitif intrabar yol açar.
+const R486_INTRABAR_MTF_ACTIVE = String(process.env.R486_INTRABAR_MTF_ACTIVE ?? '1') !== '0';
+const R486_INTRABAR_MIN_SCORE = Math.max(60, Math.min(95, Number(process.env.R486_INTRABAR_MIN_SCORE || 76)));
+const R486_INTRABAR_MIN_PROGRESS = Math.max(.03, Math.min(.60, Number(process.env.R486_INTRABAR_MIN_PROGRESS || .08)));
+const R486_INTRABAR_MAX_BODY_ATR = Math.max(.45, Math.min(2.0, Number(process.env.R486_INTRABAR_MAX_BODY_ATR || 1.10)));
+// AI yokken tam tarama mum sınırına kilitlenmez; REST yüküne göre 90-240sn arasında adaptif çalışır.
+const R486_ADAPTIVE_SCAN_ACTIVE = String(process.env.R486_ADAPTIVE_SCAN_ACTIVE ?? '1') !== '0';
+const R486_FULL_SCAN_FAST_SEC = Math.max(60, Math.min(240, Number(process.env.R486_FULL_SCAN_FAST_SEC || 90)));
+const R486_FULL_SCAN_BASE_SEC = Math.max(75, Math.min(300, Number(process.env.R486_FULL_SCAN_BASE_SEC || 120)));
+const R486_FULL_SCAN_BUSY_SEC = Math.max(120, Math.min(420, Number(process.env.R486_FULL_SCAN_BUSY_SEC || 210)));
+const R486_R328_INTERVAL_SEC = Math.max(18, Math.min(60, Number(process.env.R486_R328_INTERVAL_SEC || 30)));
+const R486_R370_INTERVAL_SEC = Math.max(25, Math.min(90, Number(process.env.R486_R370_INTERVAL_SEC || 45)));
+const R486_R385_INTERVAL_SEC = Math.max(120, Math.min(600, Number(process.env.R486_R385_INTERVAL_SEC || 240)));
+const R486_R366_INTERVAL_SEC = Math.max(15, Math.min(60, Number(process.env.R486_R366_INTERVAL_SEC || 20)));
+
+// AI kapalıyken worker sinyali tam taramayı beklemez. Yalnız tek sembol,
+// gerçek Binance weight başlıklarına göre adaptif cooldown ile derin mekanik analiz edilir.
+const R486_MECH_FAST_WAKE_ACTIVE = String(process.env.R486_MECH_FAST_WAKE_ACTIVE ?? '1') !== '0';
+const R486_MECH_FAST_WAKE_MIN_SCORE = Math.max(65, Math.min(98, Number(process.env.R486_MECH_FAST_WAKE_MIN_SCORE || 76)));
+const R486_MECH_FAST_WAKE_GLOBAL_SEC = Math.max(8, Math.min(180, Number(process.env.R486_MECH_FAST_WAKE_GLOBAL_SEC || 12)));
+const R486_MECH_FAST_WAKE_SYMBOL_SEC = Math.max(20, Math.min(600, Number(process.env.R486_MECH_FAST_WAKE_SYMBOL_SEC || 45)));
+let r48637LastMechWakeTs=0; const r48637MechWakeBySymbol=new Map(),r48637TargetedWakeMeta=new Map();
 // Kullanıcının sabit sermaye sözleşmesi: özsermayenin %40'ı/pozisyon, max 2 pozisyon, %20 tampon.
 const R486_COMPOUND_MARGIN_ACTIVE = String(process.env.R486_COMPOUND_MARGIN_ACTIVE ?? '1') !== '0';
 const R486_MARGIN_PER_POSITION_PCT = Math.max(0.01, Math.min(0.80, Number(process.env.R486_MARGIN_PER_POSITION_PCT || 40) / 100));
@@ -4286,7 +4343,7 @@ function r483Agg(rs=[],n=2){
   const out=[];for(let i=0;i+n<=rs.length;i+=n){const g=rs.slice(i,i+n);out.push({i:out.length,ts:0,o:g[0].o,h:Math.max(...g.map(x=>x.h)),l:Math.min(...g.map(x=>x.l)),c:g.at(-1).c,v:g.reduce((a,x)=>a+x.v,0),aligned:false,count:g.length});}return out;
 }
 
-// R486.3.6: herhangi bir taban zaman diliminden UTC-hizalı tam mum üretir.
+// R486.3.8: herhangi bir taban zaman diliminden UTC-hizalı tam mum üretir.
 function r48635AggRows(rs=[],baseMs=60000,n=3){
   if(!Array.isArray(rs)||!rs.length||!(baseMs>0)||!(n>1))return [];
   const periodMs=baseMs*n,m=new Map();
@@ -4302,6 +4359,26 @@ function r48635AggregateRawKlines(raw=[],n=3){
     return [ts,String(g[0][1]),String(Math.max(...g.map(x=>Number(x[2])))),String(Math.min(...g.map(x=>Number(x[3])))),String(g.at(-1)[4]),String(g.reduce((a,x)=>a+Number(x[5]||0),0)),ts+periodMs-1,String(g.reduce((a,x)=>a+Number(x[7]||0),0)),g.reduce((a,x)=>a+Number(x[8]||0),0),String(g.reduce((a,x)=>a+Number(x[9]||0),0)),String(g.reduce((a,x)=>a+Number(x[10]||0),0)),'0'];
   }).filter(Boolean);
 }
+// R486.3.8: oluşan mumu kapı değil, canlı kanıt olarak taşı. HTF yapısı kapanmış mumlardan;
+// intrabar hız yolu bu snapshotı 1m/3m/5m ortaklığıyla ayrıca tartar.
+function r48638LiveKline(raw=[],periodMs=60000){
+  try{
+    if(!Array.isArray(raw)||!raw.length)return null;
+    const x=raw.at(-1),ts=Number(x?.[0]||0),now=Date.now();
+    if(!(ts>0)||ts+periodMs<=now)return null;
+    return {ts,progress:Math.max(0,Math.min(1,(now-ts)/periodMs)),o:Number(x[1]),h:Number(x[2]),l:Number(x[3]),c:Number(x[4]),v:Number(x[5]||0),tbv:Number(x[9]||0),live:true};
+  }catch(_){return null;}
+}
+function r48638LiveAggregate1m(raw=[],n=3){
+  try{
+    if(!Array.isArray(raw)||!raw.length||!(n>1))return null;
+    const now=Date.now(),periodMs=60000*n,last=raw.at(-1),lastTs=Number(last?.[0]||0);if(!(lastTs>0))return null;
+    const key=Math.floor(lastTs/periodMs)*periodMs,g=raw.filter(x=>{const ts=Number(x?.[0]||0);return ts>=key&&ts<key+periodMs;});
+    if(!g.length||key+periodMs<=now)return null;
+    return {ts:key,progress:Math.max(0,Math.min(1,(now-key)/periodMs)),o:Number(g[0][1]),h:Math.max(...g.map(x=>Number(x[2]))),l:Math.min(...g.map(x=>Number(x[3]))),c:Number(g.at(-1)[4]),v:g.reduce((a,x)=>a+Number(x[5]||0),0),tbv:g.reduce((a,x)=>a+Number(x[9]||0),0),live:true,count:g.length};
+  }catch(_){return null;}
+}
+function r48638LiveRow(x){return x&&x.o>0&&x.h>=x.l&&x.c>0?{i:0,ts:Number(x.ts||0),o:Number(x.o),h:Number(x.h),l:Number(x.l),c:Number(x.c),v:Number(x.v||0),tbv:Number(x.tbv||0),progress:Number(x.progress||0),live:true}:null;}
 const r48635DetectionState=new Map();
 function r48635DetectionStamp(symbol,setup){
   const key=String(symbol||'').replace('USDT','').toUpperCase(),now=Date.now();
@@ -4312,6 +4389,39 @@ function r48635DetectionStamp(symbol,setup){
   r48635DetectionState.set(key,row);
   return {firstSeenAt:row.firstSeenAt,firstSetup:row.firstSetup,lastSetup:row.lastSetup,ageMs:Math.max(0,now-row.firstSeenAt)};
 }
+
+function r48637GhostMath(bars=[],b3=[],b5=[]){
+  try{
+    if(!R486_MTF_GHOST_ACTIVE||!Array.isArray(bars)||bars.length<20)return {ready:false,score:0,reason:'OFF_OR_SHORT'};
+    const x=bars.slice(-24),last=x.at(-1),eps=1e-12,avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0,clamp=v=>Math.max(0,Math.min(1,v));
+    const tr=[];for(let j=1;j<x.length;j++)tr.push(Math.max(x[j].h-x[j].l,Math.abs(x[j].h-x[j-1].c),Math.abs(x[j].l-x[j-1].c)));
+    const atr6=avg(tr.slice(-6)),atr18=avg(tr.slice(-18)),atr=Math.max(eps,atr18||atr6||last.c*.001);
+    const rangeOf=a=>a.length?Math.max(...a.map(z=>z.h))-Math.min(...a.map(z=>z.l)):0;
+    const recent=x.slice(-7),prior=x.slice(-19,-7),rRecent=rangeOf(recent),rPrior=Math.max(eps,rangeOf(prior));
+    const compression=clamp((1-rRecent/rPrior)/.50);
+    const volPrior=avg(x.slice(-22,-10).map(z=>z.v)),volDry=avg(x.slice(-10,-3).map(z=>z.v)),volWake=avg(x.slice(-3).map(z=>z.v));
+    const dryScore=volPrior>0?clamp((1-volDry/volPrior)/.55):0,wakeScore=volDry>0?clamp((volWake/volDry-1)/1.5):0;
+    const buyRatio=z=>z.v>0?z.tbv/z.v:.5,buy3=avg(x.slice(-3).map(buyRatio)),buyPrev=avg(x.slice(-10,-3).map(buyRatio));
+    const buyAccel=clamp(((buy3-buyPrev)*100+1)/18),buyPressure=clamp((buy3-.50)/.13);
+    const lows=recent.map(z=>z.l),closes=recent.map(z=>z.c),slope=a=>a.length>1?(a.at(-1)-a[0])/(a.length-1):0;
+    const lowSlopeAtr=slope(lows)/atr,closeSlopeAtr=slope(closes)/atr,higherLow=clamp((lowSlopeAtr+.02)/.20),drift=clamp((closeSlopeAtr+.01)/.18);
+    const ceiling=Math.max(...x.slice(-20,-3).map(z=>z.h)),distCeilAtr=(ceiling-last.c)/atr;
+    const nearCeiling=distCeilAtr>=-.18&&distCeilAtr<=1.15?clamp(1-Math.abs(distCeilAtr-.35)/.85):0;
+    const rng=Math.max(eps,last.h-last.l),clv=(last.c-last.l)/rng,lowerWick=(Math.min(last.o,last.c)-last.l)/rng,upperWick=(last.h-Math.max(last.o,last.c))/rng;
+    const absorption=clamp((lowerWick*.75+clv*.55+(buy3-.5)*1.8));
+    const L3=b3.at(-1),P3=b3.at(-2),L5=b5.at(-1),P5=b5.at(-2);
+    const bull3=!!(L3&&P3&&L3.c>=P3.c&&L3.l>=P3.l*.9985),fiveNotBear=!!(L5&&P5&&L5.c>=P5.c*.995&&!((L5.c<L5.o&&L5.c<P5.l)||(L5.c<P5.c*.994&&L5.h<=P5.h)));
+    const last6Move=Math.abs(last.c-x.at(-7).c)/atr,lastBody=Math.abs(last.c-last.o)/atr;
+    const alreadyLate=last6Move>R486_LATE_BREAKOUT_ATR||lastBody>1.05||distCeilAtr<-.80||wakeScore>.95&&lastBody>.75;
+    const rejection=upperWick>.58&&last.h>ceiling*1.00005&&last.c<ceiling&&last.c<last.o;
+    let score=compression*18+dryScore*8+wakeScore*10+buyAccel*15+buyPressure*10+higherLow*14+drift*7+nearCeiling*10+absorption*5+(bull3?7:0)+(fiveNotBear?5:0);
+    if(alreadyLate)score-=26;if(rejection)score-=24;if(buy3<.49)score-=10;if(lowSlopeAtr<-.04)score-=10;
+    score=Math.max(0,Math.min(100,Math.round(score)));
+    const ready=score>=R486_GHOST_SCORE_MIN&&!alreadyLate&&!rejection&&buy3>=.505&&fiveNotBear&&distCeilAtr>=-.18&&distCeilAtr<=1.15;
+    return {ready,score,compression:+compression.toFixed(2),dry:+dryScore.toFixed(2),wake:+wakeScore.toFixed(2),buy3:+buy3.toFixed(3),buyPrev:+buyPrev.toFixed(3),buyAccel:+((buy3-buyPrev)*100).toFixed(1),higherLow:+higherLow.toFixed(2),drift:+drift.toFixed(2),distCeilingAtr:+distCeilAtr.toFixed(2),absorption:+absorption.toFixed(2),bull3,fiveNotBear,alreadyLate,rejection,ceiling:+ceiling.toFixed(10)};
+  }catch(e){return {ready:false,score:0,reason:String(e?.message||e).slice(0,80)};}
+}
+
 function r48635ExplosionPulse(kl=[]){
   try{
     if(!Array.isArray(kl)||kl.length<18)return {ok:false,reason:'YETERSIZ_1M'};
@@ -4327,8 +4437,10 @@ function r48635ExplosionPulse(kl=[]){
     const fiveContextOk=!bear5&&L5.c>=P5.c*.995;
     const early=vol1>=1.45&&body1>=.12&&delta1>4&&bull3&&fiveContextOk;
     const confirmed=vol5>=1.8&&body5>=.40&&L5.c>L5.o&&delta5>0;
-    const score=Math.max(0,Math.min(100,Math.round(vol1*18+Math.max(0,body1)*18+Math.max(0,delta1)*.25+(bull3?18:0)+(fiveContextOk?10:0)+(confirmed?15:0))));
-    return {ok:true,early,confirmed,mode:confirmed?'CONFIRMED_5M_EXPLOSION':early?'EARLY_1M_3M_IGNITION':'WATCH',score,vol1:+vol1.toFixed(2),body1:+body1.toFixed(3),delta1:+delta1.toFixed(1),bull3,fiveContextOk,bear5,vol5:+vol5.toFixed(2),body5:+body5.toFixed(3),delta5:+delta5.toFixed(1)};
+    const ghost=r48637GhostMath(bars,b3,b5),baseScore=Math.max(0,Math.min(100,Math.round(vol1*18+Math.max(0,body1)*18+Math.max(0,delta1)*.25+(bull3?18:0)+(fiveContextOk?10:0)+(confirmed?15:0))));
+    const score=Math.max(baseScore,Number(ghost.score||0));
+    const mode=confirmed?'CONFIRMED_5M_EXPLOSION':early?'EARLY_1M_3M_IGNITION':ghost.ready?'PRE_BREAKOUT_GHOST':'WATCH';
+    return {ok:true,early,confirmed,ghostReady:!!ghost.ready,ghost,mode,score,vol1:+vol1.toFixed(2),body1:+body1.toFixed(3),delta1:+delta1.toFixed(1),bull3,fiveContextOk,bear5,vol5:+vol5.toFixed(2),body5:+body5.toFixed(3),delta5:+delta5.toFixed(1)};
   }catch(e){return {ok:false,reason:String(e?.message||e).slice(0,80)};}
 }
 
@@ -4479,12 +4591,20 @@ function r483OiFunding(data={},p15=0,flow={}){
 function r484Near(z,price,limit){return !!(z&&(z.inZone||Number(z.dist)<=limit));}
 function r483ChartStory(symbol,data={}){
   try{
-    const c=data.candles||{},times=c._times||{},price=Number(data.fiyat||0),tf={},rows={};
+    const c=data.candles||{},times=c._times||{},price=Number(data.fiyat||0),tf={},rows={},liveMeta=c._live||data.liveCandles||{};
     for(const k of ['1m','5m','15m','1h','4h','1d']){rows[k]=r483Rows(c[k],times[k]);tf[k]=r484Structure(rows[k],k);}
     rows['3m']=R486_MICRO_3M_ACTIVE?(Array.isArray(c['3m'])&&c['3m'].length?r483Rows(c['3m'],times['3m']):r48635AggRows(rows['1m'],60000,3)):[];tf['3m']=r484Structure(rows['3m'],'3m');
-    rows['30m']=r483Agg(rows['15m'],2);tf['30m']=r484Structure(rows['30m'],'30m');
+    const closed15For30=[...rows['15m']];
+    if(R486_INTRABAR_MTF_ACTIVE){
+      for(const k of ['1m','3m','5m','15m']){
+        const lr=r48638LiveRow(liveMeta?.[k]);
+        if(lr&&(!rows[k].length||Number(lr.ts)>Number(rows[k].at(-1)?.ts||0))){lr.i=rows[k].length;rows[k]=[...rows[k],lr];tf[k]=r484Structure(rows[k],k);}
+      }
+    }
+    rows['30m']=r483Agg(closed15For30,2);tf['30m']=r484Structure(rows['30m'],'30m');
     const fvg={},ob={},fib={},liq={};for(const k of ['1m','3m','5m','15m','30m','1h','4h','1d']){fvg[k]=r483Fvg(rows[k],price);ob[k]=r483Ob(rows[k],price);fib[k]=r483Fib(rows[k],price);liq[k]=r483Liquidity(rows[k],price);}
     const flow=r484OrderFlow(data,rows['1m'].length?rows['1m']:rows['5m'].length?rows['5m']:rows['15m']),oi=r483OiFunding(data,tf['15m']?.ret1||0,flow),bull=[],bear=[],risks=[],evidence=[];let long=0,short=0;
+    const workerPulse=data.workerPulse||((typeof __r328PatlamaFlags==='object'&&__r328PatlamaFlags)?__r328PatlamaFlags[String(symbol||'').replace('USDT','').toUpperCase()]:null),workerPulseFresh=!!(workerPulse&&Date.now()-Number(workerPulse.ts||0)<6*60*1000),ghostPulse=!!(R486_MTF_GHOST_ACTIVE&&workerPulseFresh&&String(workerPulse.mode||'')==='PRE_BREAKOUT_GHOST'&&Number(workerPulse.score||0)>=R486_GHOST_SCORE_MIN);
     const add=(side,pts,label,meta={})=>{if(side==='LONG'){long+=pts;bull.push(label);}else{short+=pts;bear.push(label);}evidence.push({side,pts:+pts.toFixed(2),label,...meta});};
     for(const [k,w] of Object.entries(R484_TF_WEIGHTS)){const x=tf[k]||{};if(x.trend==='UP_HH_HL')add('LONG',w,`${k} HH/HL`,{tf:k,kind:'STRUCTURE'});if(x.trend==='DOWN_LH_LL')add('SHORT',w,`${k} LH/LL`,{tf:k,kind:'STRUCTURE'});for(const ev of x.events||[]){const m=ev.strong?1.25:1;const pts=(ev.type.startsWith('MSS')?w*1.25:ev.type.startsWith('CHOCH')?w:ev.type.includes('TREND_RETEST')?w*.98:ev.type.includes('TREND_BREAK')?w*.9:ev.type.includes('FALSE_BREAK')?w*.62:w*.72)*m;add(ev.side,pts,`${k} ${ev.type}`,{tf:k,kind:ev.type,level:ev.level});}}
     for(const k of ['3m','5m','15m','1h','4h']){const w=R484_TF_WEIGHTS[k]||1,fg=fvg[k],oo=ob[k],ll=liq[k],ff=fib[k],near=Math.max(.6,Math.min(2.2,Number(data.atrYuzde||3)*.42));if(r484Near(fg.bull,price,near))add('LONG',w*.62,`${k} bull FVG ${fg.bull.state}`,{tf:k,kind:'FVG',zone:fg.bull});if(r484Near(fg.bear,price,near))add('SHORT',w*.62,`${k} bear FVG ${fg.bear.state}`,{tf:k,kind:'FVG',zone:fg.bear});if(r484Near(fg.ifvgBull,price,near*1.5))add('LONG',w*.82,`${k} bullish IFVG`,{tf:k,kind:'IFVG',zone:fg.ifvgBull});if(r484Near(fg.ifvgBear,price,near*1.5))add('SHORT',w*.82,`${k} bearish IFVG`,{tf:k,kind:'IFVG',zone:fg.ifvgBear});if(fg.mitigatedBull&&r484Near(fg.mitigatedBull,price,near*1.5))add('LONG',w*.45,`${k} FVG mitigation↑`,{tf:k,kind:'FVG_MITIGATION'});if(fg.mitigatedBear&&r484Near(fg.mitigatedBear,price,near*1.5))add('SHORT',w*.45,`${k} FVG mitigation↓`,{tf:k,kind:'FVG_MITIGATION'});if(r484Near(oo.demand,price,near*1.2))add('LONG',w*.58,`${k} demand OB ${oo.demand.state}`,{tf:k,kind:'ORDER_BLOCK',zone:oo.demand});if(r484Near(oo.supply,price,near*1.2))add('SHORT',w*.58,`${k} supply OB ${oo.supply.state}`,{tf:k,kind:'ORDER_BLOCK',zone:oo.supply});if(oo.mitigatedDemand&&r484Near(oo.mitigatedDemand,price,near*1.6))add('LONG',w*.42,`${k} OB mitigation↑`,{tf:k,kind:'OB_MITIGATION'});if(oo.mitigatedSupply&&r484Near(oo.mitigatedSupply,price,near*1.6))add('SHORT',w*.42,`${k} OB mitigation↓`,{tf:k,kind:'OB_MITIGATION'});if(ff?.ok&&ff.inZone)add(ff.side,w*.52,`${k} ana-bacak OTE ${ff.side}`,{tf:k,kind:'FIB_OTE',fibScore:ff.score});if(ll.sweepBull)add('LONG',w*.78,`${k} SSL sweep+reclaim`,{tf:k,kind:'SWEEP_RECLAIM',level:ll.sweepBull.level});if(ll.sweepBear)add('SHORT',w*.78,`${k} BSL sweep+reclaim`,{tf:k,kind:'SWEEP_RECLAIM',level:ll.sweepBear.level});}
@@ -4501,9 +4621,13 @@ function r483ChartStory(symbol,data={}){
     const microBull=microBullCount>=2,microBear=microBearCount>=2||!!tf['5m']?.mssDown||tf['5m']?.trend==='DOWN_LH_LL';
     const microConfirmedContinuation=R486_MICRO_CONSENSUS_ACTIVE&&microBullCount>=R486_MICRO_MARKET_MIN_VOTES&&microBearCount===0&&!targetRejection&&(!parabolicChase||staircaseImpulse);
     const earlyIgnition=R486_EARLY_IGNITION_ACTIVE&&microVotes['1m'].bull&&microVotes['3m'].bull&&!microVotes['5m'].bull&&!microVotes['5m'].bear&&['RANGE_MIXED','COMPRESSION','EXPANSION'].includes(microVotes['5m'].trend)&&microVotes['5m'].ret1>=-.18&&!targetRejection&&!parabolicChase;
-    const verticalImpulse=!!(parabolicChase||(impulseChase&&impulseConcentration>=.52)||(t15.ret1>=Math.max(1.3,atrPct*.78)&&bodyRatio15>=.58));
+    const live15=liveMeta?.['15m']||null,live15Progress=Number(live15?.progress||0),live15Range=Math.max(1e-12,Number(live15?.h||0)-Number(live15?.l||0)),live15Body=Math.max(0,Number(live15?.c||0)-Number(live15?.o||0)),live15BodyAtr=atrAbs>0?live15Body/atrAbs:0,live15Upper=live15Range>0?(Number(live15?.h||0)-Math.max(Number(live15?.o||0),Number(live15?.c||0)))/live15Range:0;
+    const htfBullContext=[t1.trend,t4.trend,td.trend].filter(x=>x==='UP_HH_HL'||x==='EXPANSION'||x==='COMPRESSION').length,htfHardBear=[t1.trend,t4.trend,td.trend].filter(x=>x==='DOWN_LH_LL').length;
+    const intrabarMtfScore=Math.max(0,Math.min(100,Math.round(microBullCount*18+(microBearCount===0?10:0)+htfBullContext*9+(flow.state==='BUYERS_CONTROL'?14:flow.state==='BUY_LEAN'?7:0)+(oi.state==='LONG_BUILD'||oi.state==='SHORT_SQUEEZE'?9:0)+(live15BodyAtr>0?Math.min(14,live15BodyAtr*12):0)-(live15Upper>.42?18:0)-(live15BodyAtr>R486_INTRABAR_MAX_BODY_ATR?20:0)-htfHardBear*5)));
+    const intrabarMtfObvious=!!(R486_INTRABAR_MTF_ACTIVE&&live15&&live15Progress>=R486_INTRABAR_MIN_PROGRESS&&live15Body>0&&microBullCount>=2&&microBearCount===0&&htfBullContext>=1&&htfHardBear<=1&&intrabarMtfScore>=R486_INTRABAR_MIN_SCORE&&live15Upper<.42&&live15BodyAtr<=R486_INTRABAR_MAX_BODY_ATR&&!targetRejection);
+    const verticalImpulse=!!(parabolicChase||(impulseChase&&impulseConcentration>=.52)||(t15.ret1>=Math.max(1.3,atrPct*.78)&&bodyRatio15>=.58)||(live15BodyAtr>R486_INTRABAR_MAX_BODY_ATR));
     const postImpulseReject=!!(verticalImpulse&&(targetRejection||microBearCount>=2||tf['5m']?.trend==='DOWN_LH_LL'||(upperWick15>=.28&&red15)));
-    if(microConfirmedContinuation)add('LONG',3.2,'1m+3m+5m ortak yapı devamı',{kind:'MICRO_CONSENSUS'});else if(earlyIgnition)add('LONG',1.8,'1m+3m erken ateşleme; 5m ters değil',{kind:'EARLY_IGNITION'});if(microBearCount>=2)add('SHORT',2.2,'mikro yapıda 2/3 aşağı dönüş',{kind:'MICRO_REVERSAL'});
+    if(microConfirmedContinuation)add('LONG',3.2,'1m+3m+5m ortak yapı devamı',{kind:'MICRO_CONSENSUS'});else if(earlyIgnition)add('LONG',1.8,'1m+3m erken ateşleme; 5m ters değil',{kind:'EARLY_IGNITION'});if(intrabarMtfObvious)add('LONG',3.0,`15m kapanış beklemeden bariz MTF uyumu ${intrabarMtfScore}`,{kind:'INTRABAR_MTF',progress:live15Progress});if(ghostPulse)add('LONG',2.4,`MTF hayalet ön-kırılım ${Number(workerPulse.score||0)}`,{kind:'PRE_BREAKOUT_GHOST',ghost:workerPulse.ghost||null});if(microBearCount>=2)add('SHORT',2.2,'mikro yapıda 2/3 aşağı dönüş',{kind:'MICRO_REVERSAL'});
     const oiConflict=oi.reliable&&['TRAP_BUILDUP','POSITION_UNWIND','LONG_LIQUIDATION'].includes(oi.state),flowBear=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(flow.state),flowBull=['BUYERS_CONTROL','SELL_ABSORPTION_BULL'].includes(flow.state),flowConflict=flow.conflict||flowBear;
     let topRisk=upper*1.35+(nearHtfSupply?2.6:0)+(nearUpperLiquidity?1.5:0)+(impulseChase?1.5:0)+(targetRejection?1.6:0)+(oi.crowdedLong?1.1:0)+(oiConflict?1.8:0)+(microBear?1.8:0)+(postImpulseReject?2.4:0)+(trendBreakBear?1.65:0)+(flowBear?1.5:0)+(flow.conflict?.8:0);if(nearHtfSupply)risks.push('15m/1h/4h supply OB veya bearish FVG/IFVG yakın');if(nearUpperLiquidity)risks.push('üst likiditeye alan dar');if(impulseChase)risks.push('15m impuls sonrası market-order kovalamaca');if(targetRejection)risks.push('15m hedef reddi/üst fitil');if(microBear)risks.push('1m/3m/5m mikro yapı aşağı dönüş gösteriyor');if(postImpulseReject)risks.push('dikey patlama sonrası üst reddi / mikro yapı kaybı');if(trendBreakBear)risks.push('yükselen trend desteği kırıldı/retest aşağı tuttu');if(flowBear)risks.push(`order-flow ${flow.state}`);if(oiConflict)risks.push(`OI ${oi.state}`);
     const structuralTopEvidence=[upper>=2,nearHtfSupply,nearUpperLiquidity,impulseChase,targetRejection].filter(Boolean).length,trapEvidence=[microBear,oiConflict,flowConflict,oi.crowdedLong].filter(Boolean).length,bias=long>short+2.2?'LONG':short>long+2.2?'SHORT':'MIXED';
@@ -4512,7 +4636,7 @@ function r483ChartStory(symbol,data={}){
     const obstacles=[...targets,{p:ob['3m']?.supply?.low,t:'3M_SUPPLY_OB'},{p:fvg['3m']?.bear?.low,t:'3M_BEAR_FVG'},{p:ob['5m']?.supply?.low,t:'5M_SUPPLY_OB'},{p:ob['15m']?.supply?.low,t:'15M_SUPPLY_OB'},{p:ob['1h']?.supply?.low,t:'1H_SUPPLY_OB'},{p:fvg['5m']?.bear?.low,t:'5M_BEAR_FVG'},{p:fvg['15m']?.bear?.low,t:'15M_BEAR_FVG'},{p:fvg['1h']?.bear?.low,t:'1H_BEAR_FVG'},{p:tf['15m']?.trendline?.resistance?.linePrice,t:'15M_TRENDLINE_RES'}].map(x=>({...x,p:Number(x.p)})).filter(x=>x.p>price).sort((a,b)=>a.p-b.p),firstObstacleObj=obstacles[0]||null,firstObstacle=firstObstacleObj?.p||null,firstObstacleDistPct=firstObstacle?((firstObstacle-price)/price*100):null;
     const freshRetest=(k,maxBars)=>{const z=tf[k]?.trendline,idx=Number(z?.retestUpIndex);return !!(z?.retestUp&&Number.isFinite(idx)&&rows[k].length-1-idx<=maxBars);},freshTrendRetest=freshRetest('1m',5)||freshRetest('3m',4)||freshRetest('5m',3)||freshRetest('15m',2)||freshRetest('1h',1),trendLineNow=Number(tf['15m']?.trendline?.resistance?.linePrice||tf['5m']?.trendline?.resistance?.linePrice||tf['3m']?.trendline?.resistance?.linePrice||0),trendRetestNear=trendLineNow>0&&Math.abs(price-trendLineNow)<=Math.max(price*.004,atrAbs*.35),validatedTrendRetest=freshTrendRetest&&trendRetestNear&&!microBear&&!flowBear;
     const confirmedPullback=!!(validatedTrendRetest&&microBullCount>=2&&!microVotes['5m'].bear&&!flowBear);
-    const microConsensus={active:R486_MICRO_CONSENSUS_ACTIVE,votes:microVotes,bullCount:microBullCount,bearCount:microBearCount,confirmedContinuation:microConfirmedContinuation,earlyIgnition,confirmedPullback,verticalImpulse,postImpulseReject,status:postImpulseReject?'POST_IMPULSE_REJECTION':confirmedPullback?'CONFIRMED_PULLBACK':microConfirmedContinuation?'CONFIRMED_CONTINUATION':earlyIgnition?'EARLY_IGNITION':microBear?'MICRO_REVERSAL':'MIXED'};
+    const microConsensus={active:R486_MICRO_CONSENSUS_ACTIVE,votes:microVotes,bullCount:microBullCount,bearCount:microBearCount,confirmedContinuation:microConfirmedContinuation,earlyIgnition,intrabarMtfObvious,intrabarMtfScore,live15Progress:+live15Progress.toFixed(3),live15BodyAtr:+live15BodyAtr.toFixed(2),ghostPrebreakout:ghostPulse,ghostScore:ghostPulse?Number(workerPulse.score||0):0,ghost:ghostPulse?(workerPulse.ghost||null):null,confirmedPullback,verticalImpulse,postImpulseReject,status:postImpulseReject?'POST_IMPULSE_REJECTION':confirmedPullback?'CONFIRMED_PULLBACK':intrabarMtfObvious?'INTRABAR_MTF_JOIN':microConfirmedContinuation?'CONFIRMED_CONTINUATION':earlyIgnition?'EARLY_IGNITION':ghostPulse?'PRE_BREAKOUT_GHOST':microBear?'MICRO_REVERSAL':'MIXED'};
     const dailyAgainst=td.trend==='DOWN_LH_LL',compressionConflict=t15.trend==='COMPRESSION'&&(t5.trend==='DOWN_LH_LL'||microBear)&&(dailyAgainst||t1.trend!=='UP_HH_HL'),nearObstacle=firstObstacleDistPct!==null&&firstObstacleDistPct<=Math.max(.55,atrPct*.18),strongBreak=trendBreakBull&&microBull&&flowBull&&!targetRejection,structuredContinuation=((staircaseImpulse&&t15.trend==='UP_HH_HL')||microConfirmedContinuation)&&flowBull&&!microBear&&!nearObstacle&&!targetRejection;
     let timing=bias==='LONG'?'JOIN':bias==='SHORT'?'AVOID_LONG':'MIXED',entryMode=structuredContinuation?'STRUCTURED_CONTINUATION':'MARKET';
     if(bias==='LONG'&&!(microBull||validatedTrendRetest||((t15.trend==='UP_HH_HL'||trendBreakBull)&&flowBull&&!parabolicChase&&!nearObstacle))){timing='WAIT_CONFIRM';entryMode='MICRO_CONFIRM';}
@@ -4522,15 +4646,17 @@ function r483ChartStory(symbol,data={}){
     if(bias==='LONG'&&flow.conflict&&timing==='JOIN'){timing='WAIT_CONFIRM';entryMode='FLOW_CONSENSUS_REQUIRED';}
     if(bias==='LONG'&&trendBreakBear){timing=(microBear||upper>=2)?'TRAP':'WAIT_CONFIRM';entryMode='STRUCTURE_RECLAIM';}
     if(bias==='MIXED'&&((structuralTopEvidence>=2&&trapEvidence>=2)||(trapEvidence>=3&&topRisk>=5))){timing='TRAP';entryMode='CONFIRM_RECLAIM';}
-    // R486.3.6 yönlendirmesi: erken ateşlemeyi kaçırma, fakat dikey patlama sonrası reddi MARKET sanma.
+    // R486.3.8 yönlendirmesi: erken ateşlemeyi kaçırma, fakat dikey patlama sonrası reddi MARKET sanma.
     if(postImpulseReject){timing=structuralTopEvidence>=3?'TRAP':'WAIT_RETEST';entryMode='POST_IMPULSE_RECLAIM_REQUIRED';}
     else if(confirmedPullback&&bias!=='SHORT'){timing='JOIN';entryMode='MICRO_CONFIRMED_PULLBACK';}
+    else if(intrabarMtfObvious&&bias!=='SHORT'){timing='INTRABAR_JOIN';entryMode='LIVE_15M_MTF_CONTINUATION';}
     else if(microConfirmedContinuation&&bias==='LONG'){timing='JOIN';entryMode='MICRO_1M_3M_5M_CONTINUATION';}
     else if(earlyIgnition&&bias!=='SHORT'){timing='EARLY_IGNITION';entryMode='MICRO_1M_3M_EARLY';}
-    const quality=Math.max(0,Math.min(100,Math.round(50+(long-short)*3.4-topRisk*2.15+(microConfirmedContinuation?10:earlyIgnition?5:microBull?3:0)+(confirmedPullback?6:0)-(postImpulseReject?8:0)+(flow.state==='SELL_ABSORPTION_BULL'?4:0)-(flow.conflict?4:0)-(!oi.reliable?2:0)))),qualityAdj=Math.max(-9,Math.min(8,Math.round((quality-55)/7.5))),invalidation=ob['15m']?.demand?.low||fvg['15m']?.bull?.low||liq['15m']?.below||null,support=liq['15m']?.below||ob['15m']?.demand?.high||fvg['15m']?.bull?.low||null,resistance=firstObstacle||liq['15m']?.above||ob['15m']?.supply?.low||fvg['15m']?.bear?.high||null;let mmScenario='UNRESOLVED';if(postImpulseReject)mmScenario='POST_IMPULSE_REJECTION_WAIT_RECLAIM';else if(earlyIgnition)mmScenario='MICRO_EARLY_IGNITION';else if(microConfirmedContinuation)mmScenario='MICRO_CONSENSUS_MARKUP';else if(confirmedPullback)mmScenario='VALIDATED_PULLBACK_RECLAIM';else if(validatedTrendRetest)mmScenario='DESCENDING_TREND_BROKEN_RETEST_OR_MARKUP';else if(trendBreakBull)mmScenario='BREAKOUT_AWAITING_RETEST';else if(trendBreakBear)mmScenario='ASCENDING_TREND_BROKEN_DISTRIBUTION_RISK';else if(timing==='TRAP')mmScenario='UPPER_LIQUIDITY_GRAB_OR_DISTRIBUTION';else if(oi.state==='SHORT_SQUEEZE'&&targetLiquidity)mmScenario='SHORT_COVER_TO_UPPER_LIQUIDITY';else if(oi.state==='LONG_BUILD'&&bias==='LONG'&&flowBull)mmScenario='MARKUP_WITH_NEW_LONGS';else if(liq['15m']?.sweepBull||liq['5m']?.sweepBull)mmScenario='SELL_SIDE_LIQUIDITY_TAKEN_REPRICING_UP';else if((fib['15m']?.inZone&&fib['15m'].side==='LONG')||ob['15m']?.demand?.inZone||fvg['15m']?.bull?.inZone)mmScenario='DISCOUNT_REPRICING_FROM_DEMAND';else if(bias==='LONG'&&targetLiquidity)mmScenario='MARKUP_TO_BUY_SIDE_LIQUIDITY';
-    const setupKey=postImpulseReject?'POST_IMPULSE_REJECTION':confirmedPullback?'CONFIRMED_PULLBACK':microConfirmedContinuation?'CONFIRMED_CONTINUATION':earlyIgnition?'EARLY_IGNITION':null,detection=r48635DetectionStamp(symbol,setupKey),microBreakLevel=Math.max(Number(tf['1m']?.lastHigh||0),Number(tf['3m']?.lastHigh||0),Number(tf['5m']?.lastHigh||0)),distanceFromBreakoutAtr=microBreakLevel>0&&atrAbs>0?+((price-microBreakLevel)/atrAbs).toFixed(2):null;
-    const storyParts=[`15m ${t15.trend||'?'}`,`mikro 1m:${microVotes['1m'].trend}/3m:${microVotes['3m'].trend}/5m:${microVotes['5m'].trend}`,`mikroDurum ${microConsensus.status}`,`1h ${t1.trend||'?'}`,`4h ${t4.trend||'?'}`,`1d ${td.trend||'?'}`,`akış ${flow.state}`,`OI ${oi.state}`,`MM ${mmScenario}`,`trend ${tf['15m']?.trendline?.state||'NO_BREAK'}`];if(firstObstacle)storyParts.push(`ilkEngel ${Number(firstObstacle)}`);if(targetLiquidity)storyParts.push(`hedefLik ${Number(targetLiquidity)}`);if(['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(timing)&&retestEntry)storyParts.push(`market kovalanmaz; retest ${Number(retestEntry)}`);if(detection)storyParts.push(`ilkAlgı ${Math.round(detection.ageMs/1000)}sn önce`);
-    return {version:'R486.3.6',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,retestType:retestObj?.t||null,retestGapPct:retestGapPct===null?null:+retestGapPct.toFixed(2),retestGapAtr:retestGapAtr===null?null:+retestGapAtr.toFixed(2),targetLiquidity,targetType:targetObj?.t||null,firstObstacle,firstObstacleType:firstObstacleObj?.t||null,firstObstacleDistPct:firstObstacleDistPct===null?null:+firstObstacleDistPct.toFixed(2),invalidation,support,resistance,flowState:flow.state,orderFlow:flow,mmScenario,structuralTopEvidence,trapEvidence,impulseChase,parabolicChase,staircaseImpulse,impulseConcentration:+impulseConcentration.toFixed(2),targetRejection,upperWick15:+upperWick15.toFixed(2),bodyRatio15:+bodyRatio15.toFixed(2),validatedTrendRetest,compressionConflict,nearObstacle,structuredContinuation,microConsensus,detection,distanceFromBreakoutAtr,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},source:{lane:data.sourceLane,label:data.sourceLabel}};
+    else if(ghostPulse&&bias!=='SHORT'&&!microBear&&!targetRejection){timing='PRE_BREAKOUT_GHOST';entryMode='MTF_GHOST_ACCUMULATION';}
+    const quality=Math.max(0,Math.min(100,Math.round(50+(long-short)*3.4-topRisk*2.15+(intrabarMtfObvious?11:microConfirmedContinuation?10:earlyIgnition?5:microBull?3:0)+(confirmedPullback?6:0)+(ghostPulse?7:0)-(postImpulseReject?8:0)+(flow.state==='SELL_ABSORPTION_BULL'?4:0)-(flow.conflict?4:0)-(!oi.reliable?2:0)))),qualityAdj=Math.max(-9,Math.min(8,Math.round((quality-55)/7.5))),invalidation=ob['15m']?.demand?.low||fvg['15m']?.bull?.low||liq['15m']?.below||null,support=liq['15m']?.below||ob['15m']?.demand?.high||fvg['15m']?.bull?.low||null,resistance=firstObstacle||liq['15m']?.above||ob['15m']?.supply?.low||fvg['15m']?.bear?.high||null;let mmScenario='UNRESOLVED';if(postImpulseReject)mmScenario='POST_IMPULSE_REJECTION_WAIT_RECLAIM';else if(ghostPulse)mmScenario='MTF_GHOST_ACCUMULATION_BELOW_LIQUIDITY';else if(earlyIgnition)mmScenario='MICRO_EARLY_IGNITION';else if(microConfirmedContinuation)mmScenario='MICRO_CONSENSUS_MARKUP';else if(confirmedPullback)mmScenario='VALIDATED_PULLBACK_RECLAIM';else if(validatedTrendRetest)mmScenario='DESCENDING_TREND_BROKEN_RETEST_OR_MARKUP';else if(trendBreakBull)mmScenario='BREAKOUT_AWAITING_RETEST';else if(trendBreakBear)mmScenario='ASCENDING_TREND_BROKEN_DISTRIBUTION_RISK';else if(timing==='TRAP')mmScenario='UPPER_LIQUIDITY_GRAB_OR_DISTRIBUTION';else if(oi.state==='SHORT_SQUEEZE'&&targetLiquidity)mmScenario='SHORT_COVER_TO_UPPER_LIQUIDITY';else if(oi.state==='LONG_BUILD'&&bias==='LONG'&&flowBull)mmScenario='MARKUP_WITH_NEW_LONGS';else if(liq['15m']?.sweepBull||liq['5m']?.sweepBull)mmScenario='SELL_SIDE_LIQUIDITY_TAKEN_REPRICING_UP';else if((fib['15m']?.inZone&&fib['15m'].side==='LONG')||ob['15m']?.demand?.inZone||fvg['15m']?.bull?.inZone)mmScenario='DISCOUNT_REPRICING_FROM_DEMAND';else if(bias==='LONG'&&targetLiquidity)mmScenario='MARKUP_TO_BUY_SIDE_LIQUIDITY';
+    const setupKey=postImpulseReject?'POST_IMPULSE_REJECTION':confirmedPullback?'CONFIRMED_PULLBACK':intrabarMtfObvious?'INTRABAR_MTF_JOIN':microConfirmedContinuation?'CONFIRMED_CONTINUATION':earlyIgnition?'EARLY_IGNITION':ghostPulse?'PRE_BREAKOUT_GHOST':null,detection=r48635DetectionStamp(symbol,setupKey),microBreakLevel=Math.max(Number(tf['1m']?.lastHigh||0),Number(tf['3m']?.lastHigh||0),Number(tf['5m']?.lastHigh||0)),distanceFromBreakoutAtr=microBreakLevel>0&&atrAbs>0?+((price-microBreakLevel)/atrAbs).toFixed(2):null;
+    const storyParts=[`15m ${t15.trend||'?'}`,`mikro 1m:${microVotes['1m'].trend}/3m:${microVotes['3m'].trend}/5m:${microVotes['5m'].trend}`,`mikroDurum ${microConsensus.status}`,`1h ${t1.trend||'?'}`,`4h ${t4.trend||'?'}`,`1d ${td.trend||'?'}`,`akış ${flow.state}`,`OI ${oi.state}`,`MM ${mmScenario}`,`trend ${tf['15m']?.trendline?.state||'NO_BREAK'}`];if(firstObstacle)storyParts.push(`ilkEngel ${Number(firstObstacle)}`);if(targetLiquidity)storyParts.push(`hedefLik ${Number(targetLiquidity)}`);if(['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(timing)&&retestEntry)storyParts.push(`market kovalanmaz; retest ${Number(retestEntry)}`);if(intrabarMtfObvious)storyParts.push(`15m canlı MTF ${intrabarMtfScore} · mum %${Math.round(live15Progress*100)}`);if(ghostPulse)storyParts.push(`hayaletSkor ${Number(workerPulse.score||0)}`);if(detection)storyParts.push(`ilkAlgı ${Math.round(detection.ageMs/1000)}sn önce`);
+    return {version:'R486.3.8',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,retestType:retestObj?.t||null,retestGapPct:retestGapPct===null?null:+retestGapPct.toFixed(2),retestGapAtr:retestGapAtr===null?null:+retestGapAtr.toFixed(2),targetLiquidity,targetType:targetObj?.t||null,firstObstacle,firstObstacleType:firstObstacleObj?.t||null,firstObstacleDistPct:firstObstacleDistPct===null?null:+firstObstacleDistPct.toFixed(2),invalidation,support,resistance,flowState:flow.state,orderFlow:flow,mmScenario,structuralTopEvidence,trapEvidence,impulseChase,parabolicChase,staircaseImpulse,impulseConcentration:+impulseConcentration.toFixed(2),targetRejection,upperWick15:+upperWick15.toFixed(2),bodyRatio15:+bodyRatio15.toFixed(2),validatedTrendRetest,compressionConflict,nearObstacle,structuredContinuation,intrabarMtfObvious,intrabarMtfScore,live15Progress:+live15Progress.toFixed(3),microConsensus,workerPulse:workerPulseFresh?workerPulse:null,detection,distanceFromBreakoutAtr,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},sourceRsi5m:Number(data.rsi5m),sourceRsi15m:Number(data.rsi15m),sourceRsi1h:Number(data.rsi1h),sourceRsi4h:Number(data.rsi4h),source:{lane:data.sourceLane,label:data.sourceLabel}};
   }catch(e){return {version:'R486.2',bias:'MIXED',timing:'MIXED',entryMode:'NONE',quality:50,qualityAdj:0,topRisk:0,summary:`hikâye hesaplanamadı: ${String(e?.message||e).slice(0,100)}`,error:true};}
 }
 
@@ -4539,8 +4665,10 @@ function r486EntryTruthGuard(story={},opts={}){
   if(!R486_ENTRY_TRUTH_ACTIVE||side!=='LONG'||!(entry>0))return {active:R486_ENTRY_TRUTH_ACTIVE,marketAllowed:true,mode:'LEGACY',plannedEntry:entry,recommendedSl:sl,recommendedTp:tp};
   const risk=entry>sl&&sl>0?entry-sl:0,stopPct=risk>0?risk/entry*100:null,minStopPct=Math.max(.80,Math.min(4.5,atrPct*R486_MIN_STOP_ATR)),tightStop=stopPct!==null&&stopPct<minStopPct;
   // Canlı giriş fiyatı değişebildiği için hikaye üretildiği andaki eski/ters hedefleri emir matematiğine sokma.
-  const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005,first=firstObstacleDirectionValid?firstRaw:0;
+  const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005;
   const targetRaw=Number(story.targetLiquidity||0),targetDirectionValid=!(targetRaw>0)||targetRaw>entry*1.00005,target=targetDirectionValid?targetRaw:0;
+  const fallbackObstacles=R486_FIRST_OBSTACLE_RESOLVE?[Number(story?.liquidity?.['3m']?.above||0),Number(story?.liquidity?.['5m']?.above||0),Number(story?.liquidity?.['15m']?.above||0),Number(story?.liquidity?.['1h']?.above||0),Number(story?.orderBlock?.['3m']?.supply?.low||0),Number(story?.orderBlock?.['5m']?.supply?.low||0),Number(story?.orderBlock?.['15m']?.supply?.low||0),Number(story?.fvg?.['3m']?.bear?.low||0),Number(story?.fvg?.['5m']?.bear?.low||0),Number(story?.fvg?.['15m']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b):[];
+  const first=firstObstacleDirectionValid&&firstRaw>0?firstRaw:(fallbackObstacles[0]||0);
   const firstObstacleRR=first>entry&&risk>0?(first-entry)/risk:null,retest=Number(story.retestEntry||0),retestPlan=['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(String(story.timing||'')),retestBelowStop=retestPlan&&retest>0&&sl>0&&retest<=sl*1.0005,retestFar=Number(story.retestGapAtr||0)>.35;
   let recommendedSl=sl;if(tightStop){const widened=entry*(1-minStopPct/100);recommendedSl=Math.min(sl>0?sl:widened,widened);}if(retest>0&&['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(String(story.timing))){const buffer=Math.max(entry*.0015,entry*atrPct/100*.12);recommendedSl=Math.min(recommendedSl>0?recommendedSl:retest-buffer,retest-buffer);}
   if(entry>0&&recommendedSl>0&&((entry-recommendedSl)/entry*100)>10)recommendedSl=entry*.90;
@@ -4560,7 +4688,7 @@ function r486EntryTruthGuard(story={},opts={}){
   const reasons=[];
   if(storyWait)reasons.push(`hikâye:${mode}`);
   if(planIncoherent)reasons.push(retestBelowStop?'retest seviyesi SL altında':'TP/SL yön planı tutarsız');
-  if(firstRaw>0&&!firstObstacleDirectionValid)reasons.push(`ilk engel LONG yönünde değil; karar hesabından çıkarıldı (${firstRaw})`);
+  if(firstRaw>0&&!firstObstacleDirectionValid)reasons.push(`ilk engel LONG yönünde değil (${firstRaw}); ${first>entry?'en yakın gerçek üst engel '+first+' ile çözüldü':'geçerli üst engel bulunamadı'}`);
   if(targetRaw>0&&!targetDirectionValid)reasons.push(`hedef likidite LONG yönünde değil; karar hesabından çıkarıldı (${targetRaw})`);
   if(firstObstacleSoft)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} ince (uyarı)`);
   if(firstObstacleHard)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
@@ -4590,9 +4718,11 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   const explicitStoryAgainst=side!=='LONG'||timing==='AVOID_LONG'||String(story?.bias||'').toUpperCase()==='SHORT';
   const confirmationConflict=semanticDirectionConflict||(microBear&&flowAgainst&&quality<68);
   const trigger=!!(decision?.r447Signature||decision?.brainAction==='TRADE'||decision?.autoOk||decision?.r160TraderDecision||decision?.r159MomentumPass||decision?.r156FastBypass||decision?.r284WaitUpgradeOk||decision?.r289Playbook?.tradeOk||decision?.r290Smc5m?.tradeOk||decision?.r291Confluence?.tradeOk||decision?.r190Edge?.earlyContinuation||decision?.r190Edge?.squeeze||decision?.r88VurKacOk);
-  const proof=!!(micro.confirmedContinuation||micro.confirmedPullback||story?.validatedTrendRetest||story?.structuredContinuation||story?.trendBreaks?.bull||decision?.r117BodyReclaimOk||decision?.r117MssOk||decision?.r117TrapSweepTaken||decision?.r289Playbook?.tradeOk||decision?.r291Confluence?.tradeOk);
+  const breakoutProof=!!(micro.confirmedContinuation||story?.structuredContinuation||story?.trendBreaks?.bull||decision?.r117MssOk||decision?.r289Playbook?.tradeOk||decision?.r291Confluence?.tradeOk);
+  const retestProof=!!(micro.confirmedPullback||story?.validatedTrendRetest||decision?.r117BodyReclaimOk||decision?.r117TrapSweepTaken);
+  const proof=!!(breakoutProof||retestProof);
   const waitTiming=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP'].includes(timing);
-  const mmAwaitsRetest=/AWAITING_RETEST|RETEST_REQUIRED/i.test(String(story?.mmScenario||''))&&!micro.confirmedContinuation&&!micro.confirmedPullback&&!story?.validatedTrendRetest&&!story?.structuredContinuation;
+  const mmAwaitsRetest=/AWAITING_RETEST|RETEST_REQUIRED/i.test(String(story?.mmScenario||''))&&!(R486_RETEST_PROOF_REQUIRED?retestProof:(micro.confirmedContinuation||retestProof||story?.structuredContinuation));
   const impulseNeedsProof=R486_VERTICAL_IMPULSE_PROOF_REQUIRED&&!!micro.verticalImpulse&&!proof;
   const expansionNeedsReclaim=String(story?.tf?.['15m']?.trend||'')==='EXPANSION'&&String(story?.tf?.['5m']?.trend||'')==='DOWN_LH_LL'&&!micro.confirmedPullback&&!micro.confirmedContinuation;
   const mixedTiming=timing==='MIXED';
@@ -4606,6 +4736,11 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
     fiveMinuteTrend!=='DOWN_LH_LL' && !micro.postImpulseReject &&
     !story?.targetRejection && quality>=R486_STORY_TACTICAL_MIN_QUALITY && topRisk<5.5
   );
+
+const ghostPrebreakout=!!(R486_MTF_GHOST_ACTIVE&&micro.ghostPrebreakout&&Number(micro.ghostScore||0)>=R486_GHOST_SCORE_MIN);
+const strongFlowConflict=!!(R486_FLOW_CONFLICT_TACTICAL&&micro.confirmedContinuation&&(['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(flow)||bearVotes>=bullVotes+2));
+const multiRsiHot=[Number(story?.sourceRsi5m||NaN),Number(story?.sourceRsi15m||NaN),Number(story?.sourceRsi1h||NaN),Number(story?.sourceRsi4h||NaN)].filter(Number.isFinite).filter(x=>x>=78).length;
+const htfCountertrend=!!(R486_HTF_COUNTERTREND_TACTICAL&&String(story?.tf?.['4h']?.trend||'')==='DOWN_LH_LL'&&String(story?.tf?.['1d']?.trend||'')==='DOWN_LH_LL');
   const direct=['JOIN','MARKET_OK','WAIT_PLAN_TRUTH'].includes(timing)||entryTruth?.marketAllowed===true;
   const rrTactical=!Number.isFinite(firstRR)||firstRR>=R486_STORY_TACTICAL_MIN_FIRST_RR;
   if(!R486_SINGLE_AUTHORITY_ACTIVE)return {active:false,action:entryTruth?.marketAllowed?'MARKET':'PUSU',riskScale:1,reason:'legacy'};
@@ -4614,17 +4749,27 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   if(explicitStoryAgainst)return {active:true,action:'REJECT',riskScale:0,reason:`grafik/emir yönü açıkça çelişkili: ${story?.bias||'?'} / ${flow}`};
   if(confirmationConflict)return {active:true,action:'PUSU',riskScale:0,priority:true,reason:`çoklu zaman/akış teyidi LONG için hazır değil; mtfBear:${mtfBear} oy:${bullVotes}/${bearVotes}`};
   if(micro.postImpulseReject||impulseNeedsProof||expansionNeedsReclaim)return {active:true,action:'PUSU',riskScale:0,priority:true,reason:`dikey patlama sonrası reclaim kanıtı bekleniyor · mikro:${micro.status||'MIXED'} 15m:${story?.tf?.['15m']?.trend||'?'} 5m:${story?.tf?.['5m']?.trend||'?'} proof:${proof?'Y':'N'}`};
+  // Bariz MTF uyumunda 15m kapanışı kapı değildir. Kapanmış 1h/4h bağlamı + tamamlanmış mikro yapı
+  // ve oluşan 15m mum birlikteyse, geç kalmadan TACTICAL/MARKET yolu açılır.
+  if(micro.intrabarMtfObvious&&trigger&&!flowAgainst&&!microBear&&rrTactical&&topRisk<6.8){
+    const full=Number(micro.bullCount||0)>=3&&quality>=Math.max(R486_STORY_MARKET_MIN_QUALITY,R486_INTRABAR_MIN_SCORE)&&mtfBear<=1;
+    return {active:true,action:full?'MARKET':'TACTICAL',riskScale:full?.85:.65,early:true,intrabar:true,reason:`15m kapanış beklenmedi; canlı MTF ${micro.intrabarMtfScore||0} · mikro ${micro.bullCount||0}↑/${micro.bearCount||0}↓ · mum %${Math.round(Number(micro.live15Progress||0)*100)}`};
+  }
   // Hikâye WAIT diyorsa tetik güçlü olsa bile markete çevrilmez; pusu yüksek öncelikle yaşar.
-  if((waitTiming||mmAwaitsRetest)&&!R486_WAIT_STORY_MARKET_BRIDGE)return {active:true,action:'PUSU',riskScale:0,priority:true,reason:`hikâye ${waitTiming?timing:story?.mmScenario}; 1m/3m/5m taze teyit bekleniyor`};
+  if((waitTiming||mmAwaitsRetest)&&!R486_WAIT_STORY_MARKET_BRIDGE)return {active:true,action:'PUSU',riskScale:0,priority:true,reason:`hikâye ${waitTiming?timing:story?.mmScenario}; retestProof:${retestProof?'Y':'N'} · 1m/3m reclaim + 5m tutunma bekleniyor`};
   // Q kazanan snapshotı: 15m dönüş tamamlanmadan iki mikro zaman + alıcı akışı + OI short-squeeze,
   // dikey patlamanın sonu değil başlangıcıysa TACTICAL yol açık kalır. Bu pozitif yol boğulmayı önler.
   if(squeezeIgnition&&trigger&&rrTactical)return {active:true,action:'TACTICAL',riskScale:.75,early:true,reason:`short-squeeze erken ateşleme; mikro ${micro.bullCount||0}↑/${micro.bearCount||0}↓ · q${quality}`};
+  if(ghostPrebreakout&&trigger&&!flowAgainst&&!microBear&&topRisk<5.5&&quality>=R486_GHOST_TACTICAL_MIN)return {active:true,action:'TACTICAL',riskScale:.70,early:true,ghost:true,reason:`MTF hayalet ön-kırılım; sıkışma+yükselen taban+taker ivmesi · skor ${micro.ghostScore} q${quality}`};
   if(mixedTiming&&quality<R486_STORY_MARKET_MIN_QUALITY)return {active:true,action:'PUSU',riskScale:0,priority:true,reason:`MIXED hikâye q${quality}; 1m/3m/5m ortak yapı bekleniyor`};
   // Patlamadan önce: 1m+3m ateşleme var, 5m henüz ters değil. Tam risk değil; 10x taban TACTICAL.
   if(timing==='EARLY_IGNITION'&&micro.earlyIgnition&&trigger&&rrTactical&&!flowAgainst&&topRisk<7)return {active:true,action:'TACTICAL',riskScale:R486_EARLY_IGNITION_RISK_SCALE,early:true,reason:`erken ateşleme 1m+3m; 5m ters değil · q${quality}`};
   // En iyi teyitli geri çekilme: mikro reclaim + yapı devamı.
   if(micro.confirmedPullback&&trigger&&rrTactical&&!flowAgainst&&topRisk<7.5)return {active:true,action:quality>=R486_STORY_MARKET_MIN_QUALITY&&mtfBear<=1?'MARKET':'TACTICAL',riskScale:quality>=R486_STORY_MARKET_MIN_QUALITY&&mtfBear<=1?.85:.65,reason:`onaylı geri çekilme/reclaim · 1m/3m/5m ${micro.bullCount||0}/3`};
-  // Temiz devam: üç mikro zaman dilimi ortak yönde. MM AWAITING_RETEST etiketi tek başına bu setupı öldürmez.
+  // Üçlü mikro yapı güçlüdür; fakat canlı akış sert ters veya 4h+1d karşı-trend ise RUNNER/MARKET yetkisi verilmez.
+  if(strongFlowConflict&&trigger)return {active:true,action:'TACTICAL',riskScale:.55,reason:`mikro 3/3 yukarı fakat canlı akış ters; market kovalamaca yerine TACTICAL q${quality}`};
+  if(htfCountertrend&&micro.confirmedContinuation&&trigger&&rrTactical)return {active:true,action:'TACTICAL',riskScale:.60,reason:`mikro devam güçlü fakat 4h+1d karşı-trend; COUNTERTREND_TACTICAL q${quality}`};
+  // Temiz devam: üç mikro zaman dilimi ortak yönde ve canlı akış ters değil.
   if(micro.confirmedContinuation&&trigger&&rrTactical&&!flowAgainst&&topRisk<7.5)return {active:true,action:'MARKET',riskScale:1,reason:`1m+3m+5m ortak yapı devamı · q${quality}`};
   // Genel MARKET artık proof ister. Böylece ORDI tipi 15m patlama + 5m DOWN + proof:N market olamaz.
   if(direct&&trigger&&proof&&quality>=R486_STORY_MARKET_MIN_QUALITY&&rrTactical&&!flowAgainst&&topRisk<7.5)return {active:true,action:'MARKET',riskScale:1,reason:`hikâye JOIN q${quality} proof:Y`};
@@ -14902,8 +15047,8 @@ app.get('/api/analyze/:symbol', async (req, res) => {
         // Güvenlik korumaları korunur (spread, lateTrap, grafik hardNo). Asıl karar R300'de.
         const autoOkLegacy=(isTierA||isTierBPlus) && entryPermissionOk && !r190Edge?.spreadBlock && !(r190Edge?.lateTrapRisk && !r190Edge?.squeeze) && !(r281Map?.hardNo && !r281Map?.runner);
         const r305Safety = entryPermissionOk && !r190Edge?.spreadBlock && !atrExtremeBlock && !hardVeto;
-        // R486.3.6: lateTrap/chartHardNo burada veto değildir; grafik hikâyesi tek otoritede tartar.
-        // R300 SADE BEYİN — R486.3.6'te danışman; operasyonel safety dışında nihai veto vermez.
+        // R486.3.8: lateTrap/chartHardNo burada veto değildir; grafik hikâyesi tek otoritede tartar.
+        // R300 SADE BEYİN — R486.3.8'te danışman; operasyonel safety dışında nihai veto vermez.
         // reasons dizisi + r274/ICT metinleri beynin okuyacağı özet; rangePos r276 motorundan (varsa).
         const r300SummaryTxt = [].concat(reasons||[]).join(' · ') + ' ' + String((typeof r274Signal!=='undefined'&&r274Signal?.summary)||'') + ' ' + String((typeof r110ICT!=='undefined'&&r110ICT?.summary)||'');
         const r300RangePos = (typeof r276Pos!=='undefined' && Number.isFinite(r276Pos)) ? r276Pos
@@ -15254,7 +15399,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
             decisionChain.r300SoftReject = r300Final.reason;
             decisionChain.r309eFromWait = true;
             decisionChain.reason = `${decisionChain.reason || ''} · ⚠️ R300 danışman: ${r300Final.reason}`;
-            try { logAuto(`⚠️ ${full} R300 uyarı verdi; R486.3.6 tek otorite grafik hikâyesine devredildi (${r300Final.reason.slice(0,70)})`); } catch(_){}
+            try { logAuto(`⚠️ ${full} R300 uyarı verdi; R486.3.8 tek otorite grafik hikâyesine devredildi (${r300Final.reason.slice(0,70)})`); } catch(_){}
           } else {
             decisionChain.autoOk = false;
             decisionChain.brainAction = 'WATCH';
@@ -15321,9 +15466,15 @@ app.get('/api/analyze/:symbol', async (req, res) => {
     const r483DeepCandles = String(process.env.R483_DEEP_CANDLES ?? '1') !== '0';
     const k3m = R486_MICRO_3M_ACTIVE ? r48635AggregateRawKlines(k1m,3) : [];
     const r308RawCandles = {
-      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. En son mum en sagda ve KAPANMIŞTIR. R486.3.6 derin bağlam: 1m=60, 3m=60(türetilmiş), 5m=60, 15m=96, 1h=72, 4h=42, 1d=30.',
+      not: 'Her mum [Acilis,Yuksek,Dusuk,Kapanis,Hacim]. Ana diziler kapanmış mumdur; _live alanı oluşan 1m/3m/5m/15m snapshotıdır. R486.3.8 derin bağlam: 1m=60, 3m=60(türetilmiş), 5m=60, 15m=96, 1h=72, 4h=42, 1d=30.',
       son15mMumYasiSn: (() => { try { const kk = (k15m||[]).filter(c => Number(c[0]) + 900000 <= Date.now());
         return kk.length ? Math.round((Date.now() - (Number(kk[kk.length-1][0]) + 900000)) / 1000) : null; } catch(_) { return null; } })(), // R402: doğrulama damgası — son kapanmış 15m mumu kaç sn önce kapandı
+      _live: {
+        '1m': r48638LiveKline(k1m,60000),
+        '3m': r48638LiveAggregate1m(k1m,3),
+        '5m': r48638LiveKline(k5m,300000),
+        '15m': r48638LiveKline(k15m,900000)
+      },
       _times: {
         '1d': r484PackTimes(k1d, r483DeepCandles ? 30 : 10, 86400000),
         '4h': r484PackTimes(k4h, r483DeepCandles ? 42 : 16, 14400000),
@@ -17756,7 +17907,19 @@ app.post('/api/close', async (req, res) => {
 let autoConfig = null;
 let autoRunning = false;
 let autoTimer = null;
-const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // R330: 15m moduna geçiş — 7.5dk tarama (15m mumun ortası+kapanışı yakalanır). Backtest: 15m PF 2.25 vs 5m 1.73.
+const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // legacy/fallback; R486.3.8 AI kapalıyken adaptif tarama kullanır.
+function r48638AdaptiveScanIntervalMs(){
+  if(!R486_ADAPTIVE_SCAN_ACTIVE||AI_BRAIN_ENABLED)return AUTO_SCAN_INTERVAL_MS;
+  if(isBinanceBackoffActive()||isPositionRiskCooldownActive())return R486_FULL_SCAN_BUSY_SEC*1000;
+  const load=r48638GovLoadRatio();
+  if(load<.32)return R486_FULL_SCAN_FAST_SEC*1000;
+  if(load<.62)return R486_FULL_SCAN_BASE_SEC*1000;
+  return R486_FULL_SCAN_BUSY_SEC*1000;
+}
+function r48638WakeCooldowns(){
+  const load=r48638GovLoadRatio(),mult=load<.45?1:load<.72?1.6:2.5;
+  return {globalMs:R486_MECH_FAST_WAKE_GLOBAL_SEC*1000*mult,symbolMs:R486_MECH_FAST_WAKE_SYMBOL_SEC*1000*mult,load:+load.toFixed(2)};
+}
 
 // ═══ R328: PATLAMA TESPİT WORKER ═══
 // TOP2 coinleri hızlı (45sn) izler, AI ÇAĞIRMADAN (bedava) patlama başlangıcını tespit eder.
@@ -17816,7 +17979,7 @@ const R4863_R370_BATCH = Math.max(24, Math.min(80, Number(process.env.R4863_R370
 const R4863_R385_BATCH = Math.max(36, Math.min(100, Number(process.env.R4863_R385_BATCH||72)));
 const R4863_R328_BATCH = Math.max(12, Math.min(48, Number(process.env.R4863_R328_BATCH||24)));
 const R4863_R366_BATCH = Math.max(10, Math.min(40, Number(process.env.R4863_R366_BATCH||20)));
-let r4863WorkerUniverseState = {ts:0,totalFutures:0,eligible:0,hot:[],rows:[],cursors:{r370:0,r385:0,r328:0,r366:0},lastBatch:{},workers:{}};
+let r4863WorkerUniverseState = {ts:0,totalFutures:0,eligible:0,hot:[],ghostHot:[],rows:[],cursors:{r370:0,r385:0,r328:0,r366:0},lastBatch:{},workers:{}};
 function r4863PotentialScore(t){
   try{
     const q=Math.max(0,Number(t.quoteVolume||0));
@@ -17830,6 +17993,19 @@ function r4863PotentialScore(t){
     const tradeScore=Math.max(0,Math.log10(trades+1)-3)*5;
     const latePenalty=ch>45?(ch-45)*1.4:0;
     return +(volScore+trendScore+rangeScore+tradeScore-latePenalty).toFixed(2);
+  }catch(_){return 0;}
+}
+
+function r48637GhostTickerScore(t){
+  try{
+    const q=Math.max(0,Number(t.quoteVolume||0)),ch=Number(t.priceChangePercent||0),hi=Number(t.highPrice||0),lo=Number(t.lowPrice||0),px=Number(t.lastPrice||0),trades=Math.max(0,Number(t.count||0));
+    const pos=(lo>0&&hi>lo)?(px-lo)/(hi-lo):.5,range=(lo>0&&hi>lo)?(hi-lo)/lo*100:0;
+    const vol=Math.max(0,Math.log10(q+1)-6)*15,activity=Math.max(0,Math.log10(trades+1)-3)*6;
+    const moderateMove=18-Math.min(18,Math.abs(ch-5.5)*1.5);     // +%2..+%10 arası, henüz geç değil
+    const location=pos>=.38&&pos<=.82 ? 16-Math.abs(pos-.64)*24 : Math.max(-10,8-Math.abs(pos-.64)*35);
+    const rangeSweet=range>=3&&range<=18 ? 10 : range<3?range*2:Math.max(-8,10-(range-18)*.7);
+    const latePenalty=ch>24?(ch-24)*1.6:0;
+    return +(vol+activity+moderateMove+location+rangeSweet-latePenalty).toFixed(2);
   }catch(_){return 0;}
 }
 async function r4863GetWorkerUniverse(){
@@ -17848,11 +18024,12 @@ async function r4863GetWorkerUniverse(){
     .filter(t=>{const ok=r427KriptoMu(t.symbol,metaMap.get(String(t.symbol||'').toUpperCase())||{});if(!ok&&excluded.length<30)excluded.push(r427Base(t.symbol));return ok;})
     .filter(t=>Number(t.lastPrice)>0&&Number(t.quoteVolume||0)>=R4863_WORKER_MIN_QUOTE)
     .filter(t=>{const ch=Number(t.priceChangePercent||0);return ch>=-4&&ch<=80;})
-    .map(t=>({...t,r4863Score:r4863PotentialScore(t)}))
-    .sort((a,b)=>Number(b.r4863Score||0)-Number(a.r4863Score||0))
+    .map(t=>({...t,r4863Score:r4863PotentialScore(t),r48637GhostScore:r48637GhostTickerScore(t)}))
+    .sort((a,b)=>Math.max(Number(b.r4863Score||0),Number(b.r48637GhostScore||0))-Math.max(Number(a.r4863Score||0),Number(a.r48637GhostScore||0)))
     .slice(0,R4863_WORKER_MAX_UNIVERSE);
-  r4863WorkerUniverseState={...r4863WorkerUniverseState,ts:now,totalFutures,eligible:rows.length,excludedCount:Math.max(0,usdtRows.length-rows.length),excludedExamples:excluded.slice(0,20),hot:rows.slice(0,12).map(t=>String(t.symbol).replace('USDT','')),rows};
-  try{autoScanState.workerUniverse={totalFutures,eligible:rows.length,excludedCount:r4863WorkerUniverseState.excludedCount,excludedExamples:r4863WorkerUniverseState.excludedExamples,minQuote:R4863_WORKER_MIN_QUOTE,hot:r4863WorkerUniverseState.hot,lastRefresh:now};}catch(_){}
+  const ghostHot=[...rows].sort((a,b)=>Number(b.r48637GhostScore||0)-Number(a.r48637GhostScore||0)).slice(0,14).map(t=>String(t.symbol).replace('USDT',''));
+  r4863WorkerUniverseState={...r4863WorkerUniverseState,ts:now,totalFutures,eligible:rows.length,excludedCount:Math.max(0,usdtRows.length-rows.length),excludedExamples:excluded.slice(0,20),hot:rows.slice(0,12).map(t=>String(t.symbol).replace('USDT','')),ghostHot,rows};
+  try{autoScanState.workerUniverse={totalFutures,eligible:rows.length,excludedCount:r4863WorkerUniverseState.excludedCount,excludedExamples:r4863WorkerUniverseState.excludedExamples,minQuote:R4863_WORKER_MIN_QUOTE,hot:r4863WorkerUniverseState.hot,ghostHot,lastRefresh:now};}catch(_){}
   return rows;
 }
 function r4863RotateBatch(rows,worker,size){
@@ -17888,10 +18065,27 @@ function r385Aggregate4h(k1h) {
   const out = [];
   for (let i = 0; i + 4 <= k1h.length; i += 4) {
     const g = k1h.slice(i, i + 4);
-    out.push([g[0][0], g[0][1], Math.max(...g.map(x=>+x[2])), Math.min(...g.map(x=>+x[3])), g[3][4], g.reduce((s,x)=>s+(+x[5]),0)]);
+    out.push([g[0][0], g[0][1], Math.max(...g.map(x=>+x[2])), Math.min(...g.map(x=>+x[3])), g[3][4], g.reduce((s,x)=>s+(+x[5]),0), g[3][6], g.reduce((s,x)=>s+(+x[7]||0),0), g.reduce((s,x)=>s+(+x[8]||0),0), g.reduce((s,x)=>s+(+x[9]||0),0), g.reduce((s,x)=>s+(+x[10]||0),0)]);
   }
   return out;
 }
+
+function r48637HtfPrebreakout(kl=[],tf='1h'){
+  try{
+    if(!R486_MTF_GHOST_ACTIVE||!Array.isArray(kl)||kl.length<36)return null;
+    const b=kl.slice(-48).map(r=>({o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],tbv:+r[9]})),n=b.length,last=b.at(-1),avg=a=>a.length?a.reduce((z,x)=>z+x,0)/a.length:0;
+    const tr=[];for(let j=1;j<n;j++)tr.push(Math.max(b[j].h-b[j].l,Math.abs(b[j].h-b[j-1].c),Math.abs(b[j].l-b[j-1].c)));const atr=Math.max(1e-12,avg(tr.slice(-14)));
+    const priorHigh=Math.max(...b.slice(-24,-2).map(x=>x.h)),dist=(priorHigh-last.c)/atr;
+    const range=a=>a.length?Math.max(...a.map(x=>x.h))-Math.min(...a.map(x=>x.l)):0,recent=b.slice(-7),prior=b.slice(-19,-7),compression=range(prior)>0?range(recent)/range(prior):1;
+    const lowSlope=(recent.at(-1).l-recent[0].l)/6/atr,closeSlope=(recent.at(-1).c-recent[0].c)/6/atr;
+    const buy=x=>x.v>0?x.tbv/x.v:.5,buy3=avg(b.slice(-3).map(buy)),buyPrev=avg(b.slice(-10,-3).map(buy)),vol3=avg(b.slice(-3).map(x=>x.v)),volPrev=avg(b.slice(-15,-3).map(x=>x.v)),volAwake=volPrev>0?vol3/volPrev:1;
+    const lastMove=Math.abs(last.c-b.at(-5).c)/atr,late=dist<-.45||lastMove>2.2;
+    let score=0;score+=Math.max(0,Math.min(1,(.88-compression)/.45))*24;score+=Math.max(0,Math.min(1,(lowSlope+.02)/.16))*20;score+=Math.max(0,Math.min(1,(closeSlope+.01)/.14))*10;score+=(dist>=0&&dist<=1.2)?18:0;score+=Math.max(0,Math.min(1,((buy3-buyPrev)*100+1)/14))*16;score+=Math.max(0,Math.min(1,(volAwake-.8)/1.2))*8;if(late)score-=25;score=Math.max(0,Math.min(100,Math.round(score)));
+    const ready=score>=R486_GHOST_SCORE_MIN&&dist>=0&&dist<=1.2&&lowSlope>-.02&&buy3>=.505&&!late;
+    return ready?{ready,tf,score,level:+priorHigh.toFixed(10),distAtr:+dist.toFixed(2),compression:+compression.toFixed(2),lowSlope:+lowSlope.toFixed(2),buy3:+buy3.toFixed(3),buyAccel:+((buy3-buyPrev)*100).toFixed(1),volAwake:+volAwake.toFixed(2)}:null;
+  }catch(_){return null;}
+}
+
 async function r385KoklamaIscisi() {
   // R395: 15m kapanış patlamasından kaçın — sınırın ±25sn'sinde koklama pas geçer (429 diyeti).
   { const s = Math.floor(Date.now()/1000) % 900; if (s < 25 || s > 875) return; }
@@ -17917,26 +18111,23 @@ async function r385KoklamaIscisi() {
         const lastClose = +k1h[k1h.length-1][4];
         const k4h = r385Aggregate4h(k1h);
         const tespit = r384HtfYapisalKirilim(k1h, k4h, lastClose);
-        if (!tespit) continue;
-        for (const tf of ['1h','4h']) {
-          const d = tespit[tf];
-          if (!d) continue;
-          const kirilimVar = d.dusenTrendKirildi || d.bazKirilimi;
-          const mesafeOk = Number.isFinite(d.mesafeYuzde) && d.mesafeYuzde >= -1 && d.mesafeYuzde <= 6;
-          if (kirilimVar && d.hacimTeyit && mesafeOk) {
-            bulunan.push({
-              symbol: full.replace('USDT',''),
-              skor: Math.round(55 + Math.min(30, d.hacimKati*8) + (6 - Math.abs(d.mesafeYuzde))*2),
-              change15m: d.mesafeYuzde,
-              // R387 FIX: TOP2 kapısı ea.hacimArtis okur; bu alan eksikti → HER koklama adayı
-              // "hacim undefinedx < 1.3x" ile reddedildi ve 2 slotu işgal edip r370 adaylarını da boğdu
-              // (10.07: 12.6 saatte 20 bulundu → 0 TOP2). Koklama zaten hacimTeyit>=1.8x ister —
-              // adaylar şartı fazlasıyla sağlıyordu, etiketi cebinde değildi.
-              hacimArtis: +Number(d.hacimKati || 0).toFixed(1),
-              worker:'R385', sourceWorker:'R385',
-              sebep: `R385 ${tf} yapısal kırılım: ${d.dusenTrendKirildi ? 'düşen trend kırıldı' : 'baz tepesi aşıldı'} · hacim ${d.hacimKati}x · seviyeye mesafe %${d.mesafeYuzde}`
-            });
-            break; // sembol başına tek aday yeter
+        let eklendi=false;
+        if(tespit){
+          for (const tf of ['1h','4h']) {
+            const d = tespit[tf];
+            if (!d) continue;
+            const kirilimVar = d.dusenTrendKirildi || d.bazKirilimi;
+            const mesafeOk = Number.isFinite(d.mesafeYuzde) && d.mesafeYuzde >= -1 && d.mesafeYuzde <= 6;
+            if (kirilimVar && d.hacimTeyit && mesafeOk) {
+              bulunan.push({symbol:full.replace('USDT',''),skor:Math.round(55+Math.min(30,d.hacimKati*8)+(6-Math.abs(d.mesafeYuzde))*2),change15m:d.mesafeYuzde,hacimArtis:+Number(d.hacimKati||0).toFixed(1),worker:'R385',sourceWorker:'R385',sebep:`R385 ${tf} yapısal kırılım: ${d.dusenTrendKirildi?'düşen trend kırıldı':'baz tepesi aşıldı'} · hacim ${d.hacimKati}x · seviyeye mesafe %${d.mesafeYuzde}`});
+              eklendi=true;break;
+            }
+          }
+        }
+        if(!eklendi){
+          const pre=[r48637HtfPrebreakout(k4h,'4h'),r48637HtfPrebreakout(k1h,'1h')].filter(Boolean).sort((a,b)=>b.score-a.score)[0];
+          if(pre){
+            bulunan.push({symbol:full.replace('USDT',''),skor:pre.score,change15m:+(pre.distAtr).toFixed(2),hacimArtis:pre.volAwake,worker:'R385_GHOST',sourceWorker:'R385_GHOST',ghostPreBreakout:true,sebep:`R486.3.8 ${pre.tf} MTF hayalet: baz tepesine ${pre.distAtr} ATR · sıkışma ${pre.compression} · yükselen taban ${pre.lowSlope} · taker ivme ${pre.buyAccel}%`});
           }
         }
       } catch(_) { continue; }
@@ -17944,12 +18135,13 @@ async function r385KoklamaIscisi() {
     bulunan.sort((a,b) => b.skor - a.skor);
     r385KirilimAdaylari = bulunan.slice(0, 8);
     r4863WorkerTelemetry('r385',{found:bulunan.length,selected:r385KirilimAdaylari.map(x=>x.symbol)});
+    try { for (const x of r385KirilimAdaylari.slice(0,3)) if(Number(x.skor||0)>=R486_MECH_FAST_WAKE_MIN_SCORE) r125RegisterPriorityWake(String(x.symbol)+'USDT', x.ghostPreBreakout?'R48637_R385_GHOST':'R48637_R385_BREAK', Number(x.skor||0)); } catch(_) {}
     if (r385KirilimAdaylari.length) {
-      logAuto(`👃 R385 KOKLAMA: ${r385KirilimAdaylari.map(x => x.symbol + '(' + x.skor + '·%' + x.change15m + ')').join(' · ')} — HTF kırılım adayları r370 kanalına veriliyor`);
+      logAuto(`👃 R385 KOKLAMA/👻 HTF HAYALET: ${r385KirilimAdaylari.map(x => x.symbol + '(' + x.skor + '·%' + x.change15m + ')').join(' · ')} — HTF kırılım adayları r370 kanalına veriliyor`);
     }
   } catch(_) {}
 }
-setInterval(r385KoklamaIscisi, 5*60*1000); // 5dk'da bir; AI maliyeti SIFIR
+setInterval(r385KoklamaIscisi, R486_R385_INTERVAL_SEC*1000); // R486.3.8 adaptif-fast HTF worker; cache+governor korumalı
 setTimeout(r385KoklamaIscisi, 45*1000);    // açılıştan 45sn sonra ilk koku
 
 async function r370ErkenYukselisWorker() {
@@ -17960,7 +18152,7 @@ async function r370ErkenYukselisWorker() {
     if (!Array.isArray(all)) return;
     const uygun = all.filter(t => {
       const chg=Number(t.priceChangePercent), vol=Number(t.quoteVolume||0);
-      return chg>=1 && chg<=25 && vol>=3_000_000;
+      return chg>=-2 && chg<=25 && vol>=3_000_000;
     });
     const adaylar = r4863RotateBatch(uygun,'r370',R4863_R370_BATCH);
     r4863WorkerTelemetry('r370',{eligible:uygun.length,batch:adaylar.length,coverage:'ROTATING_FULL_MARKET'});
@@ -17982,21 +18174,28 @@ async function r370ErkenYukselisWorker() {
         const oncesi = b.slice(-12,-6);
         const son6Net = (son6[son6.length-1].c - son6[0].o) / son6[0].o * 100;
         const oncesiNet = oncesi.length ? (oncesi[oncesi.length-1].c - oncesi[0].o) / oncesi[0].o * 100 : 0;
-        // Taze impuls: son 6 mum güçlü yeşil AMA öncesi yatay/hafif (yani YENİ başlamış, uzun süredir değil)
-        const tazeBaslamis = son6Net >= 3 && Math.abs(oncesiNet) < son6Net * 0.6;
-        if (!tazeBaslamis) continue;
-        // 2) Son mumlar yeşil baskın (momentum canlı)
+        // R486.3.8 iki pozitif yol kullanır:
+        // A) tamamlanmış taze impuls; B) daha yeşil mumlar gelmeden MTF birikim/ön-kırılım.
+        const tazeBaslamis = son6Net >= 3 && Math.abs(oncesiNet) < Math.max(1.2,son6Net * 0.6);
         const yesilSay = son6.filter(x=>x.c>x.o).length;
-        if (yesilSay < 4) continue;
-        // 3) Hacim artıyor (ilgi geliyor)
-        const vSon3 = son6.slice(-3).reduce((s,x)=>s+x.v,0)/3;
-        const vOnce3 = son6.slice(0,3).reduce((s,x)=>s+x.v,0)/3;
+        const vSon3 = son6.slice(-3).reduce((ss,x)=>ss+x.v,0)/3;
+        const vOnce3 = son6.slice(0,3).reduce((ss,x)=>ss+x.v,0)/3;
         const hacimArtis = vOnce3>0 ? vSon3/vOnce3 : 1;
-        // 4) Tepeye çok yakın DEĞİL (parabolik tepe geç-giriş değil, taze)
+        const buyRatio=x=>x.v>0?Number(x.tbv||0)/x.v:.5,buyNow=son6.slice(-3).reduce((ss,x)=>ss+buyRatio(x),0)/3,buyPrev=oncesi.slice(-5).reduce((ss,x)=>ss+buyRatio(x),0)/Math.max(1,oncesi.slice(-5).length);
+        const recent8=b.slice(-8),prev8=b.slice(-16,-8),range=a=>a.length?Math.max(...a.map(x=>x.h))-Math.min(...a.map(x=>x.l)):0;
+        const compression=prev8.length&&range(prev8)>0?Math.max(0,Math.min(1,(1-range(recent8)/range(prev8))/.48)):0;
+        const lowSlope=(recent8.at(-1).l-recent8[0].l)/Math.max(1,7)/atr,closeSlope=(recent8.at(-1).c-recent8[0].c)/Math.max(1,7)/atr;
+        const priorHigh=Math.max(...b.slice(-14,-2).map(x=>x.h)),distCeilAtr=(priorHigh-b.at(-1).c)/atr;
+        const volDry=prev8.length&&prev8.reduce((ss,x)=>ss+x.v,0)>0?Math.max(0,Math.min(1,(1-(recent8.slice(0,5).reduce((ss,x)=>ss+x.v,0)/5)/(prev8.reduce((ss,x)=>ss+x.v,0)/prev8.length))/.55)):0;
+        const current=b.at(-1),currRange=Math.max(1e-12,current.h-current.l),upperWick=(current.h-Math.max(current.o,current.c))/currRange;
+        let ghostScore=Math.round(compression*22+volDry*8+Math.max(0,Math.min(1,(hacimArtis-1)/1.5))*10+Math.max(0,Math.min(1,((buyNow-buyPrev)*100+1)/16))*16+Math.max(0,Math.min(1,(lowSlope+.02)/.18))*16+Math.max(0,Math.min(1,(closeSlope+.01)/.16))*8+(distCeilAtr>=-.15&&distCeilAtr<=1.15?12:0));
+        const ghostLate=son6Net>5.5||Math.abs(current.c-current.o)>atr*1.05||distCeilAtr<-.65||upperWick>.58;
+        if(ghostLate)ghostScore-=25;
+        const preBreakout=R486_MTF_GHOST_ACTIVE&&ghostScore>=R486_GHOST_SCORE_MIN&&buyNow>=.505&&distCeilAtr>=-.15&&distCeilAtr<=1.15&&!ghostLate;
+        if (!(tazeBaslamis&&yesilSay>=4) && !preBreakout) continue;
         let hi=-1e18,lo=1e18; for(const x of b){hi=Math.max(hi,x.h);lo=Math.min(lo,x.l);}
         const pos = (hi-lo)>0 ? (b[n-1].c-lo)/(hi-lo)*100 : 50;
-        const tepedeDegil = pos < 92; // %92+ = parabolik tepe, geç
-        if (!tepedeDegil) continue;
+        if (pos >= (preBreakout?88:92)) continue;
         // ═══ R421: 8 COİN-GÜN DOĞRULANMIŞ GİRİŞ FİLTRESİ (ALLO/ESPORTS/POWER/BLUAI + HMSTR/H/M/OPG) ═══
         // R420 (pos<70) çok katıydı: kazanan günleri kaçırdı (HMSTR +96%→0). 8-coin doğrulama:
         // pos24<80 VE delta>=0.52 = net +238%, PF 3.80, 32 işlem, WR %68 — EN İYİ DENGE.
@@ -18011,19 +18210,19 @@ async function r370ErkenYukselisWorker() {
         const sonMumDelta = (() => {
           const lm = b[n-1]; return (lm && lm.v>0 && Number.isFinite(lm.tbv)) ? lm.tbv/lm.v : 0.5;
         })();
-        if (pos24 >= 80) continue;         // R421: tepede girme (8-coin: pos24<80 optimal denge)
-        if (sonMumDelta < 0.52) continue;  // R421: taker alıcı baskın olmalı (spike-tuzağı önle)
-        // ERKEN YÜKSELİŞ SKORU
-        const skor = Math.round(son6Net*4 + hacimArtis*15 + yesilSay*5 + (100-pos)*0.3);
+        if (pos24 >= (preBreakout?86:80)) continue;
+        if ((preBreakout?buyNow:sonMumDelta) < (preBreakout?.505:.52)) continue;
+        const impulsSkor=Math.round(son6Net*4 + hacimArtis*15 + yesilSay*5 + (100-pos)*0.3),skor=Math.max(impulsSkor,ghostScore);
         bulunan.push({
           symbol: full.replace('USDT',''),
-          worker:'R370', sourceWorker:'R370',
+          worker:preBreakout?'R370_GHOST':'R370', sourceWorker:preBreakout?'R370_GHOST':'R370',
           skor,
           change15m: +son6Net.toFixed(1),
           hacimArtis: +hacimArtis.toFixed(1),
           yesilSay,
           pos: +pos.toFixed(0),
-          sebep: `15m taze impuls +%${son6Net.toFixed(1)} (${yesilSay}/6 yeşil, hacim ${hacimArtis.toFixed(1)}x, konum %${pos.toFixed(0)})`
+          ghostPreBreakout:preBreakout,ghostScore,buyNow:+buyNow.toFixed(3),distCeilAtr:+distCeilAtr.toFixed(2),
+          sebep: preBreakout?`R486.3.8 MTF hayalet: 15m sıkışma+yükselen taban+taker ivmesi · skor ${ghostScore} · tavana ${distCeilAtr.toFixed(2)} ATR`:`15m taze impuls +%${son6Net.toFixed(1)} (${yesilSay}/6 yeşil, hacim ${hacimArtis.toFixed(1)}x, konum %${pos.toFixed(0)})`
         });
       } catch(_) { continue; }
     }
@@ -18040,13 +18239,14 @@ async function r370ErkenYukselisWorker() {
     r4863WorkerTelemetry('r370',{found:bulunan.length,selected:r370ErkenAdaylar.map(x=>x.symbol)});
     autoScanState.r370ErkenYukselis = r370ErkenAdaylar;
     try { for (const x of r370ErkenAdaylar) { if(!r374Donusum.bulunan.has(String(x.symbol))) r374Olay('BULUNDU', String(x.symbol), `skor ${x.skor} +%${x.change15m}`); r374Donusum.bulunan.add(String(x.symbol)); } } catch(_) {} // R374 izleme
+    try { for (const x of r370ErkenAdaylar.slice(0,3)) if(Number(x.skor||0)>=R486_MECH_FAST_WAKE_MIN_SCORE) r125RegisterPriorityWake(String(x.symbol)+'USDT', x.ghostPreBreakout?'R48637_R370_GHOST':'R48637_R370_TAZE', Number(x.skor||0)); } catch(_) {}
     if (r370ErkenAdaylar.length) {
       const ozet = r370ErkenAdaylar.slice(0,3).map(x=>`${x.symbol}(${x.skor}·+%${x.change15m})`).join(' · ');
-      logAuto(`🌱 R370 ERKEN YÜKSELİŞ tespiti: ${ozet} — TOP2 adayı taze impulslar, erken izleme`);
+      logAuto(`🌱 R370 ERKEN YÜKSELİŞ/👻 BİRİKİM tespiti: ${ozet} — yeşil mum sayımı değil, taze impuls + MTF ön-kırılım önceliği`);
     }
   } catch(_) {}
 }
-setInterval(r370ErkenYukselisWorker, 60*1000); // 60sn'de bir, bedava (AI çağırmaz)
+setInterval(r370ErkenYukselisWorker, R486_R370_INTERVAL_SEC*1000); // R486.3.8 hızlı full-market erken yapı
 
 async function r343RadarUniverse(worker='r328') {
   // R486.3: patlama/1m neden workerları TOP10'a kilitli değildir. Tüm uygun Futures
@@ -18059,6 +18259,7 @@ async function r343RadarUniverse(worker='r328') {
     const active=[...(autoScanState.scanList||[]).slice(0,12),
       ...(r370ErkenAdaylar||[]).map(x=>x.symbol),
       ...(r385KirilimAdaylari||[]).map(x=>x.symbol),
+      ...(r4863WorkerUniverseState.ghostHot||[]).slice(0,8),
       ...Object.entries(__r328PatlamaFlags||{}).filter(([,f])=>f&&f.detected&&Date.now()-f.ts<5*60*1000).map(([b])=>b)];
     const out=[...new Set([...active,...batch])].slice(0,batchSize+12);
     r4863WorkerTelemetry(worker,{eligible:uygun.length,batch:out.length,coverage:'HOT_PLUS_ROTATING_FULL_MARKET'});
@@ -18073,17 +18274,20 @@ async function r328PatlamaWorker() {
     for (const base of coins) {
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
-        // R486.3.6: aynı REST maliyetiyle 1m çek; 3m ve 5m UTC-hizalı yerelde türetilir.
+        // R486.3.8: aynı REST maliyetiyle 1m çek; 3m ve 5m UTC-hizalı yerelde türetilir.
         // Böylece 5m mum kapanmasını beklemeden 1m+3m ateşleme görülür; tam MARKET için 5m ortak yapı yine aranır.
         const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=1m&limit=30`);
         const pulse = r48635ExplosionPulse(kl);
         if(!pulse.ok) continue;
         __r328PotRows.push({coin:base,skor:pulse.score,vol:pulse.vol1,mum:pulse.body1,delta:pulse.delta1,mode:pulse.mode});
-        if (pulse.early || pulse.confirmed) {
+        if (pulse.ghostReady || pulse.early || pulse.confirmed) {
           const wasNew = !__r328PatlamaFlags[base] || (Date.now()-__r328PatlamaFlags[base].ts > 4*60*1000) || __r328PatlamaFlags[base].mode!==pulse.mode;
-          __r328PatlamaFlags[base] = { ts:Date.now(),volSurge:pulse.vol1,body:pulse.body1,delta:pulse.delta1,detected:true,mode:pulse.mode,micro3m:pulse.bull3,fiveContextOk:pulse.fiveContextOk };
-          try{r125RegisterPriorityWake(full,pulse.confirmed?'R48635_5M_CONFIRMED':'R48635_EARLY_1M_3M',pulse.confirmed?98:92);}catch(_){}
-          if (wasNew) logAuto(`${pulse.confirmed?'🚀':'🌱'} ${pulse.confirmed?'PATLAMA 5M TEYİT':'ERKEN ATEŞLEME 1M+3M'}: ${base} · skor ${pulse.score} · 1m hacim ${pulse.vol1}x · mum %${pulse.body1} · delta ${pulse.delta1} · 5m ${pulse.fiveContextOk?'ters değil':'ters'} — öncelikli grafik hikâyesine gönderildi`);
+          __r328PatlamaFlags[base] = { ts:Date.now(),score:pulse.score,volSurge:pulse.vol1,body:pulse.body1,delta:pulse.delta1,detected:true,mode:pulse.mode,micro3m:pulse.bull3,fiveContextOk:pulse.fiveContextOk,ghost:pulse.ghost||null };
+          try{r125RegisterPriorityWake(full,pulse.confirmed?'R48637_5M_CONFIRMED':pulse.early?'R48637_EARLY_1M_3M':'R48637_MTF_GHOST',pulse.confirmed?98:pulse.early?94:90);}catch(_){}
+          if (wasNew) {
+            if(pulse.ghostReady) logAuto(`👻 MTF HAYALET BİRİKİM: ${base} · skor ${pulse.score} · sıkışma ${pulse.ghost?.compression} · taker ivme ${pulse.ghost?.buyAccel}% · yükselen taban ${pulse.ghost?.higherLow} · tavana ${pulse.ghost?.distCeilingAtr} ATR — yeşil mum beklemeden öncelikli hikâyeye gönderildi`);
+            else logAuto(`${pulse.confirmed?'🚀':'🌱'} ${pulse.confirmed?'PATLAMA 5M TEYİT':'ERKEN ATEŞLEME 1M+3M'}: ${base} · skor ${pulse.score} · 1m hacim ${pulse.vol1}x · mum %${pulse.body1} · delta ${pulse.delta1} · 5m ${pulse.fiveContextOk?'ters değil':'ters'} — öncelikli grafik hikâyesine gönderildi`);
+          }
         } else if (__r328PatlamaFlags[base] && Date.now()-__r328PatlamaFlags[base].ts > 5*60*1000) delete __r328PatlamaFlags[base];
       } catch(_) {}
     }
@@ -18100,7 +18304,7 @@ async function r328PatlamaWorker() {
     r4863WorkerTelemetry('r328',{found:Object.values(__r328PatlamaFlags).filter(x=>x&&x.detected&&Date.now()-x.ts<5*60*1000).length,selected:Object.entries(__r328PatlamaFlags).filter(([,x])=>x&&x.detected&&Date.now()-x.ts<5*60*1000).map(([b,x])=>`${b}:${x.mode}`)});
   } catch(_) {}
 }
-setInterval(r328PatlamaWorker, 45*1000); // 1m+3m erken ateşleme, 5m teyit; AI çağırmaz
+setInterval(r328PatlamaWorker, R486_R328_INTERVAL_SEC*1000); // R486.3.8 1m+3m intrabar erken ateşleme
 
 // ── R366: VOLATİLİTE SEBEP WORKER'I ──────────────────────────────────────────
 // Tarama 7.5dk'da bir; arada TOP coinlerin 1dk hareketini saf-kod ile takip eder ve
@@ -18171,7 +18375,7 @@ async function r366VolatiliteWorker() {
     r4863WorkerTelemetry('r366',{active:Object.keys(__r366VolSebep||{}).length,selected:Object.keys(__r366VolSebep||{}).slice(0,20)});
   } catch(_) {}
 }
-setInterval(r366VolatiliteWorker, 30*1000); // 30sn'de bir — tarama arası sürekli izleme (bedava, AI çağırmaz)
+setInterval(r366VolatiliteWorker, R486_R366_INTERVAL_SEC*1000); // R486.3.8 canlı akış/ivme worker
 
 const autoLog = []; // Son 50 otomatik işlem logu
 
@@ -18849,7 +19053,7 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/auto/config', (req, res) => {
   autoConfig = { ...(req.body||{}) };
-  autoConfig.maxPositions = R486_MAX_POSITIONS; // R486.3.6: sermaye sözleşmesi max 2
+  autoConfig.maxPositions = R486_MAX_POSITIONS; // R486.3.8: sermaye sözleşmesi max 2
   // R323: MALİYET-TASARRUF MODU dashboard toggle — sweep yoksa AI'a gönderme (frekans korunur, maliyet düşer).
   if (typeof req.body?.saverMode !== 'undefined') {
     AI_SAVER_MODE = (req.body.saverMode === true || req.body.saverMode === 1 || req.body.saverMode === '1');
@@ -19098,7 +19302,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3.6: R447 dahil tüm mekanik imzalar grafik hikâyesi otoritesinden geçer; 1m+3m+5m mikro yapı; Q tipi short-squeeze erken TACTICAL; %40+%40 bileşik marj, %20 tampon; final SL×kaldıraç koruması',scanMode:autoConfig?.scanMode||null,workers:{r370:'60sn full-market ticker + dönen 15m batch taze impuls',r385:'5dk full-market ticker + dönen 1h/4h batch kırılım',r328:'45sn hot+rotating full-market patlama radarı',r366:'30sn hot+rotating 1m hareket nedeni'},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3.8: 15m kapanış kapısı yok; kapanmış HTF bağlamı + canlı 15m + 1m/3m/5m ortak yapı; adaptif full-scan ve targeted wake; MTF GHOST; %40+%40 bileşik marj',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -19111,13 +19315,15 @@ app.get('/api/auto/status', (req, res) => {
       longOnly:true, allowShort:false, minLeverage:R486_MIN_LEVERAGE,
       leveragePolicy:'Fırsat önemine göre Binance leverageBracket sınırına kadar; 10x altına izin yok',
       harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},
+      sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta},
+      reaction:{intrabarMtf:R486_INTRABAR_MTF_ACTIVE,closeGate:false,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),fastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},
       scanArchitecture:{coreMode:autoScanState?.scanMode||autoConfig?.scanMode||'TOP24',coreLimit:autoScanState?.coreScanLimit||24,effectiveCount:scanSnap.count,effectiveList:scanSnap.list,workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[]},workerInjected:scanSnap.workerInjected,workerTelemetry:autoScanState?.workerTelemetry||{}}
     },
     turkceDurum:{
       faz: toTurkishText(autoScanState?.phase || ''),
       sonIslem: toTurkishText(autoScanState?.lastAction || ''),
       kisaDinlenme:{aktif:isAutoPauseActive(), kalanSaniye:Math.ceil(getAutoPauseRemainMs()/1000), sebep:autoPauseReason||''},
-      aciklama:'R486.3.6: 1m+3m erken ateşleme, 5m ortak yapı devamı ve onaylı reclaim; dikey patlama/reddetme MARKET olmaz. TOP24 ana havuz + bağımsız full-market workerlar. Grafik hikâyesi tek otoritedir. WAIT_RETEST/WAIT_CONFIRM/WAIT_BREAK_RETEST market emrine çevrilmez; pusu olarak yeniden değerlendirilir. RUNNER yalnız ROI büyüdü diye tam kapanmaz. Yalnız operasyonel safety ve açık yön çelişkisi reddir.'
+      aciklama:'R486.3.8: MTF GHOST sıkışma+yükselen taban+taker ivmesi ile patlama öncesi aday; 1m+3m ateşleme, 5m ortak yapı ve onaylı reclaim; dikey patlama/reddetme MARKET olmaz. TOP24 ana havuz + bağımsız full-market workerlar. Grafik hikâyesi tek otoritedir. WAIT_RETEST/WAIT_CONFIRM/WAIT_BREAK_RETEST market emrine çevrilmez; pusu olarak yeniden değerlendirilir. RUNNER yalnız ROI büyüdü diye tam kapanmaz. Yalnız operasyonel safety ve açık yön çelişkisi reddir.'
     } });
 });
 
@@ -19154,7 +19360,7 @@ function normalizeUserMaxPositions(v, def=3) {
   return Math.max(1, n);
 }
 
-async function runAutoScan(prioritySymbol=null) {
+async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
   // R95: Scan promise eski Binance 418 uykusunda takılı kalırsa yeni scan'i sonsuza kadar engellemesin.
   if (autoRunning) {
     const age = Date.now() - Number(autoScanState.lastScanStart || 0);
@@ -19206,13 +19412,13 @@ async function runAutoScan(prioritySymbol=null) {
       if (bilesikMarjin && bilesikMarjin > 0) {
         usdtAmount = bilesikMarjin;
         if (Math.abs(bilesikMarjin - Number(panelUsdtAmount||0)) > 0.5) {
-          logAuto(`💰 R486.3.6 bileşik marjin: wallet ${Number(r372BilesikMeta.equity||0).toFixed(2)}$ → poz başına ${bilesikMarjin}$ (%${r372BilesikMeta.perPositionPct}); max ${r372BilesikMeta.maxPositions} poz = %${r372BilesikMeta.totalUsePct}, tampon %${r372BilesikMeta.bufferPct}`);
+          logAuto(`💰 R486.3.8 bileşik marjin: wallet ${Number(r372BilesikMeta.equity||0).toFixed(2)}$ → poz başına ${bilesikMarjin}$ (%${r372BilesikMeta.perPositionPct}); max ${r372BilesikMeta.maxPositions} poz = %${r372BilesikMeta.totalUsePct}, tampon %${r372BilesikMeta.bufferPct}`);
         }
       }
     }
 
     const r389PanelMarj = usdtAmount; // R389: her coin için taban marj (per-coin küçülme sızıntısı olmasın)
-    const maxPositions = R486_MAX_POSITIONS; // R486.3.6 sermaye sözleşmesi: en fazla 2 pozisyon
+    const maxPositions = R486_MAX_POSITIONS; // R486.3.8 sermaye sözleşmesi: en fazla 2 pozisyon
     const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'TOP10');
     const r54ScanLimit = r54ScanLimitForMode(r54ScanMode, scanLimit || (r54ScanMode === 'TOP10' ? 10 : 6));
     autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:(vurKacAutoLev?125:Math.max(R486_MIN_LEVERAGE,Number(vurKacMaxLev||125)))};
@@ -19318,7 +19524,9 @@ async function runAutoScan(prioritySymbol=null) {
     // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
     // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
     const effectiveScanLimit = r54ScanLimit; // R54: panelden FAST6 / TOP10 / TOP24 seçilir
-    let scanList = await getUnifiedScanCandidates(effectiveScanLimit, r54ScanMode);
+    let scanList = (priorityOnly&&prioritySymbol)
+      ? [{symbol:normalizeSymbol(prioritySymbol).replace('USDT',''),fullSymbol:normalizeSymbol(prioritySymbol),r54Bucket:'R48637_TARGETED_WAKE',r4863Lane:'WORKER',workerSource:'R48637_FAST_WAKE',workerSignal:r48637TargetedWakeMeta.get(normalizeSymbol(prioritySymbol))||null}]
+      : await getUnifiedScanCandidates(effectiveScanLimit, r54ScanMode);
     if (prioritySymbol) {
       const pFull = normalizeSymbol(prioritySymbol);
       const pBase = pFull.replace('USDT','');
@@ -19335,6 +19543,7 @@ async function runAutoScan(prioritySymbol=null) {
         logAuto(`🧭 R282 ${pBase} canlı spike görüldü ama ${r54ScanMode} dışı — kullanıcı tarama modu korunuyor`);
       }
     }
+    if(priorityOnly&&prioritySymbol){const pFull=normalizeSymbol(prioritySymbol);scanList=(scanList||[]).filter(c=>normalizeSymbol(c.fullSymbol||c.symbol)===pFull).slice(0,1);logAuto(`👻 R486.3.8 hedefli mekanik wake: ${pFull.replace('USDT','')} tek-sembol derin analiz`);}
     // R341: patlama radarı için GENİŞ liste — TOP2 filtresi uygulanmadan önceki ilk 10 gainer.
     try { autoScanState.genisListe = (scanList||[]).slice(0,10).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean); } catch(_) {}
     // R371: TOP2 + aday coinler için gerçek order flow stream'lerini başlat (aggTrade + depth).
@@ -19343,7 +19552,7 @@ async function runAutoScan(prioritySymbol=null) {
       const flowCoinler = (scanList||[]).slice(0,3).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean);
       if (typeof r371StartFlow === 'function') for (const fc of flowCoinler) r371StartFlow(fc);
     } catch(_) {}
-    if (symbols.length > 0) {
+    if (symbols.length > 0 && !priorityOnly) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
       try { for (const [b,f] of Object.entries(__r328PatlamaFlags)) { if (f && f.detected && Date.now()-f.ts < 5*60*1000) wanted.add(String(b).toUpperCase()); } } catch(_) {}
       scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
@@ -19353,7 +19562,7 @@ async function runAutoScan(prioritySymbol=null) {
       for (const [b,f] of Object.entries(__r328PatlamaFlags)) {
         if (!(f && f.detected && Date.now()-f.ts < 5*60*1000)) continue;
         const varMi = scanList.some(c => String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase() === String(b).toUpperCase());
-        if (!varMi) { scanList.unshift({ symbol:String(b).toUpperCase(), fullSymbol:String(b).toUpperCase()+'USDT', r54Bucket:'R343_PATLAMA_ADAY', r4863Lane:'WORKER', workerSource:'R328', r4863Worker:'R328' }); logAuto(`🚀 R343/R328: ${b} full-market patlama bayrağıyla etkin analiz listesine enjekte edildi — ${r451Merci()} kararına gidiyor`); }
+        if (!varMi) { scanList.unshift({ symbol:String(b).toUpperCase(), fullSymbol:String(b).toUpperCase()+'USDT', r54Bucket:f.mode==='PRE_BREAKOUT_GHOST'?'R48637_GHOST_ADAY':'R343_PATLAMA_ADAY', r4863Lane:'WORKER', workerSource:'R328', r4863Worker:'R328', r48637PulseMode:f.mode, r327PatlamaScore:Number(f.score||0), workerSignal:f }); logAuto(`${f.mode==='PRE_BREAKOUT_GHOST'?'👻':'🚀'} R343/R328: ${b} ${f.mode||'patlama'} bayrağıyla etkin analiz listesine enjekte edildi — ${r451Merci()} kararına gidiyor`); }
       }
     } catch(_) {}
     if (!scanList?.length) return;
@@ -19703,7 +19912,7 @@ async function runAutoScan(prioritySymbol=null) {
         );
         const r121BrainOwnsRisk = !!(r121BrainTradeOk && (r162BrainBypassActive || Number(decisionChain?.brainConfidence||0) >= 55));
 
-        // R486.3.6: eski kapılardan yalnızca grafik hikâyesine ulaşmak için geçiş bileti.
+        // R486.3.8: eski kapılardan yalnızca grafik hikâyesine ulaşmak için geçiş bileti.
         // Bu doğrudan emir değildir; nihai MARKET/TACTICAL/PUSU/REJECT kararını r48633StoryAuthority verir.
         let r48633LegacyBypass = false;
         if (R486_SINGLE_AUTHORITY_ACTIVE && allowLong) {
@@ -19718,7 +19927,7 @@ async function runAutoScan(prioritySymbol=null) {
             if (recommendation==='WAIT' || (recommendation==='SHORT' && !allowShort)) {
               recommendation='LONG'; isLong=true; isShort=false; score=Number(longScore||0);
               decisionChain={...longDC33,side:'LONG',pass:true,tier:['A','B+'].includes(String(longDC33?.tier||''))?longDC33.tier:'B+',autoOk:true,entryPermissionOk:true,brainAction:'TRADE',r48633LegacyBypass:true,entryPermissionReason:'R486_3_5_STORY_AUTHORITY'};
-              logAuto(`📖 ${coin.symbol} R486.3.6: güçlü LONG hikâye adayı eski WAIT/tier kapılarından çıkarıldı; nihai kararı grafik hikâyesi verecek`);
+              logAuto(`📖 ${coin.symbol} R486.3.8: güçlü LONG hikâye adayı eski WAIT/tier kapılarından çıkarıldı; nihai kararı grafik hikâyesi verecek`);
             } else if (decisionChain) decisionChain.r48633LegacyBypass=true;
           }
         }
@@ -20743,7 +20952,7 @@ async function runAutoScan(prioritySymbol=null) {
           continue;
         }
         if (userRR < minRR && (r439AiOnayli || r48633LegacyBypass)) {
-          logAuto(`⚠️ ${coin.symbol} R486.3.6: panel R/R ${userRR.toFixed(2)} düşük; eski RR kapısı uyarıya indirildi, nihai kararı grafik hikâyesi verecek`);
+          logAuto(`⚠️ ${coin.symbol} R486.3.8: panel R/R ${userRR.toFixed(2)} düşük; eski RR kapısı uyarıya indirildi, nihai kararı grafik hikâyesi verecek`);
         }
 
         // R288: FINAL GRAPH GOVERNOR — analizden kaçan R156/TOP10 bypass'ı emirden hemen önce tekrar kontrol et.
@@ -20904,9 +21113,10 @@ async function runAutoScan(prioritySymbol=null) {
         // kendi okur" ilkesine aykırıydı (çifte filtreleme = boğma). AI zaten WAIT diyerek kendi filtreliyor.
         // R449: kapı artık MEKANİK motoru da kapsıyor — AI_BRAIN_ENABLED=0 iken bot işlemsiz
         // kalmasın (R325 gereği emri sadece 'aiBrain' kararı açar; mekanik karar da o kanaldan akar).
+        let aiData = null; // R486.3.8: emir sonrası R428 giriş fotoğrafı aynı snapshotı kullanır
         if ((AI_BRAIN_ENABLED && ANTHROPIC_API_KEY) || R447_ENABLED) {
           try {
-            const aiData = {
+            aiData = {
               // ═══ R308K: PUANSIZ — AI ham veriyi okur, botun skoruna mahkum değil ═══
               lastPrice: Number(coin.lastPrice || analysis?.price || 0),
               gainerRank: coin.gainerRank || null, // R308R: TOP gainer sırası (1=en volatil/güçlü)
@@ -21241,30 +21451,35 @@ async function runAutoScan(prioritySymbol=null) {
                 sl:Number(r447EntryTruth.recommendedSl||r447.sl||stopPrice),
                 karKosma:r447Wait?'NORMAL':(r447Tactical?'TACTICAL':r447.karKosma),
                 story:r447Story, authority:r447Authority,
-                reasoning:`${r447.reasoning} · R486.3.6 R447→HİKÂYE OTORİTESİ ${r447Authority.action}: ${r447Authority.reason}`,
-                plan:r447Wait?`R486.3.6 ${r447Authority.action}: market emir yok; taze 1m/3m/5m teyit veya pusu seviyesi beklenir.`:
-                  `R486.3.6 ${r447Authority.action}: R447 imzası grafik hikâyesiyle doğrulandı.`
+                reasoning:`${r447.reasoning} · R486.3.8 R447→HİKÂYE OTORİTESİ ${r447Authority.action}: ${r447Authority.reason}`,
+                plan:r447Wait?`R486.3.8 ${r447Authority.action}: market emir yok; taze 1m/3m/5m teyit veya pusu seviyesi beklenir.`:
+                  `R486.3.8 ${r447Authority.action}: R447 imzası grafik hikâyesiyle doğrulandı.`
               };
-              logAuto(`⚙️ ${coin.symbol} R447→R486.3.6 HİKÂYE OTORİTESİ: ${r447Authority.action} · q:${r447Story?.quality??'—'} · mikro:${r447Story?.microConsensus?.status||'—'} · ${r447Authority.reason}`);
+              logAuto(`⚙️ ${coin.symbol} R447→R486.3.8 HİKÂYE OTORİTESİ: ${r447Authority.action} · q:${r447Story?.quality??'—'} · mikro:${r447Story?.microConsensus?.status||'—'} · ${r447Authority.reason}`);
             } else if (!AI_BRAIN_ENABLED) {
               // R482: AI kapalıyken Server5'in TAM teknik karar zincirini yürüt.
               // FVG/IFVG, OTE/Fib, ICT sweep-reclaim, OB/mitigation, BOS/ChoCH/MSS, mum formasyonları,
               // 5m playbook, orderflow/CVD/OI/funding ve HTF kırılım motorları yalnız sensör olarak kalmasın.
               // Ancak R300 son kapı açık onay vermediyse mekanik motor AI gibi yumuşak red EZEMEZ.
-              const mechSide = String(recommendation || decisionChain?.side || '').toUpperCase();
+              const mechPulse=coin?.workerSignal||((typeof __r328PatlamaFlags==='object'&&__r328PatlamaFlags)?__r328PatlamaFlags[String(coin.symbol||'').replace('USDT','').toUpperCase()]:null),mechGhostFresh=!!(mechPulse&&Date.now()-Number(mechPulse.ts||0)<6*60*1000&&String(mechPulse.mode||'')==='PRE_BREAKOUT_GHOST');
+              // R486.3.8: kapanmış 15m R447 imzası yoksa bile canlı MTF hikâyesi tetik olabilir.
+              // Böylece 15m kapanışı kapı olmaz; yalnız bariz 1m/3m/5m + HTF uyumu pozitif yol açar.
+              const mechPreStory=R483_CHART_STORY_ENABLED?r483ChartStory(coin.symbol,r481MekanikVeri(coin,analysis,decisionChain)):null;
+              const mechIntrabarFresh=!!(mechPreStory?.microConsensus?.intrabarMtfObvious);
+              const mechSide = String((mechGhostFresh||mechIntrabarFresh)?'LONG':(recommendation || decisionChain?.side || '')).toUpperCase();
               const mechTier = String(decisionChain?.tier || '');
               const mechTrigger = !!(
                 String(decisionChain?.brainAction||'').toUpperCase() === 'TRADE' ||
                 decisionChain?.r160TraderDecision || decisionChain?.r159MomentumPass ||
                 decisionChain?.r156FastBypass || decisionChain?.r284WaitUpgradeOk ||
-                decisionChain?.r274SafeEntryPass || decisionChain?.r190Edge?.ok
+                decisionChain?.r274SafeEntryPass || decisionChain?.r190Edge?.ok || mechGhostFresh || mechIntrabarFresh
               );
               const mechPermission = !!(
                 decisionChain?.autoOk === true || decisionChain?.entryPermissionOk === true ||
                 r162BrainBypassActive || r121BrainTradeOk || decisionChain?.r284WaitUpgradeOk ||
                 decisionChain?.r48633LegacyBypass || (R486_SINGLE_AUTHORITY_ACTIVE && mechTrigger)
               );
-              // R486.3.6: yalnız operasyonel hard safety. Grafik yönü/tepe/late trap tek hikâyede tartılır.
+              // R486.3.8: yalnız operasyonel hard safety. Grafik yönü/tepe/late trap tek hikâyede tartılır.
               const mechHardBlock = !!(
                 decisionChain?.r68CriticalHardBlock || decisionChain?.poorLiquidity || decisionChain?.atrExtremeBlock
               );
@@ -21277,7 +21492,7 @@ async function runAutoScan(prioritySymbol=null) {
                 !mechHardBlock && planDirectionOk &&
                 (R486_SINGLE_AUTHORITY_ACTIVE || (decisionChain?.r482R300Approved === true && Number(userRR||0) >= Number(minRR||1.0)));
               if (fullMechanicalOk) {
-                const r483Story = R483_CHART_STORY_ENABLED ? r483ChartStory(coin.symbol, r481MekanikVeri(coin,analysis,decisionChain)) : null;
+                const r483Story = mechPreStory || (R483_CHART_STORY_ENABLED ? r483ChartStory(coin.symbol, r481MekanikVeri(coin,analysis,decisionChain)) : null);
                 decisionChain.r483Story = r483Story;
                 const rawConf = Math.max(Number(decisionChain?.brainConfidence||0), Number(decisionChain?.priorityScore||0), Number(score||0));
                 const mechConf = Math.max(64, Math.min(90, Math.round(rawConf || 64)));
@@ -21299,10 +21514,10 @@ async function runAutoScan(prioritySymbol=null) {
                   ok:true, mekanik:true, motor:`R486_3_5_MICRO_STORY_${authority.action}`, aiCallMade:false, side:storyWait?'WAIT':mechSide, plannedSide:mechSide,
                   entry:Number(storyWait ? (entryTruth.plannedEntry||0) : entryRef), tp:Number(entryTruth.recommendedTp||targetPrice), sl:Number(entryTruth.recommendedSl||stopPrice), confidence:Math.max(64,tactical?storyConf-5:storyConf),
                   karKosma:String(storyWait?'NORMAL':(tactical?'TACTICAL':(r282TradePlan?.mode || decisionChain?.r283Recipe?.mode || 'NORMAL'))), story:r483Story, authority,
-                  reasoning:`R486.3.6 MİKRO HİKÂYE/${setup}: ${String(decisionChain?.brainSummary || decisionChain?.reason || 'Server5 teknik zinciri TRADE onayı').slice(0,380)} · OTORİTE ${authority.action}: ${authority.reason} · tam R/R ${Number(entryTruth.fullRR ?? userRR ?? 0).toFixed(2)} · ilk engel R/R ${entryTruth.firstObstacleRR??'—'}${r483Story?.summary?' · HİKÂYE: '+r483Story.summary:''}`,
-                  plan:storyWait?`R486.3.6 ${authority.action}: ${entryTruth.plannedEntry?entryTruth.plannedEntry+' pusu seviyesi':'grafik teyidi'}; plan canlı tutulur.`:`R486.3.6 ${authority.action}: grafik hikâyesi nihai otoritedir; eski R300/tier/skor kapıları uyarıdır; minimum kaldıraç 10x, ${tactical?'%'+authRiskPct+' risk ölçeği':'normal risk ölçeği'}, R486 hasat aktif.`
+                  reasoning:`R486.3.8 MİKRO HİKÂYE/${setup}: ${String(decisionChain?.brainSummary || decisionChain?.reason || 'Server5 teknik zinciri TRADE onayı').slice(0,380)} · OTORİTE ${authority.action}: ${authority.reason} · tam R/R ${Number(entryTruth.fullRR ?? userRR ?? 0).toFixed(2)} · ilk engel R/R ${entryTruth.firstObstacleRR??'—'}${r483Story?.summary?' · HİKÂYE: '+r483Story.summary:''}`,
+                  plan:storyWait?`R486.3.8 ${authority.action}: ${entryTruth.plannedEntry?entryTruth.plannedEntry+' pusu seviyesi':'grafik teyidi'}; plan canlı tutulur.`:`R486.3.8 ${authority.action}: grafik hikâyesi nihai otoritedir; eski R300/tier/skor kapıları uyarıdır; minimum kaldıraç 10x, ${tactical?'%'+authRiskPct+' risk ölçeği':'normal risk ölçeği'}, R486 hasat aktif.`
                 };
-                logAuto(`📖 ${coin.symbol} R486.3.6 MİKRO HİKÂYE: ${authority.action} · q:${r483Story?.quality??'—'} · ilkRR:${entryTruth.firstObstacleRR??'—'} · ${authority.reason} · AI çağrısı yok`);
+                logAuto(`📖 ${coin.symbol} R486.3.8 MİKRO HİKÂYE: ${authority.action} · q:${r483Story?.quality??'—'} · ilkRR:${entryTruth.firstObstacleRR??'—'} · ${authority.reason} · AI çağrısı yok`);
               } else {
                 const why = !mechTrigger ? 'tam teknik TRADE tetikleyicisi yok' :
                             !mechPermission ? 'emir izni/autoOk yok' :
@@ -21382,7 +21597,7 @@ async function runAutoScan(prioritySymbol=null) {
                   markAutoSkip(coin.symbol, `R/R ${r427RR.toFixed(2)} < ${r48633RrFloor.toFixed(2)}`, {rec:ai.side, score, aiBrain:ai});
                   continue;
                 }
-                if(ai.side==='LONG'&&r427RR!==null&&r427RR<r429RRTaban&&ai?.mekanik)logAuto(`⚠️ ${coin.symbol} R486.3.6: eski R/R ${r429RRTaban.toFixed(2)} kapısı uyarıya indi; hikâye otoritesi ${r48633AuthAction}, plan R/R ${r427RR.toFixed(2)}`);
+                if(ai.side==='LONG'&&r427RR!==null&&r427RR<r429RRTaban&&ai?.mekanik)logAuto(`⚠️ ${coin.symbol} R486.3.8: eski R/R ${r429RRTaban.toFixed(2)} kapısı uyarıya indi; hikâye otoritesi ${r48633AuthAction}, plan R/R ${r427RR.toFixed(2)}`);
                 // R441 (canlı ders 20.07 AAOI): yedek kanıt YALNIZCA canlı delta yok/zayıfken bloklar —
                 // R411'in asıl niyeti buydu. AAOI'de canlı delta +14.8 (tr:500, taze) ve emir defteri +99.8
                 // alıcı baskınken mum-bazlı yedek 'SATIS' dedi ve LONG bloklandı; koşan coinde her pullback
@@ -21413,7 +21628,7 @@ async function runAutoScan(prioritySymbol=null) {
                     markAutoSkip(coin.symbol, `${ai.mekanik?'Mekanik':'AI'} plan reddi: ${_q.reason}`, {rec:ai.side, score, aiBrain:ai});
                     continue;
                   }
-                  logAuto(`⚠️ ${coin.symbol} R486.3.6: eski güven tabanı uyarıya indi; grafik otoritesi ${ai.authority.action}`);
+                  logAuto(`⚠️ ${coin.symbol} R486.3.8: eski güven tabanı uyarıya indi; grafik otoritesi ${ai.authority.action}`);
                 }
                 // ═══ R370: UYARI SAYACI — 2+ ciddi uyarı birikirse VETO (kullanıcı dersi: BEL'de 3 uyarı vardı, açıldı, kaybetti) ═══
                 let _r370UyariSay = 0; const _r370Uyarilar = [];
@@ -21762,7 +21977,7 @@ async function runAutoScan(prioritySymbol=null) {
           const r48633Tactical=String(decisionChain?.aiBrain?.authority?.action||'')==='TACTICAL';
           const opportunityLev=r48633Tactical?R486_MIN_LEVERAGE:Math.max(R486_MIN_LEVERAGE,Math.min(maxAllowed,desired));
           executeLeverage=r48636FinalLeverage(opportunityLev,userSLPct,maxAllowed,r48633Tactical);
-          leverageNote+=` · R486.3.6 fırsat ${opp.toFixed(0)}/100 ${old}x→${executeLeverage}x (aday ${opportunityLev}x, SL×Lev final koruma, Binance max ${maxAllowed}x, taban 10x)`;
+          leverageNote+=` · R486.3.8 fırsat ${opp.toFixed(0)}/100 ${old}x→${executeLeverage}x (aday ${opportunityLev}x, SL×Lev final koruma, Binance max ${maxAllowed}x, taban 10x)`;
         } catch(e) {
           if (String(e?.code||'')==='R486_MIN_LEVERAGE_UNAVAILABLE') { logAuto(`⛔ ${coin.symbol} ${e.message}`); markAutoSkip(coin.symbol,e.message,{rec:recommendation,score}); continue; }
           executeLeverage=Math.max(R486_MIN_LEVERAGE,Number(executeLeverage||R486_MIN_LEVERAGE));
@@ -21786,7 +22001,7 @@ async function runAutoScan(prioritySymbol=null) {
             usdtAmount = r389Yeni;
           } else { usdtAmount = r389PanelMarj; }
         } catch(_) { usdtAmount = r389PanelMarj; }
-        // R486.3.6: kullanıcının %40+%40/%20 bileşik sözleşmesi pozisyon marjında TEK otoritedir.
+        // R486.3.8: kullanıcının %40+%40/%20 bileşik sözleşmesi pozisyon marjında TEK otoritedir.
         // Eski %12 risk-budget boyutlandırması varsayılan kapalıdır; açık edilirse yalnız bilinçli deney olarak çalışır.
         try {
           if (R486_RISK_BUDGET_SIZING) {
@@ -22080,7 +22295,7 @@ async function runAutoScan(prioritySymbol=null) {
     autoScanState.running = false;
     autoScanState.currentSymbol = null;
     autoScanState.lastScanEnd = Date.now();
-    autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + AUTO_SCAN_INTERVAL_MS : null;
+    autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + r48638AdaptiveScanIntervalMs() : null;
 
     // R308C: B şıkkı — eski kapılar sustursa bile scan'in en iyi adayını AI değerlendirir; SHADOW=0 ise canlı emir açabilir.
     await r308RunAiCandidateReviewAfterScan();
@@ -22113,31 +22328,17 @@ async function getNewPosCount() {
 
 function startAutoTrader() {
   logAuto('Otomatik işlem başlatıldı');
-  // R331: Tarama 15m MUM KAPANIŞINA senkronize. Eski setInterval botun başlangıcına göre sayıyordu
-  // (örn 19:23.5'te bakıp yarım muma karar veriyordu). Artık :00/:15/:30/:45 mum kapanışında (+8sn mum otursun)
-  // ve isteğe bağlı mum ortasında (+7.5dk) tarar → AI hep KAPANMIŞ mumu görür, yarım mum sahte sinyali önlenir.
+  // R486.3.8: AI maliyeti yokken tam tarama 15m kapanışına kilitlenmez.
+  // Kapanmış HTF bağlamı korunur; workers/targeted wake arada tek sembolü derin tarar.
+  // Tam tarama periyodu gerçek Binance used-weight başlıklarına göre 90-240sn adaptiftir.
   function scheduleNextScan() {
-    const now = Date.now();
-    const d = new Date(now);
-    const min = d.getUTCMinutes();
-    const sec = d.getUTCSeconds();
-    // 15m sınırları: 0,15,30,45. Ayrıca ortaları: 7.5,22.5,37.5,52.5 (mum ortası kontrolü)
-    const marks = [0, 7.5, 15, 22.5, 30, 37.5, 45, 52.5];
-    const nowMin = min + sec/60;
-    // bir sonraki mark'ı bul
-    let nextMark = marks.find(m => m > nowMin + 0.05);
-    let waitMin;
-    if (nextMark === undefined) { nextMark = 60; waitMin = 60 - nowMin; }
-    else waitMin = nextMark - nowMin;
-    // mum kapanış sınırlarında (0,15,30,45) +8sn ekle (mum tam kapansın, Binance verisi otursun)
-    const isCandleClose = (nextMark % 15 === 0);
-    const waitMs = waitMin*60*1000 + (isCandleClose ? 8000 : 0);
-    autoScanState.nextScanDue = now + waitMs;
-    if (autoTimer) clearTimeout(autoTimer);
-    autoTimer = setTimeout(async () => {
-      try { await runAutoScan(); } catch(_) {}
-      scheduleNextScan(); // bir sonraki tarama için tekrar zamanla
-    }, waitMs);
+    const waitMs=r48638AdaptiveScanIntervalMs();
+    autoScanState.nextScanDue=Date.now()+waitMs;
+    if(autoTimer)clearTimeout(autoTimer);
+    autoTimer=setTimeout(async()=>{
+      try{await runAutoScan();}catch(_){}
+      scheduleNextScan();
+    },waitMs);
   }
   scheduleNextScan();
   if (!r125FastWakeTimer) {
@@ -22153,7 +22354,7 @@ function startAutoTrader() {
         } catch(_) {}
         const now = Date.now();
         for (const [sym, ev] of r125PriorityWake.entries()) {
-          if (now - ev.ts > 15000) { r125PriorityWake.delete(sym); continue; }
+          const wakeTtl=/^R48637_/i.test(String(ev.reason||''))?90000:15000; if (now - ev.ts > wakeTtl) { r125PriorityWake.delete(sym); continue; }
           // R311G: TOP2 HIZLI-TAKİP GERİ AÇILDI (kullanıcı: anlık fırsat yakalama için). 418 fix korunur:
           // eşik 11 (gerçek ani hareket), TOP2'ye 90sn cooldown (istek patlaması yok), backoff'ta dur.
           // Maliyet sebebi worker DEĞİLDİ (parse hatası + max_tokens 400'dü) — onlar R311E/F'de çözüldü.
@@ -22165,13 +22366,15 @@ function startAutoTrader() {
           const scanGapOk = now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS;
           if (Number(ev.score||0) >= wakeThreshold && scanGapOk && (!isTop2Sym || lastWakeOk) && !isBinanceBackoffActive()) {
             if (isTop2Sym) r310yLastTop2Wake = now;
-            // R336: KREDİ KATİLİ DÜZELTMESİ — FastWake artık runAutoScan TETİKLEMEZ.
-            // Eski davranış: volatil TOP2'de orderflow spike sürekli → tarama ~30sn'de dönüyordu → 335 AI çağrısı/gün
-            // → $10.5 kredi 1 günde bitti. Tarama SADECE R331 mum-senkron zamanlayıcıda döner (7.5dk: kapanış+orta).
-            // Spike bilgisi patlama-worker bayrağıyla zaten mekanik karar motoruna gidiyor; ekstra tarama = ekstra maliyet, kazanç yok.
-            autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 spike (not edildi, mum-senkron tarama bekleniyor)':'R151 orderflow spike (not)'}: ${sym.replace('USDT','')} ${ev.reason}`;
-            r125PriorityWake.delete(sym);
-            // runAutoScan(sym); ← R336: KAPALI — mum-senkron dışı tarama yok
+            const isR48637Worker=/^R48637_/i.test(String(ev.reason||'')),lastSym=Number(r48637MechWakeBySymbol.get(sym)||0),wakeCd=r48638WakeCooldowns(),globalOk=now-r48637LastMechWakeTs>=wakeCd.globalMs,symbolOk=now-lastSym>=wakeCd.symbolMs;
+            if(R486_MECH_FAST_WAKE_ACTIVE&&!AI_BRAIN_ENABLED&&isR48637Worker&&Number(ev.score||0)>=R486_MECH_FAST_WAKE_MIN_SCORE&&globalOk&&symbolOk){
+              r48637LastMechWakeTs=now;r48637MechWakeBySymbol.set(sym,now);r48637TargetedWakeMeta.set(sym,{ts:now,score:Number(ev.score||0),mode:/GHOST/i.test(String(ev.reason||''))?'PRE_BREAKOUT_GHOST':/BREAK|TAZE/i.test(String(ev.reason||''))?'EARLY_1M_3M_IGNITION':'WATCH',reason:String(ev.reason||'')});r125PriorityWake.delete(sym);
+              autoScanState.lastAction=`👻 hedefli mekanik wake: ${sym.replace('USDT','')} · ${ev.reason} · skor ${ev.score}`;
+              runAutoScan(sym,true).catch(e=>logAuto(`⚠️ ${sym} hedefli wake hata: ${String(e?.message||e).slice(0,90)}`));
+            }else{
+              autoScanState.lastAction = `${isTop2Sym?'⚡TOP2 spike':'R151 orderflow spike'} not edildi: ${sym.replace('USDT','')} ${ev.reason}`;
+              r125PriorityWake.delete(sym);
+            }
             break;
           }
         }
