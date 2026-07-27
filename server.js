@@ -86,7 +86,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R490_BIRLESIK_391_V3_STATE_SNAPSHOT_LEDGER_10X'
+const LAZARUS_BUILD = 'R493_KALITE_SIZING_391_V5_WALKFWD_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -4380,7 +4380,59 @@ function r490DdThrottleFactor(eq) {
   };
 }
 
-// ═══ R480 SHADOW_RESEARCH — salt-okunur; karar/marj/kaldıraç etkisi YOK ═══
+// ═══ R480 SHADOW_RESEARCH + R491 DAR TEPE-FREN ═══
+// R480 genel durumda salt-okunur shadow'dur. Yalnız R491'in üçlü, env-gate'li LONG
+// top-chase koşulunda giriş kararını/vetoyu/kaldıracı değiştirmeden SON marjı küçültür.
+const R491_TEPE_FREN_ACTIVE = String(process.env.R491_TEPE_FREN_ACTIVE ?? '1') !== '0';
+function r491EnvNumber(name, fallback, min, max) {
+  const rawText = process.env[name];
+  const raw = rawText === undefined || String(rawText).trim() === '' ? NaN : Number(rawText);
+  const n = Number.isFinite(raw) ? raw : Number(fallback);
+  return Math.max(Number(min), Math.min(Number(max), n));
+}
+const R491_SCORE_MAX = r491EnvNumber('R491_SCORE_MAX', 0.52, 0.05, 0.95);
+const R491_RSI4H_MIN = r491EnvNumber('R491_RSI4H_MIN', 80, 40, 99);
+const R491_K24_MIN = r491EnvNumber('R491_K24_MIN', 85, 40, 99.9);
+const R491_MARGIN_FACTOR = r491EnvNumber('R491_MARGIN_FACTOR', 0.50, 0.10, 1.00);
+const R491_MODEL_ID = 'R491_NARROW_TOP_MARGIN_BRAKE_V1';
+// ═══ R493 KALİTE-SIZING (walk-forward doğrulandı: Haziran↔Temmuz, üst çeyrek ROI +18.5 vs alt +4.6) ═══
+// R480 skoruna göre MARJ tilt: yüksek skor ağır bas, düşük skor ele. KALDIRAÇA DOKUNMAZ (min 10x korunur). Buffer-cap'li.
+const R493_KALITE_SIZING_ACTIVE = String(process.env.R493_KALITE_SIZING_ACTIVE ?? '1') !== '0';
+const R493_HIGH_FACTOR = r491EnvNumber('R493_HIGH_FACTOR', 1.10, 1.00, 1.40);
+const R493_MID_FACTOR  = r491EnvNumber('R493_MID_FACTOR', 0.90, 0.50, 1.20);
+const R493_LOW_FACTOR  = r491EnvNumber('R493_LOW_FACTOR', 0.60, 0.30, 1.00);
+const R493_HIGH_MIN    = r491EnvNumber('R493_HIGH_MIN', 0.66, 0.55, 0.90);
+const R493_LOW_MAX     = r491EnvNumber('R493_LOW_MAX', 0.55, 0.30, 0.65);
+const R493_MAX_EQ_PCT  = r491EnvNumber('R493_MAX_EQ_PCT', 0.44, 0.20, 0.60);  // poz başına marj tavanı (buffer koruması)
+const R493_MODEL_ID = 'R493_QUALITY_SIZING_WALKFWD_V1';
+let r493SizingMeta = null, r493SizingCount = 0;
+let r491BrakeTriggerCount = 0;
+let r491LastBrake = null;
+function r491NarrowTopBrakeDecision(shadow, side, at=Date.now()) {
+  const direction = String(side || '').toUpperCase();
+  const score = Number(shadow?.score);
+  const rsi4h = Number(shadow?.featureMap?.rsi4h);
+  const k24 = Number(shadow?.featureMap?.k24);
+  const refTs = Number(shadow?.scoredAt || shadow?.featureTs || 0);
+  const ageMs = refTs > 0 ? Number(at) - refTs : Infinity;
+  const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= 180000;
+  const inputsOk = Number.isFinite(score) && Number.isFinite(rsi4h) && Number.isFinite(k24);
+  const active = !!(R491_TEPE_FREN_ACTIVE && direction === 'LONG' && fresh && inputsOk &&
+    score < R491_SCORE_MAX && rsi4h > R491_RSI4H_MIN && k24 > R491_K24_MIN);
+  return {
+    active, modelId:R491_MODEL_ID, side:direction, fresh, ageSec:Number.isFinite(ageMs)?Math.round(ageMs/1000):null,
+    score:Number.isFinite(score)?score:null, rsi4h:Number.isFinite(rsi4h)?+rsi4h.toFixed(2):null,
+    k24:Number.isFinite(k24)?+k24.toFixed(2):null, factor:R491_MARGIN_FACTOR,
+    thresholds:{scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN},
+    reason:active?'R480_LOW + 4H_HOT + K24_TOP':'NO_NARROW_TOP_MATCH'
+  };
+}
+function r480RefreshReasoningLabel(text, shadow) {
+  const s = String(text || '');
+  const marker = ' · 🧠kalite(';
+  const idx = s.lastIndexOf(marker);
+  return `${idx >= 0 ? s.slice(0, idx) : s}${r480ShadowLabel(shadow)}`;
+}
 const R480_MODEL_ID = 'R480_LOO7_V1';
 const R480_FEATURE_NAMES = ['dlt','atsR','vR','er','mom12','mom4','ext','coil','k24','rsi1h','rsi4h','atr'];
 const R480W={w:[0.0454,0.054,-0.015,-0.0135,-0.0246,-0.0494,-0.0131,0.0414,0.099,-0.1053,-0.0899,-0.1481,0.0386,-0.0575],
@@ -4437,7 +4489,11 @@ function r480FinalizeShadow(baseShadow, conf, runner, decisionSnapshotId=null, a
 function r480ShadowLabel(sh){
   if(!sh||!Number.isFinite(Number(sh.score)))return '';
   const band=sh.band==='HIGH'?' YÜKSEK':sh.band==='LOW'?' düşük':'';
-  return ` · 🧠kalite(shadow) %${Math.round(Number(sh.score)*100)}${band} [id:${sh.modelId} snap:${sh.decisionSnapshotId||sh.featureSnapshotId} t-${Number(sh.ageSec||0)}s·karar etkisi yok]`;
+  const impacted=sh.decisionImpact===true;
+  const impactTxt=impacted
+    ? `R491 marj etkisi ×${Number(sh.decisionImpactFactor||1).toFixed(2)}`
+    : 'karar etkisi yok';
+  return ` · 🧠kalite(${impacted?'R491 dar-etki':'shadow'}) %${Math.round(Number(sh.score)*100)}${band} [id:${sh.modelId} snap:${sh.decisionSnapshotId||sh.featureSnapshotId} t-${Number(sh.ageSec||0)}s·${impactTxt}]`;
 }
 
 function r48636CompoundMarginFromEquity(equity, maxPositions=R486_MAX_POSITIONS) {
@@ -8116,6 +8172,12 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
     r480Band:r480?.band||null,
     r480SnapshotId:r480?.decisionSnapshotId||r480?.featureSnapshotId||null,
     r480FeatureTs:Number(r480?.featureTs||0)||null,
+    // R491: dar tepe-frenin gerçek marj etkisi metinden bağımsız ölçülür.
+    r491Brake:!!state?.r491Brake?.active,
+    r491BrakeMeta:state?.r491Brake || state?.aiSnapshot?.r491Brake || null,
+    r491MarginBefore:Number.isFinite(Number(state?.r491Brake?.marginBefore))?Number(state.r491Brake.marginBefore):null,
+    r491MarginAfter:Number.isFinite(Number(state?.r491Brake?.marginAfter))?Number(state.r491Brake.marginAfter):null,
+    r491MarginFactor:Number.isFinite(Number(state?.r491Brake?.factor))?Number(state.r491Brake.factor):null,
     score:state?.score||null, tier:state?.tier||null,
     exitReason:null,resultNote:null,pnlUSDT:null,roiPct:null,
     closedAt:null,closedAtTR:null,cooldownMin:null,
@@ -19551,7 +19613,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3.9: indikatör kapısı yok; kapanmış HTF yapı + canlı mikro zamanlama + güncel OI/funding/akış tazeliği + seviye rolü/evre/emilim; WAIT otoritesi korunur; %40+%40 bileşik marj',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3.9: indikatör kapısı yok; kapanmış HTF yapı + canlı mikro zamanlama + güncel OI/funding/akış tazeliği + seviye rolü/evre/emilim; WAIT otoritesi korunur; %40+%40 bileşik marj',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -20098,6 +20160,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         const { longScore, shortScore, isExpired, freshness } = analysis;
         let recommendation = analysis.recommendation;
         let decisionChain = analysis.decisionChain || {};
+        let r491BrakeMeta = null; // yalnız bu coin/emir çevrimi; sonraki coine sızmaz
         if (isExpired || freshness === 'EXPIRED') { markAutoSkip(coin.symbol, 'Sinyal süresi geçmiş'); continue; }
 
         // ═══ R463 COIN ZARAR BLOĞU (canlı kanıt 21.07: LA aynı gün 4 kez açıldı, 4'ü de kayıp
@@ -22282,6 +22345,64 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             usdtAmount=Number(r389PanelMarj);
           }
         } catch(_) { usdtAmount=Number(r389PanelMarj); }
+
+        // ═══ R491 DAR TEPE-FREN — FINAL MARJ HOOK ═══
+        // SKIP/VETO/KALDIRAÇ DEĞİŞİMİ YOK. Yalnız LONG ve üç koşul birlikteyse son marj ×factor.
+        // Hook tüm R389/R486/R490 sizing katmanlarından SONRA olduğu için gerçek emre giden miktarı küçültür.
+        try {
+          const r491Shadow = decisionChain?.r480Shadow || decisionChain?.aiBrain?.r480Shadow || analysis?.r480Shadow || null;
+          const r491Decision = r491NarrowTopBrakeDecision(r491Shadow, recommendation, Date.now());
+          if (r491Decision.active) {
+            const marginBefore = Number(usdtAmount);
+            const marginAfter = +(marginBefore * R491_MARGIN_FACTOR).toFixed(4);
+            if (marginBefore > 0 && marginAfter > 0 && marginAfter < marginBefore) {
+              usdtAmount = marginAfter;
+              r491BrakeMeta = {...r491Decision,symbol:String(coin.symbol||coin.fullSymbol||'').replace('USDT',''),
+                marginBefore:+marginBefore.toFixed(4),marginAfter,appliedAt:Date.now(),build:LAZARUS_BUILD};
+              r491BrakeTriggerCount += 1;
+              r491LastBrake = r491BrakeMeta;
+              const impactedShadow = {...r491Shadow,decisionImpact:true,
+                decisionImpactType:R491_MODEL_ID,decisionImpactFactor:R491_MARGIN_FACTOR,
+                decisionImpactAt:r491BrakeMeta.appliedAt,r491Brake:r491BrakeMeta};
+              analysis.r480Shadow = impactedShadow;
+              analysis.r491Brake = r491BrakeMeta;
+              decisionChain.r480Shadow = impactedShadow;
+              decisionChain.r491Brake = r491BrakeMeta;
+              if (decisionChain?.aiBrain) {
+                decisionChain.aiBrain.r480Shadow = impactedShadow;
+                decisionChain.aiBrain.r491Brake = r491BrakeMeta;
+                decisionChain.aiBrain.reasoning = r480RefreshReasoningLabel(decisionChain.aiBrain.reasoning, impactedShadow);
+              }
+              logAuto(`🛑 ${coin.symbol} R491 DAR TEPE-FREN: kalite %${Math.round(r491Decision.score*100)} < %${Math.round(R491_SCORE_MAX*100)} · 4h RSI ${r491Decision.rsi4h} > ${R491_RSI4H_MIN} · k24 ${r491Decision.k24} > ${R491_K24_MIN} → marj ${marginBefore.toFixed(2)}$→${marginAfter.toFixed(2)}$ (×${R491_MARGIN_FACTOR}; işlem engellenmedi)`);
+            }
+          }
+        } catch (e) {
+          // Fren yardımcı bir küçültme katmanıdır; hata gerçek sizing'i büyütemez ve emri bozmaz.
+          r491BrakeMeta = null;
+          logAuto(`⚠️ ${coin.symbol} R491 tepe-fren telemetri hatası: ${String(e?.message||e).slice(0,80)} — taban marj korunuyor`);
+        }
+
+        // ═══ R493 KALİTE-SIZING — R480 skoruna göre marj tilt (kaldıraç DEĞİL; min 10x korunur) ═══
+        try {
+          const _q493 = Number(analysis?.r480Shadow?.score);
+          if (R493_KALITE_SIZING_ACTIVE && recommendation === 'LONG' && Number.isFinite(_q493) && usdtAmount > 0) {
+            const f493 = _q493 >= R493_HIGH_MIN ? R493_HIGH_FACTOR : _q493 < R493_LOW_MAX ? R493_LOW_FACTOR : R493_MID_FACTOR;
+            if (f493 !== 1.0) {
+              const before493 = usdtAmount;
+              let tuned493 = before493 * f493;
+              const eq493 = Number(r372BilesikMeta?.equity || 0);
+              if (eq493 > 0) tuned493 = Math.min(tuned493, eq493 * R493_MAX_EQ_PCT);   // buffer koruması: min 10x + tampon korunur
+              tuned493 = +tuned493.toFixed(4);
+              if (tuned493 > 0 && Math.abs(tuned493 - before493) > 0.01) {
+                usdtAmount = tuned493;
+                r493SizingCount += 1;
+                r493SizingMeta = {symbol:String(coin.symbol||'').replace('USDT',''),score:_q493,band:(_q493>=R493_HIGH_MIN?'HIGH':_q493<R493_LOW_MAX?'LOW':'MID'),factor:f493,marginBefore:+before493.toFixed(2),marginAfter:tuned493,at:Date.now(),modelId:R493_MODEL_ID};
+                logAuto(`📊 ${coin.symbol} R493 kalite-sizing: skor %${Math.round(_q493*100)} ${_q493>=R493_HIGH_MIN?'YÜKSEK→ağır bas':_q493<R493_LOW_MAX?'DÜŞÜK→ele':'orta'} · marj ${before493.toFixed(2)}$×${f493}=${tuned493.toFixed(2)}$ (kaldıraç değişmedi, min 10x)`);
+              }
+            }
+          }
+        } catch (e493) { logAuto(`⚠️ ${coin.symbol} R493 kalite-sizing hata: ${String(e493?.message||e493).slice(0,60)} — taban marj korunuyor`); }
+
         // ═══ R437 GİRİŞ KOVALAMA KAPISI (tarama yolu) — ACE canlı dersi 20.07 ═══
         try {
           const r437Ai = decisionChain?.aiBrain;
@@ -22405,6 +22526,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             sltpVerified: !!orderResp.slSuccess && !!orderResp.tpSuccess,
             openedAt: Date.now(),
             r480Shadow: decisionChain?.r480Shadow || ai?.r480Shadow || analysis?.r480Shadow || null,
+            r491Brake: r491BrakeMeta,
                 openReason: (decisionChain?.aiBrain?.ok && decisionChain.aiBrain.reasoning)
                   ? `${decisionChain.aiBrain.mekanik?'MEKANİK':'AI'} ${decisionChain.aiBrain.side} güven ${decisionChain.aiBrain.confidence}%: ${decisionChain.aiBrain.reasoning}${decisionChain.aiBrain.plan?' | PLAN: '+decisionChain.aiBrain.plan:''}`
                   : (decisionChain?.reason || ''),
@@ -22434,7 +22556,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               mm: analysis.marketMaker?.target,
               cvd: analysis.cvd?.momentum,
               funding: analysis.funding?.current,
-              panel:{ usdtAmount, leverage:executeLeverage, panelLeverage:leverage, slPct:userSLPct, tpPct:userTPPct, leverageNote },
+              panel:{ usdtAmount, leverage:executeLeverage, panelLeverage:leverage, slPct:userSLPct, tpPct:userTPPct, leverageNote, r491Brake:r491BrakeMeta },
             },
             entryDiscipline:{ canliGirisIziOk:r85CanliGirisIziOk, terazi:r85Terazi, r47:r85R47, timing:r85TimingPts, flow:r85FlowPts, sadeceFundingDestek:r85SadeceFundingDestek, bartiDisiplinOk:r85BartiDisiplinOk },
             managerStatus:{ type:'AÇILDI', reason:`${coin.symbol} ${trSideLabel(recommendation)} açıldı — skor:${score} terazi:${r85Terazi}`, urgency:'LOW', lastCheck:Date.now() },
@@ -22465,6 +22587,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                 _stOpen.entryPrice = Number(orderResp.executedPrice || entryRef) || Number(_stOpen.entryPrice) || null;
                 _stOpen.usdtAmount = Number(usdtAmount) || Number(_stOpen.usdtAmount) || null;
                 _stOpen.marginUSDT = Number(usdtAmount) || Number(_stOpen.marginUSDT) || null;
+                _stOpen.r491Brake = r491BrakeMeta || _stOpen.r491Brake || null;
                 _stOpen.entryOrderId = orderResp.mainOrderId || _stOpen.entryOrderId || null;
                 logAuto(`🛡️ ${coin.symbol} R458: pozisyon yeni koruma katmanına bağlandı (${_ai.mekanik?'MEKANİK':'AI'} · ${_stOpen.aiRunner?'RUNNER':'NORMAL'} · SL%${_stOpen.slPct} · ${_stOpen.leverage}x) — R430 kâr racheti + R434 yapı trailing aktif, eski divergence sıkıştırması devre dışı`);
               }
@@ -22503,7 +22626,8 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                 marketCtx: String(decisionChain?.r140Summary || '').slice(0, 150),
                 openPrice: orderResp.executedPrice || analysis.price || null,
                 snapshotAt: Date.now(),
-                r480Shadow: decisionChain?.r480Shadow || _ai?.r480Shadow || analysis?.r480Shadow || null
+                r480Shadow: decisionChain?.r480Shadow || _ai?.r480Shadow || analysis?.r480Shadow || null,
+                r491Brake: r491BrakeMeta
               };
               trailingState.set(coin.fullSymbol, _stOpen);
             } catch(_snapE) { logAuto(`⚠️ ${coin.symbol} AI snapshot yazılamadı: ${String(_snapE?.message||_snapE).slice(0,60)}`); }
