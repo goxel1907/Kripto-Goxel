@@ -86,7 +86,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_KALITE_SIZING_391_V5_WALKFWD_10X'
+const LAZARUS_BUILD = 'R493_KALITE_SIZING_391_V5_3_HARD_ENTRY_GATE_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -4405,6 +4405,14 @@ const R493_HIGH_MIN    = r491EnvNumber('R493_HIGH_MIN', 0.66, 0.55, 0.90);
 const R493_LOW_MAX     = r491EnvNumber('R493_LOW_MAX', 0.55, 0.30, 0.65);
 const R493_MAX_EQ_PCT  = r491EnvNumber('R493_MAX_EQ_PCT', 0.44, 0.20, 0.60);  // poz başına marj tavanı (buffer koruması)
 const R493_MODEL_ID = 'R493_QUALITY_SIZING_WALKFWD_V1';
+// R493 v5.3: sizing'den bağımsız SON GİRİŞ GÜVENLİĞİ. MARKET/TACTICAL yalnız
+// bilinen ve yeterli ilk engel R/R + taze çekirdek akış ile yaşayabilir.
+const R493_ENTRY_SAFETY_ACTIVE = String(process.env.R493_ENTRY_SAFETY_ACTIVE ?? '1') !== '0';
+const R493_REQUIRE_FIRST_OBSTACLE = String(process.env.R493_REQUIRE_FIRST_OBSTACLE ?? '1') !== '0';
+const R493_MIN_FIRST_OBSTACLE_RR = r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.80, 0.10, 3.00);
+const R493_CORE_FLOW_MAX_AGE_SEC = r491EnvNumber('R493_CORE_FLOW_MAX_AGE_SEC', 45, 5, 300);
+const R493_MARKET_DATA_MAX_SPREAD_SEC = r491EnvNumber('R493_MARKET_DATA_MAX_SPREAD_SEC', 45, 5, 300);
+const R480_FRESH_MS = Math.round(r491EnvNumber('R480_FRESH_SEC', 900, 60, 3600) * 1000);  // 15m mum özelliği ~15dk geçerli; 180sn çok sıkıydı
 let r493SizingMeta = null, r493SizingCount = 0;
 let r491BrakeTriggerCount = 0;
 let r491LastBrake = null;
@@ -4415,7 +4423,7 @@ function r491NarrowTopBrakeDecision(shadow, side, at=Date.now()) {
   const k24 = Number(shadow?.featureMap?.k24);
   const refTs = Number(shadow?.scoredAt || shadow?.featureTs || 0);
   const ageMs = refTs > 0 ? Number(at) - refTs : Infinity;
-  const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= 180000;
+  const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= R480_FRESH_MS;
   const inputsOk = Number.isFinite(score) && Number.isFinite(rsi4h) && Number.isFinite(k24);
   const active = !!(R491_TEPE_FREN_ACTIVE && direction === 'LONG' && fresh && inputsOk &&
     score < R491_SCORE_MAX && rsi4h > R491_RSI4H_MIN && k24 > R491_K24_MIN);
@@ -4480,7 +4488,7 @@ function r480Score(F12, conf, runner){
 function r480FinalizeShadow(baseShadow, conf, runner, decisionSnapshotId=null, at=Date.now()){
   try{
     if(!baseShadow||baseShadow.modelId!==R480_MODEL_ID||!Array.isArray(baseShadow.features))return null;
-    const ageMs=Number(at)-Number(baseShadow.featureTs||0); if(ageMs<0||ageMs>180000)return null;
+    const ageMs=Number(at)-Number(baseShadow.featureTs||0); if(ageMs<0||ageMs>R480_FRESH_MS)return null;
     const score=r480Score(baseShadow.features,conf,runner); if(!Number.isFinite(score))return null;
     const band=score>=0.66?'HIGH':score<0.55?'LOW':'MID';
     return {...baseShadow,decisionSnapshotId:decisionSnapshotId||baseShadow.featureSnapshotId,score,band,confidence:Number(conf)||null,runner:!!runner,scoredAt:Number(at),ageSec:Math.round(ageMs/1000),decisionImpact:false};
@@ -4954,6 +4962,37 @@ function r483ChartStory(symbol,data={}){
   }catch(e){return {version:'R486.2',bias:'MIXED',timing:'MIXED',entryMode:'NONE',quality:50,qualityAdj:0,topRisk:0,summary:`hikâye hesaplanamadı: ${String(e?.message||e).slice(0,100)}`,error:true};}
 }
 
+// R493 v5.3 HARD ENTRY GATE — her MARKET/TACTICAL dönüşünden önce uygulanır.
+// Amaç: uzak TP R/R'sinin, girişe yapışık gerçek ilk engeli veya bayat akışı gizlemesini önlemek.
+function r493EntrySafetyGate(story={},entryTruth={},opts={}){
+  const side=String(opts.side||'LONG').toUpperCase();
+  if(!R493_ENTRY_SAFETY_ACTIVE||side!=='LONG')return {active:R493_ENTRY_SAFETY_ACTIVE,blocked:false,action:'ALLOW',code:'DISABLED_OR_NON_LONG'};
+  const rawRR=entryTruth?.firstObstacleRR,firstRR=(rawRR===null||rawRR===undefined||rawRR==='')?NaN:Number(rawRR),firstKnown=Number.isFinite(firstRR);
+  const role=String(story?.firstObstacleRole||entryTruth?.firstObstacleRole||'').toUpperCase();
+  const flow=String(story?.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase();
+  const oiState=String(story?.oi?.state||'UNKNOWN').toUpperCase();
+  const book=Number(story?.orderFlow?.book),bullVotes=Number(story?.orderFlow?.bullVotes?.length||0),bearVotes=Number(story?.orderFlow?.bearVotes?.length||0);
+  const flowAgeRaw=story?.orderFlow?.freshness?.flow ?? story?.snapshot?.ages?.flow;
+  const flowAge=(flowAgeRaw===null||flowAgeRaw===undefined||flowAgeRaw==='')?NaN:Number(flowAgeRaw);
+  const sourceSpreadRaw=story?.snapshot?.marketDataSpreadSec;
+  const sourceSpread=(sourceSpreadRaw===null||sourceSpreadRaw===undefined||sourceSpreadRaw==='')?NaN:Number(sourceSpreadRaw);
+  const staleTokens=[...(Array.isArray(story?.orderFlow?.staleSources)?story.orderFlow.staleSources:[]),...(Array.isArray(story?.snapshot?.stale)?story.snapshot.stale:[])].map(x=>String(x).toUpperCase());
+  const staleToken=staleTokens.some(x=>/AGGTRADE|CVD|R125|SPREAD|YAYILIM/.test(x));
+  const coreFlowStale=!Number.isFinite(flowAge)||flowAge>R493_CORE_FLOW_MAX_AGE_SEC||staleToken;
+  const sourceSpreadStale=Number.isFinite(sourceSpread)&&sourceSpread>R493_MARKET_DATA_MAX_SPREAD_SEC;
+  const flowDivergence=flow.includes('FLOW_DIVERGENCE')||story?.orderFlow?.conflict===true;
+  const sellerPressure=['SELLERS_CONTROL','SELL_LEAN','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(flow)||(Number.isFinite(book)&&book<=-8)||bearVotes>bullVotes;
+  const oiTrap=oiState==='TRAP_BUILDUP'||oiState.startsWith('TRAP_BUILDUP_');
+  const hardObstacle=role==='HARD_OBSTACLE';
+  const base={active:true,blocked:true,firstObstacleRR:firstKnown?+firstRR.toFixed(3):null,minFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,firstObstacleRole:role||null,flowState:flow,oiState,flowAgeSec:Number.isFinite(flowAge)?+flowAge.toFixed(0):null,marketDataSpreadSec:Number.isFinite(sourceSpread)?+sourceSpread.toFixed(0):null,sellerPressure,staleSources:[...new Set(staleTokens)]};
+  if(hardObstacle&&oiTrap)return {...base,action:'REJECT',code:'HARD_OBSTACLE_OI_TRAP',reason:`HARD_OBSTACLE + ${oiState}: güvenli giriş yok`};
+  if(flowDivergence&&sellerPressure)return {...base,action:'PUSU',code:'FLOW_DIVERGENCE_SELLER_PRESSURE',reason:`${flow} + satıcı baskısı: akış uzlaşmadan giriş yok`};
+  if(R493_REQUIRE_FIRST_OBSTACLE&&!firstKnown)return {...base,action:'PUSU',code:'FIRST_OBSTACLE_RR_UNKNOWN',reason:'ilk engel R/R bilinmiyor: MARKET/TACTICAL yok'};
+  if(firstKnown&&firstRR<R493_MIN_FIRST_OBSTACLE_RR)return {...base,action:'PUSU',code:'LOW_FIRST_OBSTACLE_RR',reason:`ilk engel R/R ${firstRR.toFixed(2)} < ${R493_MIN_FIRST_OBSTACLE_RR.toFixed(2)}: daha iyi fiyat/reclaim bekle`};
+  if(coreFlowStale||sourceSpreadStale)return {...base,action:'PUSU',code:'STALE_CORE_FLOW',reason:`çekirdek akış bayat/uyumsuz: flow ${Number.isFinite(flowAge)?flowAge.toFixed(0):'?'}sn, kaynak yayılımı ${Number.isFinite(sourceSpread)?sourceSpread.toFixed(0):'?'}sn`};
+  return {...base,blocked:false,action:'ALLOW',code:'PASS',reason:'ilk engel ve akış güvenliği uygun'};
+}
+
 function r486EntryTruthGuard(story={},opts={}){
   const side=String(opts.side||'LONG').toUpperCase(),entry=Number(opts.entry||0),sl=Number(opts.sl||0),tp=Number(opts.tp||0),atrPct=Math.max(.25,Number(opts.atrPct||3));
   if(!R486_ENTRY_TRUTH_ACTIVE||side!=='LONG'||!(entry>0))return {active:R486_ENTRY_TRUTH_ACTIVE,marketAllowed:true,mode:'LEGACY',plannedEntry:entry,recommendedSl:sl,recommendedTp:tp};
@@ -4976,20 +5015,23 @@ function r486EntryTruthGuard(story={},opts={}){
   }
   const fullRisk=entry>recommendedSl&&recommendedSl>0?entry-recommendedSl:risk,fullRR=recommendedTp>entry&&fullRisk>0?(recommendedTp-entry)/fullRisk:null,firstRRAdjusted=first>entry&&fullRisk>0?(first-entry)/fullRisk:firstObstacleRR;
   const firstObstacleSoft=firstRRAdjusted!==null&&firstRRAdjusted<R486_FIRST_OBSTACLE_MIN_RR&&!story.validatedTrendRetest&&!story.structuredContinuation;
-  const firstObstacleHard=firstRRAdjusted!==null&&firstRRAdjusted<0.45&&String(story.firstObstacleRole||'')==='HARD_OBSTACLE'&&!story.validatedTrendRetest&&!story.structuredContinuation;
+  const legacyFirstObstacleHard=firstRRAdjusted!==null&&firstRRAdjusted<0.45&&String(story.firstObstacleRole||'')==='HARD_OBSTACLE'&&!story.validatedTrendRetest&&!story.structuredContinuation;
+  const r493EntrySafety=r493EntrySafetyGate(story,{firstObstacleRR:firstRRAdjusted,firstObstacleRole:story.firstObstacleRole,plannedEntry},{side});
+  const firstObstacleHard=legacyFirstObstacleHard||['FIRST_OBSTACLE_RR_UNKNOWN','LOW_FIRST_OBSTACLE_RR'].includes(String(r493EntrySafety?.code||''));
   const planIncoherent=retestBelowStop||!(recommendedSl>0&&recommendedSl<entry)||!(recommendedTp>entry),directionAgainst=story.bias==='SHORT'||['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(String(story.flowState||''));
-  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical,marketAllowed=!(storyWait||planIncoherent||firstObstacleHard||directionAgainst||(tightStop&&retestFar));
+  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked);
   const reasons=[];
   if(storyWait)reasons.push(`hikâye:${mode}`);
   if(planIncoherent)reasons.push(retestBelowStop?'retest seviyesi SL altında':'TP/SL yön planı tutarsız');
   if(firstRaw>0&&!firstObstacleDirectionValid)reasons.push(`ilk engel LONG yönünde değil (${firstRaw}); ${first>entry?'en yakın gerçek üst engel '+first+' ile çözüldü':'geçerli üst engel bulunamadı'}`);
   if(targetRaw>0&&!targetDirectionValid)reasons.push(`hedef likidite LONG yönünde değil; karar hesabından çıkarıldı (${targetRaw})`);
   if(firstObstacleSoft)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} ince (uyarı)`);
-  if(firstObstacleHard)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
+  if(legacyFirstObstacleHard)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
+  if(r493EntrySafety.blocked)reasons.push(`R493 ${r493EntrySafety.code}: ${r493EntrySafety.reason}`);
   if(directionAgainst)reasons.push(`yön/akış LONG karşıtı`);
   if(tightStop)reasons.push(`SL ${Number(stopPct||0).toFixed(2)}% < ${minStopPct.toFixed(2)}% (${R486_MIN_STOP_ATR} ATR)`);
-  const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||story.orderFlow?.conflict||!story.oi?.reliable||firstObstacleSoft||tightStop||retestBelowStop);
-  return {active:true,marketAllowed,mode:marketAllowed?'MARKET_OK':(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,reasons};
+  const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||story.orderFlow?.conflict||!story.oi?.reliable||firstObstacleSoft||tightStop||retestBelowStop||r493EntrySafety.blocked);
+  return {active:true,marketAllowed,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,reasons};
 }
 
 function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
@@ -5002,10 +5044,12 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   const trigger=!!(decision?.r447Signature||decision?.brainAction==='TRADE'||decision?.autoOk||decision?.r160TraderDecision||decision?.r159MomentumPass||decision?.r156FastBypass||decision?.r284WaitUpgradeOk||decision?.r289Playbook?.tradeOk||decision?.r290Smc5m?.tradeOk||decision?.r291Confluence?.tradeOk||decision?.r190Edge?.earlyContinuation||decision?.r190Edge?.squeeze||decision?.r88VurKacOk);
   const breakoutProof=!!(micro.confirmedContinuation||story?.structuredContinuation||story?.trendBreaks?.bull||decision?.r117MssOk||decision?.r289Playbook?.tradeOk||decision?.r291Confluence?.tradeOk),retestProof=!!(micro.confirmedPullback||story?.validatedTrendRetest||decision?.r117BodyReclaimOk||decision?.r117TrapSweepTaken),proof=!!(breakoutProof||retestProof);
   const waitTiming=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP'].includes(timing),mmAwaitsRetest=/AWAITING_RETEST|RETEST_REQUIRED/i.test(String(story?.mmScenario||''))&&!retestProof,impulseNeedsProof=R486_VERTICAL_IMPULSE_PROOF_REQUIRED&&!!micro.verticalImpulse&&!proof,expansionNeedsReclaim=String(story?.tf?.['15m']?.trend||'')==='EXPANSION'&&String(story?.tf?.['5m']?.trend||'')==='DOWN_LH_LL'&&!micro.confirmedPullback&&!micro.confirmedContinuation;
-  const anatomyAction=String(story?.planTruth?.action||'AUTO'),anatomyReason=String(story?.planTruth?.reason||''),rrTactical=!Number.isFinite(firstRR)||firstRR>=R486_STORY_TACTICAL_MIN_FIRST_RR||String(story?.firstObstacleRole||'')==='WEAK_OBSTACLE'||String(story?.firstObstacleRole||'')==='TRIGGER';
-  if(!R486_SINGLE_AUTHORITY_ACTIVE)return {active:false,action:entryTruth?.marketAllowed?'MARKET':'PUSU',riskScale:1,reason:'legacy'};
+  const anatomyAction=String(story?.planTruth?.action||'AUTO'),anatomyReason=String(story?.planTruth?.reason||''),rrTactical=Number.isFinite(firstRR)&&firstRR>=R486_STORY_TACTICAL_MIN_FIRST_RR;
   if(operationalHard)return {active:true,action:'REJECT',riskScale:0,reason:'operasyonel hard safety'};
   if(story?.error)return {active:true,action:plannedEntry>0?'PUSU':'REJECT',riskScale:0,reason:'grafik hikâyesi üretilemedi'};
+  const r493EntrySafety=entryTruth?.r493EntrySafety?.active?entryTruth.r493EntrySafety:r493EntrySafetyGate(story,entryTruth,{side});
+  if(r493EntrySafety.blocked)return {active:true,action:r493EntrySafety.action,riskScale:0,priority:r493EntrySafety.action==='PUSU',leverageBoost:false,r493EntrySafety,reason:`R493 giriş kapısı [${r493EntrySafety.code}]: ${r493EntrySafety.reason}`};
+  if(!R486_SINGLE_AUTHORITY_ACTIVE)return {active:false,action:entryTruth?.marketAllowed?'MARKET':'PUSU',riskScale:1,r493EntrySafety,reason:'legacy'};
   if(explicitStoryAgainst)return {active:true,action:'REJECT',riskScale:0,reason:`grafik/emir yönü açıkça çelişkili: ${story?.bias||'?'} / ${flow}`};
   if(anatomyAction==='PUSU')return {active:true,action:'PUSU',riskScale:0,priority:true,leverageBoost:false,reason:`piyasa anatomisi: ${anatomyReason}`};
   if(confirmationConflict)return {active:true,action:'PUSU',riskScale:0,priority:true,leverageBoost:false,reason:`çoklu zaman/akış teyidi LONG için hazır değil; mtfBear:${mtfBear} oy:${bullVotes}/${bearVotes}`};
@@ -22382,11 +22426,31 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           logAuto(`⚠️ ${coin.symbol} R491 tepe-fren telemetri hatası: ${String(e?.message||e).slice(0,80)} — taban marj korunuyor`);
         }
 
+        // ═══ R493 v5.3 SON EMİR KİLİDİ — authority sonrasında ikinci savunma hattı ═══
+        // Herhangi bir eski/yan yol ai.side=LONG üretse bile gerçek /api/order çağrısından önce
+        // R493 PASS ve MARKET/TACTICAL otoritesi yoksa emir açılmaz.
+        if (R493_ENTRY_SAFETY_ACTIVE && recommendation === 'LONG') {
+          const _r493FinalAuthority = decisionChain?.aiBrain?.authority || decisionChain?.r48633Authority || null;
+          const _r493FinalSafety = _r493FinalAuthority?.r493EntrySafety || decisionChain?.aiBrain?.story?.entryTruth?.r493EntrySafety || decisionChain?.r483Story?.entryTruth?.r493EntrySafety || null;
+          const _r493FinalAction = String(_r493FinalAuthority?.action || '').toUpperCase();
+          const _r493FinalPass = !!(_r493FinalSafety && _r493FinalSafety.blocked === false && String(_r493FinalSafety.code || '') === 'PASS' && ['MARKET','TACTICAL'].includes(_r493FinalAction));
+          if (!_r493FinalPass) {
+            const _r493Why = _r493FinalSafety?.reason || `otorite/safety kanıtı eksik (${_r493FinalAction || 'YOK'})`;
+            logAuto(`⛔ ${coin.symbol} R493 SON EMİR KİLİDİ: ${_r493Why} — MARKET emri açılmadı`);
+            markAutoSkip(coin.symbol, `R493 final gate: ${_r493FinalSafety?.code || 'NO_PASS'} · ${_r493Why}`, {rec:recommendation, score, aiBrain:decisionChain?.aiBrain});
+            try { if (_r493FinalAction === 'PUSU') r125RegisterPriorityWake(coin.fullSymbol, `R493_${_r493FinalSafety?.code || 'PUSU'}`, 76); } catch(_e) {}
+            continue;
+          }
+        }
+
         // ═══ R493 KALİTE-SIZING — R480 skoruna göre marj tilt (kaldıraç DEĞİL; min 10x korunur) ═══
         try {
           const _q493 = Number(analysis?.r480Shadow?.score);
           if (R493_KALITE_SIZING_ACTIVE && recommendation === 'LONG' && Number.isFinite(_q493) && usdtAmount > 0) {
-            const f493 = _q493 >= R493_HIGH_MIN ? R493_HIGH_FACTOR : _q493 < R493_LOW_MAX ? R493_LOW_FACTOR : R493_MID_FACTOR;
+            let f493 = _q493 >= R493_HIGH_MIN ? R493_HIGH_FACTOR : _q493 < R493_LOW_MAX ? R493_LOW_FACTOR : R493_MID_FACTOR;
+            // R493 GÜVENLİK (ChatGPT incelemesi): TACTICAL/temiz-olmayan girişte marjı BÜYÜTME — yalnız küçültebilir.
+            const _r493Clean = String(decisionChain?.aiBrain?.authority?.action || '').toUpperCase() === 'MARKET' && String(decisionChain?.aiBrain?.karKosma || '').toUpperCase() !== 'TACTICAL';
+            if (!_r493Clean && f493 > 1.0) f493 = 1.0;
             if (f493 !== 1.0) {
               const before493 = usdtAmount;
               let tuned493 = before493 * f493;
