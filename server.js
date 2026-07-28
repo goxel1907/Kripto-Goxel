@@ -86,7 +86,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_KALITE_SIZING_391_V5_3_HARD_ENTRY_GATE_10X'
+const LAZARUS_BUILD = 'R493_KALITE_SIZING_391_V5_4_TOP24_CORE_GUARD_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -19657,7 +19657,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3.9: indikatör kapısı yok; kapanmış HTF yapı + canlı mikro zamanlama + güncel OI/funding/akış tazeliği + seviye rolü/evre/emilim; WAIT otoritesi korunur; %40+%40 bileşik marj',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R486.3.9: indikatör kapısı yok; kapanmış HTF yapı + canlı mikro zamanlama + güncel OI/funding/akış tazeliği + seviye rolü/evre/emilim; WAIT otoritesi korunur; %40+%40 bileşik marj',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -19715,6 +19715,27 @@ function normalizeUserMaxPositions(v, def=3) {
   return Math.max(1, n);
 }
 
+// ═══ R493 v5.4 TOP24 CORE GUARD ═══
+// Hedefli worker wake, tam TOP24 ana havuzunu ezmemeli. Aynı worker tanımı
+// liste üretimi, telemetri ve fail-soft birleşiminde tek yerde kullanılır.
+function r493IsWorkerCandidate(c={}) {
+  return !!(c?.r4863Lane==='WORKER' || c?.workerSource || c?.r4863Worker || c?.r370Erken || c?.r385Koklama || String(c?.r54Bucket||'').includes('PATLAMA'));
+}
+function r493UniqueCandidateMerge(primary=[], secondary=[], max=80) {
+  const out=[]; const seen=new Set();
+  for (const c of [...(Array.isArray(primary)?primary:[]), ...(Array.isArray(secondary)?secondary:[])]) {
+    const key=normalizeSymbol(c?.fullSymbol||c?.symbol||'');
+    if(!key||seen.has(key)) continue;
+    seen.add(key); out.push(c);
+    if(out.length>=max) break;
+  }
+  return out;
+}
+function r493CoreNames(list=[], limit=24) {
+  return (Array.isArray(list)?list:[]).filter(c=>!r493IsWorkerCandidate(c))
+    .map(c=>String(c?.symbol||c?.fullSymbol||'').replace('USDT','')).filter(Boolean).slice(0,limit);
+}
+
 async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
   // R95: Scan promise eski Binance 418 uykusunda takılı kalırsa yeni scan'i sonsuza kadar engellemesin.
   if (autoRunning) {
@@ -19730,10 +19751,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         ? `Binance geçici istek freni ${Math.ceil(getBinanceBackoffMs()/1000)}sn — yeni işlem yok`
         : 'Takılan tarama temizlendi; yeni tarama sıraya alınacak';
     } else {
-      return;
+      return { skipped:'busy', priorityOnly:!!priorityOnly };
     }
   }
-  if (!autoConfig?.enabled) return;
+  if (!autoConfig?.enabled) return { skipped:'disabled' };
   // R150: priority wake 3-5sn içinde ardışık scan tetikleyip kline/depth/OI 429 üretmesin.
   // Pozisyon yönetimi fastManageOpenPositions ile ayrı çalışır; bu fren sadece yeni tarama/emir adayını geciktirir.
   const r150Now = Date.now();
@@ -19744,10 +19765,24 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
   }
   r150LastScanBeginTs = r150Now;
   autoRunning = true;
+  const r493PrevFullTelemetry = priorityOnly ? {
+    scanList:Array.isArray(autoScanState?.scanList)?[...autoScanState.scanList]:[],
+    coreScanList:Array.isArray(autoScanState?.coreScanList)?[...autoScanState.coreScanList]:[],
+    workerInjected:Array.isArray(autoScanState?.workerInjected)?[...autoScanState.workerInjected]:[],
+    topCandidates:Array.isArray(autoScanState?.topCandidates)?[...autoScanState.topCandidates]:[],
+    skipReasons:{...(autoScanState?.skipReasons||{})},
+    effectiveScanCount:Number(autoScanState?.effectiveScanCount||0),
+    nextScanDue:Number(autoScanState?.nextScanDue||0)||null,
+    genisListe:Array.isArray(autoScanState?.genisListe)?[...autoScanState.genisListe]:[],
+    top24Detay:Array.isArray(autoScanState?.top24Detay)?[...autoScanState.top24Detay]:[],
+    top24Zaman:autoScanState?.top24Zaman||null
+  } : null;
   resetAutoScanState({
-    enabled:true, running:true, phase:'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
-    currentSymbol:null, scanList:[], checked:0, opened:0, skipped:0, livePositions:0, positionCount:0,
-    topCandidates:[], skipReasons:{}, lastAction:'Tarama başlıyor'
+    enabled:true, running:true, phase:priorityOnly?'HEDEFLİ_WAKE':'BAŞLADI', lastScanStart:Date.now(), lastScanEnd:null,
+    currentSymbol:prioritySymbol?normalizeSymbol(prioritySymbol).replace('USDT',''):null,
+    scanList:priorityOnly?r493PrevFullTelemetry.scanList:[], checked:0, opened:0, skipped:0, livePositions:0, positionCount:0,
+    topCandidates:[], skipReasons:{},
+    lastAction:priorityOnly?`Hedefli wake hazırlanıyor: ${String(prioritySymbol||'').replace('USDT','')}`:'Tam TOP24 taraması başlıyor'
   });
 
   try {
@@ -19882,6 +19917,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     let scanList = (priorityOnly&&prioritySymbol)
       ? [{symbol:normalizeSymbol(prioritySymbol).replace('USDT',''),fullSymbol:normalizeSymbol(prioritySymbol),r54Bucket:'R48637_TARGETED_WAKE',r4863Lane:'WORKER',workerSource:'R48637_FAST_WAKE',workerSignal:r48637TargetedWakeMeta.get(normalizeSymbol(prioritySymbol))||null}]
       : await getUnifiedScanCandidates(effectiveScanLimit, r54ScanMode);
+    // R493 v5.4: filtre/enjeksiyon öncesi gerçek CORE tabanını sakla. Eski sembol
+    // whitelist'i veya worker enjeksiyonu ana havuzu sıfırlarsa bu taban geri konur.
+    const r493GeneratedCore = priorityOnly ? [] : (scanList||[]).filter(c=>!r493IsWorkerCandidate(c));
     if (prioritySymbol) {
       const pFull = normalizeSymbol(prioritySymbol);
       const pBase = pFull.replace('USDT','');
@@ -19900,27 +19938,54 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
     if(priorityOnly&&prioritySymbol){const pFull=normalizeSymbol(prioritySymbol);scanList=(scanList||[]).filter(c=>normalizeSymbol(c.fullSymbol||c.symbol)===pFull).slice(0,1);logAuto(`👻 R486.3.9 hedefli mekanik wake: ${pFull.replace('USDT','')} tek-sembol derin analiz`);}
     // R341: patlama radarı için GENİŞ liste — TOP2 filtresi uygulanmadan önceki ilk 10 gainer.
-    try { autoScanState.genisListe = (scanList||[]).slice(0,10).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean); } catch(_) {}
+    try {
+      const r493LocalGenis=(scanList||[]).slice(0,10).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean);
+      if(priorityOnly) autoScanState.targetedWakePreview=r493LocalGenis;
+      else autoScanState.genisListe=r493LocalGenis;
+    } catch(_) {}
     // R371: TOP2 + aday coinler için gerçek order flow stream'lerini başlat (aggTrade + depth).
     // Böylece AI karar verirken bu coinlerin GERÇEK akışı (MM ne yapıyor) canlı hazır olur.
     try {
       const flowCoinler = (scanList||[]).slice(0,3).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase()).filter(Boolean);
       if (typeof r371StartFlow === 'function') for (const fc of flowCoinler) r371StartFlow(fc);
     } catch(_) {}
-    if (symbols.length > 0 && !priorityOnly) {
+    // R493 v5.4: legacy `symbols` alanı TOP24'ü yanlışlıkla hard-whitelist yapıp
+    // CORE havuzunu sıfırlıyordu. Yalnız açıkça symbolWhitelistActive=true ise filtrele.
+    const r493ExplicitWhitelist = !priorityOnly && Array.isArray(symbols) && symbols.length>0 && (cfg.symbolWhitelistActive===true || String(process.env.R493_SYMBOL_WHITELIST_ACTIVE||'0')==='1');
+    if (r493ExplicitWhitelist) {
       const wanted = new Set(symbols.map(x => String(x).replace('USDT','').toUpperCase()));
-      try { for (const [b,f] of Object.entries(__r328PatlamaFlags)) { if (f && f.detected && Date.now()-f.ts < 5*60*1000) wanted.add(String(b).toUpperCase()); } } catch(_) {}
-      scanList = scanList.filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
+      scanList = (scanList||[]).filter(c => wanted.has(String(c.symbol||'').replace('USDT','').toUpperCase()) || wanted.has(String(c.fullSymbol||'').replace('USDT','').toUpperCase()));
+      logAuto(`🧭 R493 açık sembol whitelist aktif: ${wanted.size} sembol; dinamik ${r54ScanMode} bu kapsamda süzüldü`);
+    } else if (!priorityOnly && Array.isArray(symbols) && symbols.length>0) {
+      logAuto(`🛡️ R493 eski symbols listesi (${symbols.length}) dinamik ${r54ScanMode} CORE havuzunu boğmasın diye hard filtre olarak uygulanmadı`);
     }
-    // R486.3: full-market R328 bayrağı kullanıcı sembol filtresi olmasa da ana 24 kotasından bağımsız enjekte edilir.
-    try {
+    // R486.3 / R493 v5.4: full-market R328 bayrakları yalnız TAM taramaya eklenir.
+    // priorityOnly wake gerçekten tek sembol kalır; tüm worker bayrakları onu 10-11 coine şişiremez.
+    if (!priorityOnly) try {
       for (const [b,f] of Object.entries(__r328PatlamaFlags)) {
         if (!(f && f.detected && Date.now()-f.ts < 5*60*1000)) continue;
-        const varMi = scanList.some(c => String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase() === String(b).toUpperCase());
+        const varMi = (scanList||[]).some(c => String(c.symbol||c.fullSymbol||'').replace('USDT','').toUpperCase() === String(b).toUpperCase());
         if (!varMi) { scanList.unshift({ symbol:String(b).toUpperCase(), fullSymbol:String(b).toUpperCase()+'USDT', r54Bucket:f.mode==='PRE_BREAKOUT_GHOST'?'R48637_GHOST_ADAY':'R343_PATLAMA_ADAY', r4863Lane:'WORKER', workerSource:'R328', r4863Worker:'R328', r48637PulseMode:f.mode, r327PatlamaScore:Number(f.score||0), workerSignal:f }); logAuto(`${f.mode==='PRE_BREAKOUT_GHOST'?'👻':'🚀'} R343/R328: ${b} ${f.mode||'patlama'} bayrağıyla etkin analiz listesine enjekte edildi — ${r451Merci()} kararına gidiyor`); }
       }
     } catch(_) {}
-    if (!scanList?.length) return;
+
+    // CORE invariant: tam TOP24 taramasında worker bulunması ana havuzun yerini alamaz.
+    if (!priorityOnly && !r493ExplicitWhitelist && !(scanList||[]).some(c=>!r493IsWorkerCandidate(c))) {
+      let fallbackCore = r493GeneratedCore;
+      if (!fallbackCore.length) {
+        try {
+          const excludedCore=new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','SOLUSDT','ADAUSDT','DOGEUSDT','DOTUSDT','MATICUSDT','LTCUSDT','TRXUSDT','AVAXUSDT','LINKUSDT','UNIUSDT','WBTCUSDT','SHIBUSDT']);
+          const rows=await r4863GetWorkerUniverse();
+          fallbackCore=(rows||[]).filter(t=>!excludedCore.has(String(t.symbol||'').toUpperCase())).slice(0,Math.min(6,effectiveScanLimit)).map(t=>({...normalizeTickerToCoin(t),source:'R493_CORE_FAILSOFT',r54Bucket:'R493_CORE_FAILSOFT',r4863Lane:'CORE',workerSource:null,r4863Worker:null}));
+        } catch(_) { fallbackCore=[]; }
+      }
+      if (fallbackCore.length) {
+        scanList=r493UniqueCandidateMerge(scanList,fallbackCore,80);
+        pushCritical('R493_CORE_SCAN_RECOVERED', `CORE liste boşalmıştı; ${fallbackCore.length} ana aday fail-soft geri eklendi`, {scanMode:r54ScanMode,priorityOnly:false}, 'WARNING');
+        logAuto(`🧯 R493 CORE-GUARD: boşalan ana ${r54ScanMode} havuzuna ${fallbackCore.length} CORE aday geri eklendi`);
+      }
+    }
+    if (!scanList?.length) return { skipped:'empty_scan' };
     logAuto(`🔥 5m Fırsat Beyni ${r54ScanMode} tarama listesi ${scanList.length}: ${scanList.slice(0,8).map(c=>c.symbol).join(', ')}...`);
 
     // Kill zone bazlı min skor artırma kaldırıldı.
@@ -19957,15 +20022,30 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
       }
     } catch(_) {}
 
-    autoScanState.phase = 'TARIYOR';
-    autoScanState.scanList = [...new Set((scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).filter(Boolean))].slice(0,80);
-    autoScanState.effectiveScanCount=autoScanState.scanList.length;
-    autoScanState.scanSourceMap=Object.fromEntries((scanList||[]).map(c=>{const coin=String(c.symbol||c.fullSymbol||'').replace('USDT','');const worker=c.workerSource||c.r4863Worker||(c.r385Koklama?'R385':c.r370Erken?'R370':String(c.r54Bucket||'').includes('PATLAMA')?'R328':'CORE');return [coin,{worker,source:c.r54Bucket||c.source||'',lane:c.r4863Lane||''}];}));
-    autoScanState.workerInjected=(scanList||[]).filter(c=>c.r4863Lane==='WORKER'||c.workerSource||c.r4863Worker||c.r370Erken||c.r385Koklama||String(c.r54Bucket||'').includes('PATLAMA')).map(c=>({coin:String(c.symbol||c.fullSymbol||'').replace('USDT',''),worker:c.workerSource||c.r4863Worker||(c.r385Koklama?'R385':c.r370Erken?'R370':'R328')}));
-    autoScanState.coreScanList=(scanList||[]).filter(c=>!(c.r4863Lane==='WORKER'||c.workerSource||c.r4863Worker||c.r370Erken||c.r385Koklama||String(c.r54Bucket||'').includes('PATLAMA'))).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).slice(0,effectiveScanLimit);
-    autoScanState.coreScanLimit=effectiveScanLimit;
-    // R310D: ZENGİN TOP24 LİSTESİ (dashboard canlı kartı için) — sıra, 12h%, 24h%, grup, fiyat. Binance'den 45sn taze ticker + 15dk 12h.
-    autoScanState.top24Detay = (scanList||[]).slice(0,24).map((c,idx)=>({
+    autoScanState.phase = priorityOnly ? 'HEDEFLİ_WAKE_TARIYOR' : 'TARIYOR';
+    const r493LocalNames=[...new Set((scanList||[]).map(c=>String(c.symbol||c.fullSymbol||'').replace('USDT','')).filter(Boolean))].slice(0,80);
+    const r493LocalWorkers=(scanList||[]).filter(r493IsWorkerCandidate).map(c=>({coin:String(c.symbol||c.fullSymbol||'').replace('USDT',''),worker:c.workerSource||c.r4863Worker||(c.r385Koklama?'R385':c.r370Erken?'R370':'R328')}));
+    if (priorityOnly) {
+      // Hedefli wake, son tam TOP24 görünümünü ve CORE listesini ezmez.
+      autoScanState.targetedWakeList=r493LocalNames;
+      autoScanState.targetedWakeAt=Date.now();
+      autoScanState.targetedWakeSymbol=r493LocalNames[0]||String(prioritySymbol||'').replace('USDT','');
+      autoScanState.scanList=r493PrevFullTelemetry.scanList;
+      autoScanState.coreScanList=r493PrevFullTelemetry.coreScanList;
+      autoScanState.workerInjected=r493PrevFullTelemetry.workerInjected;
+      autoScanState.effectiveScanCount=r493PrevFullTelemetry.effectiveScanCount;
+    } else {
+      autoScanState.scanList=r493LocalNames;
+      autoScanState.effectiveScanCount=autoScanState.scanList.length;
+      autoScanState.scanSourceMap=Object.fromEntries((scanList||[]).map(c=>{const coin=String(c.symbol||c.fullSymbol||'').replace('USDT','');const worker=r493IsWorkerCandidate(c)?(c.workerSource||c.r4863Worker||(c.r385Koklama?'R385':c.r370Erken?'R370':'R328')):'CORE';return [coin,{worker,source:c.r54Bucket||c.source||'',lane:c.r4863Lane||''}];}));
+      autoScanState.workerInjected=r493LocalWorkers;
+      autoScanState.coreScanList=r493CoreNames(scanList,effectiveScanLimit);
+      autoScanState.coreScanLimit=effectiveScanLimit;
+      autoScanState.lastFullScanStart=autoScanState.lastScanStart;
+      autoScanState.lastFullCoreCount=autoScanState.coreScanList.length;
+    }
+    // R310D / R493 v5.4: hedefli wake tam TOP24 detay kartını ezmez.
+    const r493Top24Local=(scanList||[]).slice(0,24).map((c,idx)=>({
       sira: idx+1,
       coin: String(c.symbol||c.fullSymbol||'').replace('USDT',''),
       degisim12h: (typeof c.change12h === 'number') ? +c.change12h.toFixed(2) : null,
@@ -19974,7 +20054,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
       grup: idx <= 1 ? 'TOP2' : /TOP10_GAINER|TOP24_PINNED_TOP10|TOP3_ULTRA/.test(String(c.r54Bucket||'')) ? 'TOP10' : 'VOLATIL',
       hacim: (typeof c.volume === 'number') ? Math.round(c.volume) : null
     }));
-    autoScanState.top24Zaman = new Intl.DateTimeFormat('tr-TR', { timeZone:'Europe/Istanbul', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(new Date());
+    if(priorityOnly) autoScanState.targetedWakeDetails=r493Top24Local;
+    else {
+      autoScanState.top24Detay=r493Top24Local;
+      autoScanState.top24Zaman=new Intl.DateTimeFormat('tr-TR', { timeZone:'Europe/Istanbul', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(new Date());
+    }
     autoScanState.scanSource = LAZARUS_BUILD;
     autoScanState.scanLimit = effectiveScanLimit;
     autoScanState.lastScanTR = new Intl.DateTimeFormat('tr-TR', {
@@ -22752,10 +22836,23 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     autoScanState.running = false;
     autoScanState.currentSymbol = null;
     autoScanState.lastScanEnd = Date.now();
-    autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + r48638AdaptiveScanIntervalMs() : null;
+    if (!priorityOnly) {
+      autoScanState.lastFullScanEnd = autoScanState.lastScanEnd;
+      autoScanState.nextScanDue = autoConfig?.enabled ? Date.now() + r48638AdaptiveScanIntervalMs() : null;
+    } else {
+      // Hedefli wake mevcut tam-tarama timerını/telemetrisini ileri itmez.
+      autoScanState.nextScanDue = r493PrevFullTelemetry?.nextScanDue || autoScanState.nextScanDue || null;
+    }
 
-    // R308C: B şıkkı — eski kapılar sustursa bile scan'in en iyi adayını AI değerlendirir; SHADOW=0 ise canlı emir açabilir.
-    await r308RunAiCandidateReviewAfterScan();
+    // R308C: tam tarama sonrası en iyi adayı değerlendir. Hedefli wake zaten kendi tek
+    // sembolünü derin analiz etti; eski full-scan adayını ikinci kez review etmez.
+    if (!priorityOnly) await r308RunAiCandidateReviewAfterScan();
+    else {
+      autoScanState.targetedWakeCandidates=Array.isArray(autoScanState.topCandidates)?[...autoScanState.topCandidates]:[];
+      autoScanState.targetedWakeSkipReasons={...(autoScanState.skipReasons||{})};
+      autoScanState.topCandidates=r493PrevFullTelemetry?.topCandidates||[];
+      autoScanState.skipReasons=r493PrevFullTelemetry?.skipReasons||{};
+    }
 
     // Görünürlük düzeltmesi: emir denemesi hata verdikten sonra eski MAX_POZİSYON_DOLU
     // fazı ekranda takılı kalmasın. Binance pozisyonu tekrar okunur; 0/1 ise BEKLİYOR gösterilir.
@@ -22788,13 +22885,16 @@ function startAutoTrader() {
   // R486.3.9: AI maliyeti yokken tam tarama 15m kapanışına kilitlenmez.
   // Kapanmış HTF bağlamı korunur; workers/targeted wake arada tek sembolü derin tarar.
   // Tam tarama periyodu gerçek Binance used-weight başlıklarına göre 90-240sn adaptiftir.
-  function scheduleNextScan() {
-    const waitMs=r48638AdaptiveScanIntervalMs();
+  function scheduleNextScan(overrideMs=null) {
+    const waitMs=Number.isFinite(Number(overrideMs))?Math.max(5000,Number(overrideMs)):r48638AdaptiveScanIntervalMs();
     autoScanState.nextScanDue=Date.now()+waitMs;
     if(autoTimer)clearTimeout(autoTimer);
     autoTimer=setTimeout(async()=>{
-      try{await runAutoScan();}catch(_){}
-      scheduleNextScan();
+      // Hedefli wake tam tarama saatine taşmışsa 120sn daha erteleme; 10sn sonra yeniden dene.
+      if(autoRunning){ scheduleNextScan(10_000); return; }
+      let result=null;
+      try{result=await runAutoScan();}catch(_){}
+      scheduleNextScan(result?.skipped==='busy'?10_000:null);
     },waitMs);
   }
   scheduleNextScan();
@@ -22821,7 +22921,9 @@ function startAutoTrader() {
           const TOP2_WAKE_COOLDOWN_MS = 90 * 1000;
           const lastWakeOk = !r310yLastTop2Wake || (now - r310yLastTop2Wake > TOP2_WAKE_COOLDOWN_MS);
           const scanGapOk = now - Math.max(Number(autoScanState.lastScanStart||0), Number(autoScanState.lastScanEnd||0), r150LastScanBeginTs||0) > R150_MIN_SCAN_GAP_MS;
-          if (Number(ev.score||0) >= wakeThreshold && scanGapOk && (!isTop2Sym || lastWakeOk) && !isBinanceBackoffActive()) {
+          const fullScanDueIn = Number(autoScanState.nextScanDue||0)-now;
+          const fullScanDueSoon = fullScanDueIn>0 && fullScanDueIn<=15_000;
+          if (Number(ev.score||0) >= wakeThreshold && scanGapOk && !fullScanDueSoon && (!isTop2Sym || lastWakeOk) && !isBinanceBackoffActive()) {
             if (isTop2Sym) r310yLastTop2Wake = now;
             const isR48637Worker=/^R48637_/i.test(String(ev.reason||'')),lastSym=Number(r48637MechWakeBySymbol.get(sym)||0),wakeCd=r48638WakeCooldowns(),globalOk=now-r48637LastMechWakeTs>=wakeCd.globalMs,symbolOk=now-lastSym>=wakeCd.symbolMs;
             if(R486_MECH_FAST_WAKE_ACTIVE&&!AI_BRAIN_ENABLED&&isR48637Worker&&Number(ev.score||0)>=R486_MECH_FAST_WAKE_MIN_SCORE&&globalOk&&symbolOk){
