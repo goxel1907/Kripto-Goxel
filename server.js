@@ -20172,6 +20172,51 @@ app.get('/api/testnet/status', (_req,res) => {
   const c=r486391BinanceCreds();
   res.json({ok:true,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,executionBase:'USD-M Futures Testnet',hardLockedTestnet:true,credentialsReady:!!(c.apiKey&&c.apiSecret),credentialSource:c.source,session:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR});
 });
+const R500_CHART_INTERVALS = new Set(['1m','3m','5m','15m','1h','4h']);
+function r500ChartRowsFromRaw(raw=[]){
+  return Array.isArray(raw) ? raw.map(x=>({
+    openTime:Number(x?.[0]),open:Number(x?.[1]),high:Number(x?.[2]),low:Number(x?.[3]),close:Number(x?.[4]),volume:Number(x?.[5]),closeTime:Number(x?.[6]),closed:Number(x?.[6])<=Date.now()
+  })).filter(x=>x.openTime>0&&x.open>0&&x.high>=x.low&&x.close>0) : [];
+}
+function r500ExistingKlineCache(symbol,interval){
+  const keyMap={
+    '1m':`k1m_${symbol}`,
+    '5m':`k5m_${symbol}`,
+    '15m':`k15m_${symbol}`,
+    '1h':`k1h_${symbol}`,
+    '4h':`k4h_${symbol}`,
+  };
+  const key=keyMap[interval];
+  if(!key)return null;
+  const hit=cache.get(key);
+  if(!hit||!Array.isArray(hit.val)||!hit.val.length)return null;
+  return {raw:hit.val,cacheKey:key,cacheAgeMs:Math.max(0,Date.now()-Number(hit.ts||0))};
+}
+// V5: Sol karşılaştırma grafiği tek timeframe'i lazy-load eder.
+// Önce analiz motorunun mevcut kline cache'i kullanılır; cache yoksa yalnız seçili timeframe için
+// Binance public kline çağrısı yapılır. Emir/karar/sizing zincirine etkisi yoktur.
+app.get('/api/chart/live/:symbol', async (req,res) => {
+  try {
+    const sym=normalizeSymbol(String(req.params.symbol||'')).toUpperCase();
+    const interval=String(req.query.interval||'15m');
+    if(!/^[A-Z0-9]{2,20}USDT$/.test(sym))return res.status(400).json({ok:false,error:'Geçersiz sembol'});
+    if(!R500_CHART_INTERVALS.has(interval))return res.status(400).json({ok:false,error:'Geçersiz timeframe'});
+    const limit=Math.max(40,Math.min(120,Number(req.query.limit||110)));
+    let source='BINANCE_PUBLIC_LAZY',cacheAgeMs=null,raw=null;
+    const existing=r500ExistingKlineCache(sym,interval);
+    // Düşük TF cache'i 90sn, yüksek TF cache'i 20dk içinde ise anında kullan.
+    const maxAge=(interval==='1m'||interval==='3m'||interval==='5m')?90_000:20*60_000;
+    if(existing&&existing.cacheAgeMs<=maxAge){raw=existing.raw;source='ANALYSIS_KLINE_CACHE';cacheAgeMs=existing.cacheAgeMs;}
+    if(!raw){
+      raw=await cached(`r500-live-one:${sym}:${interval}:${limit}`,8_000,()=>bPub('/fapi/v1/klines',`symbol=${sym}&interval=${interval}&limit=${limit}`));
+      source='BINANCE_PUBLIC_LAZY';cacheAgeMs=0;
+    }
+    const rows=r500ChartRowsFromRaw(raw).slice(-limit);
+    res.set('Cache-Control','no-store');
+    res.json({ok:true,build:LAZARUS_BUILD,symbol:sym,interval,source,cacheAgeMs,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,serverTime:Date.now(),rows});
+  } catch(e){res.status(500).json({ok:false,error:safeErrMsg(e)});}
+});
+
 app.get('/api/chart/6tf/:symbol', async (req,res) => {
   try {
     const sym = normalizeSymbol(String(req.params.symbol||'')).toUpperCase();
