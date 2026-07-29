@@ -138,7 +138,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V7_INFRA_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V8_INFRA_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -261,6 +261,34 @@ const binanceGov = {
   last429At: 0,
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms)||0)));
+
+// V8: positionRisk ve mikro-kline sorguları yoğun public REST kuyruğunda beklemez.
+// Aynı governor sayaçlarını kullanır fakat ayrı öncelikli tek-uçuş kuyruğunda çalışır.
+// Limit penceresi doluysa 60sn uyumak yerine hızlıca fail-closed/backoff döner.
+const binancePriorityGov = { q: Promise.resolve() };
+async function binancePriorityThrottle(scope='PRIORITY', weight=1, orderWeight=0) {
+  const job = async () => {
+    _resetGovWindowIfNeeded();
+    const now = Date.now();
+    if (Number(binanceGov.backoffUntil||0) > now) {
+      throw makeBinanceBackoffError(`${scope} global backoff`, Math.ceil((binanceGov.backoffUntil-now)/1000), 418);
+    }
+    const nextWeight = Number(binanceGov.usedWeight||0) + Number(weight||0);
+    const nextOrders = Number(binanceGov.usedOrders||0) + Number(orderWeight||0);
+    if (nextWeight > 1800 || nextOrders > 70) {
+      const waitMs = Math.max(1000, 60_000 - (Date.now() - Number(binanceGov.minuteStart||Date.now())) + 250);
+      const e = makeBinanceBackoffError(`${scope} governor penceresi dolu`, Math.ceil(waitMs/1000), 429);
+      e.code = 'BINANCE_PRIORITY_WINDOW_FULL';
+      throw e;
+    }
+    binanceGov.usedWeight = nextWeight;
+    binanceGov.usedOrders = nextOrders;
+    await sleep(orderWeight ? 60 : 30);
+  };
+  const prev = binancePriorityGov.q.catch(()=>{});
+  binancePriorityGov.q = prev.then(job, job);
+  return binancePriorityGov.q;
+}
 function _resetGovWindowIfNeeded() {
   const now = Date.now();
   if (now - binanceGov.minuteStart >= 60_000) {
@@ -839,6 +867,29 @@ async function bPub(path, qs='') {
     if (data && data.code === -1003) { registerBinanceBackoff('Binance -1003 public', 60); throw new Error(formatBinanceError(path, data)); }
     return data;
   }catch(e){ if (e.message && e.message.includes(path)) throw e; throw new Error(`JSON hatası: ${text.substring(0,80)}`);}
+
+}
+
+// V8: kritik mikro mum tazelemesi için public REST öncelikli yol.
+// Global public kuyruğunda onlarca tarama isteğinin arkasında beklemez.
+async function bPubPriority(path, qs='', timeout=6000) {
+  const limMatch = /limit=(\d+)/.exec(qs||'');
+  const lim = limMatch ? Number(limMatch[1]) : 0;
+  const weight = path.includes('/klines') ? (lim > 100 ? 5 : 2) : 1;
+  await binancePriorityThrottle(`PRIORITY_PUBLIC:${path}`, weight, 0);
+  const url = `${FAPI}${path}${qs ? '?' + qs : ''}`;
+  const r = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+  r48638SyncGovHeaders(r);
+  if (r.status === 429 || r.status === 418) registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'));
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch (_) { throw new Error(`Priority JSON hatası: ${text.substring(0,100)}`); }
+  if (data && data.code && data.code < 0) {
+    if (Number(data.code) === -1003) registerBinanceBackoff('Binance -1003 priority public', 60);
+    throw new Error(formatBinanceError(path, data));
+  }
+  return data;
 }
 
 // ── İMZA + BINANCE SAAT SENKRON ───────────────────────────────────────────────
@@ -908,7 +959,8 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   delete cleanParams.__emergency;
   const orderWeight = (m0 === 'POST' || m0 === 'DELETE') ? 1 : 0;
   const w = path.includes('/positionRisk') ? 5 : path.includes('/openOrders') ? 3 : path.includes('/userTrades') ? 5 : 1;
-  await binanceThrottle(`${emergencyBypass ? 'EMERGENCY' : 'SIGNED'}:${path}`, w, orderWeight);
+  if (path.includes('/positionRisk')) await binancePriorityThrottle('PRIORITY_POSITION_RISK', w, orderWeight);
+  else await binanceThrottle(`${emergencyBypass ? 'EMERGENCY' : 'SIGNED'}:${path}`, w, orderWeight);
   if (!lastTimeSync) await syncBinanceTime(false);
   const ts = Date.now() + binanceTimeOffset;
   const obj = { ...cleanParams, timestamp: ts, recvWindow: 10000 };
@@ -970,7 +1022,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   return data;
 }
 
-// ── V7 POSITIONRISK CENTRAL POLLER / SINGLE-FLIGHT / BACKOFF ─────────────────
+// ── V8 POSITIONRISK CENTRAL POLLER / SINGLE-FLIGHT / BACKOFF ─────────────────
 // Amaç: dashboard, tarama, manager ve SL/TP aynı toplu positionRisk snapshotını paylaşır.
 // Sembol başına bağımsız istek YOK. Kısa ağ hatasında stale-cache fail-soft, yeni emir fail-closed.
 const posRiskCache = {
@@ -1037,7 +1089,7 @@ function resetStuckPositionRiskInflight(reason='watchdog') {
     posRiskCache.generation++;
     posRiskCache.fetching=false; posRiskCache.inflight=null; posRiskCache.inflightStartedAt=0;
     posRiskCache.hardResetCount++;
-    posRiskCache.lastError='positionRisk 60sn üstü takıldı; V7 hard reset';
+    posRiskCache.lastError='positionRisk 60sn üstü takıldı; V8 hard reset';
     posRiskCache.lastErrorType='HARD_STUCK';
     try{pushCritical('POSITION_RISK_HARD_RESET',`positionRisk ${Math.round(age/1000)}sn takıldı; merkezî poller yeniden açıldı`,{reason,ageMs:age},'WARNING');}catch(_){}
     return true;
@@ -11788,7 +11840,7 @@ app.get('/api/futures-coins', async (req, res) => {
   } catch(e) { res.status(400).json({ error:e.message }); }
 });
 
-// ── V7 MİKRO MUM TAZELİK KATMANI ─────────────────────────────────────────────
+// ── V8 MİKRO MUM TAZELİK KATMANI ─────────────────────────────────────────────
 const R501_MICRO_TFS=Object.freeze({'1m':60000,'5m':300000,'15m':900000});
 function r501ClosedKlineMeta(raw=[],ms=60000,now=Date.now()){
   const rows=Array.isArray(raw)?raw:[];
@@ -11806,7 +11858,7 @@ async function r501EnsureFreshMicroKlines(symbol,input={}){
     let refreshed=false,error=null;
     if(!meta.ok){
       try{
-        raw=await cached(`r501-fresh:${symbol}:${tf}`,8000,()=>bPub('/fapi/v1/klines',`symbol=${symbol}&interval=${tf}&limit=200`));
+        raw=await bPubPriority('/fapi/v1/klines',`symbol=${symbol}&interval=${tf}&limit=200&endTime=${Date.now()}`,6000);
         meta=r501ClosedKlineMeta(raw,ms); refreshed=true;
         if(Array.isArray(raw)&&raw.length)cache.set(key,{val:raw,exp:Date.now()+Math.min(ms,tf==='1m'?20000:tf==='5m'?45000:90000),ts:Date.now()});
       }catch(e){error=safeErrMsg(e);}
@@ -19813,7 +19865,7 @@ app.get('/api/infra/health',(_req,res)=>{
     lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:posRiskCache.consecutiveFailures,
     cooldownMs:getPositionRiskCooldownMs(),inflight:posRiskCache.fetching,hardResetCount:posRiskCache.hardResetCount
   };
-  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true}});
+  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true,priorityPositionRisk:true,priorityMicroKlines:true,queueWaitBounded:true}});
 });
 
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
@@ -20987,8 +21039,8 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         const { longScore, shortScore, isExpired, freshness } = analysis;
         if(analysis?.r501MicroFreshness && analysis.r501MicroFreshness.ok===false){
           const h=analysis.r501MicroFreshness; const why=['1m','5m','15m'].filter(tf=>!h?.[tf]?.ok).map(tf=>`${tf}+${h?.[tf]?.lagBars??'?'}mum`).join(',');
-          markAutoSkip(coin.symbol,`V7 MICRO_DATA_STALE ${why}`,{rec:'WAIT',tier:'DATA',reason:`Taze mikro mum alınamadı: ${why}`});
-          try{r49356CaptureDecision({coin,analysis,decisionChain:analysis.decisionChain||{},candidateProduced:true,forcedDecision:{action:'PUSU',authority:'V7_DATA_FRESHNESS',reason:`MICRO_DATA_STALE ${why}`}});}catch(_){}
+          markAutoSkip(coin.symbol,`V8 MICRO_DATA_STALE ${why}`,{rec:'WAIT',tier:'DATA',reason:`Taze mikro mum alınamadı: ${why}`});
+          try{r49356CaptureDecision({coin,analysis,decisionChain:analysis.decisionChain||{},candidateProduced:true,forcedDecision:{action:'PUSU',authority:'V8_DATA_FRESHNESS',reason:`MICRO_DATA_STALE ${why}`}});}catch(_){}
           continue;
         }
         let recommendation = analysis.recommendation;
