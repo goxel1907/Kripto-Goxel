@@ -138,7 +138,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V7_INFRA_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -662,7 +662,7 @@ async function freshOpenPositionForSymbol(apiKey, apiSecret, symbol, attempts=3)
   const sym = String(symbol||'').toUpperCase();
   for (let i=0; i<attempts; i++) {
     try {
-      const rows = await getPositionRisk(apiKey, apiSecret, {symbol:sym}); // symbol-specific: cache bypass
+      const rows = await getPositionRiskCached(apiKey, apiSecret, {symbol:sym,__forceFresh:true,__maxAgeMs:3000}); // V7: merkezî full-snapshot, max 3sn
       const p = Array.isArray(rows) ? rows.find(x=>String(x.symbol||'').toUpperCase()===sym) : null;
       if (p && Math.abs(parseFloat(p.positionAmt || 0)) > 0) return { open:true, pos:p };
     } catch(e) {
@@ -895,7 +895,7 @@ function r405Nobetci(text) { try {
     logAuto(`🧪🔑 TESTNET KİMLİK HATASI (-2015): Testnet endpoint anahtarı reddetti. Bu hata yalnız IP değildir; yanlış canlı anahtar, eksik TESTNET key/secret veya testnet izin/IP kısıtı olabilir. Bu build yalnız BINANCE_TESTNET_API_KEY/SECRET Railway ENV değerlerini kabul eder. Kaynak IP: ${ip}.`);
   }
 } catch(_) {} }
-async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
+async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false,maxRetries=2) {
   apiKey=cleanBinanceCredential(apiKey);
   apiSecret=cleanBinanceCredential(apiSecret);
   if(!apiKey||!apiSecret) throw new Error('Binance API key/secret boş veya maskeli');
@@ -934,7 +934,8 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   // R330C: Ağ + gövde-okuma hatası (Premature close / Invalid response body / ECONNRESET) için retry.
   // Binance CM-UM entegrasyon geçişinde balance/account gövdesi yarıda kesilebiliyor. fetch VE res.text() birlikte retry.
   let text, netErr;
-  for (let attempt = 0; attempt <= 2; attempt++) {
+  const retryCap = Math.max(0, Math.min(2, Number(maxRetries)||0));
+  for (let attempt = 0; attempt <= retryCap; attempt++) {
     try {
       const res = await fetch(finalUrl, options);
       r48638SyncGovHeaders(res);
@@ -948,7 +949,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
       netErr = e;
       const msg = String(e?.message || e).toLowerCase();
       const gecici = msg.includes('premature close') || msg.includes('invalid response body') || msg.includes('econnreset') || msg.includes('socket hang up') || msg.includes('timeout') || msg.includes('network') || msg.includes('fetch failed') || msg.includes('body');
-      if (!gecici || attempt === 2) break;
+      if (!gecici || attempt === retryCap) break;
       await new Promise(r => setTimeout(r, 500 * (attempt+1))); // 500ms, 1000ms bekle
       options.signal = AbortSignal.timeout(timeout);
     }
@@ -961,7 +962,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   if (data.code && data.code < 0) {
     if (Number(data.code) === -1021 && !_retry) {
       await syncBinanceTime(true);
-      return bReq(apiKey,apiSecret,method,path,params,timeout,true);
+      return bReq(apiKey,apiSecret,method,path,params,timeout,true,maxRetries);
     }
     if (Number(data.code) === -1003) registerBinanceBackoff(`Binance -1003 ${path}`, 60);
     throw new Error(formatBinanceError(path, data));
@@ -969,24 +970,38 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   return data;
 }
 
-// ── R18 POSITIONRISK CACHE / SINGLE-FLIGHT / RATE-LIMIT GUARD ────────────────
-// Binance -1003 hatasının kökü: /positionRisk farklı döngülerden art arda çağrılıyordu.
-// R19: R17/R14 balance gövdesine dokunmadan positionRisk için global cache + single-flight.
+// ── V7 POSITIONRISK CENTRAL POLLER / SINGLE-FLIGHT / BACKOFF ─────────────────
+// Amaç: dashboard, tarama, manager ve SL/TP aynı toplu positionRisk snapshotını paylaşır.
+// Sembol başına bağımsız istek YOK. Kısa ağ hatasında stale-cache fail-soft, yeni emir fail-closed.
 const posRiskCache = {
   data: null,
   ts: 0,
   fetching: false,
   inflight: null,
   inflightStartedAt: 0,
+  generation: 0,
   rateLimitUntil: 0,
+  networkBackoffUntil: 0,
   lastApiKey: null,
   lastSource: null,
   lastError: null,
+  lastErrorType: null,
+  lastAttemptAt: 0,
+  lastSuccessAt: 0,
+  lastFailureAt: 0,
+  lastLatencyMs: null,
+  consecutiveFailures: 0,
+  warnedInflightAt: 0,
+  hardResetCount: 0,
+  lastInvalidateReason: null,
 };
-const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
-const POS_RISK_TTL_ACTIVE = 25000;   // R308J: 15sn→25sn. TOP24'te 429 baskısı arttı, pozisyon-risk okuma sıklığı düşürüldü.
-const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
-const POS_RISK_INFLIGHT_TIMEOUT_MS = 15000; // R95: tek-uçuş 15sn üstü takılırsa temizle
+const POS_RISK_TTL_NORMAL = 15000;
+const POS_RISK_TTL_ACTIVE = 8000;
+const POS_RISK_REQUEST_TIMEOUT_MS = 4500;
+const POS_RISK_RATELIMIT_MS = 90000;
+const POS_RISK_WARN_MS = 18000;
+const POS_RISK_HARD_STUCK_MS = 60000;
+const POS_RISK_POLLER_TICK_MS = 5000;
 
 function keyFingerprint(apiKey, apiSecret='') {
   const k=cleanBinanceCredential(apiKey), sec=cleanBinanceCredential(apiSecret);
@@ -994,167 +1009,146 @@ function keyFingerprint(apiKey, apiSecret='') {
   const h=crypto.createHash('sha256').update(`${k}\0${sec}`).digest('hex').slice(0,16);
   return `${k.slice(0,6)}:${k.length}:${h}`;
 }
-function isPositionRiskRateLimitError(err) {
-  const m = String(err && (err.message || err) || '');
-  return m.includes('-1003') || m.includes('BINANCE_BACKOFF_ACTIVE') || m.includes('HTTP 418') || m.includes('HTTP 429') || /too many requests/i.test(m) || /merkezi istek freni/i.test(m);
+function positionRiskErrorType(err) {
+  const m=String(err?.message||err||'').toLowerCase();
+  if(m.includes('-1003')||m.includes('429')||m.includes('418')||m.includes('too many requests')||m.includes('backoff')) return 'RATE_LIMIT';
+  if(m.includes('-2015')||m.includes('invalid api')||m.includes('signature')) return 'AUTH';
+  if(m.includes('timeout')||m.includes('aborted')||m.includes('network')||m.includes('fetch failed')||m.includes('econnreset')||m.includes('socket')||m.includes('premature')) return 'NETWORK_TIMEOUT';
+  return 'OTHER';
 }
+function isPositionRiskRateLimitError(err) { return positionRiskErrorType(err)==='RATE_LIMIT'; }
 function isPositionRiskCooldownActive() {
-  return Date.now() < Number(posRiskCache.rateLimitUntil || 0);
+  return Date.now() < Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0));
 }
 function getPositionRiskCooldownMs() {
-  return Math.max(0, Number(posRiskCache.rateLimitUntil || 0) - Date.now());
+  return Math.max(0,Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0))-Date.now());
+}
+function positionRiskNetworkBackoffMs(failures=1) {
+  return Math.min(60000, 5000 * Math.pow(2, Math.max(0, Number(failures||1)-1)));
 }
 function resetStuckPositionRiskInflight(reason='watchdog') {
-  const age = posRiskCache.fetching ? Date.now() - Number(posRiskCache.inflightStartedAt || 0) : 0;
-  if (posRiskCache.fetching && age > POS_RISK_INFLIGHT_TIMEOUT_MS) {
-    try { pushCritical('POSITION_RISK_INFLIGHT_RESET', `positionRisk isteği ${Math.round(age/1000)}sn takıldı; kilit temizlendi`, {reason, ageMs:age}, 'WARNING'); } catch(_) {}
-    posRiskCache.fetching = false;
-    posRiskCache.inflight = null;
-    posRiskCache.inflightStartedAt = 0;
-    posRiskCache.lastError = 'positionRisk isteği takıldı; R95 kilit temizledi';
+  if(!posRiskCache.fetching) return false;
+  const age=Date.now()-Number(posRiskCache.inflightStartedAt||0);
+  if(age>POS_RISK_WARN_MS && Date.now()-Number(posRiskCache.warnedInflightAt||0)>POS_RISK_WARN_MS){
+    posRiskCache.warnedInflightAt=Date.now();
+    try{pushCritical('POSITION_RISK_SLOW',`positionRisk tek-uçuş ${Math.round(age/1000)}sn sürüyor; duplicate istek açılmadı`,{reason,ageMs:age},'WARNING');}catch(_){}
+  }
+  if(age>POS_RISK_HARD_STUCK_MS){
+    posRiskCache.generation++;
+    posRiskCache.fetching=false; posRiskCache.inflight=null; posRiskCache.inflightStartedAt=0;
+    posRiskCache.hardResetCount++;
+    posRiskCache.lastError='positionRisk 60sn üstü takıldı; V7 hard reset';
+    posRiskCache.lastErrorType='HARD_STUCK';
+    try{pushCritical('POSITION_RISK_HARD_RESET',`positionRisk ${Math.round(age/1000)}sn takıldı; merkezî poller yeniden açıldı`,{reason,ageMs:age},'WARNING');}catch(_){}
     return true;
   }
   return false;
 }
-function positionRowsOpenCount(rows) {
-  return Array.isArray(rows) ? rows.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).length : 0;
+function positionRowsOpenCount(rows){return Array.isArray(rows)?rows.filter(p=>Math.abs(parseFloat(p.positionAmt||0))>0).length:0;}
+function filterPositionRiskRows(rows,params={}){
+  if(!Array.isArray(rows))return [];
+  const sym=params&&params.symbol?String(params.symbol).toUpperCase():'';
+  return sym?rows.filter(p=>String(p.symbol||'').toUpperCase()===sym):rows;
 }
-function filterPositionRiskRows(rows, params={}) {
-  if (!Array.isArray(rows)) return [];
-  const sym = params && params.symbol ? String(params.symbol).toUpperCase() : '';
-  return sym ? rows.filter(p => String(p.symbol || '').toUpperCase() === sym) : rows;
-}
-async function fetchPositionRiskRaw(apiKey, apiSecret) {
-  try {
-    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v3/positionRisk', {});
-    posRiskCache.lastSource = 'v3/positionRisk';
-    return Array.isArray(rows) ? rows : [];
-  } catch(e1) {
-    if (isPositionRiskRateLimitError(e1)) throw e1;
-    const rows = await bReq(apiKey, apiSecret, 'GET', '/fapi/v2/positionRisk', {});
-    posRiskCache.lastSource = 'v2/positionRisk';
-    return Array.isArray(rows) ? rows : [];
+async function fetchPositionRiskRaw(apiKey,apiSecret){
+  try{
+    const rows=await bReq(apiKey,apiSecret,'GET','/fapi/v3/positionRisk',{},POS_RISK_REQUEST_TIMEOUT_MS,false,0);
+    posRiskCache.lastSource='v3/positionRisk'; return Array.isArray(rows)?rows:[];
+  }catch(e1){
+    if(isPositionRiskRateLimitError(e1)||positionRiskErrorType(e1)==='AUTH')throw e1;
+    const rows=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{},POS_RISK_REQUEST_TIMEOUT_MS,false,0);
+    posRiskCache.lastSource='v2/positionRisk'; return Array.isArray(rows)?rows:[];
   }
 }
-
-// Ham positionRisk: symbol-specific çağrılar için doğrudan Binance'e gider.
-// Toplu çağrılar getPositionRiskCached ile yapılmalı.
-async function getPositionRisk(apiKey, apiSecret, params={}) {
-  const rows = await fetchPositionRiskRaw(apiKey, apiSecret);
-  return filterPositionRiskRows(rows, params);
-}
-
-async function getPositionRiskCached(apiKey, apiSecret, params={}) {
-  resetStuckPositionRiskInflight('getPositionRiskCached');
-  const now = Date.now();
-  const apiFp = keyFingerprint(apiKey, apiSecret);
-
-  // R95: Binance 418/429 merkezi istek freni aktifken yeni positionRisk isteği açma.
-  if (isBinanceBackoffActive()) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
-    throw makeBinanceBackoffError('Binance geçici istek freni', Math.ceil(getBinanceBackoffMs()/1000), 418);
+async function refreshPositionRiskCentral(apiKey,apiSecret,{reason='consumer',force=false}={}){
+  resetStuckPositionRiskInflight(reason);
+  const now=Date.now(),fp=keyFingerprint(apiKey,apiSecret);
+  if(isBinanceBackoffActive()){
+    if(force)throw makeBinanceBackoffError('Binance geçici istek freni',Math.ceil(getBinanceBackoffMs()/1000),418);
+    if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
+    throw makeBinanceBackoffError('Binance geçici istek freni',Math.ceil(getBinanceBackoffMs()/1000),418);
   }
-
-  // -1003 cooldown aktifse cache döndür; cache yoksa yeni emir akışını güvenli durdur.
-  if (now < posRiskCache.rateLimitUntil) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
-    throw new Error('positionRisk rate-limit cooldown');
+  const localUntil=Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0));
+  if(now<localUntil){
+    if(force)throw new Error(`positionRisk backoff ${Math.ceil((localUntil-now)/1000)}sn`);
+    if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
+    throw new Error(`positionRisk backoff ${Math.ceil((localUntil-now)/1000)}sn`);
   }
-
-  // Symbol-specific sorgular: R280 — önce taze cache'e bak (bypass yalnızca cache bayatsa).
-  // Eskiden her symbol-specific çağrı doğrudan Binance'e gidiyordu → pozisyon yönetimi (BE/trailing)
-  // açık pozisyonu sık sorunca 429 tetikliyordu. Artık ACTIVE TTL içindeki taze cache kullanılır.
-  if (params && params.symbol) {
-    const hasOpenSym = posRiskCache.data && Array.isArray(posRiskCache.data) &&
-      posRiskCache.data.some(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
-    const ttlSym = hasOpenSym ? POS_RISK_TTL_ACTIVE : POS_RISK_TTL_NORMAL;
-    if (posRiskCache.data && (now - posRiskCache.ts < ttlSym) && posRiskCache.lastApiKey === apiFp) {
-      return filterPositionRiskRows(posRiskCache.data, params);
-    }
-    return getPositionRisk(apiKey, apiSecret, params);
+  if(posRiskCache.fetching&&posRiskCache.inflight){
+    if(force)return posRiskCache.inflight;
+    if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
+    return posRiskCache.inflight;
   }
-
-  const hasOpen = posRiskCache.data && Array.isArray(posRiskCache.data) &&
-    posRiskCache.data.some(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
-  const ttl = hasOpen ? POS_RISK_TTL_ACTIVE : POS_RISK_TTL_NORMAL;
-
-  if (posRiskCache.data && now - posRiskCache.ts < ttl &&
-      posRiskCache.lastApiKey === apiFp) {
-    return posRiskCache.data;
-  }
-
-  // Single-flight: başka istek uçaktaysa aynı promise'i bekle.
-  if (posRiskCache.fetching && posRiskCache.inflight) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
-    try {
-      const rows = await posRiskCache.inflight;
-      return Array.isArray(rows) ? rows : [];
-    } catch(_e) {
-      return posRiskCache.data || [];
-    }
-  }
-
-  posRiskCache.fetching = true;
-  posRiskCache.inflightStartedAt = Date.now();
-  posRiskCache.inflight = (async () => {
-    try {
-      const data = await getPositionRisk(apiKey, apiSecret, {});
-      posRiskCache.data = Array.isArray(data) ? data : [];
-      posRiskCache.ts = Date.now();
-      posRiskCache.lastApiKey = apiFp;
-      posRiskCache.lastError = null;
+  const gen=++posRiskCache.generation;
+  posRiskCache.fetching=true; posRiskCache.inflightStartedAt=Date.now(); posRiskCache.lastAttemptAt=Date.now();
+  posRiskCache.inflight=(async()=>{
+    const t0=Date.now();
+    try{
+      const data=await fetchPositionRiskRaw(apiKey,apiSecret);
+      if(gen!==posRiskCache.generation)return posRiskCache.data||data;
+      posRiskCache.data=Array.isArray(data)?data:[]; posRiskCache.ts=Date.now(); posRiskCache.lastApiKey=fp;
+      posRiskCache.lastSuccessAt=Date.now(); posRiskCache.lastLatencyMs=Date.now()-t0;
+      posRiskCache.lastError=null; posRiskCache.lastErrorType=null; posRiskCache.consecutiveFailures=0;
+      posRiskCache.networkBackoffUntil=0;
       return posRiskCache.data;
-    } catch(e) {
-      const msg = e.message || '';
-      posRiskCache.lastError = safeErrMsg(e);
-      if (msg.includes('-1003') || msg.includes('Too many requests') || msg.includes('BINANCE_BACKOFF_ACTIVE') || msg.includes('HTTP 418') || msg.includes('HTTP 429')) {
-        const extraMs = Math.max(POS_RISK_RATELIMIT_MS, getBinanceBackoffMs());
-        posRiskCache.rateLimitUntil = Date.now() + extraMs;
-        pushCritical('POSITION_RISK_RATELIMIT', e, {cooldownMs:extraMs}, 'WARNING');
-        console.log(`⛔ positionRisk / Binance istek freni: ${Math.ceil(extraMs/1000)}sn bekleniyor`);
+    }catch(e){
+      if(gen!==posRiskCache.generation)return posRiskCache.data||[];
+      const typ=positionRiskErrorType(e); posRiskCache.lastError=safeErrMsg(e); posRiskCache.lastErrorType=typ;
+      posRiskCache.lastFailureAt=Date.now(); posRiskCache.lastLatencyMs=Date.now()-t0; posRiskCache.consecutiveFailures++;
+      if(typ==='RATE_LIMIT'){
+        const extra=Math.max(POS_RISK_RATELIMIT_MS,getBinanceBackoffMs()); posRiskCache.rateLimitUntil=Date.now()+extra;
+        try{pushCritical('POSITION_RISK_RATELIMIT',e,{cooldownMs:extra,reason},'WARNING');}catch(_){}
+      }else if(typ==='NETWORK_TIMEOUT'||typ==='OTHER'){
+        const extra=positionRiskNetworkBackoffMs(posRiskCache.consecutiveFailures); posRiskCache.networkBackoffUntil=Date.now()+extra;
+        try{pushCritical('POSITION_RISK_BACKOFF',e,{cooldownMs:extra,reason,errorType:typ},'WARNING');}catch(_){}
       }
-      if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return posRiskCache.data;
+      if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
       throw e;
-    } finally {
-      posRiskCache.fetching = false;
-      posRiskCache.inflight = null;
-      posRiskCache.inflightStartedAt = 0;
+    }finally{
+      if(gen===posRiskCache.generation){posRiskCache.fetching=false;posRiskCache.inflight=null;posRiskCache.inflightStartedAt=0;}
     }
   })();
-
   return posRiskCache.inflight;
 }
-
-function invalidatePosRiskCache(reason='manual') {
-  posRiskCache.ts = 0;
-  posRiskCache.lastInvalidateReason = reason;
+async function getPositionRiskCached(apiKey,apiSecret,params={}){
+  const clean={...(params||{})};
+  const force=!!clean.__forceFresh; delete clean.__forceFresh;
+  const requestedMaxAge=Number(clean.__maxAgeMs); delete clean.__maxAgeMs;
+  const now=Date.now(),fp=keyFingerprint(apiKey,apiSecret),hasOpen=positionRowsOpenCount(posRiskCache.data)>0;
+  const ttl=Number.isFinite(requestedMaxAge)?Math.max(0,requestedMaxAge):(hasOpen?POS_RISK_TTL_ACTIVE:POS_RISK_TTL_NORMAL);
+  if(!force&&posRiskCache.data&&posRiskCache.lastApiKey===fp&&now-posRiskCache.ts<ttl)return filterPositionRiskRows(posRiskCache.data,clean);
+  const rows=await refreshPositionRiskCentral(apiKey,apiSecret,{reason:clean.symbol?`symbol:${clean.symbol}`:'bulk',force});
+  return filterPositionRiskRows(rows,clean);
 }
-// Eski isimle çağıran yerler kırılmasın.
-function invalidatePositionRiskCache(reason='manual') {
-  invalidatePosRiskCache(reason);
-}
-
-// Eski dashboard diagnostik alanı için uyumluluk objesi.
-const positionRiskState = {
-  get cache() {
-    if (!posRiskCache.data) return null;
-    const hasOpen = positionRowsOpenCount(posRiskCache.data) > 0;
-    const ttl = hasOpen ? POS_RISK_TTL_ACTIVE : POS_RISK_TTL_NORMAL;
-    return {
-      rows: posRiskCache.data,
-      ts: posRiskCache.ts,
-      ttl,
-      exp: posRiskCache.ts + ttl,
-      openCount: positionRowsOpenCount(posRiskCache.data),
-      fp: posRiskCache.lastApiKey,
-    };
-  },
-  get inflight() { resetStuckPositionRiskInflight('state getter'); return posRiskCache.fetching; },
-  get cooldownUntil() { return posRiskCache.rateLimitUntil; },
-  get lastError() { return posRiskCache.lastError; },
-  get lastSource() { return posRiskCache.lastSource; },
+// Eski çağrılar için uyumluluk; artık doğrudan Binance'e gitmez.
+async function getPositionRisk(apiKey,apiSecret,params={}){return getPositionRiskCached(apiKey,apiSecret,params);}
+function invalidatePosRiskCache(reason='manual'){posRiskCache.ts=0;posRiskCache.lastInvalidateReason=reason;}
+function invalidatePositionRiskCache(reason='manual'){invalidatePosRiskCache(reason);}
+const positionRiskState={
+  get cache(){if(!posRiskCache.data)return null;const hasOpen=positionRowsOpenCount(posRiskCache.data)>0,ttl=hasOpen?POS_RISK_TTL_ACTIVE:POS_RISK_TTL_NORMAL;return{rows:posRiskCache.data,ts:posRiskCache.ts,ttl,exp:posRiskCache.ts+ttl,openCount:positionRowsOpenCount(posRiskCache.data),fp:posRiskCache.lastApiKey};},
+  get inflight(){resetStuckPositionRiskInflight('state getter');return posRiskCache.fetching;},
+  get cooldownUntil(){return Math.max(posRiskCache.rateLimitUntil,posRiskCache.networkBackoffUntil);},
+  get lastError(){return posRiskCache.lastError;}, get lastSource(){return posRiskCache.lastSource;},
+  get lastSuccessAt(){return posRiskCache.lastSuccessAt;}, get lastAttemptAt(){return posRiskCache.lastAttemptAt;},
+  get lastLatencyMs(){return posRiskCache.lastLatencyMs;}, get lastErrorType(){return posRiskCache.lastErrorType;},
+  get consecutiveFailures(){return posRiskCache.consecutiveFailures;}, get hardResetCount(){return posRiskCache.hardResetCount;}
 };
-
+let positionRiskPollerTimer=null;
+function startPositionRiskCentralPoller(){
+  if(positionRiskPollerTimer)return;
+  positionRiskPollerTimer=setInterval(async()=>{
+    try{
+      if(!autoConfig?.enabled||!autoConfig?.apiKey||!autoConfig?.apiSecret)return;
+      resetStuckPositionRiskInflight('central-poller');
+      if(isBinanceBackoffActive()||isPositionRiskCooldownActive())return;
+      const hasOpen=positionRowsOpenCount(posRiskCache.data)>0,target=hasOpen?POS_RISK_TTL_ACTIVE:POS_RISK_TTL_NORMAL;
+      if(!posRiskCache.data||Date.now()-Number(posRiskCache.ts||0)>=target){
+        await refreshPositionRiskCentral(autoConfig.apiKey,autoConfig.apiSecret,{reason:'central-poller'});
+      }
+    }catch(_){}
+  },POS_RISK_POLLER_TICK_MS);
+  try{positionRiskPollerTimer.unref?.();}catch(_){}
+}
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. WEBSOCKET CVD — Sürekli bağlı, gerçek zamanlı Cumulative Volume Delta
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -8521,7 +8515,7 @@ async function r179BootstrapLedger48h(apiKey, apiSecret, lookbackMs=48*60*60*100
     }
     let base = opts.replace ? [] : (Array.isArray(tradeLedger)?tradeLedger.filter(r=>!String(r.id||'').startsWith('RESTORE48_')):[]);
     let flatSymbols=new Set();
-    try{const pr=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{});if(Array.isArray(pr))for(const x of pr){if(Math.abs(Number(x.positionAmt||0))<1e-12)flatSymbols.add(normalizeSymbol(String(x.symbol||'')));}}catch(_){flatSymbols=new Set();}
+    try{const pr=await getPositionRiskCached(apiKey,apiSecret,{__maxAgeMs:3000});if(Array.isArray(pr))for(const x of pr){if(Math.abs(Number(x.positionAmt||0))<1e-12)flatSymbols.add(normalizeSymbol(String(x.symbol||'')));}}catch(_){flatSymbols=new Set();}
     const existing = new Set(base.map(r=>r179LedgerKey(r)));
     let restored=0;
     for (const g of groups.values()) {
@@ -11794,6 +11788,36 @@ app.get('/api/futures-coins', async (req, res) => {
   } catch(e) { res.status(400).json({ error:e.message }); }
 });
 
+// ── V7 MİKRO MUM TAZELİK KATMANI ─────────────────────────────────────────────
+const R501_MICRO_TFS=Object.freeze({'1m':60000,'5m':300000,'15m':900000});
+function r501ClosedKlineMeta(raw=[],ms=60000,now=Date.now()){
+  const rows=Array.isArray(raw)?raw:[];
+  const closed=rows.filter(x=>Number(x?.[6]||0)<=now);
+  const last=closed.at(-1)||null,expectedClose=Math.floor(now/ms)*ms-1,lastClose=Number(last?.[6]||0);
+  const lagBars=lastClose>0?Math.max(0,Math.floor((expectedClose-lastClose)/ms)):999;
+  return {lastClose,expectedClose,lagBars,count:closed.length,ok:lastClose>0&&lagBars<=1};
+}
+async function r501EnsureFreshMicroKlines(symbol,input={}){
+  const out={...input},health={};
+  for(const tf of ['1m','5m','15m']){
+    const ms=R501_MICRO_TFS[tf],key=`k${tf}_${symbol}`;
+    let raw=Array.isArray(out[key])?out[key]:[];
+    let meta=r501ClosedKlineMeta(raw,ms);
+    let refreshed=false,error=null;
+    if(!meta.ok){
+      try{
+        raw=await cached(`r501-fresh:${symbol}:${tf}`,8000,()=>bPub('/fapi/v1/klines',`symbol=${symbol}&interval=${tf}&limit=200`));
+        meta=r501ClosedKlineMeta(raw,ms); refreshed=true;
+        if(Array.isArray(raw)&&raw.length)cache.set(key,{val:raw,exp:Date.now()+Math.min(ms,tf==='1m'?20000:tf==='5m'?45000:90000),ts:Date.now()});
+      }catch(e){error=safeErrMsg(e);}
+    }
+    out[key]=raw; health[tf]={...meta,refreshed,error};
+  }
+  health.ok=['1m','5m','15m'].every(tf=>health[tf]?.ok);
+  health.checkedAt=Date.now();
+  return {...out,health};
+}
+
 // ── PRO ANALİZ ────────────────────────────────────────────────────────────────
 app.get('/api/analyze/:symbol', async (req, res) => {
   const sym  = req.params.symbol.toUpperCase();
@@ -11828,13 +11852,16 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
     const k4h  = r4h.status==='fulfilled'&&Array.isArray(r4h.value)   ?r4h.value  :[];
     const k1d  = r1d.status==='fulfilled'&&Array.isArray(r1d.value)   ?r1d.value  :[]; // R329: günlük mum
-    const k1m  = r1m.status==='fulfilled'&&Array.isArray(r1m.value)   ?r1m.value  :[]; // R366: 1dk×60 (son 1 saat)
+    let k1m  = r1m.status==='fulfilled'&&Array.isArray(r1m.value)   ?r1m.value  :[];
     const k1h  = r1h.status==='fulfilled'&&Array.isArray(r1h.value)   ?r1h.value  :[];
-    const k15m = r15m.status==='fulfilled'&&Array.isArray(r15m.value) ?r15m.value :[];
+    let k15m = r15m.status==='fulfilled'&&Array.isArray(r15m.value) ?r15m.value :[];
     // R490 v3: R480 özellikleri bu analiz cevabına gömülür; global sembol map/race yoktur.
     // Yalnız KAPANMIŞ 15m/1h/4h mumları kullanılır; oluşan HTF mum backtest parity'sini bozamaz.
     const r480Shadow = (()=>{ try { return r480BuildBaseShadow(full,k15m,k1h,k4h,Date.now()); } catch(_) { return null; } })();
-    const k5m  = r5m.status==='fulfilled'&&Array.isArray(r5m.value)   ?r5m.value  :[];
+    let k5m  = r5m.status==='fulfilled'&&Array.isArray(r5m.value)   ?r5m.value  :[];
+    const r501Fresh=await r501EnsureFreshMicroKlines(full,{[`k1m_${full}`]:k1m,[`k5m_${full}`]:k5m,[`k15m_${full}`]:k15m});
+    k1m=r501Fresh[`k1m_${full}`]||k1m; k5m=r501Fresh[`k5m_${full}`]||k5m; k15m=r501Fresh[`k15m_${full}`]||k15m;
+    const r501MicroFreshness=r501Fresh.health;
     const fundArr  = rFunding.status==='fulfilled'&&Array.isArray(rFunding.value)   ?rFunding.value  :[];
     const premiumObj = rPremium?.status==='fulfilled'&&rPremium.value?rPremium.value:null;
     const oiHist   = rOIHist.status==='fulfilled'&&Array.isArray(rOIHist.value)     ?rOIHist.value   :[];
@@ -16357,6 +16384,7 @@ app.get('/api/analyze/:symbol', async (req, res) => {
       r480Shadow,
       r308RawCandles,
       r49356ShadowCandles,
+      r501MicroFreshness,
       r366Parabolik, // R366: 1dk parabolik fib (LONG & SHORT)
       r384HtfKirilim, // R384: 1h/4h yapısal kırılım (trendline + baz) hacim teyitli
       r316Trend,
@@ -16754,7 +16782,7 @@ app.post('/api/order', async (req, res) => {
     await new Promise(r=>setTimeout(r,800));
     let execPrice=parseFloat(main.avgPrice||curPrice);
     try{
-      const pos=await getPositionRisk(apiKey,apiSecret,{symbol:sym});
+      const pos=await getPositionRiskCached(apiKey,apiSecret,{symbol:sym,__maxAgeMs:3000});
       const p=Array.isArray(pos)?pos.find(x=>x.symbol===sym&&Math.abs(parseFloat(x.positionAmt))>0):null;
       if(p&&parseFloat(p.entryPrice)>0)execPrice=parseFloat(p.entryPrice);
     }catch(e){}
@@ -16994,7 +17022,7 @@ app.post('/api/update-sl', async (req, res) => {
   const sym = symbol.toUpperCase().includes('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
   try {
     // Mevcut pozisyonu al
-    const pos = await getPositionRisk(apiKey,apiSecret,{symbol:sym});
+    const pos = await getPositionRiskCached(apiKey,apiSecret,{symbol:sym,__maxAgeMs:3000});
     const p = Array.isArray(pos) ? pos.find(x=>x.symbol===sym&&Math.abs(parseFloat(x.positionAmt))>0) : null;
     if (!p) return res.status(400).json({ error:'Açık pozisyon yok' });
 
@@ -18737,7 +18765,7 @@ app.post('/api/close', async (req, res) => {
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   try{
     try{await cancelAlgoOrders(apiKey,apiSecret,sym,true);}catch(e){}
-    const pos=await getPositionRisk(apiKey,apiSecret,{symbol:sym});
+    const pos=await getPositionRiskCached(apiKey,apiSecret,{symbol:sym,__maxAgeMs:3000});
     const arr=Array.isArray(pos)?pos:[];
     const p=arr.find(x=>Math.abs(parseFloat(x.positionAmt))>0);
     if(!p)return res.json({ok:true,message:'Açık pozisyon yok'});
@@ -18763,6 +18791,7 @@ function r486391BinanceCreds() {
   const apiSecret = cleanBinanceCredential(process.env.BINANCE_TESTNET_API_SECRET || '');
   return { apiKey, apiSecret, source: apiKey && apiSecret ? 'RAILWAY_ENV_TESTNET' : 'MISSING_TESTNET_ENV' };
 }
+startPositionRiskCentralPoller();
 let autoRunning = false;
 let autoTimer = null;
 const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // legacy/fallback; R486.3.9 AI kapalıyken adaptif tarama kullanır.
@@ -19776,6 +19805,17 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
   }
 }
 
+app.get('/api/infra/health',(_req,res)=>{
+  const pr={
+    cacheAgeMs:posRiskCache.ts?Date.now()-posRiskCache.ts:null,openCount:positionRowsOpenCount(posRiskCache.data),
+    lastSuccessAt:posRiskCache.lastSuccessAt||0,successAgeMs:posRiskCache.lastSuccessAt?Date.now()-posRiskCache.lastSuccessAt:null,
+    lastAttemptAt:posRiskCache.lastAttemptAt||0,lastLatencyMs:posRiskCache.lastLatencyMs,lastError:posRiskCache.lastError,
+    lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:posRiskCache.consecutiveFailures,
+    cooldownMs:getPositionRiskCooldownMs(),inflight:posRiskCache.fetching,hardResetCount:posRiskCache.hardResetCount
+  };
+  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true}});
+});
+
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
 app.get('/api/diagnostics/status', (_req, res) => {
   const lastCritical = criticalEvents[criticalEvents.length - 1] || null;
@@ -19798,6 +19838,13 @@ app.get('/api/diagnostics/status', (_req, res) => {
       openCount: positionRiskState.cache?.openCount || 0,
       source: positionRiskState.lastSource || null,
       lastError: positionRiskState.lastError || null,
+      lastErrorType: positionRiskState.lastErrorType || null,
+      lastSuccessAt: positionRiskState.lastSuccessAt || 0,
+      successAgeMs: positionRiskState.lastSuccessAt ? Date.now()-positionRiskState.lastSuccessAt : null,
+      lastAttemptAt: positionRiskState.lastAttemptAt || 0,
+      lastLatencyMs: positionRiskState.lastLatencyMs ?? null,
+      consecutiveFailures: positionRiskState.consecutiveFailures || 0,
+      hardResetCount: positionRiskState.hardResetCount || 0,
       inflight: !!positionRiskState.inflight,
     },
     binanceRest: {
@@ -19832,6 +19879,13 @@ app.get('/api/health', (_req, res) => {
       openCount: positionRiskState.cache?.openCount || 0,
       source: positionRiskState.lastSource || null,
       lastError: positionRiskState.lastError || null,
+      lastErrorType: positionRiskState.lastErrorType || null,
+      lastSuccessAt: positionRiskState.lastSuccessAt || 0,
+      successAgeMs: positionRiskState.lastSuccessAt ? Date.now()-positionRiskState.lastSuccessAt : null,
+      lastAttemptAt: positionRiskState.lastAttemptAt || 0,
+      lastLatencyMs: positionRiskState.lastLatencyMs ?? null,
+      consecutiveFailures: positionRiskState.consecutiveFailures || 0,
+      hardResetCount: positionRiskState.hardResetCount || 0,
       inflight: !!positionRiskState.inflight,
     } : null;
 
@@ -20931,6 +20985,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         }
 
         const { longScore, shortScore, isExpired, freshness } = analysis;
+        if(analysis?.r501MicroFreshness && analysis.r501MicroFreshness.ok===false){
+          const h=analysis.r501MicroFreshness; const why=['1m','5m','15m'].filter(tf=>!h?.[tf]?.ok).map(tf=>`${tf}+${h?.[tf]?.lagBars??'?'}mum`).join(',');
+          markAutoSkip(coin.symbol,`V7 MICRO_DATA_STALE ${why}`,{rec:'WAIT',tier:'DATA',reason:`Taze mikro mum alınamadı: ${why}`});
+          try{r49356CaptureDecision({coin,analysis,decisionChain:analysis.decisionChain||{},candidateProduced:true,forcedDecision:{action:'PUSU',authority:'V7_DATA_FRESHNESS',reason:`MICRO_DATA_STALE ${why}`}});}catch(_){}
+          continue;
+        }
         let recommendation = analysis.recommendation;
         let decisionChain = analysis.decisionChain || {};
         let r491BrakeMeta = null; // yalnız bu coin/emir çevrimi; sonraki coine sızmaz
@@ -23887,7 +23947,7 @@ async function syncPositions() {
     // hâlâ açıksa state korunur. Şüphede pozisyon AÇIK sayılır (yanlış kapatmaktan iyidir).
     const r344StillOpen = async (sym) => {
       try {
-        const one = await getPositionRisk(autoConfig.apiKey, autoConfig.apiSecret, { symbol: sym });
+        const one = await getPositionRiskCached(autoConfig.apiKey, autoConfig.apiSecret, { symbol: sym, __maxAgeMs:3000 });
         const arr = Array.isArray(one) ? one : [];
         return arr.some(x => Math.abs(parseFloat(x.positionAmt)) > 0);
       } catch(_) { return true; }
