@@ -892,7 +892,7 @@ function r405Nobetci(text) { try {
   if (!s.includes('-2015') && !s.toLowerCase().includes('invalid api-key')) return;
   const ip = (s.match(/request ip:\s*([\d.]+)/i) || [])[1] || '?';
   if (Date.now() - r405Son > 10 * 60 * 1000) { r405Son = Date.now();
-    logAuto(`🔑🚨 BINANCE KİLİDİ (-2015): Railway çıkış IP'si ${ip} anahtarın beyaz listesinde DEĞİL — imzalı uçlar ölü, EMİR AÇILAMAZ. ÇÖZÜM (2dk): Binance → API Management → anahtarı düzenle → IP listesine ${ip} ekle. Kalıcı: Railway statik IP ya da kısıtsız anahtar (withdrawal izni ASLA).`);
+    logAuto(`🧪🔑 TESTNET KİMLİK HATASI (-2015): Testnet endpoint anahtarı reddetti. Bu hata yalnız IP değildir; yanlış canlı anahtar, eksik TESTNET key/secret veya testnet izin/IP kısıtı olabilir. Bu build yalnız BINANCE_TESTNET_API_KEY/SECRET Railway ENV değerlerini kabul eder. Kaynak IP: ${ip}.`);
   }
 } catch(_) {} }
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false) {
@@ -16474,11 +16474,9 @@ app.get('/api/my-ip', async (_req, res) => {
 // - v2/account + v2/balance geri eklendi
 // - v3/v2 account.assets içindeki USDT satırı da okunur
 // - İmzalı bağlantı başarılı ama USDT satırı yoksa bunu açık diagnostik olarak döndürür
-app.post('/api/account', async (req, res) => {
-  let { apiKey, apiSecret } = req.body || {};
-  apiKey = cleanBinanceCredential(apiKey);
-  apiSecret = cleanBinanceCredential(apiSecret);
-  if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'API key gerekli' });
+app.post('/api/account', async (_req, res) => {
+  const { apiKey, apiSecret, source:credentialSource } = r486391BinanceCreds();
+  if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'TESTNET_API_ENV_MISSING', credentialSource });
 
   const errors = [];
   const sources = [];
@@ -16688,7 +16686,8 @@ app.post('/api/account', async (req, res) => {
 app.post('/api/order', async (req, res) => {
   const _tn = testnetSessionStatus();
   if (TESTNET_SESSION_AUTO_STOP && _tn.expired) return res.status(423).json({ok:false,error:'TESTNET_SESSION_EXPIRED',message:'Testnet süresi doldu; yeni emir kapalı. Açık pozisyonlar kapatılabilir.',testnet:_tn});
-  const{apiKey,apiSecret,symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
+  const{symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
+  const {apiKey,apiSecret}=r486391BinanceCreds();
   if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!usdtAmount)
     return res.status(400).json({error:'Eksik parametre'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
@@ -16915,9 +16914,9 @@ function positionManagerSnapshot(pos, state, note='İzleniyor') {
   };
 }
 
-app.post('/api/positions', async (req, res) => {
-  const{apiKey,apiSecret}=req.body;
-  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
+app.post('/api/positions', async (_req, res) => {
+  const{apiKey,apiSecret,source:credentialSource}=r486391BinanceCreds();
+  if(!apiKey||!apiSecret)return res.status(400).json({error:'TESTNET_API_ENV_MISSING',credentialSource});
   try{
     const data=await getPositionRiskCached(apiKey,apiSecret);
     const rawOpen=Array.isArray(data)?data.filter(p=>parseFloat(p.positionAmt)!==0):[];
@@ -16988,7 +16987,8 @@ app.post('/api/positions', async (req, res) => {
 
 // ── BREAK-EVEN STOP — Kâra geçince SL'yi giriş fiyatına çek ────────────────
 app.post('/api/update-sl', async (req, res) => {
-  const { apiKey, apiSecret, symbol, newSL, cancelExisting } = req.body;
+  const { symbol, newSL, cancelExisting } = req.body;
+  const {apiKey,apiSecret}=r486391BinanceCreds();
   if (!apiKey||!apiSecret||!symbol||!newSL)
     return res.status(400).json({ error:'Eksik parametre' });
   const sym = symbol.toUpperCase().includes('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
@@ -18731,8 +18731,9 @@ async function fastManageOpenPositions() {
 
 // ── KAPAT ─────────────────────────────────────────────────────────────────────
 app.post('/api/close', async (req, res) => {
-  const{apiKey,apiSecret,symbol}=req.body;
-  if(!apiKey||!apiSecret||!symbol)return res.status(400).json({error:'Eksik parametre'});
+  const{symbol}=req.body;
+  const{apiKey,apiSecret}=r486391BinanceCreds();
+  if(!apiKey||!apiSecret||!symbol)return res.status(400).json({error:'TESTNET_API_ENV_MISSING_OR_SYMBOL'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   try{
     try{await cancelAlgoOrders(apiKey,apiSecret,sym,true);}catch(e){}
@@ -18755,16 +18756,12 @@ app.post('/api/close', async (req, res) => {
 //   trailingPct, breakEvenPct, symbols:[] }
 
 let autoConfig = null;
-// R486.3.9.1: Karne/ledger senkronu dashboard açılmadan da çalışır.
-// Öncelik panelden gelen canlı anahtarlardır; panel henüz bağlanmadıysa Railway ENV kullanılır.
+// TESTNET CREDENTIAL FIX: testnet servisi yalnız Railway ENV kimliğini kullanır.
+// Panel/localStorage anahtarları asla imzalı testnet uçlarına gönderilmez.
 function r486391BinanceCreds() {
-  const panelKey = String(autoConfig?.apiKey || '').trim();
-  const panelSecret = String(autoConfig?.apiSecret || '').trim();
-  const envKey = String(process.env.BINANCE_TESTNET_API_KEY || '').trim();
-  const envSecret = String(process.env.BINANCE_TESTNET_API_SECRET || '').trim();
-  const apiKey = panelKey || envKey;
-  const apiSecret = panelSecret || envSecret;
-  return { apiKey, apiSecret, source: panelKey && panelSecret ? 'PANEL' : (envKey && envSecret ? 'RAILWAY_ENV' : 'MISSING') };
+  const apiKey = cleanBinanceCredential(process.env.BINANCE_TESTNET_API_KEY || '');
+  const apiSecret = cleanBinanceCredential(process.env.BINANCE_TESTNET_API_SECRET || '');
+  return { apiKey, apiSecret, source: apiKey && apiSecret ? 'RAILWAY_ENV_TESTNET' : 'MISSING_TESTNET_ENV' };
 }
 let autoRunning = false;
 let autoTimer = null;
@@ -19916,6 +19913,11 @@ app.post('/api/auto/config', (req, res) => {
   const _tn = testnetSessionStatus();
   if (req.body?.enabled && TESTNET_SESSION_AUTO_STOP && _tn.expired) return res.status(423).json({ok:false,error:'TESTNET_SESSION_EXPIRED',message:'Testnet süresi doldu. Süreyi uzat veya RESET_ID değiştir.',testnet:_tn});
   autoConfig = { ...(req.body||{}) };
+  const _testnetCreds = r486391BinanceCreds();
+  autoConfig.apiKey = _testnetCreds.apiKey;
+  autoConfig.apiSecret = _testnetCreds.apiSecret;
+  autoConfig.credentialSource = _testnetCreds.source;
+  if (req.body?.enabled && (!autoConfig.apiKey || !autoConfig.apiSecret)) return res.status(400).json({ok:false,error:'TESTNET_API_ENV_MISSING',message:'Railway Variables içine BINANCE_TESTNET_API_KEY ve BINANCE_TESTNET_API_SECRET ekle.',credentialSource:_testnetCreds.source});
   autoConfig.maxPositions = R486_MAX_POSITIONS; // R486.3.9: sermaye sözleşmesi max 2
   // R323: MALİYET-TASARRUF MODU dashboard toggle — sweep yoksa AI'a gönderme (frekans korunur, maliyet düşer).
   if (typeof req.body?.saverMode !== 'undefined') {
@@ -20167,7 +20169,8 @@ function r48632ScanSnapshot(){
 app.get('/api/testnet/status', (_req,res) => {
   const v = TESTNET_VIRTUAL_EQUITY_ACTIVE ? r500TestnetVirtualEquity() : null;
   res.set('Cache-Control','no-store');
-  res.json({ok:true,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,executionBase:'USD-M Futures Testnet',hardLockedTestnet:true,session:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR});
+  const c=r486391BinanceCreds();
+  res.json({ok:true,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,executionBase:'USD-M Futures Testnet',hardLockedTestnet:true,credentialsReady:!!(c.apiKey&&c.apiSecret),credentialSource:c.source,session:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR});
 });
 app.get('/api/chart/6tf/:symbol', async (req,res) => {
   try {
