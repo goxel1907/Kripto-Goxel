@@ -138,7 +138,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V8_INFRA_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V9_GOVFIX_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -266,24 +266,43 @@ const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms)||0))
 // Aynı governor sayaçlarını kullanır fakat ayrı öncelikli tek-uçuş kuyruğunda çalışır.
 // Limit penceresi doluysa 60sn uyumak yerine hızlıca fail-closed/backoff döner.
 const binancePriorityGov = { q: Promise.resolve() };
+// V9: kritik sağlık sorguları için normal 1800/dk tarama tavanının üstünde,
+// Binance Futures 2400/dk gerçek sınırının altında ayrılmış rezerv bulunur.
+// Yerel rezerv beklemesi gerçek 429 değildir; hata serisi/cooldown cezası üretmez.
+function priorityBudgetForScope(scope='PRIORITY') {
+  const s = String(scope || '').toUpperCase();
+  if (s.includes('POSITION_RISK')) return { lane:'POSITION_RISK', maxWeight:2280, maxOrders:75 };
+  if (s.includes('/KLINES')) return { lane:'MICRO_KLINE', maxWeight:2180, maxOrders:70 };
+  return { lane:'GENERAL_PRIORITY', maxWeight:2050, maxOrders:70 };
+}
+function makePriorityLocalDeferError(scope, waitMs, budget) {
+  const ms = Math.max(250, Number(waitMs)||1000);
+  const e = new Error(`${scope} yerel governor rezervini bekliyor: ${Math.ceil(ms/1000)}sn`);
+  e.code = 'BINANCE_PRIORITY_DEFER';
+  e.localDefer = true;
+  e.retryAfter = Math.ceil(ms/1000);
+  e.retryAfterMs = ms;
+  e.priorityLane = budget?.lane || 'PRIORITY';
+  return e;
+}
 async function binancePriorityThrottle(scope='PRIORITY', weight=1, orderWeight=0) {
   const job = async () => {
     _resetGovWindowIfNeeded();
     const now = Date.now();
     if (Number(binanceGov.backoffUntil||0) > now) {
+      // Bu gerçek/global Binance freni olabilir; rate-limit olarak kalır.
       throw makeBinanceBackoffError(`${scope} global backoff`, Math.ceil((binanceGov.backoffUntil-now)/1000), 418);
     }
+    const budget = priorityBudgetForScope(scope);
     const nextWeight = Number(binanceGov.usedWeight||0) + Number(weight||0);
     const nextOrders = Number(binanceGov.usedOrders||0) + Number(orderWeight||0);
-    if (nextWeight > 1800 || nextOrders > 70) {
-      const waitMs = Math.max(1000, 60_000 - (Date.now() - Number(binanceGov.minuteStart||Date.now())) + 250);
-      const e = makeBinanceBackoffError(`${scope} governor penceresi dolu`, Math.ceil(waitMs/1000), 429);
-      e.code = 'BINANCE_PRIORITY_WINDOW_FULL';
-      throw e;
+    if (nextWeight > budget.maxWeight || nextOrders > budget.maxOrders) {
+      const waitMs = Math.max(250, 60_000 - (Date.now() - Number(binanceGov.minuteStart||Date.now())) + 100);
+      throw makePriorityLocalDeferError(scope, waitMs, budget);
     }
     binanceGov.usedWeight = nextWeight;
     binanceGov.usedOrders = nextOrders;
-    await sleep(orderWeight ? 60 : 30);
+    await sleep(orderWeight ? 60 : 20);
   };
   const prev = binancePriorityGov.q.catch(()=>{});
   binancePriorityGov.q = prev.then(job, job);
@@ -1062,6 +1081,7 @@ function keyFingerprint(apiKey, apiSecret='') {
   return `${k.slice(0,6)}:${k.length}:${h}`;
 }
 function positionRiskErrorType(err) {
+  if(err?.code==='BINANCE_PRIORITY_DEFER'||err?.localDefer) return 'LOCAL_DEFER';
   const m=String(err?.message||err||'').toLowerCase();
   if(m.includes('-1003')||m.includes('429')||m.includes('418')||m.includes('too many requests')||m.includes('backoff')) return 'RATE_LIMIT';
   if(m.includes('-2015')||m.includes('invalid api')||m.includes('signature')) return 'AUTH';
@@ -1146,13 +1166,21 @@ async function refreshPositionRiskCentral(apiKey,apiSecret,{reason='consumer',fo
     }catch(e){
       if(gen!==posRiskCache.generation)return posRiskCache.data||[];
       const typ=positionRiskErrorType(e); posRiskCache.lastError=safeErrMsg(e); posRiskCache.lastErrorType=typ;
-      posRiskCache.lastFailureAt=Date.now(); posRiskCache.lastLatencyMs=Date.now()-t0; posRiskCache.consecutiveFailures++;
-      if(typ==='RATE_LIMIT'){
-        const extra=Math.max(POS_RISK_RATELIMIT_MS,getBinanceBackoffMs()); posRiskCache.rateLimitUntil=Date.now()+extra;
-        try{pushCritical('POSITION_RISK_RATELIMIT',e,{cooldownMs:extra,reason},'WARNING');}catch(_){}
-      }else if(typ==='NETWORK_TIMEOUT'||typ==='OTHER'){
-        const extra=positionRiskNetworkBackoffMs(posRiskCache.consecutiveFailures); posRiskCache.networkBackoffUntil=Date.now()+extra;
-        try{pushCritical('POSITION_RISK_BACKOFF',e,{cooldownMs:extra,reason,errorType:typ},'WARNING');}catch(_){}
+      posRiskCache.lastFailureAt=Date.now(); posRiskCache.lastLatencyMs=Date.now()-t0;
+      if(typ==='LOCAL_DEFER'){
+        // Yerel governor beklemesi gerçek Binance hatası değildir.
+        // Hata serisini büyütme; yalnız pencere açılana kadar kontrollü ertele.
+        const extra=Math.max(250,Number(e?.retryAfterMs||Number(e?.retryAfter||1)*1000));
+        posRiskCache.networkBackoffUntil=Date.now()+Math.min(60_000,extra);
+      }else{
+        posRiskCache.consecutiveFailures++;
+        if(typ==='RATE_LIMIT'){
+          const extra=Math.max(POS_RISK_RATELIMIT_MS,getBinanceBackoffMs()); posRiskCache.rateLimitUntil=Date.now()+extra;
+          try{pushCritical('POSITION_RISK_RATELIMIT',e,{cooldownMs:extra,reason},'WARNING');}catch(_){}
+        }else if(typ==='NETWORK_TIMEOUT'||typ==='OTHER'){
+          const extra=positionRiskNetworkBackoffMs(posRiskCache.consecutiveFailures); posRiskCache.networkBackoffUntil=Date.now()+extra;
+          try{pushCritical('POSITION_RISK_BACKOFF',e,{cooldownMs:extra,reason,errorType:typ},'WARNING');}catch(_){}
+        }
       }
       if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
       throw e;
@@ -19865,7 +19893,7 @@ app.get('/api/infra/health',(_req,res)=>{
     lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:posRiskCache.consecutiveFailures,
     cooldownMs:getPositionRiskCooldownMs(),inflight:posRiskCache.fetching,hardResetCount:posRiskCache.hardResetCount
   };
-  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true,priorityPositionRisk:true,priorityMicroKlines:true,queueWaitBounded:true}});
+  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true,priorityPositionRisk:true,priorityMicroKlines:true,queueWaitBounded:true,reservedPriorityBudget:true,localDeferNotFailure:true}});
 });
 
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
