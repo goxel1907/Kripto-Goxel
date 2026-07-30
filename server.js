@@ -9,6 +9,7 @@ const fetch   = globalThis.fetch;
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const app = express();
 app.use(cors());
@@ -138,7 +139,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V9_1_LOCAL_DEFER_SCANFIX_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_V9_2_EVIDENCE_RECORDER_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -1331,7 +1332,7 @@ function r371StartFlow(symbol) {
     const full = String(symbol).toUpperCase().replace('USDT','') + 'USDT';
     if (r371ActiveStreams.has(full)) return; // zaten dinleniyor
     const lower = full.toLowerCase();
-    if (!r371FlowStore.has(full)) r371FlowStore.set(full, { trades:[], book:{bids:new Map(),asks:new Map()}, lastUpdate:0, bookReady:false });
+    if (!r371FlowStore.has(full)) r371FlowStore.set(full, { trades:[], book:{bids:new Map(),asks:new Map()}, lastUpdate:0, lastAggTradeAt:0, lastDepthAt:0, bookReady:false });
     const store = r371FlowStore.get(full);
 
     // ── aggTrade: gerçek işlem akışı (delta) ──
@@ -1342,11 +1343,11 @@ function r371StartFlow(symbol) {
         const price = parseFloat(d.p), qty = parseFloat(d.q);
         // m=true: alıcı market maker (yani AGRESİF SATIŞ — taker sattı). m=false: agresif ALIŞ (taker aldı).
         const agresifAlis = d.m === false;
-        store.trades.push({ ts: Date.now(), price, qty, usdt: price*qty, agresifAlis });
+        store.trades.push({ ts: Date.now(), exchangeTs:Number(d.T||d.E||0)||null, aggTradeId:d.a??null, price, qty, usdt: price*qty, agresifAlis });
         // Son 2 dakikayı tut
         const cutoff = Date.now() - 120*1000;
         if (store.trades.length > 500) store.trades = store.trades.filter(t => t.ts > cutoff);
-        store.lastUpdate = Date.now();
+        store.lastUpdate = Date.now(); store.lastAggTradeAt = store.lastUpdate;
       } catch(_) {}
     });
     aggWs.on('error', ()=>{ try { r371ActiveStreams.delete(full); } catch(_){} });
@@ -1363,7 +1364,7 @@ function r371StartFlow(symbol) {
         store.book.bids = new Map(bids.map(x => [parseFloat(x[0]), parseFloat(x[1])]));
         store.book.asks = new Map(asks.map(x => [parseFloat(x[0]), parseFloat(x[1])]));
         store.bookReady = true;
-        store.lastUpdate = Date.now();
+        store.lastUpdate = Date.now(); store.lastDepthAt = store.lastUpdate;
       } catch(_) {}
     });
     depthWs.on('error', ()=>{ try { r371ActiveStreams.delete(full); } catch(_){} });
@@ -5386,7 +5387,7 @@ function r49356CaptureDecision({coin={},analysis={},decisionChain={},ai={},story
     const timeframes={};for(const tf of R49356_TFS)timeframes[tf]=r49356PerTf(data,tf,decisionTime,entry,st,ai);
     const consensus=r49356Consensus(timeframes,'LONG',{r480Shadow:ai?.r480Shadow||decisionChain?.r480Shadow||analysis?.r480Shadow||null,liveAction:inferredAction,karKosma:ai?.karKosma,decisionTime});const liveDecision={action:inferredAction,authority,reason,entry:r49356Round(entry,10),stop:r49356Round(sl,10),target:r49356Round(tp,10)};const hardRisk=r49356HardRisk(st,timeframes,liveDecision),chartError=r49356ChartError(st,timeframes),shadowAssessment=r49356ShadowClean(st,timeframes,hardRisk),diagnosis=r49356Provisional({candidateProduced,chartError,liveDecision,story:st,timeframes,consensus,hardRisk,shadowAssessment});const decisionId=r49356DecisionId(symbol,decisionTime);
     const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_TESTNET_6TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(decisionTime).toISOString(),decisionTimeMs:decisionTime,noLookahead:true,liveDecision,timeframes,consensus,diagnosis:{diagnosisClass:diagnosis,hardRisk,shadowAssessment,chartComponentError:chartError},decisionTrace:[],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:diagnosis.status==='FINALIZED'?diagnosis:null,candidateProduced,source:{lane:data.sourceLane,label:data.sourceLabel},workerSignal:data.workerPulse||null};
-    snap.decisionTrace=r49356DecisionTrace({candidateProduced,story:st,liveDecision,timeframes,consensus,diagnosis});r49356Snapshots.set(decisionId,snap);r49356LastCapture={decisionId,symbol,action:liveDecision.action,diagnosis:diagnosis.code,ts:decisionTime};r49356Persist();return snap;
+    snap.decisionTrace=r49356DecisionTrace({candidateProduced,story:st,liveDecision,timeframes,consensus,diagnosis});r49356Snapshots.set(decisionId,snap);r49356LastCapture={decisionId,symbol,action:liveDecision.action,diagnosis:diagnosis.code,ts:decisionTime};r49356Persist();try{r501EvidenceDecision(snap,{coin,analysis,decisionChain,ai});}catch(_r501e){}return snap;
   }catch(e){try{pushCritical('R49356_CAPTURE',e,{symbol:coin?.symbol},'WARNING');}catch(_){}return null;}
 }
 
@@ -8524,6 +8525,261 @@ function saveTradeLedger() {
   try { fs.writeFileSync(tradeLedgerPath, JSON.stringify(tradeLedger.slice(0,250), null, 2)); } catch(_) {}
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// R501 TESTNET EVIDENCE RECORDER — BACKTEST'TE EKSİK CANLI BAĞLAM ARŞİVİ
+// Yalnız TESTNET işlem açılış/kapanışlarına bağlanır. Piyasa verisi PUBLIC LIVE
+// Binance USDⓈ-M kaynaklarından okunur; canlı signed/order endpointi içermez.
+// Kaydedilenler: raw aggTrade/tick akışı, CVD, OI current+history, depth/order-book,
+// 6TF kapanmış mumlar, kaynak tazeliği, karar/gate funnel ve işlem sonucu.
+// ═══════════════════════════════════════════════════════════════════════════════
+const R501_EVIDENCE_SCHEMA = 'LAZARUS_R501_TESTNET_EVIDENCE_V1';
+const R501_EVIDENCE_ACTIVE = String(process.env.R501_EVIDENCE_ACTIVE ?? '1') !== '0';
+const R501_EVIDENCE_SAMPLE_MS = Math.max(500, Math.min(10000, Number(process.env.R501_EVIDENCE_SAMPLE_MS || 1000)));
+const R501_EVIDENCE_BOOK_MS = Math.max(1000, Math.min(60000, Number(process.env.R501_EVIDENCE_BOOK_MS || 5000)));
+const R501_EVIDENCE_OI_MS = Math.max(10000, Math.min(300000, Number(process.env.R501_EVIDENCE_OI_MS || 30000)));
+const R501_EVIDENCE_MAX_TICKS = Math.max(5000, Math.min(250000, Number(process.env.R501_EVIDENCE_MAX_TICKS || 50000)));
+const R501_EVIDENCE_MAX_SAMPLES = Math.max(2000, Math.min(100000, Number(process.env.R501_EVIDENCE_MAX_SAMPLES || 20000)));
+const R501_EVIDENCE_RETENTION_DAYS = Math.max(7, Math.min(365, Number(process.env.R501_EVIDENCE_RETENTION_DAYS || 90)));
+const R501_EVIDENCE_MAX_TRADES = Math.max(30, Math.min(1000, Number(process.env.R501_EVIDENCE_MAX_TRADES || 250)));
+const R501_EVIDENCE_MIN_CLOSED_REVIEW = Math.max(10, Math.min(200, Number(process.env.R501_EVIDENCE_MIN_CLOSED_REVIEW || 30)));
+const R501_EVIDENCE_DIR = path.join(TESTNET_STATE_DIR, `lazarus_evidence_testnet_${TESTNET_SESSION_FILE_TAG}`);
+const R501_EVIDENCE_TRADES_DIR = path.join(R501_EVIDENCE_DIR, 'trades');
+const R501_EVIDENCE_INDEX_PATH = path.join(R501_EVIDENCE_DIR, 'index.json');
+const R501_EVIDENCE_FUNNEL_PATH = path.join(R501_EVIDENCE_DIR, 'decision_funnel.ndjson');
+try { fs.mkdirSync(R501_EVIDENCE_TRADES_DIR, {recursive:true}); } catch (_) {}
+
+function r501Clamp(v,a,b){ return Math.max(a,Math.min(b,Number(v)||0)); }
+function r501Num(v,d=6){ const n=Number(v); return Number.isFinite(n)?Number(n.toFixed(d)):null; }
+function r501SafeId(v){ return String(v||'').replace(/[^a-zA-Z0-9_.-]/g,'_').slice(0,160); }
+function r501AtomicWrite(file, data){
+  try { const tmp=`${file}.tmp`; fs.writeFileSync(tmp,data); fs.renameSync(tmp,file); return true; }
+  catch(e){ try{pushCritical('R501_WRITE',e,{file:path.basename(file)},'WARNING');}catch(_){} return false; }
+}
+function r501ReadJson(file,fallback){ try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(_){return fallback;} }
+function r501GzipWrite(file,obj){
+  try { const raw=Buffer.from(JSON.stringify(obj)); const gz=zlib.gzipSync(raw,{level:6}); return r501AtomicWrite(file,gz); }
+  catch(e){ try{pushCritical('R501_GZIP',e,{file:path.basename(file)},'WARNING');}catch(_){} return false; }
+}
+function r501GzipRead(file){ try{return JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8'));}catch(_){return null;} }
+function r501DirBytes(dir){
+  let total=0; try{for(const n of fs.readdirSync(dir)){const p=path.join(dir,n),s=fs.statSync(p);total+=s.isDirectory()?r501DirBytes(p):s.size;}}catch(_){} return total;
+}
+function r501NowIso(ts=Date.now()){ try{return new Date(Number(ts)||Date.now()).toISOString();}catch(_){return null;} }
+function r501TrimText(v,n=900){ return String(v??'').replace(/\s+/g,' ').trim().slice(0,n); }
+
+let r501EvidenceIndex = r501ReadJson(R501_EVIDENCE_INDEX_PATH,null);
+if(!r501EvidenceIndex || !Array.isArray(r501EvidenceIndex.trades)){
+  r501EvidenceIndex={schema:R501_EVIDENCE_SCHEMA,version:1,build:LAZARUS_BUILD,session:TESTNET_SESSION_RESET_ID,createdAt:Date.now(),updatedAt:Date.now(),trades:[]};
+}
+const r501ActiveEvidence = new Map();
+const r501FunnelRecent = [];
+const r501FunnelStats = {total:0,byType:{},byAction:{},byAuthority:{},byReason:{},lastAt:0};
+
+function r501SaveIndex(){
+  r501EvidenceIndex.build=LAZARUS_BUILD; r501EvidenceIndex.session=TESTNET_SESSION_RESET_ID; r501EvidenceIndex.updatedAt=Date.now();
+  r501EvidenceIndex.trades=(r501EvidenceIndex.trades||[]).sort((a,b)=>Number(b.openedAt||0)-Number(a.openedAt||0)).slice(0,R501_EVIDENCE_MAX_TRADES);
+  r501AtomicWrite(R501_EVIDENCE_INDEX_PATH,JSON.stringify(r501EvidenceIndex,null,2));
+}
+function r501Cleanup(){
+  try{
+    const cutoff=Date.now()-R501_EVIDENCE_RETENTION_DAYS*86400000;
+    const keep=[];
+    for(const x of (r501EvidenceIndex.trades||[])){
+      if(Number(x.openedAt||0)<cutoff && x.status!=='OPEN'){
+        try{fs.unlinkSync(path.join(R501_EVIDENCE_TRADES_DIR,String(x.file||'')));}catch(_){}
+      }else keep.push(x);
+    }
+    r501EvidenceIndex.trades=keep.slice(0,R501_EVIDENCE_MAX_TRADES); r501SaveIndex();
+    try{const s=fs.statSync(R501_EVIDENCE_FUNNEL_PATH);if(s.size>50*1024*1024){fs.renameSync(R501_EVIDENCE_FUNNEL_PATH,`${R501_EVIDENCE_FUNNEL_PATH}.${Date.now()}.bak`);}}catch(_){}
+  }catch(_){}
+}
+r501Cleanup();
+
+function r501FunnelCount(bucket,key){ const k=r501TrimText(key||'UNKNOWN',120)||'UNKNOWN'; bucket[k]=(bucket[k]||0)+1; }
+function r501EvidenceFunnel(ev={}){
+  if(!R501_EVIDENCE_ACTIVE)return;
+  try{
+    const row={schema:R501_EVIDENCE_SCHEMA,ts:Number(ev.ts||Date.now()),iso:r501NowIso(ev.ts),build:LAZARUS_BUILD,session:TESTNET_SESSION_RESET_ID,...ev};
+    delete row.apiKey; delete row.apiSecret; delete row.signature; delete row.secret;
+    fs.appendFileSync(R501_EVIDENCE_FUNNEL_PATH,JSON.stringify(row)+'\n');
+    r501FunnelRecent.unshift(row); if(r501FunnelRecent.length>300)r501FunnelRecent.length=300;
+    r501FunnelStats.total++; r501FunnelStats.lastAt=row.ts;
+    r501FunnelCount(r501FunnelStats.byType,row.type); r501FunnelCount(r501FunnelStats.byAction,row.action); r501FunnelCount(r501FunnelStats.byAuthority,row.authority); if(row.reason)r501FunnelCount(r501FunnelStats.byReason,r501TrimText(row.reason,90));
+  }catch(e){try{pushCritical('R501_FUNNEL',e,{},'WARNING');}catch(_){}}
+}
+(function r501LoadFunnelTail(){
+  try{
+    const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');const lines=raw.trim().split('\n').slice(-3000);
+    for(const ln of lines){try{const row=JSON.parse(ln);r501FunnelStats.total++;r501FunnelStats.lastAt=Math.max(r501FunnelStats.lastAt,Number(row.ts||0));r501FunnelCount(r501FunnelStats.byType,row.type);r501FunnelCount(r501FunnelStats.byAction,row.action);r501FunnelCount(r501FunnelStats.byAuthority,row.authority);if(row.reason)r501FunnelCount(r501FunnelStats.byReason,r501TrimText(row.reason,90));if(r501FunnelRecent.length<300)r501FunnelRecent.unshift(row);}catch(_){}}
+  }catch(_){}
+})();
+
+async function r501HttpJson(url,timeoutMs=9000){
+  const t0=Date.now();let timer=null;
+  try{
+    const ctrl=new AbortController();timer=setTimeout(()=>ctrl.abort(),timeoutMs);const res=await fetch(url,{signal:ctrl.signal,headers:{'User-Agent':'Lazarus-Testnet-Evidence/1.0','Accept':'application/json'}});const text=await res.text();let data=null;try{data=JSON.parse(text);}catch(_){data=text.slice(0,500);}return {ok:res.ok,status:res.status,data,latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(new URL(url)).pathname};
+  }catch(e){return {ok:false,status:0,error:safeErrMsg(e),latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(()=>{try{return(new URL(url)).pathname}catch(_){return''}})()};}
+  finally{if(timer)clearTimeout(timer);}
+}
+function r501Pub(endpoint,params={}){const u=new URL(endpoint,FAPI);for(const[k,v]of Object.entries(params)){if(v!==undefined&&v!==null&&v!=='')u.searchParams.set(k,String(v));}return r501HttpJson(u.toString());}
+
+function r501AggSummary(rows=[]){
+  let buy=0,sell=0,qty=0,notional=0,firstTs=null,lastTs=null;
+  for(const x of (Array.isArray(rows)?rows:[])){const p=Number(x.p??x.price),q=Number(x.q??x.qty),u=p*q,ts=Number(x.T??x.time??x.ts);if(!(p>0&&q>0))continue;notional+=u;qty+=q;if(x.m===true||String(x.m)==='true')sell+=u;else buy+=u;if(ts){firstTs=firstTs===null?ts:Math.min(firstTs,ts);lastTs=lastTs===null?ts:Math.max(lastTs,ts);}}
+  const total=buy+sell;return {trades:Array.isArray(rows)?rows.length:0,buyUSDT:r501Num(buy,2),sellUSDT:r501Num(sell,2),deltaUSDT:r501Num(buy-sell,2),buyRatio:r501Num(total?buy/total*100:50,2),notionalUSDT:r501Num(notional,2),quantity:r501Num(qty,8),firstTs,lastTs};
+}
+function r501DepthSummary(data){
+  const bids=Array.isArray(data?.bids)?data.bids:Array.isArray(data?.b)?data.b:[];const asks=Array.isArray(data?.asks)?data.asks:Array.isArray(data?.a)?data.a:[];
+  const b=bids.map(x=>[Number(x[0]),Number(x[1])]).filter(x=>x[0]>0&&x[1]>=0).sort((x,y)=>y[0]-x[0]);const a=asks.map(x=>[Number(x[0]),Number(x[1])]).filter(x=>x[0]>0&&x[1]>=0).sort((x,y)=>x[0]-y[0]);
+  const bn=b.reduce((s,x)=>s+x[0]*x[1],0),an=a.reduce((s,x)=>s+x[0]*x[1],0),mid=b[0]&&a[0]?(b[0][0]+a[0][0])/2:null,spread=mid?(a[0][0]-b[0][0])/mid*10000:null;
+  const wall=(arr)=>arr.map(x=>({price:x[0],qty:x[1],usdt:x[0]*x[1]})).sort((x,y)=>y.usdt-x.usdt).slice(0,3).map(x=>({price:r501Num(x.price,10),qty:r501Num(x.qty,8),usdt:r501Num(x.usdt,2)}));
+  return {bidLevels:b.length,askLevels:a.length,bestBid:b[0]?.[0]??null,bestAsk:a[0]?.[0]??null,mid:r501Num(mid,10),spreadBps:r501Num(spread,3),bidNotional:r501Num(bn,2),askNotional:r501Num(an,2),imbalancePct:r501Num((bn+an)?(bn-an)/(bn+an)*100:0,2),bidWalls:wall(b),askWalls:wall(a),topBids:b.slice(0,10).map(x=>[r501Num(x[0],10),r501Num(x[1],8)]),topAsks:a.slice(0,10).map(x=>[r501Num(x[0],10),r501Num(x[1],8)])};
+}
+function r501KlinePack(tf,res){
+  const rows=Array.isArray(res?.data)?res.data:[];const last=rows.at(-1);const tfMs={'1m':60000,'3m':180000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000}[tf]||60000;const closeTs=Number(last?.[6]||0);const age=closeTs?Math.max(0,Date.now()-closeTs):null;
+  return {ok:!!res?.ok,status:res?.status,latencyMs:res?.latencyMs,rows:rows.slice(-120),lastCloseTime:closeTs||null,ageMs:age,lagBars:age===null?null:Math.max(0,Math.floor(age/tfMs))};
+}
+async function r501RestBundle(symbol,anchorTs,label='ENTRY'){
+  const sym=normalizeSymbol(symbol),start=Math.max(0,Number(anchorTs||Date.now())-5*60*1000),end=Number(anchorTs||Date.now());
+  const defs=[
+    ['aggTrades',r501Pub('/fapi/v1/aggTrades',{symbol:sym,startTime:start,endTime:end,limit:1000})],
+    ['depth',r501Pub('/fapi/v1/depth',{symbol:sym,limit:100})],
+    ['openInterest',r501Pub('/fapi/v1/openInterest',{symbol:sym})],
+    ['oiHistory',r501Pub('/futures/data/openInterestHist',{symbol:sym,period:'5m',limit:30})],
+    ['funding',r501Pub('/fapi/v1/fundingRate',{symbol:sym,limit:20})],
+    ['premiumIndex',r501Pub('/fapi/v1/premiumIndex',{symbol:sym})],
+  ];
+  for(const tf of ['1m','3m','5m','15m','1h','4h'])defs.push([`kline_${tf}`,r501Pub('/fapi/v1/klines',{symbol:sym,interval:tf,limit:120,endTime:end})]);
+  const settled=await Promise.all(defs.map(async([name,p])=>[name,await p]));const out={label,capturedAt:Date.now(),anchorTs:end,symbol:sym,source:'BINANCE_LIVE_PUBLIC'};for(const[name,res]of settled)out[name]=res;
+  out.aggTradesSummary=r501AggSummary(out.aggTrades?.data);out.depthSummary=r501DepthSummary(out.depth?.data);out.klines={};for(const tf of ['1m','3m','5m','15m','1h','4h'])out.klines[tf]=r501KlinePack(tf,out[`kline_${tf}`]);
+  return out;
+}
+
+function r501TradePath(id){return path.join(R501_EVIDENCE_TRADES_DIR,`${r501SafeId(id)}.json.gz`);}
+function r501IndexEntry(id){return (r501EvidenceIndex.trades||[]).find(x=>x.id===id);}
+function r501Serializable(rec){
+  return {schema:rec.schema,version:rec.version,build:rec.build,session:rec.session,id:rec.id,symbol:rec.symbol,side:rec.side,status:rec.status,openedAt:rec.openedAt,closedAt:rec.closedAt||null,trade:rec.trade,entryContext:rec.entryContext,initialRest:rec.initialRest||null,samples:rec.samples||[],rawTicks:rec.rawTicks||[],oiSeries:rec.oiSeries||[],checkpoints:rec.checkpoints||[],close:rec.close||null,closeRest:rec.closeRest||null,errors:rec.errors||[],createdAt:rec.createdAt,updatedAt:Date.now(),completeness:r501Completeness(rec)};
+}
+function r501Completeness(rec){
+  const k=rec?.initialRest?.klines||{};const kCount=['1m','3m','5m','15m','1h','4h'].filter(tf=>k[tf]?.ok&&Array.isArray(k[tf]?.rows)&&k[tf].rows.length).length;
+  const flags={aggTrade:!!rec?.initialRest?.aggTrades?.ok,depth:!!rec?.initialRest?.depth?.ok,oiCurrent:!!rec?.initialRest?.openInterest?.ok,oiHistory:!!rec?.initialRest?.oiHistory?.ok,klines6tf:kCount===6,liveTicks:Number(rec?.rawTicks?.length||0)>0,liveSamples:Number(rec?.samples?.length||0)>=10,bookHistory:(rec?.samples||[]).some(x=>x.book),freshness:(rec?.samples||[]).some(x=>x.freshness),closeBundle:rec?.status==='OPEN'?true:!!rec?.closeRest};
+  const vals=Object.values(flags),score=Math.round(vals.filter(Boolean).length/vals.length*100);return {score,flags,klineTfCount:kCount,ticks:Number(rec?.rawTicks?.length||0),samples:Number(rec?.samples?.length||0),oiSamples:Number(rec?.oiSeries?.length||0)};
+}
+function r501UpdateIndex(rec){
+  const c=r501Completeness(rec);const ent={id:rec.id,file:path.basename(r501TradePath(rec.id)),symbol:rec.symbol.replace('USDT',''),side:rec.side,status:rec.status,openedAt:rec.openedAt,closedAt:rec.closedAt||null,entryPrice:rec.trade?.entryPrice??null,closePrice:rec.close?.closePrice??null,pnlUSDT:rec.close?.pnlUSDT??null,roiPct:rec.close?.roiPct??null,sampleCount:rec.samples?.length||0,tickCount:rec.rawTicks?.length||0,completeness:c.score,updatedAt:Date.now()};
+  r501EvidenceIndex.trades=[ent,...(r501EvidenceIndex.trades||[]).filter(x=>x.id!==rec.id)].slice(0,R501_EVIDENCE_MAX_TRADES);r501SaveIndex();
+}
+function r501PersistRec(rec){rec.updatedAt=Date.now();r501GzipWrite(r501TradePath(rec.id),r501Serializable(rec));r501UpdateIndex(rec);}
+
+function r501CurrentBook(symbol){
+  try{const s=r371FlowStore.get(normalizeSymbol(symbol));if(!s?.bookReady)return null;return r501DepthSummary({bids:[...s.book.bids.entries()],asks:[...s.book.asks.entries()]});}catch(_){return null;}
+}
+function r501CollectRawTicks(rec){
+  try{
+    const store=r371FlowStore.get(rec.symbol);if(!store||!Array.isArray(store.trades))return 0;let n=0,maxTs=rec._lastRawTs||0;
+    for(const t of store.trades){if(Number(t.ts||0)<Number(rec._lastRawTs||0))continue;const key=t.aggTradeId!=null?`a${t.aggTradeId}`:`${t.ts}|${t.price}|${t.qty}|${t.agresifAlis?1:0}`;if(rec._seenTickKeys.has(key))continue;rec._seenTickKeys.add(key);if(rec._seenTickKeys.size>12000){const a=[...rec._seenTickKeys].slice(-5000);rec._seenTickKeys=new Set(a);}const row={ts:Number(t.ts||Date.now()),exchangeTs:Number(t.exchangeTs||0)||null,aggTradeId:t.aggTradeId??null,price:r501Num(t.price,10),qty:r501Num(t.qty,8),usdt:r501Num(t.usdt,2),side:t.agresifAlis?'BUY':'SELL'};rec.rawTicks.push(row);if(t.agresifAlis)rec._buyUSDT+=Number(t.usdt||0);else rec._sellUSDT+=Number(t.usdt||0);maxTs=Math.max(maxTs,row.ts);n++;}
+    rec._lastRawTs=maxTs;if(rec.rawTicks.length>R501_EVIDENCE_MAX_TICKS)rec.rawTicks.splice(0,rec.rawTicks.length-R501_EVIDENCE_MAX_TICKS);return n;
+  }catch(_){return 0;}
+}
+function r501Freshness(symbol){
+  const now=Date.now(),sym=normalizeSymbol(symbol);let tickTs=0,flowTs=0,depthTs=0,depthReady=false,cvdValid=false;
+  try{const e=tickStore.get(sym),t=e?.lastTicks?.at(-1);tickTs=Number(t?.ts||0);}catch(_){}
+  try{const s=r371FlowStore.get(sym);flowTs=Number(s?.lastAggTradeAt||s?.lastUpdate||0);depthTs=Number(s?.lastDepthAt||s?.lastUpdate||0);depthReady=!!s?.bookReady;}catch(_){}
+  try{cvdValid=!!getCVD(sym)?.valid;}catch(_){}
+  return {capturedAt:now,tickAgeMs:tickTs?now-tickTs:null,aggTradeAgeMs:flowTs?now-flowTs:null,depthAgeMs:depthTs?now-depthTs:null,flowOrDepthAgeMs:Math.min(flowTs?now-flowTs:Infinity,depthTs?now-depthTs:Infinity),depthReady,cvdValid,positionRiskAgeMs:Number(posRiskCache?.lastSuccessAt||0)?now-Number(posRiskCache.lastSuccessAt):null,positionRiskErrorType:posRiskCache?.lastErrorType||null,binanceBackoff:!!isBinanceBackoffActive?.()};
+}
+function r501StartPublicStreams(symbol){
+  try{startCVDStream(symbol);}catch(_){}try{r371StartFlow(symbol);}catch(_){}try{r130StartCombinedAggTradeStream([normalizeSymbol(symbol)]);}catch(_){}try{startIcebergStream(symbol);}catch(_){}
+}
+function r501Sample(rec,forceBook=false){
+  if(!rec||rec._finalized)return;const now=Date.now();r501CollectRawTicks(rec);let tick=null,flow=null,cvd=null;
+  try{tick=getTickAnalysis(rec.symbol);}catch(_){}try{const last=rec.rawTicks.at(-1)?.price||rec.trade?.entryPrice;flow=r371GetFlowAnalysis(rec.symbol,last);}catch(_){}try{cvd=getCVD(rec.symbol);}catch(_){}
+  const book=(forceBook||now-Number(rec._lastBookAt||0)>=R501_EVIDENCE_BOOK_MS)?r501CurrentBook(rec.symbol):null;if(book)rec._lastBookAt=now;
+  const price=rec.rawTicks.at(-1)?.price??tick?.currentCandle?.close??rec.trade?.entryPrice??null;
+  const sample={ts:now,elapsedMs:now-rec.openedAt,price:r501Num(price,10),cvd:{buyUSDT:r501Num(rec._buyUSDT,2),sellUSDT:r501Num(rec._sellUSDT,2),deltaUSDT:r501Num(rec._buyUSDT-rec._sellUSDT,2),stream:cvd?{buy:cvd.buy,sell:cvd.sell,delta:cvd.delta,ratio:cvd.ratio,momentum:cvd.momentum,valid:cvd.valid}:null},tick:tick?{recent30s:tick.recent30s,deltaRatio:tick.deltaRatio,deltaTrend:tick.deltaTrend,deltaFlip:tick.deltaFlip,whaleBias:tick.whaleBias,vpin:tick.vpin,microstructure:tick.microstructure}:null,flow:flow?{delta30:flow.gercekDelta30sn,delta120:flow.gercekDelta2dk,buyRatio30:flow.alisOrani30sn,direction:flow.akisYonu,acceleration:flow.ivme,tick30:flow.tick30sn,upperWall:flow.ustDuvar,lowerWall:flow.altDuvar}:null,book,freshness:r501Freshness(rec.symbol),oi:rec.oiSeries.at(-1)||null};
+  rec.samples.push(sample);if(rec.samples.length>R501_EVIDENCE_MAX_SAMPLES)rec.samples.splice(0,rec.samples.length-R501_EVIDENCE_MAX_SAMPLES);
+  if(now-Number(rec._lastPersistAt||0)>15000){rec._lastPersistAt=now;r501PersistRec(rec);}if(now-Number(rec._lastOiAt||0)>=R501_EVIDENCE_OI_MS&&!rec._oiInflight)r501PollOI(rec);
+}
+async function r501PollOI(rec){
+  if(!rec||rec._oiInflight||rec._finalized)return;rec._oiInflight=true;rec._lastOiAt=Date.now();
+  try{const r=await r501Pub('/fapi/v1/openInterest',{symbol:rec.symbol});const d=r?.data||{};rec.oiSeries.push({ts:Date.now(),openInterest:r501Num(d.openInterest,8),symbol:d.symbol||rec.symbol,time:Number(d.time||0)||null,ok:!!r.ok,latencyMs:r.latencyMs,error:r.error||null});if(rec.oiSeries.length>2000)rec.oiSeries.splice(0,rec.oiSeries.length-2000);}catch(e){rec.errors.push({ts:Date.now(),scope:'OI_POLL',error:safeErrMsg(e)});}finally{rec._oiInflight=false;}
+}
+async function r501Checkpoint(rec,label){
+  try{const cp={label,ts:Date.now(),local:r501Sample(rec,true)};const [depth,oi,premium]=await Promise.all([r501Pub('/fapi/v1/depth',{symbol:rec.symbol,limit:100}),r501Pub('/fapi/v1/openInterest',{symbol:rec.symbol}),r501Pub('/fapi/v1/premiumIndex',{symbol:rec.symbol})]);cp.depth=depth;cp.depthSummary=r501DepthSummary(depth.data);cp.openInterest=oi;cp.premiumIndex=premium;rec.checkpoints.push(cp);r501PersistRec(rec);}catch(e){rec.errors.push({ts:Date.now(),scope:`CHECKPOINT_${label}`,error:safeErrMsg(e)});}
+}
+function r501ScheduleCheckpoints(rec){
+  const plan=[[30000,'+30s'],[60000,'+1m'],[180000,'+3m'],[300000,'+5m'],[900000,'+15m'],[1800000,'+30m']];rec._timeouts=[];for(const[ms,label]of plan){const t=setTimeout(()=>{if(!rec._finalized)r501Checkpoint(rec,label).catch(()=>null);},ms);try{t.unref?.();}catch(_){}rec._timeouts.push(t);}
+}
+function r501EntryContext(row={},state={}){
+  const ai=state?.aiSnapshot||row?.aiSnapshot||{};return {entryReason:state?.openReason||row?.entryReason||null,score:state?.score??row?.score??null,tier:state?.tier??row?.tier??null,leverage:state?.leverage??row?.leverage??null,marginUSDT:state?.marginUSDT??state?.usdtAmount??row?.marginUSDT??null,sl:state?.initialSL??state?.currentSL??null,tp:state?.targetTP??null,entryOrderId:state?.entryOrderId??row?.entryOrderId??null,decision:{kind:ai?.decisionKind||null,confidence:ai?.aiConfidence??null,reasoning:r501TrimText(ai?.aiReasoning,1200),plan:r501TrimText(ai?.aiPlan,800),chartStory:ai?.chartStory||null,gainerRank:ai?.gainerRank??null,marketCtx:r501TrimText(ai?.marketCtx,300),funding:ai?.funding??null,delta:ai?.delta??null,oiChange1h:ai?.oiChange1h??null,orderBookImbalance:ai?.orderBookImbalance??null,atrPct:ai?.atrPct??null,rsi:ai?.rsi||null,r491Brake:ai?.r491Brake||state?.r491Brake||null}};
+}
+function r501EvidenceOpen(row={},state={}){
+  if(!R501_EVIDENCE_ACTIVE||BINANCE_EXECUTION_ENV!=='TESTNET'||!row?.id)return null;const id=String(row.id);if(r501ActiveEvidence.has(id))return r501ActiveEvidence.get(id);
+  const rec={schema:R501_EVIDENCE_SCHEMA,version:1,build:LAZARUS_BUILD,session:TESTNET_SESSION_RESET_ID,id,symbol:normalizeSymbol(row.symbol),side:normalizeSide(row.side),status:'OPEN',openedAt:Number(row.openedAt||Date.now()),closedAt:null,trade:{id,rowBuild:row.build||LAZARUS_BUILD,entryPrice:row.entryPrice??null,quantity:row.quantity??null,leverage:row.leverage??null,marginUSDT:row.marginUSDT??null,entryOrderId:row.entryOrderId??null},entryContext:r501EntryContext(row,state),initialRest:null,samples:[],rawTicks:[],oiSeries:[],checkpoints:[],close:null,closeRest:null,errors:[],createdAt:Date.now(),updatedAt:Date.now(),_buyUSDT:0,_sellUSDT:0,_lastRawTs:0,_seenTickKeys:new Set(),_lastBookAt:0,_lastOiAt:0,_oiInflight:false,_lastPersistAt:0,_finalized:false};
+  r501ActiveEvidence.set(id,rec);r501StartPublicStreams(rec.symbol);r501Sample(rec,true);rec._timer=setInterval(()=>r501Sample(rec,false),R501_EVIDENCE_SAMPLE_MS);try{rec._timer.unref?.();}catch(_){}r501ScheduleCheckpoints(rec);r501PersistRec(rec);
+  r501EvidenceFunnel({type:'TRADE_OPEN',symbol:rec.symbol,tradeId:id,action:'OPEN',authority:'TESTNET_EXECUTION',reason:r501TrimText(rec.entryContext?.entryReason,300),score:rec.entryContext?.score,tier:rec.entryContext?.tier});
+  r501RestBundle(rec.symbol,rec.openedAt,'ENTRY').then(b=>{rec.initialRest=b;const pre=b?.aggTrades?.data||[];rec.preEntryAggTradesRaw=Array.isArray(pre)?pre.slice(-1000):[];r501PersistRec(rec);}).catch(e=>{rec.errors.push({ts:Date.now(),scope:'ENTRY_REST',error:safeErrMsg(e)});r501PersistRec(rec);});
+  return rec;
+}
+async function r501EvidenceClose(row={},state={},cls={}){
+  if(!R501_EVIDENCE_ACTIVE||!row?.id)return null;const id=String(row.id);let rec=r501ActiveEvidence.get(id);if(!rec){const old=r501GzipRead(r501TradePath(id));if(old){rec={...old,_buyUSDT:Number(old.samples?.at(-1)?.cvd?.buyUSDT||0),_sellUSDT:Number(old.samples?.at(-1)?.cvd?.sellUSDT||0),_lastRawTs:Number(old.rawTicks?.at(-1)?.ts||0),_seenTickKeys:new Set(),_finalized:false};}else rec=r501EvidenceOpen({...row,status:'OPEN'},state);}if(!rec||rec._finalized)return rec;
+  rec.status='FINALIZING';rec.closedAt=Number(row.closedAt||Date.now());rec.close={closedAt:rec.closedAt,closePrice:row.closePrice??cls.closePrice??null,pnlUSDT:row.pnlUSDT??cls.realizedPnl??null,roiPct:row.roiPct??cls.roiPct??null,exitReason:row.exitReason??cls.code??null,exitLabel:row.exitLabel??cls.label??null,resultNote:row.resultNote??null,sl:row.sl??state?.currentSL??null,tp:row.tp??state?.targetTP??null,peakRoi:row.zirveRoi??state?.peakPnl??null,dipRoi:row.dipRoi??state?.dipPnl??null};
+  try{clearInterval(rec._timer);}catch(_){}for(const t of(rec._timeouts||[])){try{clearTimeout(t);}catch(_){}}r501Sample(rec,true);
+  try{rec.closeRest=await r501RestBundle(rec.symbol,rec.closedAt,'CLOSE');}catch(e){rec.errors.push({ts:Date.now(),scope:'CLOSE_REST',error:safeErrMsg(e)});}rec.status='CLOSED';rec._finalized=true;r501PersistRec(rec);r501ActiveEvidence.delete(id);
+  r501EvidenceFunnel({type:'TRADE_CLOSE',symbol:rec.symbol,tradeId:id,action:'CLOSE',authority:'TESTNET_EXECUTION',reason:r501TrimText(rec.close?.exitReason||rec.close?.exitLabel,240),pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct,completeness:r501Completeness(rec).score});return rec;
+}
+function r501EvidenceDecision(snap={},ctx={}){
+  if(!R501_EVIDENCE_ACTIVE||!snap)return;const c=ctx?.coin||{},a=ctx?.analysis||{},d=ctx?.decisionChain||{},ai=ctx?.ai||{};const ld=snap.liveDecision||{};
+  r501EvidenceFunnel({type:'DECISION',decisionId:snap.decisionId,symbol:snap.symbol,candidateProduced:snap.candidateProduced!==false,action:ld.action||'UNKNOWN',authority:ld.authority||'UNKNOWN',reason:r501TrimText(ld.reason,500),score:ai?.confidence??d?.score??c?.score??null,tier:d?.tier??c?.tier??null,r497:{rank:c?.gainerRank??c?.rank??null,bucket:c?.r497Bucket??c?.r54Bucket??c?.source??null,riskScale:c?.r497RiskScale??d?.r497RiskScale??null},r495:{action:ai?.r495Action??ai?.action??null,riskScale:ai?.r495RiskScale??null},firstObstacleRR:d?.r483Story?.entryTruth?.firstObstacleRR??a?.story?.entryTruth?.firstObstacleRR??null,diagnosis:snap?.diagnosis?.diagnosisClass?.code??null,consensus:snap?.consensus?.state??null,source:snap?.source||null});
+}
+
+function r501Status(){
+  const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;const reasons=[];
+  if(closed.length<R501_EVIDENCE_MIN_CLOSED_REVIEW)reasons.push(`Kapalı kanıtlı işlem ${closed.length}/${R501_EVIDENCE_MIN_CLOSED_REVIEW}`);if(avg<95)reasons.push(`Ortalama veri tamlığı %${avg.toFixed(1)} < %95`);if(r501FunnelStats.total<200)reasons.push(`Karar funnel örneği ${r501FunnelStats.total}/200`);
+  const reviewReady=!reasons.length;return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},reviewReadiness:{status:reviewReady?'EVIDENCE_REVIEW_READY':'COLLECTING',reviewReady,liveEnablement:false,reasons:[...reasons,'Bu paket canlı emir adaptörü içermez; insan incelemesi zorunludur.']},activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
+}
+function r501LoadFunnel(limit=200){
+  const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
+}
+function r501ReportHtml(){
+return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lazarus Testnet Kanıt Raporu</title><style>
+:root{--bg:#07101b;--card:#0e1929;--line:#263750;--txt:#eaf1ff;--mut:#8ea0ba;--g:#35d19f;--y:#ffc266;--r:#ff747c;--b:#78adff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,Arial;line-height:1.45}main{max-width:1380px;margin:auto;padding:18px}.hero,.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:14px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}h1{margin:0;font-size:24px}h2{font-size:17px;margin:22px 0 9px}.mut{color:var(--mut)}.metric{font-size:24px;font-weight:850}.g{color:var(--g)}.y{color:var(--y)}.r{color:var(--r)}.b{color:var(--b)}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:8px;border-bottom:1px solid #23344d;text-align:left}th{color:#aec2df}.bar{height:8px;background:#1b2a3e;border-radius:9px;overflow:hidden}.fill{height:100%;background:var(--g)}button,a.btn{background:#183250;color:#dfeaff;border:1px solid #315375;border-radius:7px;padding:6px 10px;cursor:pointer;text-decoration:none;font-size:11px}svg{width:100%;height:220px;background:#09121f;border-radius:9px}.note{border-left:4px solid var(--y);padding:10px 12px;background:#2b2314;border-radius:8px}@media(max-width:850px){.grid,.two{grid-template-columns:1fr}}</style></head><body><main>
+<section class="hero"><h1>🧪 Lazarus v5.9.2 — Testnet Kanıt ve Parity Raporu</h1><div class="mut">Canlı PUBLIC Binance piyasa verisi + yalnız Testnet işlem sonucu. Bu rapor canlı emir açmaz.</div><div id="head" class="grid" style="margin-top:12px"></div></section>
+<h2>Canlıya geçiş araştırma kapısı</h2><div id="ready" class="note">Yükleniyor…</div>
+<h2>Backtest referansı ve Testnet örneği</h2><div id="compare" class="grid"></div>
+<h2>Karar funnel</h2><div id="funnel" class="card"></div>
+<h2>Kanıtlı işlemler</h2><div id="trades" class="card">Yükleniyor…</div>
+<h2>Seçilen işlem ayrıntısı</h2><div id="detail" class="card mut">Tablodan işlem seç.</div>
+</main><script>
+const esc=s=>String(s??'—').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+const fmtTs=t=>t?new Date(t).toLocaleString('tr-TR',{timeZone:'Europe/Istanbul'}):'—';
+const n=(v,d=2)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'—';
+let STATUS=null,TRADES=[];
+function metric(label,val,sub,cls){return '<div class="card"><div class="mut">'+esc(label)+'</div><div class="metric '+(cls||'')+'">'+esc(val)+'</div><div class="mut">'+esc(sub||'')+'</div></div>'}
+async function load(){STATUS=await fetch('/api/evidence/status',{cache:'no-store'}).then(r=>r.json());const tr=await fetch('/api/evidence/trades?limit=250',{cache:'no-store'}).then(r=>r.json());TRADES=tr.trades||[];render();}
+function render(){const s=STATUS,c=s.counts||{},r=s.reviewReadiness||{};document.getElementById('head').innerHTML=metric('Kapalı kanıtlı işlem',c.closed||0,'aktif '+(c.activeRecorders||0),'g')+metric('Ortalama tamlık','%'+n(s.averageCompleteness,1),'hedef ≥ %95','b')+metric('Funnel kayıt',c.funnel||0,'hedef ≥ 200','y')+metric('Disk',(Number(s.diskBytes||0)/1048576).toFixed(1)+' MB',esc(s.stateDir),'');document.getElementById('ready').innerHTML='<b class="'+(r.reviewReady?'g':'y')+'">'+esc(r.status)+'</b><br>'+esc((r.reasons||[]).join(' · '));const h=s.historicalReference||{};document.getElementById('compare').innerHTML=metric('Backtest işlem',h.trades||547,'policy replay','b')+metric('Backtest PF',h.pf||1.815,'exchange-parity değil','b')+metric('Testnet kapalı',c.closed||0,'kanıtlı gerçek zaman','g')+metric('Canlı enablement','KAPALI','insan incelemesi zorunlu','r');renderFunnel();renderTrades();}
+function renderFunnel(){const f=STATUS.funnelStats||{},top=o=>Object.entries(o||{}).sort((a,b)=>b[1]-a[1]).slice(0,12).map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+x[1]+'</td></tr>').join('');document.getElementById('funnel').innerHTML='<div class="two"><div><b>Aksiyon</b><table>'+top(f.byAction)+'</table></div><div><b>Otorite</b><table>'+top(f.byAuthority)+'</table></div></div>';}
+function renderTrades(){if(!TRADES.length){document.getElementById('trades').innerHTML='<div class="mut">Henüz kanıtlı işlem yok. İlk Testnet işlem açıldığında otomatik kayıt başlar.</div>';return;}document.getElementById('trades').innerHTML='<table><thead><tr><th>TR zamanı</th><th>Coin</th><th>Yön</th><th>Durum</th><th>PnL</th><th>ROI</th><th>Örnek</th><th>Tick</th><th>Tamlık</th></tr></thead><tbody>'+TRADES.map(x=>'<tr style="cursor:pointer" onclick="detail(\''+encodeURIComponent(x.id)+'\')"><td>'+fmtTs(x.openedAt)+'</td><td><b>'+esc(x.symbol)+'</b></td><td>'+esc(x.side)+'</td><td>'+esc(x.status)+'</td><td>'+n(x.pnlUSDT,3)+'</td><td>'+n(x.roiPct,2)+'%</td><td>'+esc(x.sampleCount)+'</td><td>'+esc(x.tickCount)+'</td><td><div class="bar"><div class="fill" style="width:'+Math.max(0,Math.min(100,Number(x.completeness||0)))+'%"></div></div>%'+esc(x.completeness)+'</td></tr>').join('')+'</tbody></table>';}
+function lineSvg(rows,key,label){const pts=(rows||[]).map(x=>({t:Number(x.ts),v:Number(key(x))})).filter(x=>Number.isFinite(x.t)&&Number.isFinite(x.v));if(pts.length<2)return '<div class="mut">'+label+': veri yetersiz</div>';const W=900,H=220,p=28,min=Math.min(...pts.map(x=>x.v)),max=Math.max(...pts.map(x=>x.v)),rng=max-min||1;const xy=pts.map((x,i)=>[(p+i/(pts.length-1)*(W-2*p)).toFixed(1),(p+(max-x.v)/rng*(H-2*p)).toFixed(1)]);return '<div><b>'+esc(label)+'</b><svg viewBox="0 0 '+W+' '+H+'"><polyline fill="none" stroke="#78adff" stroke-width="2" points="'+xy.map(x=>x.join(',')).join(' ')+'"/><text x="6" y="15" fill="#8ea0ba" font-size="11">max '+n(max,2)+'</text><text x="6" y="210" fill="#8ea0ba" font-size="11">min '+n(min,2)+'</text></svg></div>';}
+async function detail(id){const d=await fetch('/api/evidence/trade/'+id,{cache:'no-store'}).then(r=>r.json());if(!d.ok){document.getElementById('detail').textContent=d.error||'okunamadı';return;}const x=d.trade,s=x.samples||[],c=x.completeness||{};document.getElementById('detail').innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b>'+esc(x.symbol)+' '+esc(x.side)+'</b><div class="mut">'+fmtTs(x.openedAt)+' → '+fmtTs(x.closedAt)+'</div></div><a class="btn" href="/api/evidence/export/'+encodeURIComponent(x.id)+'">JSON indir</a></div><div class="grid" style="margin-top:10px">'+metric('Tamlık','%'+esc(c.score),'tick '+esc(c.ticks),'g')+metric('CVD delta',n(s.at(-1)?.cvd?.deltaUSDT,2)+'$','buy '+n(s.at(-1)?.cvd?.buyUSDT,0)+' / sell '+n(s.at(-1)?.cvd?.sellUSDT,0),'b')+metric('OI örnek',esc((x.oiSeries||[]).length),'current OI','y')+metric('PnL',n(x.close?.pnlUSDT,3)+'$','ROI '+n(x.close?.roiPct,2)+'%','')+'</div><div class="two" style="margin-top:10px">'+lineSvg(s,z=>z.price,'Fiyat')+lineSvg(s,z=>z.cvd?.deltaUSDT,'CVD delta')+lineSvg(x.oiSeries,z=>z.openInterest,'Open Interest')+lineSvg(s,z=>z.book?.imbalancePct,'Order-book imbalance')+'</div><pre style="white-space:pre-wrap;background:#09121f;border:1px solid #263750;border-radius:9px;padding:10px;max-height:380px;overflow:auto">'+esc(JSON.stringify({entryContext:x.entryContext,completeness:x.completeness,entryFreshness:s[0]?.freshness,close:x.close,errors:x.errors},null,2))+'</pre>';}
+load().catch(e=>document.getElementById('trades').textContent='Rapor yüklenemedi: '+e.message);setInterval(load,30000);
+</script></body></html>`;
+}
+
+app.get('/api/evidence/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json(r501Status());});
+app.get('/api/evidence/trades',(req,res)=>{const limit=Math.max(1,Math.min(500,Number(req.query.limit)||120));res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,trades:(r501EvidenceIndex.trades||[]).slice(0,limit),count:(r501EvidenceIndex.trades||[]).length});});
+app.get('/api/evidence/trade/:id',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),obj=r501GzipRead(r501TradePath(id));res.set('Cache-Control','no-store');if(!obj)return res.status(404).json({ok:false,error:'EVIDENCE_NOT_FOUND'});res.json({ok:true,trade:obj});});
+app.get('/api/evidence/funnel',(req,res)=>{const limit=Math.max(1,Math.min(2000,Number(req.query.limit)||200));res.set('Cache-Control','no-store');res.json({ok:true,stats:r501FunnelStats,rows:r501LoadFunnel(limit)});});
+app.get('/api/evidence/export/:id',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),obj=r501GzipRead(r501TradePath(id));if(!obj)return res.status(404).send('EVIDENCE_NOT_FOUND');res.set('Content-Type','application/json; charset=utf-8');res.set('Content-Disposition',`attachment; filename="${id}.evidence.json"`);res.send(JSON.stringify(obj,null,2));});
+app.get('/api/evidence/report',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
+app.get('/rapor/kanit',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
+
+setTimeout(()=>{
+  if(!R501_EVIDENCE_ACTIVE)return;try{for(const row of(Array.isArray(tradeLedger)?tradeLedger:[])){if(row&&row.status==='OPEN'&&row.id&&!r501ActiveEvidence.has(row.id)){const st=(()=>{try{return trailingState.get(normalizeSymbol(row.symbol))||{}}catch(_){return{}}})();r501EvidenceOpen(row,st);}}}catch(e){try{pushCritical('R501_RESTORE_OPEN',e,{},'WARNING');}catch(_){}}
+},12000).unref?.();
+
+
+
 // ── R179: EKSİK PANEL/LEDGER HELPER'LARI — R165 frekansını bozmadan ─────────
 function r179LedgerKey(row={}) {
   const sym = normalizeSymbol(String(row.symbol||'')).replace('USDT','');
@@ -8783,6 +9039,7 @@ function recordTradeOpen(symbol, side, entryPrice, qty, state={}) {
   };
   tradeLedger = [row,...tradeLedger.filter(x=>x.id!==id)].slice(0,250);
   saveTradeLedger();
+  try { r501EvidenceOpen(row, state); } catch(_r501e) { try{pushCritical('R501_OPEN_HOOK',_r501e,{symbol:sym},'WARNING');}catch(_){} }
   // R181: Açılış bildirimi ledger kayıt anından direkt gider; karmaşık kart yolu bypass.
   try { r181TradeOpenCard(row, state).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_OPEN_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_) {}
   // R466: Telegram açılış bildirimi (altyapı hazırdı, bağlı değildi)
@@ -8848,7 +9105,7 @@ function recordTradeClose(symbol, state={}, cls={}) {
   try { r126UpdatePlaybookStats(state, cls); } catch(_) {}
   // R181: Kapanış bildirimi PnL 0/null olsa bile direkt gider; gerçek PnL sonra reconcile ile düzelir.
   try { r181TradeCloseCard(row, state, cls).catch(e=>{ try { console.log('[telegram sessiz başarısız] R186_TG_CLOSE_PROMISE_FAIL:', String(e?.message||e)); } catch(_) {} }); } catch(_tge) {}
-  saveTradeLedger(); return row;
+  saveTradeLedger(); try { r501EvidenceClose(row, state, cls).catch(()=>null); } catch(_r501e) { try{pushCritical('R501_CLOSE_HOOK',_r501e,{symbol:sym},'WARNING');}catch(_){} } return row;
 }
 
 // R316 LEDGER HAFIZA: bu coindeki son işlem sonuçlarını AI'ya özetler (aynı coinde tekrar yanmayı önler).
@@ -19549,6 +19806,7 @@ function markAutoSkip(symbol, reason, row={}) {
   autoScanState.skipped = (autoScanState.skipped||0) + 1;
   autoScanState.skipReasons[key] = (autoScanState.skipReasons[key]||0) + 1;
   if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
+  try { r501EvidenceFunnel({type:'SKIP',symbol:normalizeSymbol(symbol||''),action:'SKIP',authority:row?.authority||row?.gate||'AUTO_PIPELINE',reason:key,score:row?.score??null,tier:row?.tier??null,rec:row?.rec??null}); } catch(_r501e) {}
 }
 
 // R308B: AI B-modu için analiz sırasında dolan zengin context havuzu.
