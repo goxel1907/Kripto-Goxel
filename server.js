@@ -14,6 +14,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
+
+// ═══ V5.9.2 TESTNET PARITY BUILD ═════════════════════════════════════════════
+// Bu paket yanlışlıkla canlı emir gönderemez: signed/account/order uçları USDⓈ-M
+// Futures TESTNET'e sabitlenmiştir. Karar motoru ve grafikler ise canlı Binance
+// Futures piyasa verisini kullanır; böylece canlıya geçişte strateji davranışı
+// değişmez, yalnız execution endpoint/kimlik değişir.
+const BINANCE_EXECUTION_ENV = 'TESTNET';
+const BINANCE_MARKET_DATA_ENV = 'LIVE';
+const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const FAPI = 'https://fapi.binance.com';
 const FAPI_WS = 'wss://fstream.binance.com/stream';
 // R132: Binance USDⓈ-M Futures WS upgrade sonrası routed endpoints zorunlu.
@@ -21,8 +30,51 @@ const FAPI_WS = 'wss://fstream.binance.com/stream';
 const FAPI_WS_PUBLIC = 'wss://fstream.binance.com/public';
 const FAPI_WS_MARKET = 'wss://fstream.binance.com/market';
 
-// R24: Auto monitor gerçek açılış sayaçları. Restart olsa bile mümkün olduğunca korunur.
-const AUTO_STATS_PATH = path.join(process.cwd(), 'lazarus_auto_stats.json');
+// TESTNET durumları canlı dosyalara ASLA karışmaz.
+const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
+try { fs.mkdirSync(TESTNET_STATE_DIR, { recursive:true }); } catch (_) {}
+
+// Süre 0 = sınırsız. 48 = 2 gün, 168 = 1 hafta. Railway restart süreyi
+// sıfırlamaz; sayaç /data altında saklanır. Baştan başlatmak için RESET_ID değiştir.
+const TESTNET_SESSION_HOURS = Math.max(0, Math.min(24*365, Number(process.env.TESTNET_SESSION_HOURS || 0)));
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'SESSION_1').trim() || 'SESSION_1';
+const TESTNET_SESSION_FILE_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'SESSION_1';
+const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
+const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_testnet_session.json');
+function initTestnetSession() {
+  let old = null;
+  try { old = JSON.parse(fs.readFileSync(TESTNET_SESSION_PATH, 'utf8')); } catch (_) {}
+  const reset = !old || String(old.resetId || '') !== TESTNET_SESSION_RESET_ID;
+  const startedAt = reset ? Date.now() : Math.max(1, Number(old.startedAt || Date.now()));
+  const expiresAt = TESTNET_SESSION_HOURS > 0 ? startedAt + TESTNET_SESSION_HOURS*3600_000 : 0;
+  const next = { version:1, resetId:TESTNET_SESSION_RESET_ID, startedAt, expiresAt, hours:TESTNET_SESSION_HOURS, updatedAt:Date.now() };
+  try { fs.writeFileSync(TESTNET_SESSION_PATH, JSON.stringify(next, null, 2)); } catch (_) {}
+  return next;
+}
+let testnetSessionState = initTestnetSession();
+let testnetExpiryLogAt = 0;
+function testnetSessionStatus() {
+  const now = Date.now();
+  const expiresAt = Number(testnetSessionState?.expiresAt || 0);
+  const unlimited = !(expiresAt > 0);
+  const remainingMs = unlimited ? null : Math.max(0, expiresAt-now);
+  return {
+    executionEnvironment:BINANCE_EXECUTION_ENV,
+    marketDataEnvironment:BINANCE_MARKET_DATA_ENV,
+    hardLockedTestnet:true,
+    resetId:TESTNET_SESSION_RESET_ID,
+    startedAt:Number(testnetSessionState?.startedAt || now),
+    expiresAt:unlimited?null:expiresAt,
+    configuredHours:TESTNET_SESSION_HOURS,
+    unlimited,
+    expired:!unlimited && remainingMs<=0,
+    remainingMs,
+    autoStopOnExpiry:TESTNET_SESSION_AUTO_STOP,
+  };
+}
+
+// R24: Auto monitor testnet açılış sayaçları. Restart olsa bile /data'da korunur.
+const AUTO_STATS_PATH = path.join(TESTNET_STATE_DIR, `lazarus_auto_stats_testnet_${TESTNET_SESSION_FILE_TAG}.json`);
 function loadAutoStats() {
   try {
     const raw = fs.readFileSync(AUTO_STATS_PATH, 'utf8');
@@ -86,7 +138,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_PIT_GAINER_SOFTSCALE_V9_GOVFIX_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V9_GOVFIX_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -347,7 +399,7 @@ async function bAlgo(apiKey, apiSecret, params, _retry=false) {
   const ts = Date.now() + binanceTimeOffset;
   const obj = { ...params, timestamp: ts, recvWindow: 10000 };
   const fullQs = signedQueryString(obj, apiSecret);
-  const url = `${FAPI}/fapi/v1/algoOrder?${fullQs}`;
+  const url = `${BINANCE_EXECUTION_FAPI}/fapi/v1/algoOrder?${fullQs}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'X-MBX-APIKEY': String(apiKey || '').trim() },
@@ -657,7 +709,7 @@ async function freshOpenPositionForSymbol(apiKey, apiSecret, symbol, attempts=3)
   const sym = String(symbol||'').toUpperCase();
   for (let i=0; i<attempts; i++) {
     try {
-      const rows = await getPositionRiskCached(apiKey, apiSecret, {symbol:sym,__forceFresh:true,__maxAgeMs:3000}); // V7 central full snapshot
+      const rows = await getPositionRiskCached(apiKey, apiSecret, {symbol:sym,__forceFresh:true,__maxAgeMs:3000}); // V7: merkezî full-snapshot, max 3sn
       const p = Array.isArray(rows) ? rows.find(x=>String(x.symbol||'').toUpperCase()===sym) : null;
       if (p && Math.abs(parseFloat(p.positionAmt || 0)) > 0) return { open:true, pos:p };
     } catch(e) {
@@ -882,7 +934,7 @@ async function syncBinanceTime(force=false) {
   const now = Date.now();
   if (!force && now - lastTimeSync < 10*60*1000) return binanceTimeOffset;
   try {
-    const r = await fetch(`${FAPI}/fapi/v1/time`, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(`${BINANCE_EXECUTION_FAPI}/fapi/v1/time`, { signal: AbortSignal.timeout(5000) });
     const d = await r.json();
     if (d && d.serverTime) {
       binanceTimeOffset = Number(d.serverTime) - Date.now();
@@ -910,7 +962,7 @@ function r405Nobetci(text) { try {
   if (!s.includes('-2015') && !s.toLowerCase().includes('invalid api-key')) return;
   const ip = (s.match(/request ip:\s*([\d.]+)/i) || [])[1] || '?';
   if (Date.now() - r405Son > 10 * 60 * 1000) { r405Son = Date.now();
-    logAuto(`🔑🚨 BINANCE KİLİDİ (-2015): Railway çıkış IP'si ${ip} anahtarın beyaz listesinde DEĞİL — imzalı uçlar ölü, EMİR AÇILAMAZ. ÇÖZÜM (2dk): Binance → API Management → anahtarı düzenle → IP listesine ${ip} ekle. Kalıcı: Railway statik IP ya da kısıtsız anahtar (withdrawal izni ASLA).`);
+    logAuto(`🧪🔑 TESTNET KİMLİK HATASI (-2015): Testnet endpoint anahtarı reddetti. Bu hata yalnız IP değildir; yanlış canlı anahtar, eksik TESTNET key/secret veya testnet izin/IP kısıtı olabilir. Bu build yalnız BINANCE_TESTNET_API_KEY/SECRET Railway ENV değerlerini kabul eder. Kaynak IP: ${ip}.`);
   }
 } catch(_) {} }
 async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=false,maxRetries=2) {
@@ -936,7 +988,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
     .map(([k,v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&');
   const sig = sign(qs, apiSecret);
-  const url = `${FAPI}${path}`;
+  const url = `${BINANCE_EXECUTION_FAPI}${path}`;
   const fullQs = `${qs}&signature=${sig}`;
   const m = method.toUpperCase();
   const isGet = m === 'GET' || m === 'DELETE';
@@ -1933,7 +1985,7 @@ function r125FlowForSide(ctx, side='LONG') {
 // Yeni REST yükü yok. Var olan depth@100ms + aggTrade + forceOrder verisini tek beyne
 // daha erken ve daha canlı bağlar: absorpsiyon, mum kapanış tahmini, delta imprint,
 // aggression trend ve playbook win-rate kalibrasyonu.
-const R126_PLAYBOOK_STATS_PATH = path.join(process.cwd(), 'lazarus_playbook_stats.json');
+const R126_PLAYBOOK_STATS_PATH = path.join(TESTNET_STATE_DIR, `lazarus_playbook_stats_testnet_${TESTNET_SESSION_FILE_TAG}.json`);
 let r126PlaybookStats = {};
 try {
   const raw = fs.readFileSync(R126_PLAYBOOK_STATS_PATH, 'utf8');
@@ -4418,6 +4470,11 @@ const R497_MIN_BUFFER_USDT = Math.max(0, Math.min(5000, Number(process.env.R497_
 const R497_FIXED_UNTIL_EQUITY_USDT = Math.max(R497_SLOT_MARGIN_USDT*2+R497_MIN_BUFFER_USDT, Number(process.env.R497_FIXED_UNTIL_EQUITY_USDT || 200));
 const R497_ABOVE_CAP_MODE = String(process.env.R497_ABOVE_CAP_MODE || 'HOLD_FIXED').trim().toUpperCase();
 const R496_SHADOW_ACTIVE = String(process.env.R496_SHADOW_ACTIVE ?? '1') !== '0';
+// Testnet hesabındaki faucet bakiyesi binlerce USDT olabilir. Canlı 102 USDT
+// davranışını korumak için sizing/R490 hesabında testnet ledger'ından türetilen
+// sanal equity kullanılır. Emir miktarı yine gerçek testnet emridir.
+const TESTNET_VIRTUAL_EQUITY_ACTIVE = String(process.env.TESTNET_VIRTUAL_EQUITY_ACTIVE ?? '1') !== '0';
+const TESTNET_VIRTUAL_START_EQUITY_USDT = Math.max(20, Math.min(100000, Number(process.env.TESTNET_VIRTUAL_START_EQUITY_USDT || 102)));
 const r497RankHistory = new Map();
 const r497RecentScans = [];
 const r496ShadowRecent = [];
@@ -4469,7 +4526,7 @@ const R490_DD_FULL  = Math.max(0.05, Math.min(0.8, Number(process.env.R490_DD_FU
 const R490_DD_FLOOR = Math.max(0.20, Math.min(1.0, Number(process.env.R490_DD_FLOOR_FACTOR || 0.45)));
 const R490_STATE_DIR = String(process.env.R490_STATE_DIR || '').trim();
 const R490_DIR_DURABLE = R490_STATE_DIR !== '';
-const R490_PEAK_PATH = path.join(R490_STATE_DIR || process.cwd(), 'r490_peak.json');
+const R490_PEAK_PATH = path.join(R490_STATE_DIR || TESTNET_STATE_DIR, `r490_peak_testnet_${TESTNET_SESSION_FILE_TAG}.json`);
 const R490_INITIAL_PEAK = Math.max(0, Number(process.env.R490_INITIAL_PEAK_EQUITY || 0));
 let r490PeakEquity = R490_INITIAL_PEAK;
 let r490StateFound = false;
@@ -4490,7 +4547,7 @@ try {
   // ENOENT ilk çalıştırmada normaldir; diğer hatalar telemetride görünür.
   if (String(e?.code || '') !== 'ENOENT') r490StateError = String(e?.message || e).slice(0,160);
 }
-function r490WritePeak(eq, source='LIVE_PEAK') {
+function r490WritePeak(eq, source='TESTNET_VIRTUAL_PEAK') {
   const n = Number(eq);
   if (!(n > 0)) return false;
   try {
@@ -4519,7 +4576,7 @@ function r490DdThrottleFactor(eq) {
   const n = Number(eq);
   if (n > r490PeakEquity) {
     r490PeakEquity = n;
-    r490WritePeak(n, 'LIVE_PEAK');
+    r490WritePeak(n, 'TESTNET_VIRTUAL_PEAK');
   }
   const dd = n > 0 && r490PeakEquity > 0 ? (r490PeakEquity - n) / r490PeakEquity : 0;
   let factor = 1;
@@ -5142,10 +5199,10 @@ const R49356_TTL_HOURS = Math.max(6, Math.min(720, Number(process.env.R49356_TTL
 const R49356_MAX_SNAPSHOTS = Math.max(50, Math.min(5000, Number(process.env.R49356_MAX_SNAPSHOTS || 500)));
 const R49356_FINALIZE_EVERY_SEC = Math.max(30, Math.min(600, Number(process.env.R49356_FINALIZE_EVERY_SEC || 60)));
 const R49356_STATE_DIR = String(process.env.R49356_STATE_DIR || process.env.R490_STATE_DIR || '').trim();
-const R49356_STATE_PATH = path.join(R49356_STATE_DIR || process.cwd(), 'r493_v56_5tf_diagnosis.json');
+const R49356_STATE_PATH = path.join(R49356_STATE_DIR || TESTNET_STATE_DIR, `r493_v56_6tf_diagnosis_testnet_${TESTNET_SESSION_FILE_TAG}.json`);
 const R49356_TFS = Object.freeze(['1m','3m','5m','15m','1h','4h']);
-const R49356_TF_MS = Object.freeze({'1m':60_000,'5m':300_000,'15m':900_000,'1h':3_600_000,'4h':14_400_000});
-const R49356_TF_MIN = Object.freeze({'1m':120,'5m':120,'15m':40,'1h':40,'4h':40});
+const R49356_TF_MS = Object.freeze({'1m':60_000,'3m':180_000,'5m':300_000,'15m':900_000,'1h':3_600_000,'4h':14_400_000});
+const R49356_TF_MIN = Object.freeze({'1m':120,'3m':100,'5m':120,'15m':40,'1h':40,'4h':40});
 const r49356Snapshots = new Map();
 let r49356FinalizeRunning = false;
 let r49356LastFinalizeAt = 0;
@@ -5312,7 +5369,7 @@ function r49356CaptureDecision({coin={},analysis={},decisionChain={},ai={},story
     const inferredAction=forcedDecision?.action||auth?.action||(String(ai?.side||'').toUpperCase()==='WAIT'?'PUSU':String(ai?.side||'').toUpperCase()==='LONG'?'MARKET':'REJECT'),reason=forcedDecision?.reason||auth?.reason||String(ai?.reasoning||decisionChain?.reason||'').slice(0,400),authority=forcedDecision?.authority||r49356AuthorityName(auth,reason);
     const timeframes={};for(const tf of R49356_TFS)timeframes[tf]=r49356PerTf(data,tf,decisionTime,entry,st,ai);
     const consensus=r49356Consensus(timeframes,'LONG',{r480Shadow:ai?.r480Shadow||decisionChain?.r480Shadow||analysis?.r480Shadow||null,liveAction:inferredAction,karKosma:ai?.karKosma,decisionTime});const liveDecision={action:inferredAction,authority,reason,entry:r49356Round(entry,10),stop:r49356Round(sl,10),target:r49356Round(tp,10)};const hardRisk=r49356HardRisk(st,timeframes,liveDecision),chartError=r49356ChartError(st,timeframes),shadowAssessment=r49356ShadowClean(st,timeframes,hardRisk),diagnosis=r49356Provisional({candidateProduced,chartError,liveDecision,story:st,timeframes,consensus,hardRisk,shadowAssessment});const decisionId=r49356DecisionId(symbol,decisionTime);
-    const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_LIVE_5TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(decisionTime).toISOString(),decisionTimeMs:decisionTime,noLookahead:true,liveDecision,timeframes,consensus,diagnosis:{diagnosisClass:diagnosis,hardRisk,shadowAssessment,chartComponentError:chartError},decisionTrace:[],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:diagnosis.status==='FINALIZED'?diagnosis:null,candidateProduced,source:{lane:data.sourceLane,label:data.sourceLabel},workerSignal:data.workerPulse||null};
+    const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_TESTNET_6TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(decisionTime).toISOString(),decisionTimeMs:decisionTime,noLookahead:true,liveDecision,timeframes,consensus,diagnosis:{diagnosisClass:diagnosis,hardRisk,shadowAssessment,chartComponentError:chartError},decisionTrace:[],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:diagnosis.status==='FINALIZED'?diagnosis:null,candidateProduced,source:{lane:data.sourceLane,label:data.sourceLabel},workerSignal:data.workerPulse||null};
     snap.decisionTrace=r49356DecisionTrace({candidateProduced,story:st,liveDecision,timeframes,consensus,diagnosis});r49356Snapshots.set(decisionId,snap);r49356LastCapture={decisionId,symbol,action:liveDecision.action,diagnosis:diagnosis.code,ts:decisionTime};r49356Persist();return snap;
   }catch(e){try{pushCritical('R49356_CAPTURE',e,{symbol:coin?.symbol},'WARNING');}catch(_){}return null;}
 }
@@ -5325,7 +5382,7 @@ function r49356RegisterMissBaselines(scanList=[]){
     const selected=new Set(r49356SafeArray(scanList).map(x=>r49356Sym(x?.fullSymbol||x?.symbol)));
     const rows=r49356SafeArray(r4863WorkerUniverseState?.rows).filter(x=>!selected.has(r49356Sym(x?.symbol))).slice(0,8);
     let added=0;const now=Date.now();
-    for(const t of rows){const symbol=r49356Sym(t.symbol),prev=Number(r49356MissBaselineBySymbol.get(symbol)||0);if(now-prev<30*60_000)continue;const entry=Number(t.lastPrice||0);if(!(entry>0))continue;r49356MissBaselineBySymbol.set(symbol,now);const decisionId=r49356DecisionId(symbol,now);const diagnosis={code:'NO_ISSUE',status:'PROVISIONAL',confidence:0,primaryReason:'worker/core aday üretmedi; outcome izleniyor',evidence:[],counterEvidence:[],component:null,conflictType:null};const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_LIVE_5TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(now).toISOString(),decisionTimeMs:now,noLookahead:true,liveDecision:{action:'NO_CANDIDATE',authority:'SCAN',reason:'etkin scan listesine girmedi',entry:r49356Round(entry,10),stop:null,target:null},timeframes:{},consensus:{validTimeframes:[],excludedTimeframes:R49356_TFS.map(timeframe=>({timeframe,reason:'NOT_ANALYZED'})),alignment:{positive:0,negative:0,neutral:0},state:'NOT_ANALYZED',conflictSeverity:0,conflictDetails:[],shadowEffect:{decisionChange:false,confidenceAdjustment:0,marginMultiplierSuggestion:1,timingSuggestion:'NOT_ANALYZED'}},diagnosis:{diagnosisClass:diagnosis,hardRisk:{present:false,reasons:[]},shadowAssessment:{clean:false,reason:'NOT_ANALYZED'},chartComponentError:null},decisionTrace:[{stage:'SCAN',status:'MISS',detail:'worker/core aday üretmedi'},{stage:'OUTCOME',status:'WATCH',detail:`+${R49356_OUTCOME_WINDOW_MIN}dk MFE/MAE bekleniyor`}],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:null,candidateProduced:false,source:{lane:'FULL_MARKET_BASELINE',label:'R49356_SCAN_MISS_WATCH'},workerSignal:null};r49356Snapshots.set(decisionId,snap);added++;}
+    for(const t of rows){const symbol=r49356Sym(t.symbol),prev=Number(r49356MissBaselineBySymbol.get(symbol)||0);if(now-prev<30*60_000)continue;const entry=Number(t.lastPrice||0);if(!(entry>0))continue;r49356MissBaselineBySymbol.set(symbol,now);const decisionId=r49356DecisionId(symbol,now);const diagnosis={code:'NO_ISSUE',status:'PROVISIONAL',confidence:0,primaryReason:'worker/core aday üretmedi; outcome izleniyor',evidence:[],counterEvidence:[],component:null,conflictType:null};const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_TESTNET_6TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(now).toISOString(),decisionTimeMs:now,noLookahead:true,liveDecision:{action:'NO_CANDIDATE',authority:'SCAN',reason:'etkin scan listesine girmedi',entry:r49356Round(entry,10),stop:null,target:null},timeframes:{},consensus:{validTimeframes:[],excludedTimeframes:R49356_TFS.map(timeframe=>({timeframe,reason:'NOT_ANALYZED'})),alignment:{positive:0,negative:0,neutral:0},state:'NOT_ANALYZED',conflictSeverity:0,conflictDetails:[],shadowEffect:{decisionChange:false,confidenceAdjustment:0,marginMultiplierSuggestion:1,timingSuggestion:'NOT_ANALYZED'}},diagnosis:{diagnosisClass:diagnosis,hardRisk:{present:false,reasons:[]},shadowAssessment:{clean:false,reason:'NOT_ANALYZED'},chartComponentError:null},decisionTrace:[{stage:'SCAN',status:'MISS',detail:'worker/core aday üretmedi'},{stage:'OUTCOME',status:'WATCH',detail:`+${R49356_OUTCOME_WINDOW_MIN}dk MFE/MAE bekleniyor`}],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:null,candidateProduced:false,source:{lane:'FULL_MARKET_BASELINE',label:'R49356_SCAN_MISS_WATCH'},workerSignal:null};r49356Snapshots.set(decisionId,snap);added++;}
     if(added)r49356Persist();return added;
   }catch(_){return 0;}
 }
@@ -5549,7 +5606,7 @@ function r495LiveAcceptanceArbiter(symbol,story={},baseAuthority={},ctx={}){
 }
 function r495StatusPayload(limit=30){
   const now=Date.now();
-  return {ok:true,build:LAZARUS_BUILD,mode:'LIVE_DECISION_AND_FINAL_RISK',active:R495_LIVE_ACTIVE,acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,maxEntryDriftAtr:R495_MAX_ENTRY_DRIFT_ATR,minSafeMargin:R495_MIN_SAFE_MARGIN_USDT,stats:{...r495LiveStats,armedNow:r495ArmedCandidates.size},armed:[...r495ArmedCandidates.values()].map(x=>({...x,ageSec:+((now-x.armedAt)/1000).toFixed(1)})).sort((a,b)=>b.armedAt-a.armedAt).slice(0,limit),recent:r495RecentDecisions.slice(0,limit)};
+  return {ok:true,build:LAZARUS_BUILD,mode:'TESTNET_PARITY_DECISION_AND_FINAL_RISK',active:R495_LIVE_ACTIVE,acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,maxEntryDriftAtr:R495_MAX_ENTRY_DRIFT_ATR,minSafeMargin:R495_MIN_SAFE_MARGIN_USDT,stats:{...r495LiveStats,armedNow:r495ArmedCandidates.size},armed:[...r495ArmedCandidates.values()].map(x=>({...x,ageSec:+((now-x.armedAt)/1000).toFixed(1)})).sort((a,b)=>b.armedAt-a.armedAt).slice(0,limit),recent:r495RecentDecisions.slice(0,limit)};
 }
 
 function r447MekanikKarar(symbol, data = {}) {
@@ -8441,7 +8498,7 @@ function tgNotifyTradeCloseOnce(row={}, state={}, cls={}) {
   }
 }
 
-const tradeLedgerPath = './trade_ledger_live.json';
+const tradeLedgerPath = path.join(TESTNET_STATE_DIR, `trade_ledger_testnet_${TESTNET_SESSION_FILE_TAG}.json`);
 let tradeLedger = [];
 try {
   tradeLedger = JSON.parse(fs.readFileSync(tradeLedgerPath, 'utf8') || '[]');
@@ -8625,7 +8682,7 @@ async function r171MaintenanceTick() {
 }
 
 // ── R26: LAST-KNOWN POSITIONS — Railway restart/state kaybında kapanış tespiti ──
-const lastKnownPositionsPath = './last_known_positions.json';
+const lastKnownPositionsPath = path.join(TESTNET_STATE_DIR, `last_known_positions_testnet_${TESTNET_SESSION_FILE_TAG}.json`);
 let lastKnownPositions = {};
 try {
   const _lkp = JSON.parse(fs.readFileSync(lastKnownPositionsPath, 'utf8') || '{}');
@@ -16525,11 +16582,9 @@ app.get('/api/my-ip', async (_req, res) => {
 // - v2/account + v2/balance geri eklendi
 // - v3/v2 account.assets içindeki USDT satırı da okunur
 // - İmzalı bağlantı başarılı ama USDT satırı yoksa bunu açık diagnostik olarak döndürür
-app.post('/api/account', async (req, res) => {
-  let { apiKey, apiSecret } = req.body || {};
-  apiKey = cleanBinanceCredential(apiKey);
-  apiSecret = cleanBinanceCredential(apiSecret);
-  if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'API key gerekli' });
+app.post('/api/account', async (_req, res) => {
+  const { apiKey, apiSecret, source:credentialSource } = r486391BinanceCreds();
+  if (!apiKey || !apiSecret) return res.status(400).json({ ok:false, error:'TESTNET_API_ENV_MISSING', credentialSource });
 
   const errors = [];
   const sources = [];
@@ -16722,6 +16777,10 @@ app.post('/api/account', async (req, res) => {
       totalWalletBalance:Number.isFinite(w)?w:0,
       availableBalance:Number.isFinite(a)?a:0,
       totalUnrealizedProfit:Number.isFinite(u)?u:0,
+      executionEnvironment:BINANCE_EXECUTION_ENV,
+      marketDataEnvironment:BINANCE_MARKET_DATA_ENV,
+      virtualEquity:TESTNET_VIRTUAL_EQUITY_ACTIVE?r500TestnetVirtualEquity():null,
+      testnetSession:testnetSessionStatus(),
       positions,
       warning: errors.length ? errors.slice(-4).join(' | ') : undefined,
       debug
@@ -16733,7 +16792,10 @@ app.post('/api/account', async (req, res) => {
 
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
-  const{apiKey,apiSecret,symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
+  const _tn = testnetSessionStatus();
+  if (TESTNET_SESSION_AUTO_STOP && _tn.expired) return res.status(423).json({ok:false,error:'TESTNET_SESSION_EXPIRED',message:'Testnet süresi doldu; yeni emir kapalı. Açık pozisyonlar kapatılabilir.',testnet:_tn});
+  const{symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
+  const {apiKey,apiSecret}=r486391BinanceCreds();
   if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!usdtAmount)
     return res.status(400).json({error:'Eksik parametre'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
@@ -16960,9 +17022,9 @@ function positionManagerSnapshot(pos, state, note='İzleniyor') {
   };
 }
 
-app.post('/api/positions', async (req, res) => {
-  const{apiKey,apiSecret}=req.body;
-  if(!apiKey||!apiSecret)return res.status(400).json({error:'API key gerekli'});
+app.post('/api/positions', async (_req, res) => {
+  const{apiKey,apiSecret,source:credentialSource}=r486391BinanceCreds();
+  if(!apiKey||!apiSecret)return res.status(400).json({error:'TESTNET_API_ENV_MISSING',credentialSource});
   try{
     const data=await getPositionRiskCached(apiKey,apiSecret);
     const rawOpen=Array.isArray(data)?data.filter(p=>parseFloat(p.positionAmt)!==0):[];
@@ -17033,7 +17095,8 @@ app.post('/api/positions', async (req, res) => {
 
 // ── BREAK-EVEN STOP — Kâra geçince SL'yi giriş fiyatına çek ────────────────
 app.post('/api/update-sl', async (req, res) => {
-  const { apiKey, apiSecret, symbol, newSL, cancelExisting } = req.body;
+  const { symbol, newSL, cancelExisting } = req.body;
+  const {apiKey,apiSecret}=r486391BinanceCreds();
   if (!apiKey||!apiSecret||!symbol||!newSL)
     return res.status(400).json({ error:'Eksik parametre' });
   const sym = symbol.toUpperCase().includes('USDT') ? symbol.toUpperCase() : symbol.toUpperCase()+'USDT';
@@ -17081,8 +17144,29 @@ const cooldownMap = new Map(); // symbol (FULLSYM) → expiry timestamp
 // Bakiye 50$ → marjin 20$ (poz başına). Kâr olur 54$ → marjin 21.6$. Otomatik bileşik büyüme.
 let r372BakiyeCache = { value: 0, ts: 0 };
 let r372BilesikMeta = {ok:false,equity:0,margin:0,maxPositions:R486_MAX_POSITIONS,perPositionPct:40,totalUsePct:80,bufferPct:20,source:'INIT'};
+function r500TestnetVirtualEquity() {
+  const startedAt = Number(testnetSessionState?.startedAt || 0);
+  let realized = 0, closedTrades = 0;
+  try {
+    for (const row of (Array.isArray(tradeLedger) ? tradeLedger : [])) {
+      const closedAt = Number(row?.closedAt || 0);
+      if (!(closedAt >= startedAt) || String(row?.status || '').toUpperCase() === 'OPEN') continue;
+      const pnl = Number(row?.pnlUSDT ?? row?.realizedPnl ?? row?.pnl ?? 0);
+      if (Number.isFinite(pnl)) { realized += pnl; closedTrades += 1; }
+    }
+  } catch (_) {}
+  const equity = Math.max(0, TESTNET_VIRTUAL_START_EQUITY_USDT + realized);
+  return { equity:+equity.toFixed(8), start:TESTNET_VIRTUAL_START_EQUITY_USDT, realized:+realized.toFixed(8), closedTrades, startedAt };
+}
 async function r372GetBilesikMarjin(apiKey, apiSecret, fallbackMargin) {
   try {
+    if (TESTNET_VIRTUAL_EQUITY_ACTIVE) {
+      const v = r500TestnetVirtualEquity();
+      const contract = r48636CompoundMarginFromEquity(v.equity, R486_MAX_POSITIONS);
+      r372BakiyeCache = { value:v.equity, ts:Date.now() };
+      r372BilesikMeta = {...contract, source:'TESTNET_VIRTUAL_EQUITY', virtualStart:v.start, virtualRealized:v.realized, virtualClosedTrades:v.closedTrades, sessionStartedAt:v.startedAt};
+      return contract.ok ? contract.margin : Number(fallbackMargin||0);
+    }
     if (!R486_COMPOUND_MARGIN_ACTIVE) {
       r372BilesikMeta = {ok:false,equity:0,margin:Number(fallbackMargin||0),maxPositions:R486_MAX_POSITIONS,perPositionPct:0,totalUsePct:0,bufferPct:0,source:'PANEL_FALLBACK'};
       return Number(fallbackMargin||0);
@@ -18755,8 +18839,9 @@ async function fastManageOpenPositions() {
 
 // ── KAPAT ─────────────────────────────────────────────────────────────────────
 app.post('/api/close', async (req, res) => {
-  const{apiKey,apiSecret,symbol}=req.body;
-  if(!apiKey||!apiSecret||!symbol)return res.status(400).json({error:'Eksik parametre'});
+  const{symbol}=req.body;
+  const{apiKey,apiSecret}=r486391BinanceCreds();
+  if(!apiKey||!apiSecret||!symbol)return res.status(400).json({error:'TESTNET_API_ENV_MISSING_OR_SYMBOL'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   try{
     try{await cancelAlgoOrders(apiKey,apiSecret,sym,true);}catch(e){}
@@ -18779,18 +18864,14 @@ app.post('/api/close', async (req, res) => {
 //   trailingPct, breakEvenPct, symbols:[] }
 
 let autoConfig = null;
-startPositionRiskCentralPoller();
-// R486.3.9.1: Karne/ledger senkronu dashboard açılmadan da çalışır.
-// Öncelik panelden gelen canlı anahtarlardır; panel henüz bağlanmadıysa Railway ENV kullanılır.
+// TESTNET CREDENTIAL FIX: testnet servisi yalnız Railway ENV kimliğini kullanır.
+// Panel/localStorage anahtarları asla imzalı testnet uçlarına gönderilmez.
 function r486391BinanceCreds() {
-  const panelKey = String(autoConfig?.apiKey || '').trim();
-  const panelSecret = String(autoConfig?.apiSecret || '').trim();
-  const envKey = String(process.env.BINANCE_API_KEY || '').trim();
-  const envSecret = String(process.env.BINANCE_API_SECRET || '').trim();
-  const apiKey = panelKey || envKey;
-  const apiSecret = panelSecret || envSecret;
-  return { apiKey, apiSecret, source: panelKey && panelSecret ? 'PANEL' : (envKey && envSecret ? 'RAILWAY_ENV' : 'MISSING') };
+  const apiKey = cleanBinanceCredential(process.env.BINANCE_TESTNET_API_KEY || '');
+  const apiSecret = cleanBinanceCredential(process.env.BINANCE_TESTNET_API_SECRET || '');
+  return { apiKey, apiSecret, source: apiKey && apiSecret ? 'RAILWAY_ENV_TESTNET' : 'MISSING_TESTNET_ENV' };
 }
+startPositionRiskCentralPoller();
 let autoRunning = false;
 let autoTimer = null;
 const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // legacy/fallback; R486.3.9 AI kapalıyken adaptif tarama kullanır.
@@ -19963,7 +20044,14 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.post('/api/auto/config', (req, res) => {
+  const _tn = testnetSessionStatus();
+  if (req.body?.enabled && TESTNET_SESSION_AUTO_STOP && _tn.expired) return res.status(423).json({ok:false,error:'TESTNET_SESSION_EXPIRED',message:'Testnet süresi doldu. Süreyi uzat veya RESET_ID değiştir.',testnet:_tn});
   autoConfig = { ...(req.body||{}) };
+  const _testnetCreds = r486391BinanceCreds();
+  autoConfig.apiKey = _testnetCreds.apiKey;
+  autoConfig.apiSecret = _testnetCreds.apiSecret;
+  autoConfig.credentialSource = _testnetCreds.source;
+  if (req.body?.enabled && (!autoConfig.apiKey || !autoConfig.apiSecret)) return res.status(400).json({ok:false,error:'TESTNET_API_ENV_MISSING',message:'Railway Variables içine BINANCE_TESTNET_API_KEY ve BINANCE_TESTNET_API_SECRET ekle.',credentialSource:_testnetCreds.source});
   autoConfig.maxPositions = R486_MAX_POSITIONS; // R486.3.9: sermaye sözleşmesi max 2
   // R323: MALİYET-TASARRUF MODU dashboard toggle — sweep yoksa AI'a gönderme (frekans korunur, maliyet düşer).
   if (typeof req.body?.saverMode !== 'undefined') {
@@ -20093,7 +20181,7 @@ function r393SinifKarnesi() {
   return out.join('\n');
 }
 // ═══════════ R424 RAPOR/ARŞİV (kullanıcı isteği 14.07): günlük karar+işlem raporu, MD indirme ═══════════
-// Kaynak: tradeLedger (./trade_ledger_live.json — boot'ta yükleniyor, RESTART'A DAYANIKLI) + r374 olay ringi.
+// Kaynak: tradeLedger (./trade_ledger_testnet.json — boot'ta yükleniyor, RESTART'A DAYANIKLI) + r374 olay ringi.
 // Rapor İSTEK ANINDA üretilir; sıcak trade yoluna hook YOK — sıfır trade-riski. /rapor → yeni sekme sayfası.
 function r424Tarih(ts){ try{ return new Date(Number(ts)).toLocaleString('tr-TR',{timeZone:'Europe/Istanbul'});}catch(_){return '-';} }
 function r424Gun(ts){ try{ return new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Istanbul'}).format(new Date(Number(ts)));}catch(_){return '-';} }
@@ -20138,7 +20226,7 @@ function r424RaporMd(donem='gun'){
   try{ const ol=(r374Donusum?.olaylar||[]).slice(-200);
     if(ol.length){ md+=`\n## 🤖 BOT KARAR/OLAY AKIŞI (bellekteki son ${ol.length})\n\n`; for(const o of ol) md+=`- ${o.ts} **${o.tip}** ${o.coin} — ${String(o.detay||'').replace(/\n/g,' ').slice(0,160)}\n`; }
   }catch(_){}
-  md+=`\n> Not: İşlemler trade_ledger_live.json'dan (restart'a dayanıklı). Olay akışı bellek ringidir; restart sonrası yeniden dolar. Bu raporu Fable'a olduğu gibi yapıştır — o okur.\n`;
+  md+=`\n> Not: İşlemler trade_ledger_testnet.json'dan (restart'a dayanıklı). Olay akışı bellek ringidir; restart sonrası yeniden dolar. Bu raporu Fable'a olduğu gibi yapıştır — o okur.\n`;
   return md;
 }
 app.get('/api/rapor.md',(req,res)=>{ try{
@@ -20211,10 +20299,13 @@ function r48632ScanSnapshot(){
 
 
 // R493 v5.6 read-only 6TF shadow diagnosis API
-
-
-// R500 V5 UI-only: selected timeframe lazy-load chart proxy.
-// READ-ONLY: karar, sizing, emir ve pozisyon akışını değiştirmez.
+// ── TESTNET PARITY / 6TF CANLI GRAFİK ───────────────────────────────────────
+app.get('/api/testnet/status', (_req,res) => {
+  const v = TESTNET_VIRTUAL_EQUITY_ACTIVE ? r500TestnetVirtualEquity() : null;
+  res.set('Cache-Control','no-store');
+  const c=r486391BinanceCreds();
+  res.json({ok:true,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,executionBase:'USD-M Futures Testnet',hardLockedTestnet:true,credentialsReady:!!(c.apiKey&&c.apiSecret),credentialSource:c.source,session:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR});
+});
 const R500_CHART_INTERVALS = new Set(['1m','3m','5m','15m','1h','4h']);
 function r500ChartRowsFromRaw(raw=[]){
   return Array.isArray(raw) ? raw.map(x=>({
@@ -20235,6 +20326,9 @@ function r500ExistingKlineCache(symbol,interval){
   if(!hit||!Array.isArray(hit.val)||!hit.val.length)return null;
   return {raw:hit.val,cacheKey:key,cacheAgeMs:Math.max(0,Date.now()-Number(hit.ts||0))};
 }
+// V5: Sol karşılaştırma grafiği tek timeframe'i lazy-load eder.
+// Önce analiz motorunun mevcut kline cache'i kullanılır; cache yoksa yalnız seçili timeframe için
+// Binance public kline çağrısı yapılır. Emir/karar/sizing zincirine etkisi yoktur.
 app.get('/api/chart/live/:symbol', async (req,res) => {
   try {
     const sym=normalizeSymbol(String(req.params.symbol||'')).toUpperCase();
@@ -20244,6 +20338,7 @@ app.get('/api/chart/live/:symbol', async (req,res) => {
     const limit=Math.max(40,Math.min(120,Number(req.query.limit||110)));
     let source='BINANCE_PUBLIC_LAZY',cacheAgeMs=null,raw=null;
     const existing=r500ExistingKlineCache(sym,interval);
+    // Düşük TF cache'i 90sn, yüksek TF cache'i 20dk içinde ise anında kullan.
     const maxAge=(interval==='1m'||interval==='3m'||interval==='5m')?90_000:20*60_000;
     if(existing&&existing.cacheAgeMs<=maxAge){raw=existing.raw;source='ANALYSIS_KLINE_CACHE';cacheAgeMs=existing.cacheAgeMs;}
     if(!raw){
@@ -20252,12 +20347,10 @@ app.get('/api/chart/live/:symbol', async (req,res) => {
     }
     const rows=r500ChartRowsFromRaw(raw).slice(-limit);
     res.set('Cache-Control','no-store');
-    res.json({ok:true,build:LAZARUS_BUILD,symbol:sym,interval,source,cacheAgeMs,executionEnvironment:'LIVE',marketDataEnvironment:'LIVE',serverTime:Date.now(),rows});
+    res.json({ok:true,build:LAZARUS_BUILD,symbol:sym,interval,source,cacheAgeMs,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,serverTime:Date.now(),rows});
   } catch(e){res.status(500).json({ok:false,error:safeErrMsg(e)});}
 });
 
-// R500 UI-only: Binance USDⓈ-M public 6TF chart proxy.
-// READ-ONLY: karar, sizing, emir ve pozisyon akışını değiştirmez.
 app.get('/api/chart/6tf/:symbol', async (req,res) => {
   try {
     const sym = normalizeSymbol(String(req.params.symbol||'')).toUpperCase();
@@ -20276,7 +20369,7 @@ app.get('/api/chart/6tf/:symbol', async (req,res) => {
       return Object.fromEntries(pairs);
     });
     res.set('Cache-Control','no-store');
-    res.json({ok:true,build:LAZARUS_BUILD,symbol:sym,source:'BINANCE_USDM_LIVE_MARKET',executionEnvironment:'LIVE',marketDataEnvironment:'LIVE',serverTime:now,timeframes:data});
+    res.json({ok:true,build:LAZARUS_BUILD,symbol:sym,source:'BINANCE_USDM_LIVE_MARKET',executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,serverTime:now,timeframes:data});
   } catch(e) { res.status(500).json({ok:false,error:safeErrMsg(e)}); }
 });
 
@@ -20290,7 +20383,7 @@ app.get('/api/r495/armed',(req,res)=>{
 });
 
 app.get('/api/r497/status',(req,res)=>{
-  try{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'LIVE_POINT_IN_TIME_TOP_GAINER',status:r497LastStatus,recent:r497RecentScans.slice(0,Math.max(1,Math.min(50,Number(req.query.limit||10)))),sizing:{fixedSlotActive:R497_FIXED_SLOT_ACTIVE,slotMarginUSDT:R497_SLOT_MARGIN_USDT,minBufferUSDT:R497_MIN_BUFFER_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE}});}
+  try{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'TESTNET_PARITY_POINT_IN_TIME_TOP_GAINER',status:r497LastStatus,recent:r497RecentScans.slice(0,Math.max(1,Math.min(50,Number(req.query.limit||10)))),sizing:{fixedSlotActive:R497_FIXED_SLOT_ACTIVE,slotMarginUSDT:R497_SLOT_MARGIN_USDT,minBufferUSDT:R497_MIN_BUFFER_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE}});}
   catch(e){res.status(500).json({ok:false,build:LAZARUS_BUILD,error:String(e?.message||e)});}
 });
 app.get('/api/r496/shadow',(req,res)=>{
@@ -20320,7 +20413,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'LIVE_DECISION_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R497: point-in-time SOFT risk-scale (hard veto yok) + R495 3dk kabul; slot başı sabit 41$ · min 20$ tampon · 200$ üstü HOLD_FIXED; R496 shadow',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'TESTNET_PARITY_DECISION_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R497: point-in-time SOFT risk-scale (hard veto yok) + R495 3dk kabul; slot başı sabit 41$ · min 20$ tampon · 200$ üstü HOLD_FIXED; R496 shadow',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -20553,6 +20646,18 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         }
       }
       await checkTrailingSL(apiKey, apiSecret, mapped);
+    }
+
+    // Testnet süre dolunca mevcut pozisyonların yönetimi devam eder; yalnız YENİ giriş durur.
+    const _tnSession = testnetSessionStatus();
+    if (TESTNET_SESSION_AUTO_STOP && _tnSession.expired) {
+      autoScanState.phase = 'TESTNET_SÜRE_DOLDU';
+      autoScanState.lastAction = 'Testnet süresi doldu — yeni giriş kapalı, açık pozisyon yönetimi devam ediyor';
+      if (Date.now() - testnetExpiryLogAt > 10*60_000) {
+        testnetExpiryLogAt = Date.now();
+        logAuto('⏱️ TESTNET SÜRESİ DOLDU: yeni emirler durduruldu; açık pozisyonlar SL/TP/manager ile yönetilmeye devam ediyor. Uzatmak için TESTNET_SESSION_HOURS veya TESTNET_SESSION_RESET_ID değiştir.');
+      }
+      return;
     }
 
     // Max pozisyon kontrolü
@@ -23351,7 +23456,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           // ═══ R428 GİRİŞ VERİ-FOTOĞRAFI (kullanıcı isteği 15.07: "girdiği anın görüntüsü rapora düşsün") ═══
           // Piksel screenshot yerine AI'ın O AN gördüğü SAYISAL kare donduruluyor: son 40×15m mum + seviye
           // haritası + akış + plan. Fable pikselden değil sayıdan analiz eder; headless-browser yükü/riski yok.
-          // Restart'a dayanıklı: ledger'a (trade_ledger_live.json) gömülür, /api/rapor.md'de yazılır.
+          // Restart'a dayanıklı: ledger'a (trade_ledger_testnet.json) gömülür, /api/rapor.md'de yazılır.
           try {
             const _m15 = aiData?.mumlar?.['15m'] || aiData?.candles?.['15m'] || null;
             positionState[full] = positionState[full] || {};
@@ -24431,6 +24536,8 @@ async function r177FetchBinanceHistory(apiKey, apiSecret) {
 
 app.listen(PORT, async () => {
   console.log(`✅ Server ${PORT}`);
+  const _tnBoot=testnetSessionStatus();
+  console.log(`🧪 TESTNET HARD-LOCK · execution=${BINANCE_EXECUTION_ENV} · marketData=${BINANCE_MARKET_DATA_ENV} · süre=${_tnBoot.unlimited?'SINIRSIZ':Math.round((_tnBoot.remainingMs||0)/3600000)+' saat'} · virtual=${TESTNET_VIRTUAL_START_EQUITY_USDT} USDT`);
 
   // Kısa gecikme — diğer init tamamlansın
   await new Promise(r => setTimeout(r, 3000));
