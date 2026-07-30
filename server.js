@@ -138,7 +138,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V9_GOVFIX_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_PARITY_LIVE_MARKET_6TF_CHART_V9_1_LOCAL_DEFER_SCANFIX_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ R486 OTONOM KÂR HASADI + 10x TABAN ═══════════════════════════════════════
 // Canlıda gerçek Binance bracket kullanılır. Tarihsel bracket snapshotı olmadığı için
@@ -1053,6 +1053,7 @@ const posRiskCache = {
   generation: 0,
   rateLimitUntil: 0,
   networkBackoffUntil: 0,
+  localDeferUntil: 0,
   lastApiKey: null,
   lastSource: null,
   lastError: null,
@@ -1090,10 +1091,18 @@ function positionRiskErrorType(err) {
 }
 function isPositionRiskRateLimitError(err) { return positionRiskErrorType(err)==='RATE_LIMIT'; }
 function isPositionRiskCooldownActive() {
+  // V9.1: yalnız gerçek Binance rate-limit veya gerçek ağ arızası yeni taramayı durdurur.
+  // LOCAL_DEFER, governor'ın kendi dakika rezervidir; stale cache varsa tarama devam eder.
   return Date.now() < Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0));
 }
 function getPositionRiskCooldownMs() {
   return Math.max(0,Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0))-Date.now());
+}
+function isPositionRiskLocalDeferActive() {
+  return Date.now() < Number(posRiskCache.localDeferUntil||0);
+}
+function getPositionRiskLocalDeferMs() {
+  return Math.max(0,Number(posRiskCache.localDeferUntil||0)-Date.now());
 }
 function positionRiskNetworkBackoffMs(failures=1) {
   return Math.min(60000, 5000 * Math.pow(2, Math.max(0, Number(failures||1)-1)));
@@ -1140,11 +1149,16 @@ async function refreshPositionRiskCentral(apiKey,apiSecret,{reason='consumer',fo
     if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
     throw makeBinanceBackoffError('Binance geçici istek freni',Math.ceil(getBinanceBackoffMs()/1000),418);
   }
-  const localUntil=Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0));
-  if(now<localUntil){
-    if(force)throw new Error(`positionRisk backoff ${Math.ceil((localUntil-now)/1000)}sn`);
+  const hardUntil=Math.max(Number(posRiskCache.rateLimitUntil||0),Number(posRiskCache.networkBackoffUntil||0));
+  if(now<hardUntil){
+    if(force)throw new Error(`positionRisk backoff ${Math.ceil((hardUntil-now)/1000)}sn`);
     if(posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
-    throw new Error(`positionRisk backoff ${Math.ceil((localUntil-now)/1000)}sn`);
+    throw new Error(`positionRisk backoff ${Math.ceil((hardUntil-now)/1000)}sn`);
+  }
+  const localUntil=Number(posRiskCache.localDeferUntil||0);
+  if(now<localUntil){
+    if(!force&&posRiskCache.data&&posRiskCache.lastApiKey===fp)return posRiskCache.data;
+    throw makePriorityLocalDeferError('PRIORITY_POSITION_RISK',localUntil-now,priorityBudgetForScope('PRIORITY_POSITION_RISK'));
   }
   if(posRiskCache.fetching&&posRiskCache.inflight){
     if(force)return posRiskCache.inflight;
@@ -1161,17 +1175,18 @@ async function refreshPositionRiskCentral(apiKey,apiSecret,{reason='consumer',fo
       posRiskCache.data=Array.isArray(data)?data:[]; posRiskCache.ts=Date.now(); posRiskCache.lastApiKey=fp;
       posRiskCache.lastSuccessAt=Date.now(); posRiskCache.lastLatencyMs=Date.now()-t0;
       posRiskCache.lastError=null; posRiskCache.lastErrorType=null; posRiskCache.consecutiveFailures=0;
-      posRiskCache.networkBackoffUntil=0;
+      posRiskCache.networkBackoffUntil=0; posRiskCache.localDeferUntil=0;
       return posRiskCache.data;
     }catch(e){
       if(gen!==posRiskCache.generation)return posRiskCache.data||[];
       const typ=positionRiskErrorType(e); posRiskCache.lastError=safeErrMsg(e); posRiskCache.lastErrorType=typ;
       posRiskCache.lastFailureAt=Date.now(); posRiskCache.lastLatencyMs=Date.now()-t0;
       if(typ==='LOCAL_DEFER'){
-        // Yerel governor beklemesi gerçek Binance hatası değildir.
-        // Hata serisini büyütme; yalnız pencere açılana kadar kontrollü ertele.
+        // V9.1: Yerel governor beklemesi gerçek Binance/ağ hatası değildir.
+        // Ayrı alanda tutulur; stale positionRisk cache varsa full scan'i BLOKLAMAZ.
+        // Emir öncesindeki force-fresh doğrulama ise local defer boyunca fail-closed kalır.
         const extra=Math.max(250,Number(e?.retryAfterMs||Number(e?.retryAfter||1)*1000));
-        posRiskCache.networkBackoffUntil=Date.now()+Math.min(60_000,extra);
+        posRiskCache.localDeferUntil=Date.now()+Math.min(60_000,extra);
       }else{
         posRiskCache.consecutiveFailures++;
         if(typ==='RATE_LIMIT'){
@@ -1208,6 +1223,7 @@ const positionRiskState={
   get cache(){if(!posRiskCache.data)return null;const hasOpen=positionRowsOpenCount(posRiskCache.data)>0,ttl=hasOpen?POS_RISK_TTL_ACTIVE:POS_RISK_TTL_NORMAL;return{rows:posRiskCache.data,ts:posRiskCache.ts,ttl,exp:posRiskCache.ts+ttl,openCount:positionRowsOpenCount(posRiskCache.data),fp:posRiskCache.lastApiKey};},
   get inflight(){resetStuckPositionRiskInflight('state getter');return posRiskCache.fetching;},
   get cooldownUntil(){return Math.max(posRiskCache.rateLimitUntil,posRiskCache.networkBackoffUntil);},
+  get localDeferUntil(){return Number(posRiskCache.localDeferUntil||0);},
   get lastError(){return posRiskCache.lastError;}, get lastSource(){return posRiskCache.lastSource;},
   get lastSuccessAt(){return posRiskCache.lastSuccessAt;}, get lastAttemptAt(){return posRiskCache.lastAttemptAt;},
   get lastLatencyMs(){return posRiskCache.lastLatencyMs;}, get lastErrorType(){return posRiskCache.lastErrorType;},
@@ -1220,7 +1236,7 @@ function startPositionRiskCentralPoller(){
     try{
       if(!autoConfig?.enabled||!autoConfig?.apiKey||!autoConfig?.apiSecret)return;
       resetStuckPositionRiskInflight('central-poller');
-      if(isBinanceBackoffActive()||isPositionRiskCooldownActive())return;
+      if(isBinanceBackoffActive()||isPositionRiskCooldownActive()||isPositionRiskLocalDeferActive())return;
       const hasOpen=positionRowsOpenCount(posRiskCache.data)>0,target=hasOpen?POS_RISK_TTL_ACTIVE:POS_RISK_TTL_NORMAL;
       if(!posRiskCache.data||Date.now()-Number(posRiskCache.ts||0)>=target){
         await refreshPositionRiskCentral(autoConfig.apiKey,autoConfig.apiSecret,{reason:'central-poller'});
@@ -19891,9 +19907,9 @@ app.get('/api/infra/health',(_req,res)=>{
     lastSuccessAt:posRiskCache.lastSuccessAt||0,successAgeMs:posRiskCache.lastSuccessAt?Date.now()-posRiskCache.lastSuccessAt:null,
     lastAttemptAt:posRiskCache.lastAttemptAt||0,lastLatencyMs:posRiskCache.lastLatencyMs,lastError:posRiskCache.lastError,
     lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:posRiskCache.consecutiveFailures,
-    cooldownMs:getPositionRiskCooldownMs(),inflight:posRiskCache.fetching,hardResetCount:posRiskCache.hardResetCount
+    cooldownMs:getPositionRiskCooldownMs(),localDeferMs:getPositionRiskLocalDeferMs(),inflight:posRiskCache.fetching,hardResetCount:posRiskCache.hardResetCount
   };
-  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true,priorityPositionRisk:true,priorityMicroKlines:true,queueWaitBounded:true,reservedPriorityBudget:true,localDeferNotFailure:true}});
+  res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),positionRisk:pr,policy:{centralPoller:true,symbolDirectCalls:false,networkBackoff:true,microFreshFailClosed:true,priorityPositionRisk:true,priorityMicroKlines:true,queueWaitBounded:true,reservedPriorityBudget:true,localDeferNotFailure:true,localDeferDoesNotBlockScan:true,forceFreshOrderCheckFailClosed:true}});
 });
 
 // ── DASHBOARD KRİTİK HATA DURUMU ─────────────────────────────────────────────
@@ -19913,6 +19929,7 @@ app.get('/api/diagnostics/status', (_req, res) => {
     autoErrors: autoScanState?.skipReasons || {},
     positionRisk: {
       cooldownMs: getPositionRiskCooldownMs(),
+      localDeferMs: getPositionRiskLocalDeferMs(),
       cacheAgeMs: positionRiskState.cache ? Date.now() - positionRiskState.cache.ts : null,
       cacheTtlMs: positionRiskState.cache?.ttl || null,
       openCount: positionRiskState.cache?.openCount || 0,
@@ -19954,6 +19971,7 @@ app.get('/api/health', (_req, res) => {
     const sweepOnly = !!(cfg.sweepOnly === true); // R68: explicit true yoksa sweep zorunlu değildir; panel/health aynı okur.
     const positionRisk = (typeof positionRiskState !== 'undefined') ? {
       cooldownMs: (typeof getPositionRiskCooldownMs === 'function') ? getPositionRiskCooldownMs() : null,
+      localDeferMs: (typeof getPositionRiskLocalDeferMs === 'function') ? getPositionRiskLocalDeferMs() : null,
       cacheAgeMs: positionRiskState.cache ? Date.now() - positionRiskState.cache.ts : null,
       cacheTtlMs: positionRiskState.cache?.ttl || null,
       openCount: positionRiskState.cache?.openCount || 0,
