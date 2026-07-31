@@ -1,14 +1,18 @@
 {
-  "name": "lazarus-r54-fast6-micro-probe-priority",
-  "version": "1.0.0",
+  "name": "lazarus-v592-backtest-policy-testnet-raw-research-v4",
+  "version": "5.9.2-policy-raw-research-v4",
+  "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-fetch": "^2.7.0",
     "ws": "^8.17.1"
   }
 }
