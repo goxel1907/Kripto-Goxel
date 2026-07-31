@@ -27,7 +27,7 @@ const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
-const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_POLICY_RESEARCH_72H_3').trim() || 'V592_POLICY_RESEARCH_72H_3';
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_POLICY_RAW_RESEARCH_72H_4').trim() || 'V592_POLICY_RAW_RESEARCH_72H_4';
 const TESTNET_SESSION_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'EXACT_V592_72H_1';
 const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
 const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_exact_testnet_session.json');
@@ -120,7 +120,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_BACKTEST_POLICY_PARITY_TESTNET_72H_SURGICAL_RESEARCH_V3_R495_RISK4_FIXED41_R496_SHADOW_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_BACKTEST_POLICY_PARITY_TESTNET_72H_RAW_RESEARCH_V4_R495_RISK4_FIXED41_R496_SHADOW_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1007,8 +1007,8 @@ const posRiskCache = {
   consecutiveFailures: 0,
   watchdogWarnedAt: 0,
 };
-const POS_RISK_TTL_NORMAL = 20000;   // 20sn (pozisyon yok)
-const POS_RISK_TTL_ACTIVE = 25000;   // R308J: 15sn→25sn. TOP24'te 429 baskısı arttı, pozisyon-risk okuma sıklığı düşürüldü.
+const POS_RISK_TTL_NORMAL = 60000;   // RAW-V4: pozisyon yokken 60sn; tarama signed endpointi gereksiz zorlamaz
+const POS_RISK_TTL_ACTIVE = 12000;   // RAW-V4: açık pozisyonda 10sn manager için 12sn cache; stale-while-revalidate
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 30000; // Promise temizlenmez; yalnız 30sn üstünde uyarı verilir
 
@@ -1072,16 +1072,19 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   resetStuckPositionRiskInflight('getPositionRiskCached');
   const now = Date.now();
   const apiFp = keyFingerprint(apiKey, apiSecret);
+  const forceFresh = !!params?.__forceFresh;
+  const queryParams = {...(params||{})};
+  delete queryParams.__forceFresh;
 
   // R95: Binance 418/429 merkezi istek freni aktifken yeni positionRisk isteği açma.
   if (isBinanceBackoffActive()) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, queryParams);
     throw makeBinanceBackoffError('Binance geçici istek freni', Math.ceil(getBinanceBackoffMs()/1000), 418);
   }
 
   // -1003 cooldown aktifse cache döndür; cache yoksa yeni emir akışını güvenli durdur.
   if (now < posRiskCache.rateLimitUntil) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
+    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, queryParams);
     throw new Error('positionRisk rate-limit cooldown');
   }
 
@@ -1094,17 +1097,25 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
 
   if (posRiskCache.data && now - posRiskCache.ts < ttl &&
       posRiskCache.lastApiKey === apiFp) {
-    return filterPositionRiskRows(posRiskCache.data, params);
+    return filterPositionRiskRows(posRiskCache.data, queryParams);
+  }
+
+  // RAW-V4 stale-while-revalidate: normal tarama/panel mevcut son başarılı gerçeği hemen kullanır;
+  // arka planda tek signed yenileme başlatılır. Yalnız getPositionRiskTruth (__forceFresh)
+  // emir öncesi taze sonucu bekler. Böylece positionRisk gecikmesi TOP24 turunu kilitlemez.
+  if (!forceFresh && posRiskCache.data && posRiskCache.lastApiKey === apiFp && !posRiskCache.fetching) {
+    getPositionRiskCached(apiKey, apiSecret, {...queryParams,__forceFresh:true}).catch(()=>null);
+    return filterPositionRiskRows(posRiskCache.data, queryParams);
   }
 
   // Single-flight: başka istek uçaktaysa aynı promise'i bekle.
   if (posRiskCache.fetching && posRiskCache.inflight) {
-    if (posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, params);
+    if (!forceFresh && posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, queryParams);
     try {
       const rows = await posRiskCache.inflight;
-      return filterPositionRiskRows(Array.isArray(rows) ? rows : [], params);
+      return filterPositionRiskRows(Array.isArray(rows) ? rows : [], queryParams);
     } catch(_e) {
-      if(posRiskCache.data && posRiskCache.lastApiKey===apiFp)return filterPositionRiskRows(posRiskCache.data,params);
+      if(posRiskCache.data && posRiskCache.lastApiKey===apiFp)return filterPositionRiskRows(posRiskCache.data,queryParams);
       throw _e;
     }
   }
@@ -1145,10 +1156,10 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   })();
 
   const rows = await posRiskCache.inflight;
-  return filterPositionRiskRows(rows, params);
+  return filterPositionRiskRows(rows, queryParams);
 }
 async function getPositionRiskTruth(apiKey,apiSecret,params={},maxAgeMs=60000){
-  const rows=await getPositionRiskCached(apiKey,apiSecret,params);
+  const rows=await getPositionRiskCached(apiKey,apiSecret,{...(params||{}),__forceFresh:true});
   const age=posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):Infinity;
   if(!Number.isFinite(age)||age>Math.max(5000,Number(maxAgeMs)||60000)){
     throw new Error(`POSITION_RISK_TRUTH_STALE age=${Number.isFinite(age)?Math.round(age):'none'}ms source=${posRiskCache.lastSource||'none'}`);
@@ -8483,7 +8494,7 @@ function saveTradeLedger() {
 // 6TF kapanmış mumlar, kaynak tazeliği, karar/gate funnel, yönetici zaman çizgisi ve işlem sonucu.
 // KAYIT HATASI KARARI/EMRİ ENGELLEMEZ; bu modun decisionImpact değeri daima false'tur.
 // ═══════════════════════════════════════════════════════════════════════════════
-const R501_EVIDENCE_SCHEMA = 'LAZARUS_V592_BACKTEST_POLICY_SURGICAL_RESEARCH_RECORDER_V4';
+const R501_EVIDENCE_SCHEMA = 'LAZARUS_V592_BACKTEST_POLICY_SURGICAL_RESEARCH_RECORDER_V5_RAW_ARCHIVE';
 const R501_EVIDENCE_ACTIVE = String(process.env.R501_EVIDENCE_ACTIVE ?? '1') !== '0';
 const R501_EVIDENCE_SAMPLE_MS = Math.max(500, Math.min(10000, Number(process.env.R501_EVIDENCE_SAMPLE_MS || 1000)));
 const R501_EVIDENCE_BOOK_MS = Math.max(1000, Math.min(60000, Number(process.env.R501_EVIDENCE_BOOK_MS || 5000)));
@@ -8498,7 +8509,97 @@ const R501_EVIDENCE_DIR = path.join(TESTNET_STATE_DIR, `lazarus_evidence_exact_t
 const R501_EVIDENCE_TRADES_DIR = path.join(R501_EVIDENCE_DIR, 'trades');
 const R501_EVIDENCE_INDEX_PATH = path.join(R501_EVIDENCE_DIR, 'index.json');
 const R501_EVIDENCE_FUNNEL_PATH = path.join(R501_EVIDENCE_DIR, 'decision_funnel.ndjson');
-try { fs.mkdirSync(R501_EVIDENCE_TRADES_DIR, {recursive:true}); } catch (_) {}
+const R501_RAW_ARCHIVE_ACTIVE = String(process.env.R501_RAW_ARCHIVE_ACTIVE ?? '1') !== '0';
+const R501_RAW_ARCHIVE_DIR = path.join(R501_EVIDENCE_DIR, 'raw');
+const R501_RAW_ZIP_MAX_MB = Math.max(16, Math.min(1024, Number(process.env.R501_RAW_ZIP_MAX_MB || 256)));
+const R501_RAW_FILES = Object.freeze([
+  'manifest.json','entry_bundle.json','close_bundle.json','stage_snapshots.jsonl','ticks.jsonl',
+  'cvd_samples.jsonl','depth_samples.jsonl','oi_samples.jsonl','liquidations.jsonl',
+  'manager_timeline.jsonl','checksums.sha256'
+]);
+try { fs.mkdirSync(R501_EVIDENCE_TRADES_DIR, {recursive:true}); fs.mkdirSync(R501_RAW_ARCHIVE_DIR,{recursive:true}); } catch (_) {}
+
+function r501RawTradeDir(id){return path.join(R501_RAW_ARCHIVE_DIR,r501SafeId(id));}
+function r501RawFile(id,name){return path.join(r501RawTradeDir(id),name);}
+function r501RawEnsure(id){try{fs.mkdirSync(r501RawTradeDir(id),{recursive:true});return true;}catch(e){try{pushCritical('R501_RAW_MKDIR',e,{id:r501SafeId(id)},'WARNING');}catch(_){}return false;}}
+function r501RawAppend(id,name,obj){
+  if(!R501_RAW_ARCHIVE_ACTIVE||!R501_RAW_FILES.includes(name)||!name.endsWith('.jsonl'))return false;
+  try{r501RawEnsure(id);fs.appendFileSync(r501RawFile(id,name),JSON.stringify(obj)+'\n');return true;}
+  catch(e){try{pushCritical('R501_RAW_APPEND',e,{id:r501SafeId(id),file:name},'WARNING');}catch(_){}return false;}
+}
+function r501RawWriteJson(id,name,obj){
+  if(!R501_RAW_ARCHIVE_ACTIVE||!R501_RAW_FILES.includes(name)||!name.endsWith('.json'))return false;
+  try{r501RawEnsure(id);return r501AtomicWrite(r501RawFile(id,name),JSON.stringify(obj,null,2));}
+  catch(e){try{pushCritical('R501_RAW_JSON',e,{id:r501SafeId(id),file:name},'WARNING');}catch(_){}return false;}
+}
+function r501RawStat(id){
+  const out={enabled:R501_RAW_ARCHIVE_ACTIVE,id:r501SafeId(id),dir:r501RawTradeDir(id),files:{},bytes:0};
+  if(!R501_RAW_ARCHIVE_ACTIVE)return out;
+  for(const name of R501_RAW_FILES){try{const st=fs.statSync(r501RawFile(id,name));if(st.isFile()){out.files[name]={bytes:st.size,updatedAt:st.mtimeMs};out.bytes+=st.size;}}catch(_){}}
+  return out;
+}
+function r501RawCountLines(file){try{const b=fs.readFileSync(file);if(!b.length)return 0;let n=0;for(const x of b)if(x===10)n++;return n+(b[b.length-1]===10?0:1);}catch(_){return 0;}}
+function r501Sha256File(file){try{const h=crypto.createHash('sha256');h.update(fs.readFileSync(file));return h.digest('hex');}catch(_){return null;}}
+function r501RawCounts(rec){return {...(rec?._rawCounts||{}),ticks:Number(rec?._rawCounts?.ticks||0),cvdSamples:Number(rec?._rawCounts?.cvdSamples||0),depthSamples:Number(rec?._rawCounts?.depthSamples||0),oiSamples:Number(rec?._rawCounts?.oiSamples||0),liquidations:Number(rec?._rawCounts?.liquidations||0),managerEvents:Number(rec?._rawCounts?.managerEvents||0),stageSnapshots:Number(rec?._rawCounts?.stageSnapshots||0)};}
+function r501RawManifest(rec,finalize=false){
+  const id=rec?.id;if(!id)return null;let stats=r501RawStat(id),files={};
+  for(const [name,meta] of Object.entries(stats.files||{})){files[name]={...meta,sha256:(finalize&&name!=='manifest.json'&&name!=='checksums.sha256')?r501Sha256File(r501RawFile(id,name)):null};}
+  let out={schema:'LAZARUS_V592_PER_TRADE_RAW_ARCHIVE_V1',build:LAZARUS_BUILD,session:TESTNET_SESSION_RESET_ID,id,symbol:rec.symbol,side:rec.side,status:rec.status,
+    policyContract:rec.policyContract,passive:true,decisionImpact:false,orderBlocking:false,sizingImpact:false,
+    openedAt:rec.openedAt,closedAt:rec.closedAt||null,createdAt:rec.createdAt,updatedAt:Date.now(),finalized:!!finalize,
+    counts:r501RawCounts(rec),bytes:stats.bytes,files,requiredFiles:R501_RAW_FILES.filter(x=>x!=='checksums.sha256'),
+    lifecycleStages:['DECISION','ORDER_REQUEST_RECEIVED','MAIN_ORDER_SEND','MAIN_ORDER_ACK','ENTRY_FILL_OBSERVED','ENTRY_FILL_RECONCILED','PROTECTION_VERIFIED','+30s','+1m','+3m','+5m','+15m','+30m','CLOSE'],
+    noLookaheadRule:'candle.closeTime < snapshotAnchorTime',notes:['Ham arşiv yalnız Testnet araştırmasıdır.','Kayıt hatası strateji kararını veya emri engellemez.']};
+  r501RawWriteJson(id,'manifest.json',out);
+  if(finalize){
+    try{
+      stats=r501RawStat(id);const lines=[];for(const name of R501_RAW_FILES){if(name==='checksums.sha256')continue;const file=r501RawFile(id,name);try{if(fs.statSync(file).isFile())lines.push(`${r501Sha256File(file)||''}  ${name}`);}catch(_){}}
+      r501AtomicWrite(r501RawFile(id,'checksums.sha256'),lines.join('\n')+'\n');
+      const finalStats=r501RawStat(id);out={...out,bytes:finalStats.bytes,files:Object.fromEntries(Object.entries(finalStats.files||{}).map(([n,m])=>[n,{...m,sha256:(n==='checksums.sha256'||n==='manifest.json')?null:(files[n]?.sha256||r501Sha256File(r501RawFile(id,n)))}]))};
+      r501RawWriteJson(id,'manifest.json',out);
+      // checksums dosyasını final manifest hash'iyle son kez güncelle.
+      const finalLines=[];for(const name of R501_RAW_FILES){if(name==='checksums.sha256')continue;const file=r501RawFile(id,name);try{if(fs.statSync(file).isFile())finalLines.push(`${r501Sha256File(file)||''}  ${name}`);}catch(_){}}
+      r501AtomicWrite(r501RawFile(id,'checksums.sha256'),finalLines.join('\n')+'\n');
+    }catch(_){}
+  }
+  return out;
+}
+function r501RawInit(rec){
+  if(!R501_RAW_ARCHIVE_ACTIVE||!rec?.id)return;const oldManifest=r501ReadJson(r501RawFile(rec.id,'manifest.json'),null);rec._rawCounts=rec._rawCounts||rec?.rawArchive?.counts||oldManifest?.counts||{};rec._rawFinalized=!!(rec._rawFinalized||rec?.rawArchive?.finalized||oldManifest?.finalized);rec._rawStageKeys=rec._rawStageKeys||new Set();rec._seenLiqKeys=rec._seenLiqKeys||new Set();
+  rec._lastManagerHash=rec._lastManagerHash||null;rec._lastManagerRawAt=Number(rec._lastManagerRawAt||0);r501RawEnsure(rec.id);
+}
+function r501RawStage(rec,stage,payload={},ts=Date.now()){
+  if(!rec?.id)return;rec._rawStageKeys=rec._rawStageKeys||new Set();const key=`${stage}|${Number(ts||0)}`;if(rec._rawStageKeys.has(key))return;rec._rawStageKeys.add(key);
+  if(r501RawAppend(rec.id,'stage_snapshots.jsonl',{schema:'LAZARUS_V592_STAGE_SNAPSHOT_V1',stage,ts:Number(ts||Date.now()),iso:r501NowIso(ts),symbol:rec.symbol,tradeId:rec.id,passive:true,decisionImpact:false,payload}))rec._rawCounts.stageSnapshots=Number(rec._rawCounts.stageSnapshots||0)+1;
+}
+function r501RawSeedStages(rec){
+  if(!rec)return;const ds=rec.decisionSnapshot;if(ds)r501RawStage(rec,'DECISION',{decisionId:ds.decisionId,liveDecision:ds.liveDecision,consensus:ds.consensus,timeframes:r501DecisionTfCompact(ds),researchPassive:ds.researchPassive||null},ds.decisionTimeMs||rec.entryContext?.timestamps?.decisionTime||rec.openedAt);
+  const life=rec.orderLifecycle||{};for(const ev of (life.events||[]))r501RawStage(rec,ev.stage,{...ev,researchSnapshot:life.marketSnapshots?.[ev.stage]||null},ev.ts);
+}
+function r501RawLiquidations(rec,liquidations,now){
+  if(!liquidations||!rec?.id)return;rec._seenLiqKeys=rec._seenLiqKeys||new Set();const rows=[];
+  for(const [side,arr] of [['LONG',liquidations.longLiqs||[]],['SHORT',liquidations.shortLiqs||[]]])for(const x of arr){const ts=Number(x?.ts??x?.time??x?.T??x?.E??now);const key=String(x?.id??x?.orderId??`${side}|${ts}|${x?.price??x?.p}|${x?.qty??x?.q}`);if(rec._seenLiqKeys.has(key))continue;rec._seenLiqKeys.add(key);rows.push({ts,side,event:x});}
+  if(liquidations.lastCascade){const x=liquidations.lastCascade,ts=Number(x?.ts??x?.time??now),key=`CASCADE|${ts}|${JSON.stringify(x).slice(0,80)}`;if(!rec._seenLiqKeys.has(key)){rec._seenLiqKeys.add(key);rows.push({ts,side:'CASCADE',event:x});}}
+  for(const row of rows)if(r501RawAppend(rec.id,'liquidations.jsonl',{schema:'LAZARUS_V592_LIQ_EVENT_V1',tradeId:rec.id,symbol:rec.symbol,...row}))rec._rawCounts.liquidations=Number(rec._rawCounts.liquidations||0)+1;
+  if(rec._seenLiqKeys.size>10000)rec._seenLiqKeys=new Set([...rec._seenLiqKeys].slice(-4000));
+}
+function r501RawManager(rec,manager,now){
+  if(!manager||!rec?.id)return;const stable=JSON.stringify(manager);const heartbeat=now-Number(rec._lastManagerRawAt||0)>=30000;if(stable===rec._lastManagerHash&&!heartbeat)return;
+  rec._lastManagerHash=stable;rec._lastManagerRawAt=now;if(r501RawAppend(rec.id,'manager_timeline.jsonl',{schema:'LAZARUS_V592_MANAGER_EVENT_V1',tradeId:rec.id,symbol:rec.symbol,ts:now,manager}))rec._rawCounts.managerEvents=Number(rec._rawCounts.managerEvents||0)+1;
+}
+function r501RawEntryBundle(rec){return r501RawWriteJson(rec.id,'entry_bundle.json',{schema:'LAZARUS_V592_ENTRY_BUNDLE_V1',build:rec.build,session:rec.session,id:rec.id,symbol:rec.symbol,side:rec.side,openedAt:rec.openedAt,trade:rec.trade,policyContract:rec.policyContract,entryContext:rec.entryContext,decisionSnapshot:rec.decisionSnapshot,orderLifecycle:rec.orderLifecycle,initialRest:rec.initialRest,preEntryAggTradesRaw:rec.preEntryAggTradesRaw||[],passive:true,decisionImpact:false});}
+function r501RawCloseBundle(rec){return r501RawWriteJson(rec.id,'close_bundle.json',{schema:'LAZARUS_V592_CLOSE_BUNDLE_V1',build:rec.build,session:rec.session,id:rec.id,symbol:rec.symbol,side:rec.side,openedAt:rec.openedAt,closedAt:rec.closedAt,trade:rec.trade,close:rec.close,closeRest:rec.closeRest,orderLifecycle:rec.orderLifecycle,completeness:r501Completeness(rec),errors:rec.errors||[],passive:true,decisionImpact:false});}
+
+// Minimal ZIP (STORE) writer: dependency eklemeden per-trade ham dosya paketi üretir.
+const R501_CRC_TABLE=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);t[n]=c>>>0;}return t;})();
+function r501Crc32(buf){let c=0xffffffff;for(const b of buf)c=R501_CRC_TABLE[(c^b)&255]^(c>>>8);return (c^0xffffffff)>>>0;}
+function r501DosTime(d=new Date()){let year=Math.max(1980,d.getFullYear());return {time:(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),date:((year-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate()};}
+function r501ZipBuffer(entries=[]){
+  const locals=[],centrals=[];let offset=0;for(const e of entries){const name=Buffer.from(String(e.name),'utf8'),data=Buffer.isBuffer(e.data)?e.data:Buffer.from(e.data),crc=r501Crc32(data),dt=r501DosTime(e.mtime||new Date());
+    const lh=Buffer.alloc(30);lh.writeUInt32LE(0x04034b50,0);lh.writeUInt16LE(20,4);lh.writeUInt16LE(0x0800,6);lh.writeUInt16LE(0,8);lh.writeUInt16LE(dt.time,10);lh.writeUInt16LE(dt.date,12);lh.writeUInt32LE(crc,14);lh.writeUInt32LE(data.length,18);lh.writeUInt32LE(data.length,22);lh.writeUInt16LE(name.length,26);lh.writeUInt16LE(0,28);locals.push(lh,name,data);
+    const ch=Buffer.alloc(46);ch.writeUInt32LE(0x02014b50,0);ch.writeUInt16LE(20,4);ch.writeUInt16LE(20,6);ch.writeUInt16LE(0x0800,8);ch.writeUInt16LE(0,10);ch.writeUInt16LE(dt.time,12);ch.writeUInt16LE(dt.date,14);ch.writeUInt32LE(crc,16);ch.writeUInt32LE(data.length,20);ch.writeUInt32LE(data.length,24);ch.writeUInt16LE(name.length,28);ch.writeUInt16LE(0,30);ch.writeUInt16LE(0,32);ch.writeUInt16LE(0,34);ch.writeUInt16LE(0,36);ch.writeUInt32LE(0,38);ch.writeUInt32LE(offset,42);centrals.push(ch,name);offset+=lh.length+name.length+data.length;}
+  const central=Buffer.concat(centrals),end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(0,4);end.writeUInt16LE(0,6);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);end.writeUInt32LE(central.length,12);end.writeUInt32LE(offset,16);end.writeUInt16LE(0,20);return Buffer.concat([...locals,central,end]);
+}
 
 function r501Clamp(v,a,b){ return Math.max(a,Math.min(b,Number(v)||0)); }
 function r501Num(v,d=6){ const n=Number(v); return Number.isFinite(n)?Number(n.toFixed(d)):null; }
@@ -8558,7 +8659,7 @@ function r501OrderLifeMark(symbol,stage,patch={}){
   const row={...prev,symbol:sym,candidateTime:prev.candidateTime??candidateTs,decisionTime:prev.decisionTime??decisionTs,requestReceivedTime:prev.requestReceivedTime??(stage==='ORDER_REQUEST_RECEIVED'?now:null),updatedAt:now,marketSnapshots,...cleanPatch};
   row.events=[...(Array.isArray(prev.events)?prev.events:[]),{stage,ts:now,researchCaptured:!!researchSnapshot,...cleanPatch}].slice(-120);
   r501OrderLifecycleBySymbol.set(sym,row);
-  const snap=r501OrderLifeSnapshot(sym);try{for(const rec of r501ActiveEvidence.values()){if(rec?.symbol===sym){rec.orderLifecycle=snap;rec.updatedAt=now;}}}catch(_){}
+  const snap=r501OrderLifeSnapshot(sym);try{for(const rec of r501ActiveEvidence.values()){if(rec?.symbol===sym){rec.orderLifecycle=snap;rec.updatedAt=now;r501RawStage(rec,stage,{event:row.events.at(-1),researchSnapshot},now);}}}catch(_){}
   try{r501EvidenceFunnel({type:stage,symbol:sym,action:stage,authority:'TESTNET_EXECUTION',decisionImpact:false,researchCaptured:!!researchSnapshot,...cleanPatch});}catch(_){}
   return snap;
 }
@@ -8579,7 +8680,7 @@ function r501Cleanup(){
     const keep=[];
     for(const x of (r501EvidenceIndex.trades||[])){
       if(Number(x.openedAt||0)<cutoff && x.status!=='OPEN'){
-        try{fs.unlinkSync(path.join(R501_EVIDENCE_TRADES_DIR,String(x.file||'')));}catch(_){}
+        try{fs.unlinkSync(path.join(R501_EVIDENCE_TRADES_DIR,String(x.file||'')));}catch(_){} try{fs.rmSync(r501RawTradeDir(x.id),{recursive:true,force:true});}catch(_){}
       }else keep.push(x);
     }
     r501EvidenceIndex.trades=keep.slice(0,R501_EVIDENCE_MAX_TRADES); r501SaveIndex();
@@ -8610,7 +8711,7 @@ function r501EvidenceFunnel(ev={}){
 async function r501HttpJson(url,timeoutMs=9000){
   const t0=Date.now();let timer=null;
   try{
-    const ctrl=new AbortController();timer=setTimeout(()=>ctrl.abort(),timeoutMs);const res=await fetch(url,{signal:ctrl.signal,headers:{'User-Agent':'Lazarus-V592-Policy-Research/3.0','Accept':'application/json'}});const text=await res.text();let data=null;try{data=JSON.parse(text);}catch(_){data=text.slice(0,500);}return {ok:res.ok,status:res.status,data,latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(new URL(url)).pathname};
+    const ctrl=new AbortController();timer=setTimeout(()=>ctrl.abort(),timeoutMs);const res=await fetch(url,{signal:ctrl.signal,headers:{'User-Agent':'Lazarus-V592-Policy-Raw-Research/4.0','Accept':'application/json'}});const text=await res.text();let data=null;try{data=JSON.parse(text);}catch(_){data=text.slice(0,500);}return {ok:res.ok,status:res.status,data,latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(new URL(url)).pathname};
   }catch(e){return {ok:false,status:0,error:safeErrMsg(e),latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(()=>{try{return(new URL(url)).pathname}catch(_){return''}})()};}
   finally{if(timer)clearTimeout(timer);}
 }
@@ -8657,7 +8758,7 @@ async function r501RestBundle(symbol,anchorTs,label='ENTRY'){
 function r501TradePath(id){return path.join(R501_EVIDENCE_TRADES_DIR,`${r501SafeId(id)}.json.gz`);}
 function r501IndexEntry(id){return (r501EvidenceIndex.trades||[]).find(x=>x.id===id);}
 function r501Serializable(rec){
-  return {schema:rec.schema,version:rec.version,build:rec.build,session:rec.session,id:rec.id,symbol:rec.symbol,side:rec.side,status:rec.status,openedAt:rec.openedAt,closedAt:rec.closedAt||null,trade:rec.trade,policyContract:rec.policyContract||null,entryContext:rec.entryContext,decisionSnapshot:rec.decisionSnapshot||null,orderLifecycle:rec.orderLifecycle||{},initialRest:rec.initialRest||null,stageResearchSnapshots:rec.orderLifecycle?.marketSnapshots||{},preEntryAggTradesRaw:rec.preEntryAggTradesRaw||[],samples:rec.samples||[],rawTicks:rec.rawTicks||[],oiSeries:rec.oiSeries||[],checkpoints:rec.checkpoints||[],close:rec.close||null,closeRest:rec.closeRest||null,errors:rec.errors||[],createdAt:rec.createdAt,updatedAt:Date.now(),completeness:r501Completeness(rec)};
+  return {schema:rec.schema,version:rec.version,build:rec.build,session:rec.session,id:rec.id,symbol:rec.symbol,side:rec.side,status:rec.status,openedAt:rec.openedAt,closedAt:rec.closedAt||null,trade:rec.trade,policyContract:rec.policyContract||null,entryContext:rec.entryContext,decisionSnapshot:rec.decisionSnapshot||null,orderLifecycle:rec.orderLifecycle||{},initialRest:rec.initialRest||null,stageResearchSnapshots:rec.orderLifecycle?.marketSnapshots||{},preEntryAggTradesRaw:rec.preEntryAggTradesRaw||[],samples:rec.samples||[],rawTicks:rec.rawTicks||[],oiSeries:rec.oiSeries||[],checkpoints:rec.checkpoints||[],close:rec.close||null,closeRest:rec.closeRest||null,errors:rec.errors||[],rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,counts:r501RawCounts(rec),stat:r501RawStat(rec.id),finalized:!!rec._rawFinalized},createdAt:rec.createdAt,updatedAt:Date.now(),completeness:r501Completeness(rec)};
 }
 function r501Completeness(rec){
   const k=rec?.initialRest?.klines||{};const kCount=['1m','3m','5m','15m','1h','4h'].filter(tf=>k[tf]?.ok&&Array.isArray(k[tf]?.rows)&&k[tf].rows.length).length;
@@ -8665,10 +8766,10 @@ function r501Completeness(rec){
   const vals=Object.values(flags),score=Math.round(vals.filter(Boolean).length/vals.length*100);return {score,flags,klineTfCount:kCount,ticks:Number(rec?.rawTicks?.length||0),samples:Number(rec?.samples?.length||0),oiSamples:Number(rec?.oiSeries?.length||0)};
 }
 function r501UpdateIndex(rec){
-  const c=r501Completeness(rec);const ent={id:rec.id,file:path.basename(r501TradePath(rec.id)),symbol:rec.symbol.replace('USDT',''),side:rec.side,status:rec.status,openedAt:rec.openedAt,closedAt:rec.closedAt||null,entryPrice:rec.trade?.entryPrice??null,closePrice:rec.close?.closePrice??null,pnlUSDT:rec.close?.pnlUSDT??null,roiPct:rec.close?.roiPct??null,sampleCount:rec.samples?.length||0,tickCount:rec.rawTicks?.length||0,completeness:c.score,updatedAt:Date.now()};
+  const c=r501Completeness(rec),raw=r501RawStat(rec.id);const ent={id:rec.id,file:path.basename(r501TradePath(rec.id)),symbol:rec.symbol.replace('USDT',''),side:rec.side,status:rec.status,openedAt:rec.openedAt,closedAt:rec.closedAt||null,entryPrice:rec.trade?.entryPrice??null,closePrice:rec.close?.closePrice??null,pnlUSDT:rec.close?.pnlUSDT??null,roiPct:rec.close?.roiPct??null,sampleCount:rec.samples?.length||0,tickCount:rec.rawTicks?.length||0,rawCounts:r501RawCounts(rec),rawBytes:raw.bytes,rawFiles:Object.keys(raw.files||{}),rawFinalized:!!rec._rawFinalized,completeness:c.score,updatedAt:Date.now()};
   r501EvidenceIndex.trades=[ent,...(r501EvidenceIndex.trades||[]).filter(x=>x.id!==rec.id)].slice(0,R501_EVIDENCE_MAX_TRADES);r501SaveIndex();
 }
-function r501PersistRec(rec){rec.updatedAt=Date.now();r501GzipWrite(r501TradePath(rec.id),r501Serializable(rec));r501UpdateIndex(rec);}
+function r501PersistRec(rec){rec.updatedAt=Date.now();r501GzipWrite(r501TradePath(rec.id),r501Serializable(rec));if(R501_RAW_ARCHIVE_ACTIVE)r501RawManifest(rec,!!rec._rawFinalized);r501UpdateIndex(rec);}
 
 function r501CurrentBook(symbol){
   try{const s=r371FlowStore.get(normalizeSymbol(symbol));if(!s?.bookReady)return null;return r501DepthSummary({bids:[...s.book.bids.entries()],asks:[...s.book.asks.entries()]});}catch(_){return null;}
@@ -8691,21 +8792,24 @@ function r501StartPublicStreams(symbol){
   try{startCVDStream(symbol);}catch(_){}try{r371StartFlow(symbol);}catch(_){}try{r130StartCombinedAggTradeStream([normalizeSymbol(symbol)]);}catch(_){}try{startIcebergStream(symbol);}catch(_){}
 }
 function r501Sample(rec,forceBook=false){
-  if(!rec||rec._finalized)return;const now=Date.now();r501CollectRawTicks(rec);let tick=null,flow=null,cvd=null;
+  if(!rec||rec._finalized)return;const now=Date.now();const rawBefore=rec.rawTicks.length,rawAdded=r501CollectRawTicks(rec),newRawTicks=rawAdded>0?rec.rawTicks.slice(-rawAdded):[];for(const row of newRawTicks)if(r501RawAppend(rec.id,'ticks.jsonl',{schema:'LAZARUS_V592_TICK_V1',tradeId:rec.id,symbol:rec.symbol,...row}))rec._rawCounts.ticks=Number(rec._rawCounts.ticks||0)+1;let tick=null,flow=null,cvd=null;
   try{tick=getTickAnalysisRaw(rec.symbol);}catch(_){}try{const last=rec.rawTicks.at(-1)?.price||rec.trade?.entryPrice;flow=r371GetFlowAnalysisRaw(rec.symbol,last);}catch(_){}try{cvd=getCVDRaw(rec.symbol);}catch(_){}
   const book=(forceBook||now-Number(rec._lastBookAt||0)>=R501_EVIDENCE_BOOK_MS)?r501CurrentBook(rec.symbol):null;if(book)rec._lastBookAt=now;
   const price=rec.rawTicks.at(-1)?.price??tick?.currentCandle?.close??rec.trade?.entryPrice??null;
   let manager=null,liquidations=null;try{const st=trailingState.get(rec.symbol)||{};manager={currentSL:r501Num(st.currentSL??st.stopLoss,10),targetTP:r501Num(st.targetTP??st.tpPrice??st.target,10),breakEvenSet:!!st.breakEvenSet,sltpVerified:!!st.sltpVerified,peakRoi:r501Num(st.peakPnl,3),dipRoi:r501Num(st.dipPnl,3),lastManageTs:Number(st.lastManageTs||0)||null,managerAgeMs:Number(st.lastManageTs||0)?now-Number(st.lastManageTs):null,exitMode:st.exitMode||null,profitLockLevel:r501Num(st.profitLockLevel,4),r91Exit:st.r91Exit||null};}catch(_){}try{const l=liqStore.get(rec.symbol)||{};liquidations={longLiqs:(l.longLiqs||[]).slice(-100),shortLiqs:(l.shortLiqs||[]).slice(-100),lastCascade:l.lastCascade||null};}catch(_){}const sample={ts:now,elapsedMs:now-rec.openedAt,price:r501Num(price,10),cvd:{buyUSDT:r501Num(rec._buyUSDT,2),sellUSDT:r501Num(rec._sellUSDT,2),deltaUSDT:r501Num(rec._buyUSDT-rec._sellUSDT,2),stream:cvd?{buy:cvd.buy,sell:cvd.sell,delta:cvd.delta,ratio:cvd.ratio,momentum:cvd.momentum,valid:cvd.valid}:null},tick:tick?{recent30s:tick.recent30s,deltaRatio:tick.deltaRatio,deltaTrend:tick.deltaTrend,deltaFlip:tick.deltaFlip,whaleBias:tick.whaleBias,vpin:tick.vpin,microstructure:tick.microstructure}:null,flow:flow?{delta30:flow.gercekDelta30sn,delta120:flow.gercekDelta2dk,buyRatio30:flow.alisOrani30sn,direction:flow.akisYonu,acceleration:flow.ivme,tick30:flow.tick30sn,upperWall:flow.ustDuvar,lowerWall:flow.altDuvar}:null,book,liquidations,manager,freshness:r501Freshness(rec.symbol),oi:rec.oiSeries.at(-1)||null};
   rec.samples.push(sample);if(rec.samples.length>R501_EVIDENCE_MAX_SAMPLES)rec.samples.splice(0,rec.samples.length-R501_EVIDENCE_MAX_SAMPLES);
+  if(r501RawAppend(rec.id,'cvd_samples.jsonl',{schema:'LAZARUS_V592_CVD_SAMPLE_V1',tradeId:rec.id,symbol:rec.symbol,ts:sample.ts,elapsedMs:sample.elapsedMs,price:sample.price,cvd:sample.cvd,tick:sample.tick,flow:sample.flow,freshness:sample.freshness}))rec._rawCounts.cvdSamples=Number(rec._rawCounts.cvdSamples||0)+1;
+  if(book&&r501RawAppend(rec.id,'depth_samples.jsonl',{schema:'LAZARUS_V592_DEPTH_SAMPLE_V1',tradeId:rec.id,symbol:rec.symbol,ts:sample.ts,elapsedMs:sample.elapsedMs,price:sample.price,book,freshness:sample.freshness}))rec._rawCounts.depthSamples=Number(rec._rawCounts.depthSamples||0)+1;
+  r501RawLiquidations(rec,liquidations,now);r501RawManager(rec,manager,now);
   if(now-Number(rec._lastPersistAt||0)>60000){rec._lastPersistAt=now;r501PersistRec(rec);}if(now-Number(rec._lastOiAt||0)>=R501_EVIDENCE_OI_MS&&!rec._oiInflight)r501PollOI(rec);
   return sample;
 }
 async function r501PollOI(rec){
   if(!rec||rec._oiInflight||rec._finalized)return;rec._oiInflight=true;rec._lastOiAt=Date.now();
-  try{const r=await r501Pub('/fapi/v1/openInterest',{symbol:rec.symbol});const d=r?.data||{};rec.oiSeries.push({ts:Date.now(),openInterest:r501Num(d.openInterest,8),symbol:d.symbol||rec.symbol,time:Number(d.time||0)||null,ok:!!r.ok,latencyMs:r.latencyMs,error:r.error||null});if(rec.oiSeries.length>2000)rec.oiSeries.splice(0,rec.oiSeries.length-2000);}catch(e){rec.errors.push({ts:Date.now(),scope:'OI_POLL',error:safeErrMsg(e)});}finally{rec._oiInflight=false;}
+  try{const r=await r501Pub('/fapi/v1/openInterest',{symbol:rec.symbol});const d=r?.data||{};const oiRow={ts:Date.now(),openInterest:r501Num(d.openInterest,8),symbol:d.symbol||rec.symbol,time:Number(d.time||0)||null,ok:!!r.ok,latencyMs:r.latencyMs,error:r.error||null};rec.oiSeries.push(oiRow);if(r501RawAppend(rec.id,'oi_samples.jsonl',{schema:'LAZARUS_V592_OI_SAMPLE_V1',tradeId:rec.id,...oiRow}))rec._rawCounts.oiSamples=Number(rec._rawCounts.oiSamples||0)+1;if(rec.oiSeries.length>2000)rec.oiSeries.splice(0,rec.oiSeries.length-2000);}catch(e){rec.errors.push({ts:Date.now(),scope:'OI_POLL',error:safeErrMsg(e)});}finally{rec._oiInflight=false;}
 }
 async function r501Checkpoint(rec,label){
-  try{const cp={label,ts:Date.now(),local:r501Sample(rec,true)};const [depth,oi,premium]=await Promise.all([r501Pub('/fapi/v1/depth',{symbol:rec.symbol,limit:100}),r501Pub('/fapi/v1/openInterest',{symbol:rec.symbol}),r501Pub('/fapi/v1/premiumIndex',{symbol:rec.symbol})]);cp.depth=depth;cp.depthSummary=r501DepthSummary(depth.data);cp.openInterest=oi;cp.premiumIndex=premium;rec.checkpoints.push(cp);r501PersistRec(rec);}catch(e){rec.errors.push({ts:Date.now(),scope:`CHECKPOINT_${label}`,error:safeErrMsg(e)});}
+  try{const cp={label,ts:Date.now(),local:r501Sample(rec,true)};const [depth,oi,premium]=await Promise.all([r501Pub('/fapi/v1/depth',{symbol:rec.symbol,limit:100}),r501Pub('/fapi/v1/openInterest',{symbol:rec.symbol}),r501Pub('/fapi/v1/premiumIndex',{symbol:rec.symbol})]);cp.depth=depth;cp.depthSummary=r501DepthSummary(depth.data);cp.openInterest=oi;cp.premiumIndex=premium;rec.checkpoints.push(cp);r501RawStage(rec,label,cp,cp.ts);r501PersistRec(rec);}catch(e){rec.errors.push({ts:Date.now(),scope:`CHECKPOINT_${label}`,error:safeErrMsg(e)});}
 }
 function r501ScheduleCheckpoints(rec){
   const plan=[[30000,'+30s'],[60000,'+1m'],[180000,'+3m'],[300000,'+5m'],[900000,'+15m'],[1800000,'+30m']];rec._timeouts=[];for(const[ms,label]of plan){const t=setTimeout(()=>{if(!rec._finalized)r501Checkpoint(rec,label).catch(()=>null);},ms);try{t.unref?.();}catch(_){}rec._timeouts.push(t);}
@@ -8716,17 +8820,17 @@ function r501EntryContext(row={},state={}){
 function r501EvidenceOpen(row={},state={}){
   if(!R501_EVIDENCE_ACTIVE||BINANCE_EXECUTION_ENV!=='TESTNET'||!row?.id)return null;const id=String(row.id);if(r501ActiveEvidence.has(id))return r501ActiveEvidence.get(id);
   const rec={schema:R501_EVIDENCE_SCHEMA,version:3,build:LAZARUS_BUILD,policyContract:{mode:'BACKTEST_POLICY_PARITY',sourceSha256:V592_POLICY_SOURCE_SHA256,researchPassive:true,decisionImpact:false,orderBlocking:false,sizingImpact:false},session:TESTNET_SESSION_RESET_ID,id,symbol:normalizeSymbol(row.symbol),side:normalizeSide(row.side),status:'OPEN',openedAt:Number(row.openedAt||Date.now()),closedAt:null,trade:{id,rowBuild:row.build||LAZARUS_BUILD,entryPrice:row.entryPrice??null,quantity:row.quantity??null,leverage:row.leverage??null,marginUSDT:row.marginUSDT??null,entryOrderId:row.entryOrderId??null},entryContext:r501EntryContext(row,state),decisionSnapshot:r501LatestDecisionBySymbol.get(normalizeSymbol(row.symbol))||null,orderLifecycle:{...(state?.orderLifecycle||r501OrderLifeSnapshot(row.symbol)||{}),candidateTime:(state?.orderLifecycle||r501OrderLifeSnapshot(row.symbol)||{})?.candidateTime??r501LatestDecisionBySymbol.get(normalizeSymbol(row.symbol))?.decisionTimeMs??null,decisionTime:(state?.orderLifecycle||r501OrderLifeSnapshot(row.symbol)||{})?.decisionTime??r501LatestDecisionBySymbol.get(normalizeSymbol(row.symbol))?.decisionTimeMs??null,orderSendTime:(state?.orderLifecycle||r501OrderLifeSnapshot(row.symbol)||{})?.orderSendTime??state?.orderSendTime??null,orderAckTime:(state?.orderLifecycle||r501OrderLifeSnapshot(row.symbol)||{})?.orderAckTime??state?.orderAckTime??null,fillTime:(state?.orderLifecycle||r501OrderLifeSnapshot(row.symbol)||{})?.fillTime??Number(row.openedAt||Date.now()),entryOrderId:state?.entryOrderId??row?.entryOrderId??null,slOrderId:state?.slOrderId??state?.slAlgoId??null,tpOrderId:state?.tpOrderId??state?.tpAlgoId??null,sltpVerified:!!state?.sltpVerified,openedAt:Number(row.openedAt||Date.now())},initialRest:null,samples:[],rawTicks:[],oiSeries:[],checkpoints:[],close:null,closeRest:null,errors:[],createdAt:Date.now(),updatedAt:Date.now(),_buyUSDT:0,_sellUSDT:0,_lastRawTs:0,_seenTickKeys:new Set(),_lastBookAt:0,_lastOiAt:0,_oiInflight:false,_lastPersistAt:0,_finalized:false};
-  r501ActiveEvidence.set(id,rec);r501StartPublicStreams(rec.symbol);r501Sample(rec,true);rec._timer=setInterval(()=>r501Sample(rec,false),R501_EVIDENCE_SAMPLE_MS);try{rec._timer.unref?.();}catch(_){}r501ScheduleCheckpoints(rec);r501PersistRec(rec);
+  r501ActiveEvidence.set(id,rec);r501RawInit(rec);r501RawSeedStages(rec);r501StartPublicStreams(rec.symbol);r501Sample(rec,true);rec._timer=setInterval(()=>r501Sample(rec,false),R501_EVIDENCE_SAMPLE_MS);try{rec._timer.unref?.();}catch(_){}r501ScheduleCheckpoints(rec);r501PersistRec(rec);
   r501OrderLifeMark(rec.symbol,'EVIDENCE_RECORDER_OPEN',{tradeId:id,openedAt:rec.openedAt});
   r501EvidenceFunnel({type:'TRADE_OPEN',symbol:rec.symbol,tradeId:id,action:'OPEN',authority:'TESTNET_EXECUTION',reason:r501TrimText(rec.entryContext?.entryReason,300),score:rec.entryContext?.score,tier:rec.entryContext?.tier});
-  r501RestBundle(rec.symbol,rec.openedAt,'ENTRY').then(b=>{rec.initialRest=b;const pre=b?.aggTrades?.data||[];rec.preEntryAggTradesRaw=Array.isArray(pre)?pre.slice(-1000):[];r501PersistRec(rec);}).catch(e=>{rec.errors.push({ts:Date.now(),scope:'ENTRY_REST',error:safeErrMsg(e)});r501PersistRec(rec);});
+  r501RestBundle(rec.symbol,rec.openedAt,'ENTRY').then(b=>{rec.initialRest=b;const pre=b?.aggTrades?.data||[];rec.preEntryAggTradesRaw=Array.isArray(pre)?pre.slice(-1000):[];r501RawEntryBundle(rec);r501RawStage(rec,'ENTRY_BUNDLE_CAPTURED',{anchorTs:rec.openedAt,aggTrades:rec.preEntryAggTradesRaw.length,klines:Object.fromEntries(Object.entries(b?.klines||{}).map(([tf,x])=>[tf,{ok:x?.ok,lastCloseTime:x?.lastCloseTime,lagBars:x?.lagBars}]))},Date.now());r501PersistRec(rec);}).catch(e=>{rec.errors.push({ts:Date.now(),scope:'ENTRY_REST',error:safeErrMsg(e)});r501PersistRec(rec);});
   return rec;
 }
 async function r501EvidenceClose(row={},state={},cls={}){
-  if(!R501_EVIDENCE_ACTIVE||!row?.id)return null;const id=String(row.id);let rec=r501ActiveEvidence.get(id);if(!rec){const old=r501GzipRead(r501TradePath(id));if(old){rec={...old,_buyUSDT:Number(old.samples?.at(-1)?.cvd?.buyUSDT||0),_sellUSDT:Number(old.samples?.at(-1)?.cvd?.sellUSDT||0),_lastRawTs:Number(old.rawTicks?.at(-1)?.ts||0),_seenTickKeys:new Set(),_finalized:false};}else rec=r501EvidenceOpen({...row,status:'OPEN'},state);}if(!rec||rec._finalized)return rec;
+  if(!R501_EVIDENCE_ACTIVE||!row?.id)return null;const id=String(row.id);let rec=r501ActiveEvidence.get(id);if(!rec){const old=r501GzipRead(r501TradePath(id));if(old){rec={...old,_buyUSDT:Number(old.samples?.at(-1)?.cvd?.buyUSDT||0),_sellUSDT:Number(old.samples?.at(-1)?.cvd?.sellUSDT||0),_lastRawTs:Number(old.rawTicks?.at(-1)?.ts||0),_seenTickKeys:new Set(),_finalized:false};}else rec=r501EvidenceOpen({...row,status:'OPEN'},state);}if(!rec||rec._finalized)return rec;r501RawInit(rec);
   rec.status='FINALIZING';rec.closedAt=Number(row.closedAt||Date.now());rec.close={closedAt:rec.closedAt,closePrice:row.closePrice??cls.closePrice??null,pnlUSDT:row.pnlUSDT??cls.realizedPnl??null,roiPct:row.roiPct??cls.roiPct??null,exitReason:row.exitReason??cls.code??null,exitLabel:row.exitLabel??cls.label??null,resultNote:row.resultNote??null,sl:row.sl??state?.currentSL??null,tp:row.tp??state?.targetTP??null,peakRoi:row.zirveRoi??state?.peakPnl??null,dipRoi:row.dipRoi??state?.dipPnl??null};
   try{clearInterval(rec._timer);}catch(_){}for(const t of(rec._timeouts||[])){try{clearTimeout(t);}catch(_){}}r501Sample(rec,true);
-  try{rec.closeRest=await r501RestBundle(rec.symbol,rec.closedAt,'CLOSE');}catch(e){rec.errors.push({ts:Date.now(),scope:'CLOSE_REST',error:safeErrMsg(e)});}rec.orderLifecycle={...(rec.orderLifecycle||{}),closeTime:rec.closedAt};r501OrderLifeMark(rec.symbol,'TRADE_CLOSE_RECORDED',{tradeId:id,closeTime:rec.closedAt,pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct});rec.status='CLOSED';rec._finalized=true;r501PersistRec(rec);r501ActiveEvidence.delete(id);
+  try{rec.closeRest=await r501RestBundle(rec.symbol,rec.closedAt,'CLOSE');}catch(e){rec.errors.push({ts:Date.now(),scope:'CLOSE_REST',error:safeErrMsg(e)});}rec.orderLifecycle={...(rec.orderLifecycle||{}),closeTime:rec.closedAt};r501OrderLifeMark(rec.symbol,'TRADE_CLOSE_RECORDED',{tradeId:id,closeTime:rec.closedAt,pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct});r501RawStage(rec,'CLOSE',{close:rec.close,closeRestSummary:{capturedAt:rec.closeRest?.capturedAt,aggTradesSummary:rec.closeRest?.aggTradesSummary,depthSummary:rec.closeRest?.depthSummary}},rec.closedAt);rec.status='CLOSED';rec._finalized=true;r501RawCloseBundle(rec);rec._rawFinalized=true;r501RawManifest(rec,true);r501PersistRec(rec);r501ActiveEvidence.delete(id);
   r501EvidenceFunnel({type:'TRADE_CLOSE',symbol:rec.symbol,tradeId:id,action:'CLOSE',authority:'TESTNET_EXECUTION',reason:r501TrimText(rec.close?.exitReason||rec.close?.exitLabel,240),pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct,completeness:r501Completeness(rec).score});return rec;
 }
 function r501EvidenceDecision(snap={},ctx={}){
@@ -8736,7 +8840,7 @@ function r501EvidenceDecision(snap={},ctx={}){
 
 function r501Status(){
   const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;
-  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'BACKTEST_POLICY_PARITY_WITH_PASSIVE_RESEARCH_V3',decisionImpact:false,orderBlocking:false,sizingImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,policyParity:true,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
+  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'BACKTEST_POLICY_PARITY_WITH_PASSIVE_RAW_RESEARCH_V4',decisionImpact:false,orderBlocking:false,sizingImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,policyParity:true,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
 }
 function r501LoadFunnel(limit=200){
   const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
@@ -8748,7 +8852,7 @@ return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="v
 <h2>Pasif araştırma arşivi</h2><div id="ready" class="note">Yükleniyor…</div>
 <h2>Backtest referansı ve Testnet örneği</h2><div id="compare" class="grid"></div>
 <h2>Karar funnel</h2><div id="funnel" class="card"></div>
-<h2>Kanıtlı işlemler</h2><div id="trades" class="card">Yükleniyor…</div>
+<h2>Kanıtlı işlemler</h2><div class="card" style="margin-bottom:10px"><a class="btn" href="/api/evidence/dataset.csv">CSV dataset</a> <a class="btn" href="/api/evidence/funnel.ndjson">Funnel NDJSON</a></div><div id="trades" class="card">Yükleniyor…</div>
 <h2>Seçilen işlem ayrıntısı</h2><div id="detail" class="card mut">Tablodan işlem seç.</div>
 </main><script>
 const esc=s=>String(s??'—').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
@@ -8759,9 +8863,10 @@ function metric(label,val,sub,cls){return '<div class="card"><div class="mut">'+
 async function load(){STATUS=await fetch('/api/evidence/status',{cache:'no-store'}).then(r=>r.json());const tr=await fetch('/api/evidence/trades?limit=250',{cache:'no-store'}).then(r=>r.json());TRADES=tr.trades||[];render();}
 function render(){const s=STATUS,c=s.counts||{},r=s.researchReadiness||{};document.getElementById('head').innerHTML=metric('Kapalı kanıtlı işlem',c.closed||0,'aktif '+(c.activeRecorders||0),'g')+metric('Ortalama tamlık','%'+n(s.averageCompleteness,1),'hedef ≥ %95','b')+metric('Funnel kayıt',c.funnel||0,'hedef ≥ 200','y')+metric('Disk',(Number(s.diskBytes||0)/1048576).toFixed(1)+' MB',esc(s.stateDir),'');document.getElementById('ready').innerHTML='<b class="g">'+esc(r.status||'PASSIVE_COLLECTION')+'</b><br>'+esc(r.note||'Kayıt sistemi karar vermez ve emir engellemez.');const h=s.historicalReference||{};document.getElementById('compare').innerHTML=metric('Backtest işlem',h.trades||547,'policy replay','b')+metric('Backtest PF',h.pf||1.815,'exchange-parity değil','b')+metric('Testnet kapalı',c.closed||0,'kanıtlı gerçek zaman','g')+metric('Canlı enablement','KAPALI','insan incelemesi zorunlu','r');renderFunnel();renderTrades();}
 function renderFunnel(){const f=STATUS.funnelStats||{},top=o=>Object.entries(o||{}).sort((a,b)=>b[1]-a[1]).slice(0,12).map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+x[1]+'</td></tr>').join('');document.getElementById('funnel').innerHTML='<div class="two"><div><b>Aksiyon</b><table>'+top(f.byAction)+'</table></div><div><b>Otorite</b><table>'+top(f.byAuthority)+'</table></div></div>';}
-function renderTrades(){if(!TRADES.length){document.getElementById('trades').innerHTML='<div class="mut">Henüz kanıtlı işlem yok. İlk Testnet işlem açıldığında otomatik kayıt başlar.</div>';return;}document.getElementById('trades').innerHTML='<table><thead><tr><th>TR zamanı</th><th>Coin</th><th>Yön</th><th>Durum</th><th>PnL</th><th>ROI</th><th>Örnek</th><th>Tick</th><th>Tamlık</th></tr></thead><tbody>'+TRADES.map(x=>'<tr style="cursor:pointer" onclick="detail(\''+encodeURIComponent(x.id)+'\')"><td>'+fmtTs(x.openedAt)+'</td><td><b>'+esc(x.symbol)+'</b></td><td>'+esc(x.side)+'</td><td>'+esc(x.status)+'</td><td>'+n(x.pnlUSDT,3)+'</td><td>'+n(x.roiPct,2)+'%</td><td>'+esc(x.sampleCount)+'</td><td>'+esc(x.tickCount)+'</td><td><div class="bar"><div class="fill" style="width:'+Math.max(0,Math.min(100,Number(x.completeness||0)))+'%"></div></div>%'+esc(x.completeness)+'</td></tr>').join('')+'</tbody></table>';}
+function renderTrades(){if(!TRADES.length){document.getElementById('trades').innerHTML='<div class="mut">Henüz kanıtlı işlem yok. Funnel çalışıyor; ilk Testnet fill ile ham recorder başlar.</div>';return;}document.getElementById('trades').innerHTML='<table><thead><tr><th>TR zamanı</th><th>Coin</th><th>Yön</th><th>Durum</th><th>PnL</th><th>ROI</th><th>Örnek</th><th>Tick</th><th>Ham MB</th><th>Tamlık</th><th>Dosya</th></tr></thead><tbody>'+TRADES.map(x=>'<tr><td style="cursor:pointer" onclick="detail(\''+encodeURIComponent(x.id)+'\')">'+fmtTs(x.openedAt)+'</td><td><b>'+esc(x.symbol)+'</b></td><td>'+esc(x.side)+'</td><td>'+esc(x.status)+'</td><td>'+n(x.pnlUSDT,3)+'</td><td>'+n(x.roiPct,2)+'%</td><td>'+esc(x.sampleCount)+'</td><td>'+esc(x.tickCount)+'</td><td>'+n(Number(x.rawBytes||0)/1048576,2)+'</td><td><div class="bar"><div class="fill" style="width:'+Math.max(0,Math.min(100,Number(x.completeness||0)))+'%"></div></div>%'+esc(x.completeness)+'</td><td><a class="btn" href="/api/evidence/raw/'+encodeURIComponent(x.id)+'/bundle.zip">Ham ZIP</a> <button onclick="detail(\''+encodeURIComponent(x.id)+'\')">Dosyalar</button></td></tr>').join('')+'</tbody></table>';}
 function lineSvg(rows,key,label){const pts=(rows||[]).map(x=>({t:Number(x.ts),v:Number(key(x))})).filter(x=>Number.isFinite(x.t)&&Number.isFinite(x.v));if(pts.length<2)return '<div class="mut">'+label+': veri yetersiz</div>';const W=900,H=220,p=28,min=Math.min(...pts.map(x=>x.v)),max=Math.max(...pts.map(x=>x.v)),rng=max-min||1;const xy=pts.map((x,i)=>[(p+i/(pts.length-1)*(W-2*p)).toFixed(1),(p+(max-x.v)/rng*(H-2*p)).toFixed(1)]);return '<div><b>'+esc(label)+'</b><svg viewBox="0 0 '+W+' '+H+'"><polyline fill="none" stroke="#78adff" stroke-width="2" points="'+xy.map(x=>x.join(',')).join(' ')+'"/><text x="6" y="15" fill="#8ea0ba" font-size="11">max '+n(max,2)+'</text><text x="6" y="210" fill="#8ea0ba" font-size="11">min '+n(min,2)+'</text></svg></div>';}
-async function detail(id){const d=await fetch('/api/evidence/trade/'+id,{cache:'no-store'}).then(r=>r.json());if(!d.ok){document.getElementById('detail').textContent=d.error||'okunamadı';return;}const x=d.trade,s=x.samples||[],c=x.completeness||{};document.getElementById('detail').innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b>'+esc(x.symbol)+' '+esc(x.side)+'</b><div class="mut">'+fmtTs(x.openedAt)+' → '+fmtTs(x.closedAt)+'</div></div><a class="btn" href="/api/evidence/export/'+encodeURIComponent(x.id)+'">JSON indir</a></div><div class="grid" style="margin-top:10px">'+metric('Tamlık','%'+esc(c.score),'tick '+esc(c.ticks),'g')+metric('CVD delta',n(s.at(-1)?.cvd?.deltaUSDT,2)+'$','buy '+n(s.at(-1)?.cvd?.buyUSDT,0)+' / sell '+n(s.at(-1)?.cvd?.sellUSDT,0),'b')+metric('OI örnek',esc((x.oiSeries||[]).length),'current OI','y')+metric('PnL',n(x.close?.pnlUSDT,3)+'$','ROI '+n(x.close?.roiPct,2)+'%','')+'</div><div class="two" style="margin-top:10px">'+lineSvg(s,z=>z.price,'Fiyat')+lineSvg(s,z=>z.cvd?.deltaUSDT,'CVD delta')+lineSvg(x.oiSeries,z=>z.openInterest,'Open Interest')+lineSvg(s,z=>z.book?.imbalancePct,'Order-book imbalance')+'</div><pre style="white-space:pre-wrap;background:#09121f;border:1px solid #263750;border-radius:9px;padding:10px;max-height:380px;overflow:auto">'+esc(JSON.stringify({entryContext:x.entryContext,completeness:x.completeness,entryFreshness:s[0]?.freshness,close:x.close,errors:x.errors},null,2))+'</pre>';}
+async function detail(id){const [d,raw]=await Promise.all([fetch('/api/evidence/trade/'+id,{cache:'no-store'}).then(r=>r.json()),fetch('/api/evidence/raw/'+id,{cache:'no-store'}).then(r=>r.json()).catch(()=>({ok:false}))]);if(!d.ok){document.getElementById('detail').textContent=d.error||'okunamadı';return;}const x=d.trade,s=x.samples||[],c=x.completeness||{},files=raw?.stat?.files||{},links=raw?.links?.files||{},fileBtns=Object.keys(files).map(n=>'<a class="btn" href="'+esc(links[n])+'">'+esc(n)+' ('+nbytes(files[n]?.bytes)+')</a>').join(' ');document.getElementById('detail').innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b>'+esc(x.symbol)+' '+esc(x.side)+'</b><div class="mut">'+fmtTs(x.openedAt)+' → '+fmtTs(x.closedAt)+'</div></div><div><a class="btn" href="/api/evidence/export/'+encodeURIComponent(x.id)+'">Özet JSON</a> <a class="btn" href="/api/evidence/raw/'+encodeURIComponent(x.id)+'/bundle.zip">Ham ZIP</a></div></div><div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">'+fileBtns+'</div><div class="grid" style="margin-top:10px">'+metric('Tamlık','%'+esc(c.score),'tick '+esc(c.ticks),'g')+metric('CVD delta',n(s.at(-1)?.cvd?.deltaUSDT,2)+'$','buy '+n(s.at(-1)?.cvd?.buyUSDT,0)+' / sell '+n(s.at(-1)?.cvd?.sellUSDT,0),'b')+metric('OI örnek',esc((x.oiSeries||[]).length),'current OI','y')+metric('PnL',n(x.close?.pnlUSDT,3)+'$','ROI '+n(x.close?.roiPct,2)+'%','')+'</div><div class="two" style="margin-top:10px">'+lineSvg(s,z=>z.price,'Fiyat')+lineSvg(s,z=>z.cvd?.deltaUSDT,'CVD delta')+lineSvg(x.oiSeries,z=>z.openInterest,'Open Interest')+lineSvg(s,z=>z.book?.imbalancePct,'Order-book imbalance')+'</div><pre style="white-space:pre-wrap;background:#09121f;border:1px solid #263750;border-radius:9px;padding:10px;max-height:380px;overflow:auto">'+esc(JSON.stringify({entryContext:x.entryContext,completeness:x.completeness,rawManifest:raw?.manifest,entryFreshness:s[0]?.freshness,close:x.close,errors:x.errors},null,2))+'</pre>';}
+const nbytes=v=>{const n=Number(v||0);return n>1048576?(n/1048576).toFixed(1)+'MB':(n/1024).toFixed(1)+'KB'};
 load().catch(e=>document.getElementById('trades').textContent='Rapor yüklenemedi: '+e.message);setInterval(load,30000);
 </script></body></html>`;
 }
@@ -8771,6 +8876,10 @@ app.get('/api/evidence/trades',(req,res)=>{const limit=Math.max(1,Math.min(500,N
 app.get('/api/evidence/trade/:id',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),obj=r501GzipRead(r501TradePath(id));res.set('Cache-Control','no-store');if(!obj)return res.status(404).json({ok:false,error:'EVIDENCE_NOT_FOUND'});res.json({ok:true,trade:obj});});
 app.get('/api/evidence/funnel',(req,res)=>{const limit=Math.max(1,Math.min(2000,Number(req.query.limit)||200));res.set('Cache-Control','no-store');res.json({ok:true,stats:r501FunnelStats,rows:r501LoadFunnel(limit)});});
 app.get('/api/evidence/export/:id',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),obj=r501GzipRead(r501TradePath(id));if(!obj)return res.status(404).send('EVIDENCE_NOT_FOUND');res.set('Content-Type','application/json; charset=utf-8');res.set('Content-Disposition',`attachment; filename="${id}.evidence.json"`);res.send(JSON.stringify(obj,null,2));});
+app.get('/api/evidence/raw/:id',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),obj=r501GzipRead(r501TradePath(id));if(!obj)return res.status(404).json({ok:false,error:'EVIDENCE_NOT_FOUND'});const rec={...obj,_rawCounts:r501IndexEntry(id)?.rawCounts||{}};const manifest=r501ReadJson(r501RawFile(id,'manifest.json'),null)||r501RawManifest(rec,false),stat=r501RawStat(id);res.set('Cache-Control','no-store');res.json({ok:true,id,manifest,stat,links:{bundle:`/api/evidence/raw/${encodeURIComponent(id)}/bundle.zip`,files:Object.keys(stat.files||{}).reduce((a,n)=>(a[n]=`/api/evidence/raw/${encodeURIComponent(id)}/file/${encodeURIComponent(n)}`,a),{})}});});
+app.get('/api/evidence/raw/:id/file/:name',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),name=path.basename(decodeURIComponent(req.params.name||''));if(!R501_RAW_FILES.includes(name))return res.status(400).send('RAW_FILE_NOT_ALLOWED');const file=r501RawFile(id,name);try{const st=fs.statSync(file);if(!st.isFile())throw new Error('not file');res.set('Cache-Control','no-store');res.set('Content-Type',name.endsWith('.json')?'application/json; charset=utf-8':name.endsWith('.jsonl')?'application/x-ndjson; charset=utf-8':'text/plain; charset=utf-8');res.set('Content-Disposition',`attachment; filename="${id}.${name}"`);fs.createReadStream(file).pipe(res);}catch(_){res.status(404).send('RAW_FILE_NOT_FOUND');}});
+app.get('/api/evidence/raw/:id/bundle.zip',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),dir=r501RawTradeDir(id);let entries=[],total=0;for(const name of R501_RAW_FILES){try{const file=path.join(dir,name),st=fs.statSync(file);if(!st.isFile())continue;total+=st.size;if(total>R501_RAW_ZIP_MAX_MB*1048576)return res.status(413).json({ok:false,error:'RAW_ZIP_TOO_LARGE',maxMB:R501_RAW_ZIP_MAX_MB,individualFiles:`/api/evidence/raw/${encodeURIComponent(id)}`});entries.push({name,data:fs.readFileSync(file),mtime:st.mtime});}catch(_){}}if(!entries.length)return res.status(404).send('RAW_ARCHIVE_NOT_FOUND');try{const zip=r501ZipBuffer(entries);res.set('Cache-Control','no-store');res.set('Content-Type','application/zip');res.set('Content-Disposition',`attachment; filename="${id}.raw-evidence.zip"`);res.send(zip);}catch(e){res.status(500).json({ok:false,error:safeErrMsg(e)});}});
+app.get('/api/evidence/funnel.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="decision_funnel.ndjson"');fs.createReadStream(R501_EVIDENCE_FUNNEL_PATH).pipe(res);}catch(_){res.status(404).send('FUNNEL_NOT_FOUND');}});
 function r501CsvCell(v){const s=typeof v==='object'&&v!==null?JSON.stringify(v):String(v??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
 function r501Cp(rec,label){return (rec?.checkpoints||[]).find(x=>String(x?.label||'')===label)||null;}
 function r501Pct(a,b){a=Number(a);b=Number(b);return a>0&&Number.isFinite(b)?r501Num((b/a-1)*100,5):null;}
@@ -8797,7 +8906,7 @@ function r501DatasetRows(){
   }return rows;
 }
 app.get('/api/evidence/dataset.csv',(_req,res)=>{const rows=r501DatasetRows(),cols=rows.length?Object.keys(rows[0]):['id','symbol','side','decisionTime','fillTime','pnlUSDT','roiPct','completeness'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>r501CsvCell(r[c])).join(','))].join('\n');res.set('Cache-Control','no-store');res.set('Content-Type','text/csv; charset=utf-8');res.set('Content-Disposition','attachment; filename="lazarus_v592_testnet_research_dataset_v3.csv"');res.send('\ufeff'+csv);});
-app.get('/api/backtest-parity/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'BACKTEST_POLICY_PARITY_WITH_PASSIVE_RESEARCH_V3',sourceServerSha256:V592_POLICY_SOURCE_SHA256,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,stageSnapshots:['decision','orderRequest','orderSend','orderAck','fillObserved','fillReconciled','protectionVerified','+30s','+1m','+3m','+5m','+15m','+30m','close'],activePolicy:['v5.9.2 OHLCV/chart candidate logic','R495 acceptance','R497 PIT soft-scale','Fixed41/buffer/max2/risk4','R496 shadow'],executionSafety:['Testnet credentials/base','positionRisk strict truth + single-flight','max positions','margin and precision','exchange order acceptance','real SL/TP verification','reduce-only close'],limitations:['Full candidate-feature generator used to create candidates_radar_features.csv is not included in the source package; policy parity is enforceable, full historical signal regeneration is not independently reproducible.']});});
+app.get('/api/backtest-parity/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'BACKTEST_POLICY_PARITY_WITH_PASSIVE_RAW_RESEARCH_V4',sourceServerSha256:V592_POLICY_SOURCE_SHA256,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,files:R501_RAW_FILES,zipEndpoint:'/api/evidence/raw/:id/bundle.zip'},stageSnapshots:['decision','orderRequest','orderSend','orderAck','fillObserved','fillReconciled','protectionVerified','+30s','+1m','+3m','+5m','+15m','+30m','close'],activePolicy:['v5.9.2 OHLCV/chart candidate logic','R495 acceptance','R497 PIT soft-scale','Fixed41/buffer/max2/risk4','R496 shadow'],executionSafety:['Testnet credentials/base','positionRisk strict truth + single-flight','max positions','margin and precision','exchange order acceptance','real SL/TP verification','reduce-only close'],limitations:['Full candidate-feature generator used to create candidates_radar_features.csv is not included in the source package; policy parity is enforceable, full historical signal regeneration is not independently reproducible.']});});
 
 app.get('/api/evidence/report',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
 app.get('/rapor/kanit',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
@@ -24720,14 +24829,14 @@ app.get('/api/testnet/status',(_req,res)=>{
     sourceServerSha256:'5bd66193f328ca74e86fb608ea2e5ebe45b52816abab1817177925ea0e51fe1d',executionEnvironment:BINANCE_EXECUTION_ENV,
     marketDataEnvironment:BINANCE_MARKET_DATA_ENV,executionBase:'USD-M Futures Testnet',hardLockedTestnet:true,credentialsReady:!!(c.apiKey&&c.apiSecret),
     credentialSource:c.source,session:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR,
-    parityPolicy:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,policyParity:true,fullCandidateRegenerationIndependentlyReproducible:false,r501Gate:false,r502Gate:false,liveResearchDecisionImpact:false,liveResearchSizingImpact:false,liveResearchOrderBlocking:false,evidenceMode:'PASSIVE_RESEARCH_RECORDER_V3'}});
+    parityPolicy:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,policyParity:true,fullCandidateRegenerationIndependentlyReproducible:false,r501Gate:false,r502Gate:false,liveResearchDecisionImpact:false,liveResearchSizingImpact:false,liveResearchOrderBlocking:false,evidenceMode:'PASSIVE_RAW_RESEARCH_RECORDER_V4'}});
 });
 app.get('/api/exact-parity/status',(_req,res)=>{
   res.set('Cache-Control','no-store');
   res.json({ok:true,build:LAZARUS_BUILD,exactSourceSha256:'5bd66193f328ca74e86fb608ea2e5ebe45b52816abab1817177925ea0e51fe1d',
     strategyAuthority:'LAZARUS v5.9.2 BACKTEST POLICY / PIT GAINER SOFT-SCALE / FIXED41',forbiddenAdditions:{R498:false,R501DecisionGate:false,R502DecisionGate:false,microFreshnessHardVeto:false,strict6TFVeto:false},
     allowedAdapterDifferences:['signed REST base -> Binance USD-M Futures Testnet','credentials -> BINANCE_TESTNET_API_KEY/SECRET','state files isolated under /data','virtual equity starts at 102 USDT','new entries stop after 72 hours'],
-    existingStrategyTelemetry:['trade ledger','R495 status','R497 PIT status','R496 shadow','R49356 diagnostic shadow','research recorder V3 + precise order lifecycle','CSV research dataset'],passiveEvidence:{enabled:R501_EVIDENCE_ACTIVE,decisionImpact:false,orderBlocking:false,statusEndpoint:'/api/evidence/status',reportEndpoint:'/api/evidence/report'}});
+    existingStrategyTelemetry:['trade ledger','R495 status','R497 PIT status','R496 shadow','R49356 diagnostic shadow','research recorder V4 + raw per-trade archive + precise order lifecycle','CSV research dataset'],passiveEvidence:{enabled:R501_EVIDENCE_ACTIVE,decisionImpact:false,orderBlocking:false,statusEndpoint:'/api/evidence/status',reportEndpoint:'/api/evidence/report'}});
 });
 
 app.listen(PORT, async () => {
