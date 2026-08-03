@@ -1,6 +1,6 @@
 {
-  "name": "lazarus-v592-backtest-policy-testnet-raw-research-v4",
-  "version": "5.9.2-policy-raw-research-v4",
+  "name": "lazarus-v592-testnet-graph-validated-multi-source-v4-5",
+  "version": "5.9.2-testnet-graph-validated-multi-source-v4.5.0",
   "private": true,
   "main": "server.js",
   "scripts": {
