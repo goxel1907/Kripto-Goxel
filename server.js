@@ -10,7 +10,243 @@ const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const r495Exact = require('./r495_exact_closed1m');
+// ─────────────────────────────────────────────────────────────────────────────
+// V4.7.1 SELF-CONTAINED EXACT CLOSED-1M R495
+// Generated directly from r495_exact_closed1m.js
+// Source SHA-256: 39d5558e604b1c3a479309bd13c579724a9d1b3e9ad40f081fc7b1b89e567a7d
+// No external local module is required at Railway runtime.
+// ─────────────────────────────────────────────────────────────────────────────
+const r495Exact = (() => {
+function n(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : NaN;
+}
+function clamp(x, lo, hi) {
+  return Math.max(lo, Math.min(hi, x));
+}
+function mean(xs) {
+  return xs.length ? xs.reduce((a, x) => a + x, 0) / xs.length : NaN;
+}
+
+function candidateMetaFromCompact5m(raw = [], times = []) {
+  if (!Array.isArray(raw)) return null;
+  const rows = raw.map((x, i) => ({
+    ts: n(x?.[5] ?? times?.[i]),
+    open: n(x?.[0]),
+    high: n(x?.[1]),
+    low: n(x?.[2]),
+    close: n(x?.[3]),
+  })).filter(x =>
+    Number.isFinite(x.ts) && x.ts > 0 &&
+    Number.isFinite(x.open) && Number.isFinite(x.high) &&
+    Number.isFinite(x.low) && Number.isFinite(x.close) &&
+    x.high >= x.low && x.close > 0
+  );
+  if (rows.length < 10) return null;
+
+  const tr = rows.map((x, i) => {
+    const prevClose = i > 0 ? rows[i - 1].close : x.close;
+    return Math.max(
+      x.high - x.low,
+      Math.abs(x.high - prevClose),
+      Math.abs(x.low - prevClose)
+    );
+  });
+  const atrWindow = tr.slice(-14);
+  if (atrWindow.length < 10) return null;
+  const atr = mean(atrWindow);
+  const last = rows.at(-1);
+  if (!(atr > 0) || !last) return null;
+
+  const recentLow = Math.min(...rows.slice(-7).map(x => x.low));
+  const rawStop = Math.min(recentLow, last.close - 1.45 * atr);
+  const slPctRaw = (last.close - rawStop) / last.close * 100;
+  const slPct = clamp(slPctRaw, 1.2, 8.0);
+  const stop = last.close * (1 - slPct / 100);
+
+  return {
+    schema: 'LAZARUS_R495_CLOSED5M_CANDIDATE_V1',
+    candidateTs: Math.trunc(last.ts),
+    candidatePrice: last.close,
+    atr,
+    stop,
+    slPct,
+    recentLow,
+    source: 'CLOSED_5M_OHLCV',
+  };
+}
+
+function parseBinance1m(raw = []) {
+  return (Array.isArray(raw) ? raw : []).map(x => {
+    const quoteVolume = n(x?.[7]);
+    const takerBuyQuote = n(x?.[10]);
+    const ratio = quoteVolume > 0 && Number.isFinite(takerBuyQuote)
+      ? takerBuyQuote / quoteVolume
+      : 0.5; // historical backtest fillna(.5)
+    return {
+      openTime: Math.trunc(n(x?.[0])),
+      open: n(x?.[1]),
+      high: n(x?.[2]),
+      low: n(x?.[3]),
+      close: n(x?.[4]),
+      closeTime: Math.trunc(n(x?.[6])),
+      quoteVolume,
+      takerBuyQuote,
+      takerRatio: Number.isFinite(ratio) ? ratio : 0.5,
+    };
+  }).filter(x =>
+    Number.isFinite(x.openTime) && Number.isFinite(x.closeTime) &&
+    Number.isFinite(x.open) && Number.isFinite(x.high) &&
+    Number.isFinite(x.low) && Number.isFinite(x.close)
+  ).sort((a, b) => a.closeTime - b.closeTime);
+}
+
+function evaluateClosed1m({
+  rawBars = [],
+  candidateTs,
+  candidatePrice,
+  atr,
+  now = Date.now(),
+  takerRatioMin = 0.50,
+  adverseAtrMax = 0.85,
+  driftAtrMax = 0.85,
+  driftAtrMin = -0.35,
+  tacticalFloorAtr = -0.15,
+  maxWindowMs = 190000,
+}) {
+  candidateTs = n(candidateTs);
+  candidatePrice = n(candidatePrice);
+  atr = n(atr);
+  if (!(candidateTs > 0 && candidatePrice > 0 && atr > 0)) {
+    return { final: false, action: 'PUSU', scale: 0, code: 'R495_CANDIDATE_META_MISSING' };
+  }
+
+  const bars = parseBinance1m(rawBars)
+    .filter(x => x.closeTime > candidateTs && x.closeTime <= now)
+    .slice(0, 3);
+
+  if (bars.length < 3) {
+    return {
+      final: false,
+      action: 'PUSU',
+      scale: 0,
+      code: 'R495_CLOSED_1M_WAIT',
+      barsClosed: bars.length,
+      barsNeeded: 3,
+      nextDueAt: candidateTs + 180000,
+      bars,
+    };
+  }
+
+  const firstGap = bars[0].closeTime - candidateTs;
+  const gap12 = bars[1].closeTime - bars[0].closeTime;
+  const gap23 = bars[2].closeTime - bars[1].closeTime;
+  const contiguous =
+    firstGap >= 55000 && firstGap <= 65000 &&
+    gap12 >= 59000 && gap12 <= 61000 &&
+    gap23 >= 59000 && gap23 <= 61000;
+
+  if (!contiguous || bars[2].closeTime > candidateTs + maxWindowMs) {
+    return {
+      final: true,
+      action: 'PUSU',
+      scale: 0,
+      code: 'R495_CLOSED_1M_WINDOW_GAP',
+      firstGap,
+      gap12,
+      gap23,
+      bars,
+    };
+  }
+
+  const votes = bars.reduce(
+    (sum, x) => sum + (x.close > x.open && x.takerRatio >= takerRatioMin ? 1 : 0),
+    0
+  );
+  const finalPrice = bars[2].close;
+  const lowMin = Math.min(...bars.map(x => x.low));
+  const adverseAtr = (candidatePrice - lowMin) / atr;
+  const driftAtr = (finalPrice - candidatePrice) / atr;
+
+  const evidence = {
+    votes,
+    finalPrice,
+    entryTs: bars[2].closeTime,
+    adverseAtr,
+    driftAtr,
+    bars: bars.map(x => ({
+      openTime: x.openTime,
+      closeTime: x.closeTime,
+      open: x.open,
+      high: x.high,
+      low: x.low,
+      close: x.close,
+      quoteVolume: x.quoteVolume,
+      takerBuyQuote: x.takerBuyQuote,
+      takerRatio: x.takerRatio,
+      vote: x.close > x.open && x.takerRatio >= takerRatioMin,
+    })),
+  };
+
+  if (adverseAtr > adverseAtrMax) {
+    return { final: true, action: 'PUSU', scale: 0, code: 'R495_ADVERSE_ATR_LIMIT', ...evidence };
+  }
+  if (driftAtr > driftAtrMax) {
+    return { final: true, action: 'PUSU', scale: 0, code: 'R495_DRIFT_TOO_HIGH', ...evidence };
+  }
+  if (driftAtr < driftAtrMin) {
+    return { final: true, action: 'PUSU', scale: 0, code: 'R495_DRIFT_TOO_LOW', ...evidence };
+  }
+  if (votes === 3 && finalPrice >= candidatePrice) {
+    return { final: true, action: 'MARKET', scale: 1.0, code: 'R495_3_CLOSED_1M_MARKET', ...evidence };
+  }
+  if (votes >= 2 && finalPrice >= candidatePrice + tacticalFloorAtr * atr) {
+    return { final: true, action: 'TACTICAL', scale: 0.60, code: 'R495_2PLUS_CLOSED_1M_TACTICAL', ...evidence };
+  }
+  return { final: true, action: 'PUSU', scale: 0, code: 'R495_CLOSED_1M_NOT_ACCEPTED', ...evidence };
+}
+
+function buildAcceptedPlan({ acceptance, candidate, score = 0, setup = 'GENERIC' }) {
+  if (!acceptance || !['MARKET', 'TACTICAL'].includes(String(acceptance.action))) {
+    return { ok: false, code: 'NO_ACCEPTANCE' };
+  }
+  const entry = n(acceptance.finalPrice);
+  const stop = n(candidate?.stop);
+  if (!(entry > 0 && stop > 0 && stop < entry)) {
+    return { ok: false, code: 'STOP_ENTRY_DIRECTION_INVALID', entry, stop };
+  }
+  const entrySlPct = (entry - stop) / entry * 100;
+  if (entrySlPct > 10 || entrySlPct < 0.5) {
+    return { ok: false, code: 'ENTRY_SL_PCT_OUT_OF_RANGE', entry, stop, entrySlPct };
+  }
+  const setupName = String(setup || 'GENERIC').toUpperCase();
+  const runner = Number(score) >= 82 ||
+    ['PATLAMA', 'MOMENTUM_KIRILIMI', 'SIKISMA_KIRILIMI'].includes(setupName);
+  const risk = Math.max(entry - stop, entry * 0.001);
+  const target = Math.min(entry + (runner ? 3.0 : 2.4) * risk, entry * 1.12);
+  return {
+    ok: true,
+    schema: 'LAZARUS_R495_EXACT_PLAN_V1',
+    entry,
+    entryTs: acceptance.entryTs,
+    stop,
+    target,
+    entrySlPct,
+    risk,
+    runner,
+    targetR: runner ? 3.0 : 2.4,
+    targetCapPct: 12,
+  };
+}
+
+return Object.freeze({
+  candidateMetaFromCompact5m,
+  parseBinance1m,
+  evaluateClosed1m,
+  buildAcceptedPlan,
+});
+})();
+
 
 const app = express();
 app.use(cors());
@@ -28,7 +264,7 @@ const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
-const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1';
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1_SC1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1_SC1';
 const TESTNET_SESSION_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'EXACT_V592_72H_1';
 const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
 const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_exact_testnet_session.json');
@@ -130,7 +366,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_RISK4_FIXED41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_1_SELFCONTAINED_RISK4_FIXED41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -174,7 +410,7 @@ function r592NeutralizeDecisionData(data={}){
 // girdileri ve yürütme güvenliği. Lane B (RESEARCH): order-book/OI/funding/likidasyon,
 // raw aggTrade/tick-CVD, kaynak tazeliği, bağımsız Fibonacci ölçümü, fill gecikmesi ve
 // exchange rejection. Lane B hiçbir koşulda karar, miktar veya emir kapısı değildir.
-const V592_MEASUREMENT_MODE='V47_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH';
+const V592_MEASUREMENT_MODE='V471_SELF_CONTAINED_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH';
 const V592_POST_R495_SOFT_VETO_SHADOW_ONLY=String(process.env.V592_POST_R495_SOFT_VETO_SHADOW_ONLY??'1')!=='0';
 const V592_WR_CHALLENGER_SHADOW_ACTIVE=String(process.env.V592_WR_CHALLENGER_SHADOW??'1')!=='0';
 const V592_WR_CHALLENGER_MIN_RVOL=Math.max(0,Number(process.env.V592_WR_CHALLENGER_MIN_RVOL||0.90));
@@ -5727,7 +5963,7 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   if(r493EntrySafety.blocked)return {active:true,action:r493EntrySafety.action,riskScale:0,priority:r493EntrySafety.action==='PUSU',leverageBoost:false,r493EntrySafety,reason:`R493 giriş kapısı [${r493EntrySafety.code}]: ${r493EntrySafety.reason}`};
   if(V592_EXACT_BACKTEST_AUTHORITY){
     if(!planOk)return {active:false,action:'REJECT',riskScale:0,r493EntrySafety,reason:'execution plan direction invalid'};
-    return {active:false,action:'MARKET',riskScale:1,r493EntrySafety,r300Shadow:decision?.r300Shadow||null,r486Shadow:{quality,topRisk,timing,bias:story?.bias||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},reason:'V4.7 exact backtest authority: R300/R486 shadow; R495 next'};
+    return {active:false,action:'MARKET',riskScale:1,r493EntrySafety,r300Shadow:decision?.r300Shadow||null,r486Shadow:{quality,topRisk,timing,bias:story?.bias||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},reason:'V4.7.1 exact backtest authority: R300/R486 shadow; R495 next'};
   }
   if(!R486_SINGLE_AUTHORITY_ACTIVE)return {active:false,action:entryTruth?.marketAllowed?'MARKET':'PUSU',riskScale:1,r493EntrySafety,reason:'legacy'};
   if(explicitStoryAgainst)return {active:true,action:'REJECT',riskScale:0,reason:`grafik/emir yönü açıkça çelişkili: ${story?.bias||'?'} / ${flow}`};
@@ -9222,7 +9458,7 @@ function r501EvidenceDecision(snap={},ctx={}){
 
 function r501Status(){
   const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;
-  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V47_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,exactClosed1mR495:true,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
+  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V471_SELF_CONTAINED_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,exactClosed1mR495:true,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
 }
 function r501LoadFunnel(limit=200){
   const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
