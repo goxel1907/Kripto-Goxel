@@ -1,12 +1,11 @@
 {
-  "name": "lazarus-v592-testnet-exact-closed1m-r495-v4-7",
-  "version": "5.9.2-testnet-exact-closed1m-r495-v4.7.0",
+  "name": "lazarus-v592-testnet-exact-closed1m-r495-v4-7-2-signed-priority",
+  "version": "5.9.2-testnet-exact-closed1m-r495-v4.7.2",
   "private": true,
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js",
-    "test:r495": "node V47_R495_REGRESSION_TEST.js"
+    "check": "node --check server.js"
   },
   "engines": {
     "node": ">=22"
