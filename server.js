@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 // ─────────────────────────────────────────────────────────────────────────────
-// V4.7.1 SELF-CONTAINED EXACT CLOSED-1M R495
+// V4.7.2 SIGNED-PRIORITY EXACT CLOSED-1M R495
 // Generated directly from r495_exact_closed1m.js
 // Source SHA-256: 39d5558e604b1c3a479309bd13c579724a9d1b3e9ad40f081fc7b1b89e567a7d
 // No external local module is required at Railway runtime.
@@ -264,7 +264,7 @@ const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
-const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1_SC1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1_SC1';
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_2_SP1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_2_SP1';
 const TESTNET_SESSION_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'EXACT_V592_72H_1';
 const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
 const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_exact_testnet_session.json');
@@ -366,7 +366,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_1_SELFCONTAINED_RISK4_FIXED41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_2_SIGNED_PRIORITY_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -410,7 +410,7 @@ function r592NeutralizeDecisionData(data={}){
 // girdileri ve yürütme güvenliği. Lane B (RESEARCH): order-book/OI/funding/likidasyon,
 // raw aggTrade/tick-CVD, kaynak tazeliği, bağımsız Fibonacci ölçümü, fill gecikmesi ve
 // exchange rejection. Lane B hiçbir koşulda karar, miktar veya emir kapısı değildir.
-const V592_MEASUREMENT_MODE='V471_SELF_CONTAINED_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH';
+const V592_MEASUREMENT_MODE='V472_SIGNED_PRIORITY_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH';
 const V592_POST_R495_SOFT_VETO_SHADOW_ONLY=String(process.env.V592_POST_R495_SOFT_VETO_SHADOW_ONLY??'1')!=='0';
 const V592_WR_CHALLENGER_SHADOW_ACTIVE=String(process.env.V592_WR_CHALLENGER_SHADOW??'1')!=='0';
 const V592_WR_CHALLENGER_MIN_RVOL=Math.max(0,Number(process.env.V592_WR_CHALLENGER_MIN_RVOL||0.90));
@@ -740,31 +740,35 @@ function r48638SyncGovHeaders(res) {
     if (Number.isFinite(o) && o >= 0) binanceGov.usedOrders = Math.max(Number(binanceGov.usedOrders||0), o);
   } catch(_) {}
 }
+const BINANCE_WEIGHT_LIMIT_1M = 2400;
+const BINANCE_SIGNED_PRIORITY_CEILING = 2320;
+const BINANCE_PUBLIC_RESEARCH_CEILING = 900;
 function r48638GovLoadRatio() {
   _resetGovWindowIfNeeded();
-  return Math.max(0, Math.min(1.25, Number(binanceGov.usedWeight||0) / 1800));
+  return Math.max(0, Math.min(1.25, Number(binanceGov.usedWeight||0) / BINANCE_WEIGHT_LIMIT_1M));
 }
 async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
   const s=String(scope||'');
-  const priority=/(EMERGENCY|R495_EXACT|positionRisk|\/fapi\/v[123]\/(order|leverage|marginType|balance|account))/i.test(s);
+  const executionCritical=/(EMERGENCY|R495_EXACT|positionRisk|SIGNED:.*\/fapi\/v[123]\/(order|leverage|marginType|balance|account|positionRisk))/i.test(s);
   const job = async () => {
     _resetGovWindowIfNeeded();
-    const now = Date.now();
+    const started=Date.now(),now=Date.now();
     if (binanceGov.backoffUntil > now && !s.includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
-    // 700 weight yürütme/positionRisk/R495 rezervi: araştırma workerları emir hattını boğamaz.
-    const weightLimit = priority ? 1800 : 1100;
+    const weightLimit = executionCritical ? BINANCE_SIGNED_PRIORITY_CEILING : BINANCE_PUBLIC_RESEARCH_CEILING;
     if (binanceGov.usedWeight + weight > weightLimit || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
+      if(/positionRisk/i.test(s)){posRiskCache.phase='GOVERNOR_WAIT';posRiskCache.lastGovernorWaitMs=Math.max(0,wait);}
       await sleep(wait);
       _resetGovWindowIfNeeded();
     }
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
-    const baseDelay = orderWeight ? 80 : (priority ? 25 : (s.includes('PUBLIC') ? 160 : 90));
+    const baseDelay = orderWeight ? 50 : (executionCritical ? 15 : (s.includes('PUBLIC') ? 180 : 100));
     await sleep(baseDelay);
+    if(/positionRisk/i.test(s))posRiskCache.lastGovernorWaitMs=Math.max(0,Date.now()-started-baseDelay);
   };
-  const key=priority?'priorityQ':'q';
+  const key=executionCritical?'priorityQ':'q';
   const prev = binanceGov[key].catch(()=>{});
   binanceGov[key] = prev.then(job, job);
   return binanceGov[key];
@@ -1270,6 +1274,12 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
 
 async function bPub(path, qs='') {
   const now=Date.now();
+  _resetGovWindowIfNeeded();
+  const passiveResearch=/\/(depth|openInterest|fundingRate|premiumIndex|futures\/data|ticker\/bookTicker)/i.test(String(path||''));
+  if(passiveResearch&&Number(binanceGov.usedWeight||0)>=BINANCE_PUBLIC_RESEARCH_CEILING){
+    const e=new Error(`PUBLIC_RESEARCH_BUDGET_PAUSED usedWeight=${Number(binanceGov.usedWeight||0)}`);
+    e.code='PUBLIC_RESEARCH_BUDGET_PAUSED';throw e;
+  }
   if(now-reqWindow>60000){reqCount=0;reqWindow=now;}
   reqCount++;
   if(reqCount>800){const w=60000-(now-reqWindow);await sleep(w+1000);reqCount=0;reqWindow=Date.now();}
@@ -1327,7 +1337,7 @@ async function syncBinanceTime(force=false) {
   const now = Date.now();
   if (!force && now - lastTimeSync < 10*60*1000) return binanceTimeOffset;
   try {
-    const r = await fetch(`${BINANCE_EXECUTION_FAPI}/fapi/v1/time`, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(`${BINANCE_EXECUTION_FAPI}/fapi/v1/time`, { signal: AbortSignal.timeout(2000) });
     const d = await r.json();
     if (d && d.serverTime) {
       binanceTimeOffset = Number(d.serverTime) - Date.now();
@@ -1452,8 +1462,12 @@ const posRiskCache = {
   lastErrorType: null,
   consecutiveFailures: 0,
   watchdogWarnedAt: 0,
+  phase: 'IDLE',
+  lastDurationMs: null,
+  lastGovernorWaitMs: 0,
+  lastAttemptAt: 0,
 };
-const POS_RISK_TTL_NORMAL = 180000;  // RAW-V4.1: pozisyon yokken 180sn; emir öncesi forceFresh gerçeği korur
+const POS_RISK_TTL_NORMAL = 600000;  // boş hesapta 10dk; emir öncesi forceFresh taze gerçeği yine zorunlu kılar
 const POS_RISK_TTL_ACTIVE = 12000;   // RAW-V4: açık pozisyonda 10sn manager için 12sn cache; stale-while-revalidate
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 12000; // V4.7: priority lane; 12sn üstü anormal
@@ -1478,7 +1492,7 @@ function resetStuckPositionRiskInflight(reason='watchdog') {
   const age = posRiskCache.fetching ? Date.now() - Number(posRiskCache.inflightStartedAt || 0) : 0;
   if (posRiskCache.fetching && age > POS_RISK_INFLIGHT_TIMEOUT_MS && Date.now()-Number(posRiskCache.watchdogWarnedAt||0)>60000) {
     posRiskCache.watchdogWarnedAt=Date.now();
-    try { pushCritical('POSITION_RISK_SLOW_INFLIGHT', `positionRisk isteği ${Math.round(age/1000)}sn sürüyor; single-flight korunuyor`, {reason, ageMs:age}, 'WARNING'); } catch(_) {}
+    try { pushCritical('POSITION_RISK_SLOW_INFLIGHT', `positionRisk ${Math.round(age/1000)}sn sürüyor; faz=${posRiskCache.phase||'UNKNOWN'}; governor=${Math.round(Number(posRiskCache.lastGovernorWaitMs||0)/1000)}sn`, {reason, ageMs:age,phase:posRiskCache.phase,lastGovernorWaitMs:posRiskCache.lastGovernorWaitMs}, 'WARNING'); } catch(_) {}
   }
   return false;
 }
@@ -1491,21 +1505,29 @@ function filterPositionRiskRows(rows, params={}) {
   return sym ? rows.filter(p => String(p.symbol || '').toUpperCase() === sym) : rows;
 }
 async function fetchPositionRiskRaw(apiKey, apiSecret) {
-  let firstErr=null;
+  const started=Date.now();let firstErr=null;
+  posRiskCache.lastAttemptAt=started;
   try{
-    const rows=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{},5000);
-    posRiskCache.lastSource='v2/positionRisk';
-    return Array.isArray(rows)?rows:[];
-  }catch(e){firstErr=e;if(isPositionRiskRateLimitError(e))throw e;}
-  // Testnet positionRisk taşıması bozulursa aynı signed gerçekliği account.positions ile doğrula.
-  try{
-    const acc=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account',{},5000);
+    posRiskCache.phase='ACCOUNT_PRIMARY';
+    const acc=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account',{},3500);
     const rows=Array.isArray(acc?.positions)?acc.positions:[];
     posRiskCache.lastSource='v2/account.positions';
+    posRiskCache.lastDurationMs=Date.now()-started;
+    posRiskCache.phase='SUCCESS';
     return rows;
+  }catch(e){firstErr=e;if(isPositionRiskRateLimitError(e))throw e;}
+  try{
+    posRiskCache.phase='POSITION_RISK_FALLBACK';
+    const rows=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{},3500);
+    posRiskCache.lastSource='v2/positionRisk';
+    posRiskCache.lastDurationMs=Date.now()-started;
+    posRiskCache.phase='SUCCESS';
+    return Array.isArray(rows)?rows:[];
   }catch(e){
+    posRiskCache.lastDurationMs=Date.now()-started;
+    posRiskCache.phase='FAILED';
     if(isPositionRiskRateLimitError(e))throw e;
-    throw new Error(`positionRisk+account fallback başarısız: ${safeErrMsg(firstErr)} | ${safeErrMsg(e)}`);
+    throw new Error(`account.positions+positionRisk başarısız: ${safeErrMsg(firstErr)} | ${safeErrMsg(e)}`);
   }
 }
 
@@ -1571,6 +1593,8 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   }
 
   posRiskCache.fetching = true;
+  posRiskCache.phase='STARTING';
+  posRiskCache.lastGovernorWaitMs=0;
   posRiskCache.inflightStartedAt = Date.now();
   posRiskCache.inflight = (async () => {
     try {
@@ -1583,6 +1607,8 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
       posRiskCache.lastErrorType = null;
       posRiskCache.lastSuccessAt = Date.now();
       posRiskCache.consecutiveFailures = 0;
+      posRiskCache.lastDurationMs=Date.now()-Number(posRiskCache.inflightStartedAt||Date.now());
+      posRiskCache.phase='SUCCESS';
       return posRiskCache.data;
     } catch(e) {
       const msg = e.message || '';
@@ -1590,6 +1616,8 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
       posRiskCache.lastErrorAt = Date.now();
       posRiskCache.lastErrorType = isPositionRiskRateLimitError(e)?'RATE_LIMIT':(/timeout|abort/i.test(posRiskCache.lastError)?'TIMEOUT':'ERROR');
       posRiskCache.consecutiveFailures = Number(posRiskCache.consecutiveFailures||0)+1;
+      posRiskCache.lastDurationMs=Date.now()-Number(posRiskCache.inflightStartedAt||Date.now());
+      posRiskCache.phase='FAILED';
       if (msg.includes('-1003') || msg.includes('Too many requests') || msg.includes('BINANCE_BACKOFF_ACTIVE') || msg.includes('HTTP 418') || msg.includes('HTTP 429')) {
         const extraMs = Math.max(POS_RISK_RATELIMIT_MS, getBinanceBackoffMs());
         posRiskCache.rateLimitUntil = Date.now() + extraMs;
@@ -1602,6 +1630,7 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
       posRiskCache.fetching = false;
       posRiskCache.inflight = null;
       posRiskCache.inflightStartedAt = 0;
+      if(posRiskCache.phase!=='SUCCESS'&&posRiskCache.phase!=='FAILED')posRiskCache.phase='IDLE';
     }
   })();
 
@@ -9458,7 +9487,7 @@ function r501EvidenceDecision(snap={},ctx={}){
 
 function r501Status(){
   const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;
-  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V471_SELF_CONTAINED_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,exactClosed1mR495:true,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
+  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V472_SIGNED_PRIORITY_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,exactClosed1mR495:true,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,phase:posRiskCache.phase,lastDurationMs:posRiskCache.lastDurationMs,lastGovernorWaitMs:posRiskCache.lastGovernorWaitMs,lastAttemptAt:posRiskCache.lastAttemptAt,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
 }
 function r501LoadFunnel(limit=200){
   const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
