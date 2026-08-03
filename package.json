@@ -1,6 +1,6 @@
 {
-  "name": "lazarus-v592-testnet-graph-validated-multi-source-v4-5",
-  "version": "5.9.2-testnet-graph-validated-multi-source-v4.5.0",
+  "name": "lazarus-v592-testnet-exact-backtest-authority-v4-6",
+  "version": "5.9.2-testnet-exact-backtest-authority-v4.6.0",
   "private": true,
   "main": "server.js",
   "scripts": {
