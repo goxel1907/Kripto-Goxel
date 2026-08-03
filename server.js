@@ -27,7 +27,7 @@ const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
-const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_GRAPH_VALIDATED_MULTI_SOURCE_72H_4_5_1').trim() || 'V592_GRAPH_VALIDATED_MULTI_SOURCE_72H_4_5_1';
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_BACKTEST_AUTHORITY_72H_4_6_1').trim() || 'V592_EXACT_BACKTEST_AUTHORITY_72H_4_6_1';
 const TESTNET_SESSION_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'EXACT_V592_72H_1';
 const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
 const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_exact_testnet_session.json');
@@ -129,7 +129,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_GRAPH_VALIDATED_MULTI_SOURCE_V4_5_R495_RISK4_FIXED41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_BACKTEST_AUTHORITY_V4_6_R495_RISK4_FIXED41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -140,6 +140,10 @@ const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_GRAPH_VALIDATED_MULTI_SOURCE_V4_5_R49
 // exchange acceptance, real SL/TP verification and reduce-only exits.
 const V592_POLICY_PARITY_MODE = true;
 const V592_RESEARCH_PASSIVE_ONLY = true;
+// V4.6: Giriş otoritesi yalnız backtestte gözlenebilir kapalı OHLCV/PIT + V4.5 + R495.
+// R300 ve R486 hikâye sonucu aynı anda SHADOW olarak kaydedilir; emir kararı vermez.
+const V592_EXACT_BACKTEST_AUTHORITY = BINANCE_EXECUTION_ENV === 'TESTNET'
+  && String(process.env.V592_EXACT_BACKTEST_AUTHORITY ?? '1') !== '0';
 const V592_POLICY_SOURCE_SHA256 = '5bd66193f328ca74e86fb608ea2e5ebe45b52816abab1817177925ea0e51fe1d';
 const V592_POLICY_SOURCE_BUILD = 'R493_V5_9_2_PIT_GAINER_SOFTSCALE_R495_RISK4_FIXED41_R496_SHADOW_10X';
 const V592_RESEARCH_FIELDS = Object.freeze(['CVD','AGGTRADE','ORDER_FLOW','DEPTH','OPEN_INTEREST','FUNDING','LONG_SHORT_RATIOS','LIQUIDATIONS','SOURCE_FRESHNESS','R49356_DIAGNOSTIC_CONSENSUS','EOM_OHLCV_SHADOW','ATC_PRICE_ACTION_SHADOW','COMBINED_CHANNEL_SHADOW']);
@@ -184,6 +188,15 @@ function v592Canonical(v){
   const out={};for(const k of Object.keys(v).sort()){const x=v[k];if(x!==undefined&&!['apiKey','apiSecret','signature','secret'].includes(k))out[k]=v592Canonical(x);}return out;
 }
 function v592Sha(v){try{return crypto.createHash('sha256').update(JSON.stringify(v592Canonical(v))).digest('hex');}catch(_){return null;}}
+function v592PitSelectionMeta(coin={},decision={}){
+  const explicit=String(coin?.selectionReason||decision?.selectionReason||'').toUpperCase();
+  const rank=Number(coin?.r497Rank??coin?.gainerRank??99);
+  const hits=Number(coin?.r497PersistenceHits??0);
+  if(explicit==='TOP_GAINER')return {selectionReason:'TOP_GAINER',provenance:'EXPLICIT_TOP_GAINER',rank,hits};
+  // Canlı PIT karşılığı: R497 TOP10 içinde 2/3 kalıcılık. Bucket adı karar nedeni değildir.
+  if(rank<=10&&hits>=2)return {selectionReason:'TOP_GAINER',provenance:'R497_PIT_TOP10_2OF3',rank,hits};
+  return {selectionReason:null,provenance:'NOT_PIT_TOP_GAINER',rank,hits};
+}
 function v592BacktestObservableDecisionContract(snap={},ctx={}){
   const c=ctx?.coin||{},d=ctx?.decisionChain||{},ld=snap?.liveDecision||{},a=ctx?.analysis||{};
   const input={
@@ -325,17 +338,21 @@ function v592V45Compute(rowsByTf={},meta={},eom=null,atc=null){
   const orbRows=sessionRows.slice(0,3),orbHigh=orbRows.length===3?Math.max(...orbRows.map(z=>z.h)):null,orbLow=orbRows.length===3?Math.min(...orbRows.map(z=>z.l)):null,orbBreak=orbHigh!==null&&x.ts>=sessionStart+15*60000&&x.c>orbHigh,orbAccepted=orbBreak&&last2.every(z=>z.c>orbHigh),orbRetest=orbAccepted&&x.l<=orbHigh+.22*atr&&x.c>orbHigh;
   const auctionAccepted=last2.every(z=>z.c>priorHigh)&&Math.min(...last2.map(z=>z.l))>priorHigh-.15*atr,failedBreak=x.h>priorHigh+.1*atr&&x.c<priorHigh;
   const rangeAtr=a=>(Math.max(...a.map(z=>z.h))-Math.min(...a.map(z=>z.l)))/atr,r20=rangeAtr(last20),r10=rangeAtr(last10),r5v=rangeAtr(last5),contraction=r5v<=.72*r10&&r10<=.82*r20,volDry=v592V45Median(last5.map(z=>z.v))<=.85*v592V45Median(r5.slice(-20,-5).map(z=>z.v)),vcpBreak=contraction&&x.c>priorHigh&&rvol>=1.05&&((x.c-x.l)/Math.max(1e-12,x.h-x.l))>=.68;
-  const selectionReason=String(meta.selectionReason||'').toUpperCase(),bucket=String(meta.bucket||'').toUpperCase(),topGainer=selectionReason==='TOP_GAINER'||/TOP_GAINER|TOP24_PINNED_TOP10|PINNED_TOP10/.test(bucket),rank=Number(meta.pitRank??meta.rank??99),hits=Number(meta.pitHits??0),improve=Number(meta.rankImprove24??0),relativeStrength=rank<=10&&(hits>=2||improve>=1),mtf=Number(af.mtfTrendCount||0);
+  const selectionReason=String(meta.selectionReason||'').toUpperCase(),bucket=String(meta.bucket||'').toUpperCase(),topGainer=selectionReason==='TOP_GAINER',rank=Number(meta.pitRank??meta.rank??99),hits=Number(meta.pitHits??0),improve=Number(meta.rankImprove24??0),relativeStrength=rank<=10&&(hits>=2||improve>=1),mtf=Number(af.mtfTrendCount||0);
   const vwapReclaim=sessionVwap!==null&&x.l<=sessionVwap+.18*atr&&x.c>sessionVwap,avwapReclaim=anchoredVwap!==null&&x.l<=anchoredVwap+.18*atr&&x.c>anchoredVwap,pocReclaim=poc!==null&&x.l<=poc+.2*atr&&x.c>poc;
   let smb=(orbRetest?28:orbAccepted?20:orbBreak?10:0)+(auctionAccepted?22:0)+(rvol>=1.5?12:rvol>=1.1?8:0)+(topGainer?15:relativeStrength?8:0)+5*Math.min(3,mtf)/3-(failedBreak?12:0);smb=Math.max(0,Math.min(100,smb));
   let dale=(sessionVwap!==null&&x.c>sessionVwap?14:0)+(dayVwap!==null&&x.c>dayVwap?10:0)+(weekVwap!==null&&x.c>weekVwap?8:0)+(vwapReclaim?24:0)+(avwapReclaim?24:anchoredVwap!==null&&x.c>anchoredVwap?8:0)+(pocReclaim?16:poc!==null&&x.c>poc?8:0);dale=Math.max(0,Math.min(100,dale));
   let vcp=(contraction?30:0)+(volDry?20:0)+(vcpBreak?30:0)+(relativeStrength?20:0);vcp=Math.max(0,Math.min(100,vcp));
   let synergy=0;if(relativeStrength&&(orbAccepted||auctionAccepted||vcpBreak))synergy+=7;if((vwapReclaim||avwapReclaim)&&Number(ef.fib50HoldCount||0)>=1)synergy+=6;if(af.bosRecent&&pocReclaim)synergy+=4;if(topGainer&&vcpBreak)synergy+=5;
   const score=Math.min(100,.24*Number(ef.score||0)+.16*Number(af.score||0)+.24*smb+.22*dale+.14*vcp+synergy),fo=Number(meta.firstObstacleRR||af.firstObstacleRR||0),reasons=[];if(V592_V45_REQUIRE_TOP_GAINER&&!topGainer)reasons.push('NOT_TOP_GAINER');if(score<V592_V45_MS_SCORE_MIN)reasons.push('MS_SCORE_LT_MIN');if(fo<V592_V45_FIRST_OBSTACLE_RR_MIN)reasons.push('FIRST_OBSTACLE_RR_LT_MIN');const eligible=reasons.length===0;
-  const out={schema:'LAZARUS_V592_V45_MULTI_SOURCE_V1',valid:true,status:V592_V45_TESTNET_ACTIVE?'TESTNET_ACTIVE_PRE_R495_SELECTOR':'SHADOW_ONLY',ruleId:V592_V45_RULE_ID,eligible,reasons,features:{score:+score.toFixed(4),eomScore:Number(ef.score||0),atcScore:Number(af.score||0),smbScore:+smb.toFixed(4),daleScore:+dale.toFixed(4),vcpScore:+vcp.toFixed(4),synergy,selectionReason:selectionReason||null,bucket:bucket||null,topGainer,relativeStrength,firstObstacleRR:fo,rvol:+rvol.toFixed(5),sessionVwap,dayVwap,weekVwap,anchoredVwap,poc,orbHigh,orbLow,orbBreak,orbAccepted,orbRetest,auctionAccepted,failedBreak,vwapReclaim,avwapReclaim,pocReclaim,vcpContraction:contraction,volumeDryUp:volDry,vcpBreakout:vcpBreak},thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE,strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false};v592V45Stats.evaluated++;if(eligible)v592V45Stats.eligible++;else v592V45Stats.blocked++;v592V45Stats.last={...out,at:Date.now(),symbol:meta.symbol||null};return out;
+  const out={schema:'LAZARUS_V592_V45_MULTI_SOURCE_V1',valid:true,status:V592_V45_TESTNET_ACTIVE?'TESTNET_ACTIVE_PRE_R495_SELECTOR':'SHADOW_ONLY',ruleId:V592_V45_RULE_ID,eligible,reasons,features:{score:+score.toFixed(4),eomScore:Number(ef.score||0),atcScore:Number(af.score||0),smbScore:+smb.toFixed(4),daleScore:+dale.toFixed(4),vcpScore:+vcp.toFixed(4),synergy,selectionReason:selectionReason||null,selectionProvenance:meta.selectionProvenance||null,bucket:bucket||null,topGainer,relativeStrength,firstObstacleRR:fo,rvol:+rvol.toFixed(5),sessionVwap,dayVwap,weekVwap,anchoredVwap,poc,orbHigh,orbLow,orbBreak,orbAccepted,orbRetest,auctionAccepted,failedBreak,vwapReclaim,avwapReclaim,pocReclaim,vcpContraction:contraction,volumeDryUp:volDry,vcpBreakout:vcpBreak},thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE,strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false};v592V45Stats.evaluated++;if(eligible)v592V45Stats.eligible++;else v592V45Stats.blocked++;v592V45Stats.last={...out,at:Date.now(),symbol:meta.symbol||null};return out;
 }
 function v592V45RowsFromRaw(data={}){const raw=data.candles||{},times=raw._times||{},rows={};for(const tf of ['5m','15m','1h','4h'])rows[tf]=r483Rows(raw[tf]||[],times[tf]||[]).filter(x=>!x.live).slice(-120);return rows;}
-function v592V45FromLiveContext(coin={},analysis={},dc={},story={}){const data=r481MekanikVeri(coin,analysis,dc),rows=v592V45RowsFromRaw(data),meta={symbol:normalizeSymbol(coin.fullSymbol||coin.symbol),selectionReason:coin.selectionReason||dc.selectionReason||null,bucket:coin.r497Bucket||coin.r54Bucket||coin.source||null,firstObstacleRR:story?.entryTruth?.firstObstacleRR??dc?.r483Story?.entryTruth?.firstObstacleRR??null,pitRank:coin.r497Rank||coin.gainerRank,pitHits:coin.r497PersistenceHits||0,rankImprove24:coin.r497RankImprove24||0},eom=v592EomCompute(rows,meta),atc=v592AtcCompute(rows,meta);return v592V45Compute(rows,meta,eom,atc);}
+function v592V45FromLiveContext(coin={},analysis={},dc={},story={}){
+  const data=r481MekanikVeri(coin,analysis,dc),rows=v592V45RowsFromRaw(data),sel=v592PitSelectionMeta(coin,dc);
+  const meta={symbol:normalizeSymbol(coin.fullSymbol||coin.symbol),selectionReason:sel.selectionReason,selectionProvenance:sel.provenance,bucket:coin.r497Bucket||coin.r54Bucket||coin.source||null,firstObstacleRR:story?.entryTruth?.firstObstacleRR??dc?.r483Story?.entryTruth?.firstObstacleRR??null,pitRank:sel.rank,pitHits:sel.hits,rankImprove24:coin.r497RankImprove24||0};
+  const eom=v592EomCompute(rows,meta),atc=v592AtcCompute(rows,meta);return v592V45Compute(rows,meta,eom,atc);
+}
 function v592V45FromRestBundle(bundle={},meta={}){const rows={};for(const tf of ['5m','15m','1h','4h'])rows[tf]=v592EomRowsFromPack(bundle?.klines?.[tf]);const eom=v592EomCompute(rows,meta),atc=v592AtcCompute(rows,meta);return v592V45Compute(rows,meta,eom,atc);}
 
 function v592ClassifyExchangeRejection(err){
@@ -458,6 +475,7 @@ let r150LastScanBeginTs = 0;
 // Kesin Binance limitine yaslanmak yerine güvenli alt eşik kullanılır; WS verisi analizde önceliklidir.
 const binanceGov = {
   q: Promise.resolve(),
+  priorityQ: Promise.resolve(),
   minuteStart: Date.now(),
   usedWeight: 0,
   usedOrders: 0,
@@ -490,28 +508,29 @@ function r48638GovLoadRatio() {
   return Math.max(0, Math.min(1.25, Number(binanceGov.usedWeight||0) / 1800));
 }
 async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
+  const s=String(scope||'');
+  const priority=/(EMERGENCY|positionRisk|\/fapi\/v[123]\/(order|leverage|marginType|balance|account))/i.test(s);
   const job = async () => {
     _resetGovWindowIfNeeded();
     const now = Date.now();
-    if (binanceGov.backoffUntil > now && !String(scope).includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
+    if (binanceGov.backoffUntil > now && !s.includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
-    // Konservatif eşikler: gerçek limitlere yaklaşmadan sıraya al.
-    // R310Q: 850→2000 (Binance futures gerçek limit 2400/dk). Weight artık DOĞRU sayıldığı için (klines=5,
-    // depth=5/10) bu eşik gerçek kullanımı yansıtır; eski 850 hem yanlış sayıyor hem gereksiz bekletiyordu.
-    if (binanceGov.usedWeight + weight > 1800 || binanceGov.usedOrders + orderWeight > 70) {
+    // 400 weight yürütme/positionRisk rezervi: araştırma workerları signed güvenlik hattını boğamaz.
+    const weightLimit = priority ? 1800 : 1400;
+    if (binanceGov.usedWeight + weight > weightLimit || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
       await sleep(wait);
       _resetGovWindowIfNeeded();
     }
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
-    // Çok sık istek atma: public daha seyrek, emir/pozisyon daha kontrollü.
-    const baseDelay = orderWeight ? 120 : (String(scope).includes('PUBLIC') ? 90 : 70);
+    const baseDelay = orderWeight ? 80 : (priority ? 25 : (s.includes('PUBLIC') ? 110 : 70));
     await sleep(baseDelay);
   };
-  const prev = binanceGov.q.catch(()=>{});
-  binanceGov.q = prev.then(job, job);
-  return binanceGov.q;
+  const key=priority?'priorityQ':'q';
+  const prev = binanceGov[key].catch(()=>{});
+  binanceGov[key] = prev.then(job, job);
+  return binanceGov[key];
 }
 function registerBinanceBackoff(reason='rate-limit', seconds=45) {
   const sec = Math.max(5, Math.min(180, Number(seconds)||45));
@@ -1200,7 +1219,7 @@ const posRiskCache = {
 const POS_RISK_TTL_NORMAL = 180000;  // RAW-V4.1: pozisyon yokken 180sn; emir öncesi forceFresh gerçeği korur
 const POS_RISK_TTL_ACTIVE = 12000;   // RAW-V4: açık pozisyonda 10sn manager için 12sn cache; stale-while-revalidate
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
-const POS_RISK_INFLIGHT_TIMEOUT_MS = 30000; // Promise temizlenmez; yalnız 30sn üstünde uyarı verilir
+const POS_RISK_INFLIGHT_TIMEOUT_MS = 12000; // V4.6: priority lane; 12sn üstü anormal
 
 function keyFingerprint(apiKey, apiSecret='') {
   const k=cleanBinanceCredential(apiKey), sec=cleanBinanceCredential(apiSecret);
@@ -1235,21 +1254,22 @@ function filterPositionRiskRows(rows, params={}) {
   return sym ? rows.filter(p => String(p.symbol || '').toUpperCase() === sym) : rows;
 }
 async function fetchPositionRiskRaw(apiKey, apiSecret) {
-  const attempts = BINANCE_EXECUTION_ENV==='TESTNET'
-    ? [['/fapi/v2/positionRisk','v2/positionRisk'],['/fapi/v3/positionRisk','v3/positionRisk']]
-    : [['/fapi/v3/positionRisk','v3/positionRisk'],['/fapi/v2/positionRisk','v2/positionRisk']];
-  let lastErr=null;
-  for(const [endpoint,label] of attempts){
-    try{
-      const rows=await bReq(apiKey,apiSecret,'GET',endpoint,{},5000);
-      posRiskCache.lastSource=label;
-      return Array.isArray(rows)?rows:[];
-    }catch(e){
-      lastErr=e;
-      if(isPositionRiskRateLimitError(e))throw e;
-    }
+  let firstErr=null;
+  try{
+    const rows=await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{},5000);
+    posRiskCache.lastSource='v2/positionRisk';
+    return Array.isArray(rows)?rows:[];
+  }catch(e){firstErr=e;if(isPositionRiskRateLimitError(e))throw e;}
+  // Testnet positionRisk taşıması bozulursa aynı signed gerçekliği account.positions ile doğrula.
+  try{
+    const acc=await bReq(apiKey,apiSecret,'GET','/fapi/v2/account',{},5000);
+    const rows=Array.isArray(acc?.positions)?acc.positions:[];
+    posRiskCache.lastSource='v2/account.positions';
+    return rows;
+  }catch(e){
+    if(isPositionRiskRateLimitError(e))throw e;
+    throw new Error(`positionRisk+account fallback başarısız: ${safeErrMsg(firstErr)} | ${safeErrMsg(e)}`);
   }
-  throw lastErr||new Error('positionRisk okunamadı');
 }
 
 // Ham positionRisk: symbol-specific çağrılar için doğrudan Binance'e gider.
@@ -1302,7 +1322,10 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   if (posRiskCache.fetching && posRiskCache.inflight) {
     if (!forceFresh && posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, queryParams);
     try {
-      const rows = await posRiskCache.inflight;
+      const rows = await Promise.race([
+        posRiskCache.inflight,
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error('POSITION_RISK_INFLIGHT_WAIT_TIMEOUT')),9000))
+      ]);
       return filterPositionRiskRows(Array.isArray(rows) ? rows : [], queryParams);
     } catch(_e) {
       if(posRiskCache.data && posRiskCache.lastApiKey===apiFp)return filterPositionRiskRows(posRiskCache.data,queryParams);
@@ -5688,10 +5711,14 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   const breakoutProof=!!(micro.confirmedContinuation||story?.structuredContinuation||story?.trendBreaks?.bull||decision?.r117MssOk||decision?.r289Playbook?.tradeOk||decision?.r291Confluence?.tradeOk),retestProof=!!(micro.confirmedPullback||story?.validatedTrendRetest||decision?.r117BodyReclaimOk||decision?.r117TrapSweepTaken),proof=!!(breakoutProof||retestProof);
   const waitTiming=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP'].includes(timing),mmAwaitsRetest=/AWAITING_RETEST|RETEST_REQUIRED/i.test(String(story?.mmScenario||''))&&!retestProof,impulseNeedsProof=R486_VERTICAL_IMPULSE_PROOF_REQUIRED&&!!micro.verticalImpulse&&!proof,expansionNeedsReclaim=String(story?.tf?.['15m']?.trend||'')==='EXPANSION'&&String(story?.tf?.['5m']?.trend||'')==='DOWN_LH_LL'&&!micro.confirmedPullback&&!micro.confirmedContinuation;
   const anatomyAction=String(story?.planTruth?.action||'AUTO'),anatomyReason=String(story?.planTruth?.reason||''),rrTactical=Number.isFinite(firstRR)&&firstRR>=R486_STORY_TACTICAL_MIN_FIRST_RR;
-  if(operationalHard)return {active:true,action:'REJECT',riskScale:0,reason:'operasyonel hard safety'};
+  if(operationalHard&&!V592_EXACT_BACKTEST_AUTHORITY)return {active:true,action:'REJECT',riskScale:0,reason:'operasyonel hard safety'};
   if(story?.error)return {active:true,action:plannedEntry>0?'PUSU':'REJECT',riskScale:0,reason:'grafik hikâyesi üretilemedi'};
   const r493EntrySafety=entryTruth?.r493EntrySafety?.active?entryTruth.r493EntrySafety:r493EntrySafetyGate(story,entryTruth,{side});
   if(r493EntrySafety.blocked)return {active:true,action:r493EntrySafety.action,riskScale:0,priority:r493EntrySafety.action==='PUSU',leverageBoost:false,r493EntrySafety,reason:`R493 giriş kapısı [${r493EntrySafety.code}]: ${r493EntrySafety.reason}`};
+  if(V592_EXACT_BACKTEST_AUTHORITY){
+    if(!planOk)return {active:false,action:'REJECT',riskScale:0,r493EntrySafety,reason:'execution plan direction invalid'};
+    return {active:false,action:'MARKET',riskScale:1,r493EntrySafety,r300Shadow:decision?.r300Shadow||null,r486Shadow:{quality,topRisk,timing,bias:story?.bias||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},reason:'V4.6 exact backtest authority: R300/R486 shadow; R495 next'};
+  }
   if(!R486_SINGLE_AUTHORITY_ACTIVE)return {active:false,action:entryTruth?.marketAllowed?'MARKET':'PUSU',riskScale:1,r493EntrySafety,reason:'legacy'};
   if(explicitStoryAgainst)return {active:true,action:'REJECT',riskScale:0,reason:`grafik/emir yönü açıkça çelişkili: ${story?.bias||'?'} / ${flow}`};
   if(anatomyAction==='PUSU')return {active:true,action:'PUSU',riskScale:0,priority:true,leverageBoost:false,reason:`piyasa anatomisi: ${anatomyReason}`};
@@ -9096,7 +9123,7 @@ function r501EvidenceDecision(snap={},ctx={}){
 
 function r501Status(){
   const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;
-  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V45_TESTNET_ACTIVE_CLOSED_OHLCV_SELECTOR_WITH_PASSIVE_MICROSTRUCTURE',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
+  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V46_EXACT_BACKTEST_AUTHORITY_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
 }
 function r501LoadFunnel(limit=200){
   const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
@@ -9135,13 +9162,20 @@ app.get('/api/evidence/export/:id',(req,res)=>{const id=r501SafeId(decodeURIComp
 app.get('/api/evidence/raw/:id',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),obj=r501GzipRead(r501TradePath(id));if(!obj)return res.status(404).json({ok:false,error:'EVIDENCE_NOT_FOUND'});const rec={...obj,_rawCounts:r501IndexEntry(id)?.rawCounts||{}};const manifest=r501ReadJson(r501RawFile(id,'manifest.json'),null)||r501RawManifest(rec,false),stat=r501RawStat(id);res.set('Cache-Control','no-store');res.json({ok:true,id,manifest,stat,links:{bundle:`/api/evidence/raw/${encodeURIComponent(id)}/bundle.zip`,files:Object.keys(stat.files||{}).reduce((a,n)=>(a[n]=`/api/evidence/raw/${encodeURIComponent(id)}/file/${encodeURIComponent(n)}`,a),{})}});});
 app.get('/api/evidence/raw/:id/file/:name',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),name=path.basename(decodeURIComponent(req.params.name||''));if(!R501_RAW_FILES.includes(name))return res.status(400).send('RAW_FILE_NOT_ALLOWED');const file=r501RawFile(id,name);try{const st=fs.statSync(file);if(!st.isFile())throw new Error('not file');res.set('Cache-Control','no-store');res.set('Content-Type',name.endsWith('.json')?'application/json; charset=utf-8':name.endsWith('.jsonl')?'application/x-ndjson; charset=utf-8':'text/plain; charset=utf-8');res.set('Content-Disposition',`attachment; filename="${id}.${name}"`);fs.createReadStream(file).pipe(res);}catch(_){res.status(404).send('RAW_FILE_NOT_FOUND');}});
 app.get('/api/evidence/raw/:id/bundle.zip',(req,res)=>{const id=r501SafeId(decodeURIComponent(req.params.id||'')),dir=r501RawTradeDir(id);let entries=[],total=0;for(const name of R501_RAW_FILES){try{const file=path.join(dir,name),st=fs.statSync(file);if(!st.isFile())continue;total+=st.size;if(total>R501_RAW_ZIP_MAX_MB*1048576)return res.status(413).json({ok:false,error:'RAW_ZIP_TOO_LARGE',maxMB:R501_RAW_ZIP_MAX_MB,individualFiles:`/api/evidence/raw/${encodeURIComponent(id)}`});entries.push({name,data:fs.readFileSync(file),mtime:st.mtime});}catch(_){}}if(!entries.length)return res.status(404).send('RAW_ARCHIVE_NOT_FOUND');try{const zip=r501ZipBuffer(entries);res.set('Cache-Control','no-store');res.set('Content-Type','application/zip');res.set('Content-Disposition',`attachment; filename="${id}.raw-evidence.zip"`);res.send(zip);}catch(e){res.status(500).json({ok:false,error:safeErrMsg(e)});}});
-app.get('/api/evidence/execution-rejections.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="execution_rejections.ndjson"');fs.createReadStream(R501_EXECUTION_REJECTIONS_PATH).pipe(res);}catch(_){res.status(404).send('EXECUTION_REJECTIONS_NOT_FOUND');}});
-app.get('/api/evidence/wr-challenger.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="wr_challenger_shadow.ndjson"');fs.createReadStream(R501_WR_CHALLENGER_PATH).pipe(res);}catch(_){res.status(404).send('WR_CHALLENGER_NOT_FOUND');}});
-app.get('/api/evidence/eom-shadow.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="eom_shadow.ndjson"');fs.createReadStream(R501_EOM_SHADOW_PATH).pipe(res);}catch(_){res.status(404).send('EOM_SHADOW_NOT_FOUND');}});
-app.get('/api/evidence/atc-shadow.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="atc_shadow.ndjson"');fs.createReadStream(R501_ATC_SHADOW_PATH).pipe(res);}catch(_){res.status(404).send('ATC_SHADOW_NOT_FOUND');}});
-app.get('/api/evidence/v45-multi-source.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="v45_multi_source.ndjson"');fs.createReadStream(R501_V45_MULTI_SOURCE_PATH).pipe(res);}catch(_){res.status(404).send('V45_MULTI_SOURCE_NOT_FOUND');}});
-app.get('/api/evidence/combined-channel-shadow.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="combined_channel_shadow.ndjson"');fs.createReadStream(R501_COMBINED_SHADOW_PATH).pipe(res);}catch(_){res.status(404).send('COMBINED_CHANNEL_SHADOW_NOT_FOUND');}});
-app.get('/api/evidence/funnel.ndjson',(_req,res)=>{try{res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition','attachment; filename="decision_funnel.ndjson"');fs.createReadStream(R501_EVIDENCE_FUNNEL_PATH).pipe(res);}catch(_){res.status(404).send('FUNNEL_NOT_FOUND');}});
+function r501StreamNdjsonOrEmpty(res,file,name){
+  res.set('Cache-Control','no-store');res.set('Content-Type','application/x-ndjson; charset=utf-8');res.set('Content-Disposition',`attachment; filename="${name}"`);
+  if(!fs.existsSync(file))return res.status(200).send('');
+  const stream=fs.createReadStream(file);
+  stream.on('error',e=>{try{pushCritical('R501_NDJSON_STREAM',e,{name},'WARNING');}catch(_){}if(!res.headersSent)res.status(500).json({ok:false,error:'NDJSON_READ_FAILED',name,message:safeErrMsg(e)});else res.end();});
+  stream.pipe(res);
+}
+app.get('/api/evidence/execution-rejections.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_EXECUTION_REJECTIONS_PATH,'execution_rejections.ndjson'));
+app.get('/api/evidence/wr-challenger.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_WR_CHALLENGER_PATH,'wr_challenger_shadow.ndjson'));
+app.get('/api/evidence/eom-shadow.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_EOM_SHADOW_PATH,'eom_shadow.ndjson'));
+app.get('/api/evidence/atc-shadow.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_ATC_SHADOW_PATH,'atc_shadow.ndjson'));
+app.get('/api/evidence/v45-multi-source.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_V45_MULTI_SOURCE_PATH,'v45_multi_source.ndjson'));
+app.get('/api/evidence/combined-channel-shadow.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_COMBINED_SHADOW_PATH,'combined_channel_shadow.ndjson'));
+app.get('/api/evidence/funnel.ndjson',(_req,res)=>r501StreamNdjsonOrEmpty(res,R501_EVIDENCE_FUNNEL_PATH,'decision_funnel.ndjson'));
 function r501CsvCell(v){const s=typeof v==='object'&&v!==null?JSON.stringify(v):String(v??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
 function r501Cp(rec,label){return (rec?.checkpoints||[]).find(x=>String(x?.label||'')===label)||null;}
 function r501Pct(a,b){a=Number(a);b=Number(b);return a>0&&Number.isFinite(b)?r501Num((b/a-1)*100,5):null;}
@@ -9168,7 +9202,7 @@ function r501DatasetRows(){
   }return rows;
 }
 app.get('/api/evidence/dataset.csv',(_req,res)=>{const rows=r501DatasetRows(),cols=rows.length?Object.keys(rows[0]):['id','symbol','side','decisionTime','fillTime','pnlUSDT','roiPct','completeness'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>r501CsvCell(r[c])).join(','))].join('\n');res.set('Cache-Control','no-store');res.set('Content-Type','text/csv; charset=utf-8');res.set('Content-Disposition','attachment; filename="lazarus_v592_testnet_research_dataset_v3.csv"');res.send('\ufeff'+csv);});
-app.get('/api/backtest-parity/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'V45_TESTNET_ACTIVE_CLOSED_OHLCV_SELECTOR_WITH_PASSIVE_MICROSTRUCTURE',sourceServerSha256:V592_POLICY_SOURCE_SHA256,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,researchFieldsPassive:V592_RESEARCH_FIELDS,strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,dualLane:{authority:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',wrChallenger:'SHADOW_ONLY',eomChallenger:'SHADOW_ONLY',atcChallenger:'SHADOW_ONLY',combinedChannelChallenger:'SHADOW_ONLY',v45ActiveSelector:V592_V45_TESTNET_ACTIVE?'TESTNET_ACTIVE_PRE_R495':'OFF',microstructure:'PASSIVE_ONLY',postR495SoftVetoShadowOnly:true},rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,files:R501_RAW_FILES,zipEndpoint:'/api/evidence/raw/:id/bundle.zip',rejections:'/api/evidence/execution-rejections.ndjson',wrChallenger:'/api/evidence/wr-challenger.ndjson',eomShadow:'/api/evidence/eom-shadow.ndjson',atcShadow:'/api/evidence/atc-shadow.ndjson',combinedChannelShadow:'/api/evidence/combined-channel-shadow.ndjson',v45MultiSource:'/api/evidence/v45-multi-source.ndjson'},stageSnapshots:['decision','orderRequest','orderSend','orderAck','fillObserved','fillReconciled','protectionVerified','+30s','+1m','+3m','+5m','+15m','+30m','close'],activePolicy:['v5.9.2 closed-OHLCV/chart candidate logic','R495 closed-micro-candle acceptance','R497 PIT soft-scale','Fixed41/buffer/max2/risk4','R496 shadow','EOM OHLCV challenger shadow','ATC price-action pool shadow','EOM+ATC combined challenger shadow','V4.5 closed-OHLCV multi-source Testnet selector: MS≥35 + TOP_GAINER + FO≥0.35'],authorityIsolation:{closedCandlesOnly:true,liveOpenCandlesPassive:true,fibonacciPassive:true,orderBookPassive:true,openInterestPassive:true,fundingPassive:true,liquidationsPassive:true,tickCvdPassive:true,eomShadowOnly:true,atcShadowOnly:true,combinedChannelShadowOnly:true,v45ClosedOhlcvSelectorOnly:true,liveMicrostructureNeverUsedByV45:true,postR495SoftVetoShadowOnly:true,liveMicrostructureExitImpact:false},executionSafety:['Testnet credentials/base','positionRisk strict truth + single-flight','max positions','margin and precision','exchange order acceptance','real SL/TP verification','reduce-only close'],limitations:['Full candidate-feature generator used to create candidates_radar_features.csv is not included; exact historical signal regeneration is not independently reproducible.','June-selected EOM balanced rule did not improve July WR; it remains shadow.','EOM+TOP_GAINER high-precision rule improved July WR/PF/DD but retained only 38.1% of baseline trades; it remains forward-Testnet shadow.','ATC-only did not generalize on July; the balanced combined rule reduced July DD but did not improve PF, so both remain shadow.','Combined+TOP_GAINER improved July WR to 59.18% but was weaker than the existing EOM+TOP_GAINER shadow; it is not authority.','Historical order-book/OI/funding/liquidation/tick-perfect data do not exist in the backtest and therefore never enter authority decisions.','V4.5 is a new Testnet-only strategy candidate; it is not exact v5.9.2 behavior parity.']});});
+app.get('/api/backtest-parity/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'V45_TESTNET_ACTIVE_CLOSED_OHLCV_SELECTOR_WITH_PASSIVE_MICROSTRUCTURE',sourceServerSha256:V592_POLICY_SOURCE_SHA256,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,researchFieldsPassive:V592_RESEARCH_FIELDS,strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,exactBacktestAuthority:V592_EXACT_BACKTEST_AUTHORITY,r300DecisionImpact:false,r486SecondStoryDecisionImpact:false,dualLane:{authority:'V45_CLOSED_OHLCV_PIT_PLUS_R495_TESTNET',wrChallenger:'SHADOW_ONLY',eomChallenger:'SHADOW_ONLY',atcChallenger:'SHADOW_ONLY',combinedChannelChallenger:'SHADOW_ONLY',v45ActiveSelector:V592_V45_TESTNET_ACTIVE?'TESTNET_ACTIVE_PRE_R495':'OFF',microstructure:'PASSIVE_ONLY',postR495SoftVetoShadowOnly:true},rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,files:R501_RAW_FILES,zipEndpoint:'/api/evidence/raw/:id/bundle.zip',rejections:'/api/evidence/execution-rejections.ndjson',wrChallenger:'/api/evidence/wr-challenger.ndjson',eomShadow:'/api/evidence/eom-shadow.ndjson',atcShadow:'/api/evidence/atc-shadow.ndjson',combinedChannelShadow:'/api/evidence/combined-channel-shadow.ndjson',v45MultiSource:'/api/evidence/v45-multi-source.ndjson'},stageSnapshots:['decision','orderRequest','orderSend','orderAck','fillObserved','fillReconciled','protectionVerified','+30s','+1m','+3m','+5m','+15m','+30m','close'],activePolicy:['v5.9.2 closed-OHLCV/chart candidate logic','R495 closed-micro-candle acceptance','R497 PIT soft-scale','Fixed41/buffer/max2/risk4','R496 shadow','EOM OHLCV challenger shadow','ATC price-action pool shadow','EOM+ATC combined challenger shadow','V4.5 closed-OHLCV multi-source Testnet selector: MS≥35 + TOP_GAINER + FO≥0.35'],authorityIsolation:{closedCandlesOnly:true,liveOpenCandlesPassive:true,fibonacciPassive:true,orderBookPassive:true,openInterestPassive:true,fundingPassive:true,liquidationsPassive:true,tickCvdPassive:true,eomShadowOnly:true,atcShadowOnly:true,combinedChannelShadowOnly:true,v45ClosedOhlcvSelectorOnly:true,liveMicrostructureNeverUsedByV45:true,postR495SoftVetoShadowOnly:true,liveMicrostructureExitImpact:false},executionSafety:['Testnet credentials/base','positionRisk strict truth + single-flight','max positions','margin and precision','exchange order acceptance','real SL/TP verification','reduce-only close'],limitations:['Full candidate-feature generator used to create candidates_radar_features.csv is not included; exact historical signal regeneration is not independently reproducible.','June-selected EOM balanced rule did not improve July WR; it remains shadow.','EOM+TOP_GAINER high-precision rule improved July WR/PF/DD but retained only 38.1% of baseline trades; it remains forward-Testnet shadow.','ATC-only did not generalize on July; the balanced combined rule reduced July DD but did not improve PF, so both remain shadow.','Combined+TOP_GAINER improved July WR to 59.18% but was weaker than the existing EOM+TOP_GAINER shadow; it is not authority.','Historical order-book/OI/funding/liquidation/tick-perfect data do not exist in the backtest and therefore never enter authority decisions.','V4.5 is a new Testnet-only strategy candidate; it is not exact v5.9.2 behavior parity.']});});
 
 app.get('/api/evidence/report',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
 app.get('/rapor/kanit',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
@@ -22876,7 +22910,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             rrLow: !!(Number(userRR||99) < Number(minRR||1.2))
           }, { minScore: Number(effectiveMinScore || 70) });
           decisionChain.r482R300Reason = String(r300Gate.reason || '');
-          if (!r300Gate.allow) {
+          if (V592_EXACT_BACKTEST_AUTHORITY) {
+            decisionChain.r300Shadow={schema:'LAZARUS_V592_R300_SHADOW_V1',allow:!!r300Gate.allow,reason:String(r300Gate.reason||''),decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,at:Date.now()};
+            decisionChain.r482R300Approved=true;
+            decisionChain.r300SoftReject=null;
+            logAuto(`👁️ ${coin.symbol} R300 SHADOW: ${r300Gate.allow?'WOULD_PASS':'WOULD_BLOCK'} · ${r300Gate.reason} — V4.6 backtest otoritesi değişmedi`);
+          } else if (!r300Gate.allow) {
             // R308I TEK TEMİZ KAPI: R300-0 GÜVENLİK redleri (spread/sahte pump/ATR aşırı/grafik tuzağı/RR düşük)
             // gerçek tehlikedir → AI'ya bile sorulmaz, kesilir. Diğer "yetersiz/İZLE" redleri ise AI'ya gider,
             // nihai kararı AI verir. Böylece hiçbir şey AI'sız açılmaz AMA AI güçlü adayı da değerlendirir.
