@@ -10,6 +10,7 @@ const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const r495Exact = require('./r495_exact_closed1m');
 
 const app = express();
 app.use(cors());
@@ -27,7 +28,7 @@ const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
-const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_BACKTEST_AUTHORITY_72H_4_6_1').trim() || 'V592_EXACT_BACKTEST_AUTHORITY_72H_4_6_1';
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_1';
 const TESTNET_SESSION_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'EXACT_V592_72H_1';
 const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
 const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_exact_testnet_session.json');
@@ -129,7 +130,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_BACKTEST_AUTHORITY_V4_6_R495_RISK4_FIXED41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_RISK4_FIXED41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -140,7 +141,7 @@ const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_BACKTEST_AUTHORITY_V4_6_R495_RI
 // exchange acceptance, real SL/TP verification and reduce-only exits.
 const V592_POLICY_PARITY_MODE = true;
 const V592_RESEARCH_PASSIVE_ONLY = true;
-// V4.6: Giriş otoritesi yalnız backtestte gözlenebilir kapalı OHLCV/PIT + V4.5 + R495.
+// V4.7: Giriş otoritesi yalnız backtestte gözlenebilir kapalı OHLCV/PIT + V4.5 + R495.
 // R300 ve R486 hikâye sonucu aynı anda SHADOW olarak kaydedilir; emir kararı vermez.
 const V592_EXACT_BACKTEST_AUTHORITY = BINANCE_EXECUTION_ENV === 'TESTNET'
   && String(process.env.V592_EXACT_BACKTEST_AUTHORITY ?? '1') !== '0';
@@ -173,7 +174,7 @@ function r592NeutralizeDecisionData(data={}){
 // girdileri ve yürütme güvenliği. Lane B (RESEARCH): order-book/OI/funding/likidasyon,
 // raw aggTrade/tick-CVD, kaynak tazeliği, bağımsız Fibonacci ölçümü, fill gecikmesi ve
 // exchange rejection. Lane B hiçbir koşulda karar, miktar veya emir kapısı değildir.
-const V592_MEASUREMENT_MODE='V45_TESTNET_ACTIVE_CLOSED_OHLCV_SELECTOR_WITH_PASSIVE_MICROSTRUCTURE';
+const V592_MEASUREMENT_MODE='V47_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH';
 const V592_POST_R495_SOFT_VETO_SHADOW_ONLY=String(process.env.V592_POST_R495_SOFT_VETO_SHADOW_ONLY??'1')!=='0';
 const V592_WR_CHALLENGER_SHADOW_ACTIVE=String(process.env.V592_WR_CHALLENGER_SHADOW??'1')!=='0';
 const V592_WR_CHALLENGER_MIN_RVOL=Math.max(0,Number(process.env.V592_WR_CHALLENGER_MIN_RVOL||0.90));
@@ -509,14 +510,14 @@ function r48638GovLoadRatio() {
 }
 async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
   const s=String(scope||'');
-  const priority=/(EMERGENCY|positionRisk|\/fapi\/v[123]\/(order|leverage|marginType|balance|account))/i.test(s);
+  const priority=/(EMERGENCY|R495_EXACT|positionRisk|\/fapi\/v[123]\/(order|leverage|marginType|balance|account))/i.test(s);
   const job = async () => {
     _resetGovWindowIfNeeded();
     const now = Date.now();
     if (binanceGov.backoffUntil > now && !s.includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
     _resetGovWindowIfNeeded();
-    // 400 weight yürütme/positionRisk rezervi: araştırma workerları signed güvenlik hattını boğamaz.
-    const weightLimit = priority ? 1800 : 1400;
+    // 700 weight yürütme/positionRisk/R495 rezervi: araştırma workerları emir hattını boğamaz.
+    const weightLimit = priority ? 1800 : 1100;
     if (binanceGov.usedWeight + weight > weightLimit || binanceGov.usedOrders + orderWeight > 70) {
       const wait = 60_000 - (Date.now() - binanceGov.minuteStart) + 250;
       await sleep(wait);
@@ -524,7 +525,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     }
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
-    const baseDelay = orderWeight ? 80 : (priority ? 25 : (s.includes('PUBLIC') ? 110 : 70));
+    const baseDelay = orderWeight ? 80 : (priority ? 25 : (s.includes('PUBLIC') ? 160 : 90));
     await sleep(baseDelay);
   };
   const key=priority?'priorityQ':'q';
@@ -1219,7 +1220,7 @@ const posRiskCache = {
 const POS_RISK_TTL_NORMAL = 180000;  // RAW-V4.1: pozisyon yokken 180sn; emir öncesi forceFresh gerçeği korur
 const POS_RISK_TTL_ACTIVE = 12000;   // RAW-V4: açık pozisyonda 10sn manager için 12sn cache; stale-while-revalidate
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
-const POS_RISK_INFLIGHT_TIMEOUT_MS = 12000; // V4.6: priority lane; 12sn üstü anormal
+const POS_RISK_INFLIGHT_TIMEOUT_MS = 12000; // V4.7: priority lane; 12sn üstü anormal
 
 function keyFingerprint(apiKey, apiSecret='') {
   const k=cleanBinanceCredential(apiKey), sec=cleanBinanceCredential(apiSecret);
@@ -4606,10 +4607,10 @@ const R486_ADAPTIVE_SCAN_ACTIVE = String(process.env.R486_ADAPTIVE_SCAN_ACTIVE ?
 const R486_FULL_SCAN_FAST_SEC = Math.max(60, Math.min(240, Number(process.env.R486_FULL_SCAN_FAST_SEC || 90)));
 const R486_FULL_SCAN_BASE_SEC = Math.max(75, Math.min(300, Number(process.env.R486_FULL_SCAN_BASE_SEC || 120)));
 const R486_FULL_SCAN_BUSY_SEC = Math.max(120, Math.min(420, Number(process.env.R486_FULL_SCAN_BUSY_SEC || 210)));
-const R486_R328_INTERVAL_SEC = Math.max(18, Math.min(60, Number(process.env.R486_R328_INTERVAL_SEC || 30)));
-const R486_R370_INTERVAL_SEC = Math.max(25, Math.min(90, Number(process.env.R486_R370_INTERVAL_SEC || 45)));
+const R486_R328_INTERVAL_SEC = Math.max(30, Math.min(240, Number(process.env.R486_R328_INTERVAL_SEC || 120)));
+const R486_R370_INTERVAL_SEC = Math.max(45, Math.min(300, Number(process.env.R486_R370_INTERVAL_SEC || 180)));
 const R486_R385_INTERVAL_SEC = Math.max(120, Math.min(600, Number(process.env.R486_R385_INTERVAL_SEC || 240)));
-const R486_R366_INTERVAL_SEC = Math.max(15, Math.min(60, Number(process.env.R486_R366_INTERVAL_SEC || 20)));
+const R486_R366_INTERVAL_SEC = Math.max(30, Math.min(240, Number(process.env.R486_R366_INTERVAL_SEC || 120)));
 
 // AI kapalıyken worker sinyali tam taramayı beklemez. Yalnız tek sembol,
 // gerçek Binance weight başlıklarına göre adaptif cooldown ile derin mekanik analiz edilir.
@@ -4631,16 +4632,25 @@ const R486_RISK_BUDGET_SIZING = String(process.env.R486_RISK_BUDGET_SIZING || '0
 // kimliğiyle 3 dakika ARMED kalır; ardından 1m/3m/5m kabulü MARKET/TACTICAL/PUSU
 // üretir. Sizing zincirinin SONUNDA equity'nin en fazla %4'ü başlangıç SL riskidir.
 const R495_LIVE_ACTIVE = String(process.env.R495_LIVE_ACTIVE ?? '1') !== '0';
+const R495_EXACT_CLOSED_1M = String(process.env.R495_EXACT_CLOSED_1M ?? '1') !== '0';
 const R495_ACCEPT_DELAY_SEC = Math.max(60, Math.min(600, Number(process.env.R495_ACCEPT_DELAY_SEC || 180)));
 const R495_TACTICAL_RISK_SCALE = Math.max(.20, Math.min(.85, Number(process.env.R495_TACTICAL_RISK_SCALE || .60)));
 const R495_MARKET_RISK_SCALE = Math.max(.50, Math.min(1.00, Number(process.env.R495_MARKET_RISK_SCALE || 1.00)));
 const R495_FINAL_RISK_PCT = Math.max(1, Math.min(6, Number(process.env.R495_FINAL_RISK_PCT || 4)));
 const R495_MAX_ENTRY_DRIFT_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R495_MAX_ENTRY_DRIFT_ATR || .85)));
+const R495_MIN_ENTRY_DRIFT_ATR = Math.max(-1.50, Math.min(-.05, Number(process.env.R495_MIN_ENTRY_DRIFT_ATR || -.35)));
+const R495_MAX_ADVERSE_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R495_MAX_ADVERSE_ATR || .85)));
+const R495_TAKER_RATIO_MIN = Math.max(.40, Math.min(.70, Number(process.env.R495_TAKER_RATIO_MIN || .50)));
+const R495_TACTICAL_FLOOR_ATR = Math.max(-.50, Math.min(0, Number(process.env.R495_TACTICAL_FLOOR_ATR || -.15)));
+const R495_WINDOW_MAX_MS = Math.max(180000, Math.min(240000, Number(process.env.R495_WINDOW_MAX_MS || 190000)));
+const R495_ACCEPTED_COOLDOWN_MIN = Math.max(5, Math.min(60, Number(process.env.R495_ACCEPTED_COOLDOWN_MIN || 20)));
 const R495_MIN_SAFE_MARGIN_USDT = Math.max(1, Math.min(20, Number(process.env.R495_MIN_SAFE_MARGIN_USDT || 6)));
 const R495_ARM_TTL_MIN = Math.max(10, Math.min(180, Number(process.env.R495_ARM_TTL_MIN || 45)));
 const r495ArmedCandidates = new Map();
+const r495LastAcceptedBySymbol = new Map();
+const r495ExactWakeTimers = new Map();
 const r495RecentDecisions = [];
-const r495LiveStats = {armed:0,market:0,tactical:0,pusu:0,reject:0,expired:0,last:null};
+const r495LiveStats = {armed:0,market:0,tactical:0,pusu:0,reject:0,expired:0,dataError:0,last:null};
 
 // ═══ R497 POINT-IN-TIME TOP-GAINER + SABİT SLOT + R496 SHADOW ═══════════════
 // Canlı işlem evreni gün-sonu kazanan bilgisine dayanmaz. Her taramada o anki
@@ -5712,12 +5722,12 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   const waitTiming=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP'].includes(timing),mmAwaitsRetest=/AWAITING_RETEST|RETEST_REQUIRED/i.test(String(story?.mmScenario||''))&&!retestProof,impulseNeedsProof=R486_VERTICAL_IMPULSE_PROOF_REQUIRED&&!!micro.verticalImpulse&&!proof,expansionNeedsReclaim=String(story?.tf?.['15m']?.trend||'')==='EXPANSION'&&String(story?.tf?.['5m']?.trend||'')==='DOWN_LH_LL'&&!micro.confirmedPullback&&!micro.confirmedContinuation;
   const anatomyAction=String(story?.planTruth?.action||'AUTO'),anatomyReason=String(story?.planTruth?.reason||''),rrTactical=Number.isFinite(firstRR)&&firstRR>=R486_STORY_TACTICAL_MIN_FIRST_RR;
   if(operationalHard&&!V592_EXACT_BACKTEST_AUTHORITY)return {active:true,action:'REJECT',riskScale:0,reason:'operasyonel hard safety'};
-  if(story?.error)return {active:true,action:plannedEntry>0?'PUSU':'REJECT',riskScale:0,reason:'grafik hikâyesi üretilemedi'};
+  if(story?.error&&!V592_EXACT_BACKTEST_AUTHORITY)return {active:true,action:plannedEntry>0?'PUSU':'REJECT',riskScale:0,reason:'grafik hikâyesi üretilemedi'};
   const r493EntrySafety=entryTruth?.r493EntrySafety?.active?entryTruth.r493EntrySafety:r493EntrySafetyGate(story,entryTruth,{side});
   if(r493EntrySafety.blocked)return {active:true,action:r493EntrySafety.action,riskScale:0,priority:r493EntrySafety.action==='PUSU',leverageBoost:false,r493EntrySafety,reason:`R493 giriş kapısı [${r493EntrySafety.code}]: ${r493EntrySafety.reason}`};
   if(V592_EXACT_BACKTEST_AUTHORITY){
     if(!planOk)return {active:false,action:'REJECT',riskScale:0,r493EntrySafety,reason:'execution plan direction invalid'};
-    return {active:false,action:'MARKET',riskScale:1,r493EntrySafety,r300Shadow:decision?.r300Shadow||null,r486Shadow:{quality,topRisk,timing,bias:story?.bias||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},reason:'V4.6 exact backtest authority: R300/R486 shadow; R495 next'};
+    return {active:false,action:'MARKET',riskScale:1,r493EntrySafety,r300Shadow:decision?.r300Shadow||null,r486Shadow:{quality,topRisk,timing,bias:story?.bias||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},reason:'V4.7 exact backtest authority: R300/R486 shadow; R495 next'};
   }
   if(!R486_SINGLE_AUTHORITY_ACTIVE)return {active:false,action:entryTruth?.marketAllowed?'MARKET':'PUSU',riskScale:1,r493EntrySafety,reason:'legacy'};
   if(explicitStoryAgainst)return {active:true,action:'REJECT',riskScale:0,reason:`grafik/emir yönü açıkça çelişkili: ${story?.bias||'?'} / ${flow}`};
@@ -5748,57 +5758,146 @@ function r495SetupName(ai={},decision={}){
   const m=txt.match(/(?:MEKANİK\/|R447[^A-Z_]*)(PATLAMA|MOMENTUM_KIRILIMI|PULLBACK_DEVAMI|SIKISMA_KIRILIMI|YUKSELEN_DIP|HACIM_PATLAMASI|FVG_TEPKISI|RETEST_TUTUNMA|CIFT_DIP|TEMIZ_KAPANIS|CEKIC_ALT_FITIL|ARDISIK_HH|KURU_SONRASI_SPIKE|SWEEP_RECLAIM_HIGH_ATR|ORDER_BLOCK_DONUS)/i);
   return m?String(m[1]).toUpperCase():'GENERIC';
 }
-function r495StableSignalKey(symbol,story={}){
-  const c15=Number(story?.snapshot?.candleCloseTs?.['15m']||0);
-  const bucket=c15>0?c15:Math.floor(Date.now()/900000)*900000;
+function r495StableSignalKey(symbol,candidate={}){
+  const c5=Number(candidate?.candidateTs||0);
+  const bucket=c5>0?c5:Math.floor(Date.now()/300000)*300000;
   return `${r495Sym(symbol)}:${bucket}`;
 }
 function r495PushDecision(row){
   if(!row)return;
   r495RecentDecisions.unshift(row);
-  if(r495RecentDecisions.length>80)r495RecentDecisions.length=80;
+  if(r495RecentDecisions.length>120)r495RecentDecisions.length=120;
   r495LiveStats.last=row;
 }
-function r495LiveAcceptanceArbiter(symbol,story={},baseAuthority={},ctx={}){
-  const now=Date.now(),sym=r495Sym(symbol),setup=String(ctx.setup||'GENERIC').toUpperCase();
+function r495ClearExactWake(key){
+  const t=r495ExactWakeTimers.get(key);
+  if(t){try{clearTimeout(t);}catch(_){}r495ExactWakeTimers.delete(key);}
+}
+function r495ScheduleExactWake(fullSymbol,key,candidateTs){
+  if(r495ExactWakeTimers.has(key))return;
+  const due=Math.max(Date.now()+1000,Number(candidateTs||0)+181000);
+  const timer=setTimeout(()=>{
+    r495ExactWakeTimers.delete(key);
+    try{
+      if(typeof runAutoScan==='function'){
+        runAutoScan(normalizeSymbol(fullSymbol),true).catch(e=>logAuto(`⚠️ ${normalizeSymbol(fullSymbol)} R495 exact wake hata: ${safeErrMsg(e)}`));
+      }
+    }catch(e){try{logAuto(`⚠️ R495 exact wake başlatılamadı: ${safeErrMsg(e)}`);}catch(_){}}
+  },Math.max(1000,due-Date.now()));
+  timer.unref?.();
+  r495ExactWakeTimers.set(key,timer);
+}
+async function r495FetchExactClosed1m(fullSymbol,candidateTs){
+  const symbol=normalizeSymbol(fullSymbol),key=`r495_exact_1m:${symbol}:${Number(candidateTs||0)}`;
+  return cached(key,1250,async()=>{
+    await binanceThrottle('R495_EXACT_CLOSED_1M',2,0);
+    const qs=`symbol=${encodeURIComponent(symbol)}&interval=1m&startTime=${Math.trunc(Number(candidateTs||0)+1)}&limit=6`;
+    const url=`${FAPI}/fapi/v1/klines?${qs}`;
+    const res=await fetch(url,{signal:AbortSignal.timeout(6000)});
+    r48638SyncGovHeaders(res);
+    if(res.status===429||res.status===418)registerHttpBackoffAndThrow('/fapi/v1/klines:R495_EXACT',res.status,res.headers.get('Retry-After'));
+    const text=await res.text();
+    let data;try{data=JSON.parse(text);}catch(_){throw new Error(`R495 exact 1m JSON hatası: ${text.slice(0,100)}`);}
+    if(!res.ok||!Array.isArray(data))throw new Error(formatBinanceError('/fapi/v1/klines:R495_EXACT',data));
+    return data;
+  });
+}
+async function r495LiveAcceptanceArbiter(symbol,story={},baseAuthority={},ctx={}){
+  const now=Date.now(),fullSymbol=normalizeSymbol(symbol),sym=r495Sym(symbol),setup=String(ctx.setup||'GENERIC').toUpperCase();
   if(!R495_LIVE_ACTIVE)return {...baseAuthority,r495Active:false,r495Action:String(baseAuthority?.action||'MARKET'),riskScale:Number(baseAuthority?.riskScale??1),reason:`R495 kapalı · ${baseAuthority?.reason||'legacy'}`};
-  const key=r495StableSignalKey(sym,story),ttl=R495_ARM_TTL_MIN*60_000;
-  for(const [k,v] of r495ArmedCandidates){if(now-Number(v?.lastSeen||v?.armedAt||0)>ttl){r495ArmedCandidates.delete(k);r495LiveStats.expired++;}}
-  let arm=r495ArmedCandidates.get(key);
-  if(!arm){arm={key,symbol:sym,setup,armedAt:now,lastSeen:now,lastAction:'ARMED',checks:0};r495ArmedCandidates.set(key,arm);r495LiveStats.armed++;}
-  arm.lastSeen=now;arm.checks++;
-  const ageSec=Math.max(0,(now-arm.armedAt)/1000);
-  const micro=story?.microConsensus||{},bull=Number(micro.bullCount||0),bear=Number(micro.bearCount||0),rawFlow=String(story?.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase();
-  const flow=V592_POLICY_PARITY_MODE?'POLICY_NEUTRAL':rawFlow;
-  const flowAgainst=V592_POLICY_PARITY_MODE?false:/SELLERS_CONTROL|BUY_ABSORPTION_BEAR|FLOW_DIVERGENCE_SELL/.test(flow);
-  const tf=story?.tf||{},htfBear=['15m','1h','4h'].filter(k=>String(tf?.[k]?.trend||'')==='DOWN_LH_LL').length;
-  const entryTruth=ctx.entryTruth||story?.entryTruth||{},firstRR=Number(entryTruth?.firstObstacleRR),driftAtr=Number(story?.distanceFromBreakoutAtr);
-  let action='PUSU',riskScale=0,code='R495_ARMED_WAIT',reason=`3dk mikro kabul bekleniyor (${Math.floor(ageSec)}/${R495_ACCEPT_DELAY_SEC}sn)`;
-  const baseAction=String(baseAuthority?.action||'MARKET').toUpperCase();
-  if(baseAction==='REJECT') {action='REJECT';code='BASE_AUTHORITY_REJECT';reason=baseAuthority?.reason||'önceki hard authority';}
-  else if(story?.error){action='PUSU';code='NO_STORY';reason='grafik hikâyesi üretilemedi';}
-  else if(Number.isFinite(firstRR)&&firstRR<.35){action='PUSU';code='FIRST_OBSTACLE_TOO_NEAR';reason=`ilk engel R/R ${firstRR.toFixed(2)} < 0.35`;}
-  else if(['LATE_EXPANSION','EXHAUSTION'].includes(String(story?.stage||''))||story?.targetRejection){action='PUSU';code='LATE_OR_EXHAUSTED';reason=`evre ${story?.stage||'TARGET_REJECTION'}`;}
-  else if(Number.isFinite(driftAtr)&&driftAtr>R495_MAX_ENTRY_DRIFT_ATR){action='PUSU';code='ENTRY_DRIFT_LATE';reason=`breakout uzaklığı ${driftAtr.toFixed(2)} ATR`;}
-  else if(setup==='RETEST_TUTUNMA'&&Number(story?.retestGapAtr)>.60){action='PUSU';code='DEEP_RETEST_BELOW_LEVEL';reason=`retest seviye boşluğu ${Number(story.retestGapAtr).toFixed(2)} ATR`;}
-  else if(['TEMIZ_KAPANIS','KURU_SONRASI_SPIKE','CEKIC_ALT_FITIL'].includes(setup)&&htfBear>=2&&bull<2){action='PUSU';code='REVERSAL_WITHOUT_STRUCTURE_TURN';reason=`${setup}: HTF düşüş ${htfBear}, mikro boğa ${bull}`;}
-  else if(setup==='FVG_TEPKISI'&&htfBear>=2&&!micro.confirmedPullback){action='PUSU';code='FVG_COUNTERTREND_NO_RECLAIM';reason='HTF düşüşte FVG reclaim yok';}
-  else if(ageSec<R495_ACCEPT_DELAY_SEC){action='PUSU';code='R495_ARMED_WAIT';}
-  else {
-    const full=!!(micro.confirmedContinuation||(bull>=3&&bear===0&&!flowAgainst));
-    const partial=!!(micro.confirmedPullback||micro.intrabarMtfObvious||(bull>=2&&bear<=1&&!flowAgainst));
-    if(full){action='MARKET';riskScale=R495_MARKET_RISK_SCALE;code='PRE_READY_AND_3M_ACCEPT';reason=`3dk kabul tam · oy ${bull}/${bear} · ${micro.status||flow}`;}
-    else if(partial){action='TACTICAL';riskScale=R495_TACTICAL_RISK_SCALE;code='ONE_LAYER_CONFIRM';reason=`3dk kabul kısmi · oy ${bull}/${bear} · ${micro.status||flow}`;}
-    else {action='PUSU';riskScale=0;code='NO_MICRO_ACCEPTANCE';reason=`3dk kabul yok · oy ${bull}/${bear} · akış ${flow}`;}
+  const candidate=ctx.candidate||null,key=r495StableSignalKey(sym,candidate),ttl=R495_ARM_TTL_MIN*60_000;
+  for(const [k,v] of r495ArmedCandidates){
+    if(now-Number(v?.lastSeen||v?.armedAt||0)>ttl){
+      r495ClearExactWake(k);r495ArmedCandidates.delete(k);r495LiveStats.expired++;
+    }
   }
-  const row={ts:now,key,symbol:sym,setup,ageSec:+ageSec.toFixed(1),action,code,riskScale,bull,bear,flow,htfBear,firstObstacleRR:Number.isFinite(firstRR)?+firstRR.toFixed(2):null,stage:story?.stage||null,microStatus:micro.status||null,reason,researchFlow:{raw:rawFlow,wouldConflict:/SELLERS_CONTROL|BUY_ABSORPTION_BEAR|FLOW_DIVERGENCE_SELL/.test(rawFlow),decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false}};
-  if(arm.lastAction!==action||arm.lastCode!==code){if(action==='MARKET')r495LiveStats.market++;else if(action==='TACTICAL')r495LiveStats.tactical++;else if(action==='REJECT')r495LiveStats.reject++;else r495LiveStats.pusu++;r495PushDecision(row);arm.lastAction=action;arm.lastCode=code;}
+  let arm=r495ArmedCandidates.get(key);
+  if(!arm){
+    arm={key,symbol:sym,fullSymbol,setup,score:Number(ctx.score||0),candidate:candidate?{...candidate}:null,armedAt:now,lastSeen:now,lastAction:'ARMED',checks:0,finalized:false};
+    r495ArmedCandidates.set(key,arm);r495LiveStats.armed++;
+  }
+  arm.lastSeen=now;arm.checks++;
+  if(arm.finalized&&arm.lastDecision)return {...baseAuthority,...arm.lastDecision,r495Active:true,r495Action:arm.lastDecision.action,signalKey:key,armedAt:arm.armedAt};
+
+  const baseAction=String(baseAuthority?.action||'MARKET').toUpperCase();
+  let result=null;
+  if(baseAction==='REJECT'){
+    result={final:true,action:'REJECT',scale:0,code:'R495_BASE_AUTHORITY_REJECT',reason:String(baseAuthority?.reason||'önceki hard authority')};
+  }else if(!R495_EXACT_CLOSED_1M){
+    result={final:true,action:'REJECT',scale:0,code:'R495_EXACT_MODE_DISABLED',reason:'V4.7 exact closed-1m mode kapalı'};
+  }else if(!(Number(arm.candidate?.candidateTs)>0&&Number(arm.candidate?.candidatePrice)>0&&Number(arm.candidate?.atr)>0)){
+    result={final:false,action:'PUSU',scale:0,code:'R495_CANDIDATE_META_MISSING',reason:'kapalı 5m candidate time/price/ATR üretilemedi'};
+  }else{
+    const lastAccepted=r495LastAcceptedBySymbol.get(sym);
+    if(lastAccepted&&Number(arm.candidate.candidateTs)-Number(lastAccepted.candidateTs)<R495_ACCEPTED_COOLDOWN_MIN*60_000&&Number(arm.candidate.candidateTs)>Number(lastAccepted.candidateTs)){
+      result={final:true,action:'PUSU',scale:0,code:'R495_BACKTEST_20M_COOLDOWN',reason:`son kabulden ${((Number(arm.candidate.candidateTs)-Number(lastAccepted.candidateTs))/60000).toFixed(1)}dk; backtest cooldown ${R495_ACCEPTED_COOLDOWN_MIN}dk`};
+    }else{
+      r495ScheduleExactWake(fullSymbol,key,arm.candidate.candidateTs);
+      try{
+        const rawBars=await r495FetchExactClosed1m(fullSymbol,arm.candidate.candidateTs);
+        result=r495Exact.evaluateClosed1m({
+          rawBars,
+          candidateTs:arm.candidate.candidateTs,
+          candidatePrice:arm.candidate.candidatePrice,
+          atr:arm.candidate.atr,
+          now,
+          takerRatioMin:R495_TAKER_RATIO_MIN,
+          adverseAtrMax:R495_MAX_ADVERSE_ATR,
+          driftAtrMax:R495_MAX_ENTRY_DRIFT_ATR,
+          driftAtrMin:R495_MIN_ENTRY_DRIFT_ATR,
+          tacticalFloorAtr:R495_TACTICAL_FLOOR_ATR,
+          maxWindowMs:R495_WINDOW_MAX_MS,
+        });
+        result.reason=result.code;
+        if(['MARKET','TACTICAL'].includes(String(result.action||''))){
+          const plan=r495Exact.buildAcceptedPlan({acceptance:result,candidate:arm.candidate,score:arm.score,setup});
+          if(!plan.ok){
+            result={...result,final:true,action:'PUSU',scale:0,code:`R495_${plan.code}`,reason:plan.code,plan};
+          }else{
+            result.plan=plan;
+            r495LastAcceptedBySymbol.set(sym,{candidateTs:arm.candidate.candidateTs,entryTs:result.entryTs,action:result.action,key,at:now});
+          }
+        }
+      }catch(e){
+        r495LiveStats.dataError++;
+        result={final:false,action:'PUSU',scale:0,code:'R495_CLOSED_1M_DATA_ERROR',reason:safeErrMsg(e)};
+      }
+    }
+  }
+
+  const action=String(result?.action||'PUSU').toUpperCase();
+  const riskScale=action==='MARKET'?R495_MARKET_RISK_SCALE:action==='TACTICAL'?R495_TACTICAL_RISK_SCALE:0;
+  const micro=story?.microConsensus||{},rawFlow=String(story?.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase();
+  const row={
+    ts:now,key,signalKey:key,symbol:sym,setup,score:arm.score,
+    action,code:String(result?.code||'R495_UNKNOWN'),riskScale,
+    final:!!result?.final,armedAt:arm.armedAt,ageSec:+((now-arm.armedAt)/1000).toFixed(1),
+    candidate:arm.candidate,
+    entry:Number.isFinite(Number(result?.finalPrice))?Number(result.finalPrice):null,
+    entryTs:Number.isFinite(Number(result?.entryTs))?Number(result.entryTs):null,
+    votes:Number.isFinite(Number(result?.votes))?Number(result.votes):null,
+    driftAtr:Number.isFinite(Number(result?.driftAtr))?+Number(result.driftAtr).toFixed(4):null,
+    adverseAtr:Number.isFinite(Number(result?.adverseAtr))?+Number(result.adverseAtr).toFixed(4):null,
+    closed1mBars:Array.isArray(result?.bars)?result.bars:[],
+    plan:result?.plan||null,
+    reason:`R495 ${String(result?.code||'UNKNOWN')}: ${String(result?.reason||result?.code||'')}`,
+    decisionBasis:'EXACT_BACKTEST_CLOSED_1M_KLINE_TAKER_RATIO',
+    researchMicroShadow:{rawFlow,bull:Number(micro.bullCount||0),bear:Number(micro.bearCount||0),status:micro.status||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false}
+  };
+  if(arm.lastAction!==action||arm.lastCode!==row.code){
+    if(action==='MARKET')r495LiveStats.market++;
+    else if(action==='TACTICAL')r495LiveStats.tactical++;
+    else if(action==='REJECT')r495LiveStats.reject++;
+    else r495LiveStats.pusu++;
+    r495PushDecision(row);arm.lastAction=action;arm.lastCode=row.code;
+  }
   arm.lastDecision=row;
-  return {...baseAuthority,active:true,r495Active:true,r495Action:action,action,riskScale,priority:action==='PUSU',leverageBoost:action==='MARKET',armedAt:arm.armedAt,ageSec:+ageSec.toFixed(1),signalKey:key,code,reason:`R495 ${code}: ${reason}`,baseAuthority:{action:baseAction,reason:baseAuthority?.reason||null,riskScale:Number(baseAuthority?.riskScale??1)},r493EntrySafety:baseAuthority?.r493EntrySafety||entryTruth?.r493EntrySafety||null};
+  if(result?.final){arm.finalized=true;r495ClearExactWake(key);}
+  return {...baseAuthority,...row,active:true,r495Active:true,r495Action:action,action,riskScale,priority:action==='PUSU',leverageBoost:action==='MARKET',baseAuthority:{action:baseAction,reason:baseAuthority?.reason||null,riskScale:Number(baseAuthority?.riskScale??1)},r493EntrySafety:baseAuthority?.r493EntrySafety||ctx?.entryTruth?.r493EntrySafety||null};
 }
 function r495StatusPayload(limit=30){
-  const now=Date.now();
-  return {ok:true,build:LAZARUS_BUILD,mode:'LIVE_DECISION_AND_FINAL_RISK',active:R495_LIVE_ACTIVE,acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,maxEntryDriftAtr:R495_MAX_ENTRY_DRIFT_ATR,minSafeMargin:R495_MIN_SAFE_MARGIN_USDT,stats:{...r495LiveStats,armedNow:r495ArmedCandidates.size},armed:[...r495ArmedCandidates.values()].map(x=>({...x,ageSec:+((now-x.armedAt)/1000).toFixed(1)})).sort((a,b)=>b.armedAt-a.armedAt).slice(0,limit),recent:r495RecentDecisions.slice(0,limit)};
+  const now=Date.now(),armed=[...r495ArmedCandidates.values()];
+  return {ok:true,build:LAZARUS_BUILD,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',active:R495_LIVE_ACTIVE,exactClosed1m:R495_EXACT_CLOSED_1M,acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,maxEntryDriftAtr:R495_MAX_ENTRY_DRIFT_ATR,minEntryDriftAtr:R495_MIN_ENTRY_DRIFT_ATR,maxAdverseAtr:R495_MAX_ADVERSE_ATR,takerRatioMin:R495_TAKER_RATIO_MIN,tacticalFloorAtr:R495_TACTICAL_FLOOR_ATR,acceptedCooldownMin:R495_ACCEPTED_COOLDOWN_MIN,minSafeMargin:R495_MIN_SAFE_MARGIN_USDT,stats:{...r495LiveStats,armedNow:armed.filter(x=>!x.finalized).length},armed:armed.filter(x=>!x.finalized).map(x=>({...x,ageSec:+((now-x.armedAt)/1000).toFixed(1)})).sort((a,b)=>b.armedAt-a.armedAt).slice(0,limit),recent:r495RecentDecisions.slice(0,limit)};
 }
 
 function r447MekanikKarar(symbol, data = {}) {
@@ -9123,7 +9222,7 @@ function r501EvidenceDecision(snap={},ctx={}){
 
 function r501Status(){
   const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;
-  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V46_EXACT_BACKTEST_AUTHORITY_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
+  return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V47_EXACT_CLOSED_1M_R495_WITH_PASSIVE_LIVE_RESEARCH',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,exactClosed1mR495:true,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547,pf:1.815,winRatePct:64.17,maxDrawdownPct:30.57,netUSDT:967.61,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
 }
 function r501LoadFunnel(limit=200){
   const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
@@ -19652,10 +19751,10 @@ let r370ErkenAdaylar = []; // {symbol, skor, sebep, change15m, impulsMum}
 // Böylece 24'e mahkûm olmaz, fakat aynı dakikada yüzlerce REST isteği yığılmaz.
 const R4863_WORKER_MIN_QUOTE = Math.max(1_000_000, Number(process.env.R4863_WORKER_MIN_QUOTE||3_000_000));
 const R4863_WORKER_MAX_UNIVERSE = Math.max(40, Math.min(500, Number(process.env.R4863_WORKER_MAX_UNIVERSE||350)));
-const R4863_R370_BATCH = Math.max(24, Math.min(80, Number(process.env.R4863_R370_BATCH||48)));
-const R4863_R385_BATCH = Math.max(36, Math.min(100, Number(process.env.R4863_R385_BATCH||72)));
-const R4863_R328_BATCH = Math.max(12, Math.min(48, Number(process.env.R4863_R328_BATCH||24)));
-const R4863_R366_BATCH = Math.max(10, Math.min(40, Number(process.env.R4863_R366_BATCH||20)));
+const R4863_R370_BATCH = Math.max(8, Math.min(80, Number(process.env.R4863_R370_BATCH||24)));
+const R4863_R385_BATCH = Math.max(12, Math.min(100, Number(process.env.R4863_R385_BATCH||36)));
+const R4863_R328_BATCH = Math.max(4, Math.min(48, Number(process.env.R4863_R328_BATCH||12)));
+const R4863_R366_BATCH = Math.max(4, Math.min(40, Number(process.env.R4863_R366_BATCH||10)));
 let r4863WorkerUniverseState = {ts:0,totalFutures:0,eligible:0,hot:[],ghostHot:[],rows:[],cursors:{r370:0,r385:0,r328:0,r366:0},lastBatch:{},workers:{}};
 function r4863PotentialScore(t){
   try{
@@ -21026,7 +21125,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'LIVE_DECISION_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R497: point-in-time SOFT risk-scale (hard veto yok) + R495 3dk kabul; slot başı sabit 41$ · min 20$ tampon · 200$ üstü HOLD_FIXED; R496 shadow',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R497: point-in-time SOFT risk-scale (hard veto yok) + R495 exact üç kapalı 1m kabul; slot başı sabit 41$ · min 20$ tampon · 200$ üstü HOLD_FIXED; R496 shadow',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -23320,7 +23419,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               // R493 v5.5: yalnız GERÇEK operasyonel hard safety. POOR kalite etiketi + kabul edilebilir
               // makas artık burada hard veto değildir; hikâye motoru pozisyon kalitesi/risk ölçeğini tartar.
               const r482OperationalSafety = r493R482OperationalSafety(decisionChain);
-              const mechHardBlock = r482OperationalSafety.blocked;
+              const mechHardBlock = V592_EXACT_BACKTEST_AUTHORITY ? false : r482OperationalSafety.blocked;
+              if(V592_EXACT_BACKTEST_AUTHORITY && r482OperationalSafety.blocked){
+                decisionChain.r482OperationalShadow={schema:'LAZARUS_V592_R482_OPERATIONAL_SHADOW_V1',...r482OperationalSafety,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,at:Date.now()};
+                try{r501EvidenceFunnel({type:'R482_OPERATIONAL_SHADOW',symbol:coin.fullSymbol||coin.symbol,action:'WOULD_BLOCK',authority:'R482_SHADOW',reason:String(r482OperationalSafety.code||'UNKNOWN'),counterfactual:decisionChain.r482OperationalShadow,decisionImpact:false,orderBlocking:false});}catch(_e){}
+              }
               const planDirectionOk = mechSide === 'LONG'
                 ? (Number(targetPrice)>Number(entryRef) && Number(stopPrice)<Number(entryRef))
                 : mechSide === 'SHORT'
@@ -23410,21 +23513,25 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               // R495 LIVE: eligible LONG decisions are held for the same 3-minute acceptance.
               try {
                 if (R495_LIVE_ACTIVE && String(ai.side||'').toUpperCase()==='LONG') {
-                  const _r495Story = ai?.story || decisionChain?.r483Story || decisionChain?.r455Karar?.story || (R483_CHART_STORY_ENABLED?r483ChartStory(coin.symbol,r481MekanikVeri(coin,analysis,decisionChain)):null);
+                  const _r495Data = r481MekanikVeri(coin,analysis,decisionChain);
+                  const _r495Story = ai?.story || decisionChain?.r483Story || decisionChain?.r455Karar?.story || (R483_CHART_STORY_ENABLED?r483ChartStory(coin.symbol,_r495Data):null);
                   const _r495BaseAuthority = ai?.authority || decisionChain?.r48633Authority || {active:true,action:'MARKET',riskScale:1,reason:'R495 giriş tabanı'};
                   const _r495Setup = r495SetupName(ai,decisionChain);
-                  const _r495 = r495LiveAcceptanceArbiter(coin.fullSymbol||coin.symbol,_r495Story,_r495BaseAuthority,{setup:_r495Setup,entryTruth:_r495Story?.entryTruth||null,entry:Number(ai.entry||0),sl:Number(ai.sl||0),tp:Number(ai.tp||0)});
+                  const _r495Candidate = r495Exact.candidateMetaFromCompact5m(_r495Data?.candles?.['5m'],_r495Data?.candles?._times?.['5m']);
+                  const _r495 = await r495LiveAcceptanceArbiter(coin.fullSymbol||coin.symbol,_r495Story,_r495BaseAuthority,{setup:_r495Setup,score:Number(score||0),candidate:_r495Candidate,entryTruth:_r495Story?.entryTruth||null,entry:Number(ai.entry||0),sl:Number(ai.sl||0),tp:Number(ai.tp||0)});
                   decisionChain.r495Live=_r495; ai.r495Live=_r495; ai.authority=_r495;
                   if(_r495Story){ai.story=_r495Story;decisionChain.r483Story=_r495Story;}
                   if(['PUSU','REJECT'].includes(String(_r495.action||''))){
                     ai.plannedSide='LONG'; ai.side='WAIT'; ai.karKosma='NORMAL';
                     ai.reasoning=`${String(ai.reasoning||'')} · ${_r495.reason}`;
-                    ai.plan=`R495 ${_r495.action}: aynı 15m sinyalinde 3dk mikro kabul/reclaim beklenir; market emir yok.`;
-                    r496ShadowRecord({symbol:normalizeSymbol(coin.fullSymbol||coin.symbol),stage:'R495_DECISION',setup:String(decisionChain?.r455Karar?.reasoning||'').slice(0,100),action:_r495.action,riskScale:Number(_r495.riskScale||0),code:_r495.code,reason:_r495.reason,selection:'PIT_TOP_GAINER',rank:Number(coin.r497Rank||coin.gainerRank||999),persistenceHits:Number(coin.r497PersistenceHits||0)});
-                    try{r125RegisterPriorityWake(coin.fullSymbol,'R495_3M_ACCEPT_WAIT',86);}catch(_e){}
+                    ai.plan=`R495 ${_r495.action}: adaydan sonraki ilk üç tamamlanmış 1m mum beklenir/değerlendirilir; canlı mikro yapı yalnız shadow.`;
+                    r496ShadowRecord({symbol:normalizeSymbol(coin.fullSymbol||coin.symbol),stage:'R495_EXACT_CLOSED_1M',setup:String(decisionChain?.r455Karar?.reasoning||'').slice(0,100),action:_r495.action,riskScale:Number(_r495.riskScale||0),code:_r495.code,reason:_r495.reason,votes:_r495.votes,driftAtr:_r495.driftAtr,adverseAtr:_r495.adverseAtr,selection:'PIT_TOP_GAINER',rank:Number(coin.r497Rank||coin.gainerRank||999),persistenceHits:Number(coin.r497PersistenceHits||0)});
                   } else {
+                    if(_r495.plan?.ok){
+                      ai.entry=Number(_r495.plan.entry);ai.sl=Number(_r495.plan.stop);ai.tp=Number(_r495.plan.target);ai.r495ExactPlan=_r495.plan;
+                    }
                     if(String(_r495.action)==='TACTICAL') ai.karKosma='TACTICAL';
-                    ai.reasoning=`${String(ai.reasoning||'')} · ${_r495.reason} · risk×${Number(_r495.riskScale||0).toFixed(2)}`;
+                    ai.reasoning=`${String(ai.reasoning||'')} · ${_r495.reason} · kapalı1m oy ${_r495.votes??'—'}/3 · drift ${_r495.driftAtr??'—'} ATR · risk×${Number(_r495.riskScale||0).toFixed(2)}`;
                   }
                 }
               } catch(_r495e) {
@@ -24023,9 +24130,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               continue;
             }
             usdtAmount=_final495;
-            const _meta495={modelId:'R495_3M_ACCEPT_RISK4_LIVE',action:_r495Action,riskScale:_scale495,equity:+_eq495.toFixed(2),riskBudgetPct:R495_FINAL_RISK_PCT,riskBudgetUsd:+_riskUsd495.toFixed(4),slPct:+_sl495.toFixed(4),leverage:_lev495,marginBefore:+_before495.toFixed(4),panelContractMargin:+Number(r389PanelMarj).toFixed(4),scaleCap:+_scaleCap495.toFixed(4),riskCapMargin:+_riskCap495.toFixed(4),brakeCap:Number.isFinite(_brakeCap495)?+_brakeCap495.toFixed(4):null,r497Tier:String(coin?.r497Tier||'UNRANKED'),r497Rank:Number(coin?.r497Rank||999),r497RiskScale:_radarScale497,r497Cap:+_radarCap497.toFixed(4),finalMargin:_final495,initialRiskUsd:+_initialRisk495.toFixed(4),riskPctOfEquity:_riskPct495===null?null:+_riskPct495.toFixed(3),at:Date.now()};
+            const _meta495={modelId:'R495_EXACT_CLOSED_1M_RISK4_TESTNET',action:_r495Action,riskScale:_scale495,equity:+_eq495.toFixed(2),riskBudgetPct:R495_FINAL_RISK_PCT,riskBudgetUsd:+_riskUsd495.toFixed(4),slPct:+_sl495.toFixed(4),leverage:_lev495,marginBefore:+_before495.toFixed(4),panelContractMargin:+Number(r389PanelMarj).toFixed(4),scaleCap:+_scaleCap495.toFixed(4),riskCapMargin:+_riskCap495.toFixed(4),brakeCap:Number.isFinite(_brakeCap495)?+_brakeCap495.toFixed(4):null,r497Tier:String(coin?.r497Tier||'UNRANKED'),r497Rank:Number(coin?.r497Rank||999),r497RiskScale:_radarScale497,r497Cap:+_radarCap497.toFixed(4),finalMargin:_final495,initialRiskUsd:+_initialRisk495.toFixed(4),riskPctOfEquity:_riskPct495===null?null:+_riskPct495.toFixed(3),at:Date.now()};
             decisionChain.r495FinalSizing=_meta495; if(decisionChain?.aiBrain)decisionChain.aiBrain.r495FinalSizing=_meta495;
-            logAuto(`🧱 ${coin.symbol} R495/R497 FINAL: ${_r495Action} micro×${_scale495.toFixed(2)} · radar ${String(coin?.r497Tier||'UNRANKED')}×${_radarScale497.toFixed(2)} · marj ${_before495.toFixed(2)}$→${_final495.toFixed(2)}$ · başlangıç risk ${_initialRisk495.toFixed(2)}$ (%${_riskPct495===null?'—':_riskPct495.toFixed(2)} equity) · bundan sonra büyütülemez`);
+            logAuto(`🧱 ${coin.symbol} R495/R497 FINAL: ${_r495Action} closed1m×${_scale495.toFixed(2)} · radar ${String(coin?.r497Tier||'UNRANKED')}×${_radarScale497.toFixed(2)} · marj ${_before495.toFixed(2)}$→${_final495.toFixed(2)}$ · başlangıç risk ${_initialRisk495.toFixed(2)}$ (%${_riskPct495===null?'—':_riskPct495.toFixed(2)} equity) · bundan sonra büyütülemez`);
           }
         } catch(_r495SizeE) {
           logAuto(`⛔ ${coin.symbol} R495 FINAL sizing hata → fail-closed: ${String(_r495SizeE?.message||_r495SizeE).slice(0,100)}`);
