@@ -50,6 +50,8 @@ console.log('── C1  getPositionRiskCached: GERÇEK forceFresh ' + '─'.repe
       resetStuckPositionRiskInflight: () => {},
       keyFingerprint: () => 'FP',
       isBinanceBackoffActive: () => false,
+      isExecBackoffActive: () => false,
+      getExecBackoffMs: () => 30000,
       getBinanceBackoffMs: () => 30000,
       makeBinanceBackoffError: (m) => new Error('BINANCE_BACKOFF_ACTIVE ' + m),
       isPositionRiskRateLimitError: () => false,
@@ -72,11 +74,11 @@ console.log('── C1  getPositionRiskCached: GERÇEK forceFresh ' + '─'.repe
   r = await c.getPositionRiskCached('k', 's', { __forceFresh: true });
   ok('C1b forceFresh=true → TTL cache ATLANIR, ağa gidilir', c.__fetched() === 1 && r[0].positionAmt === '2', `fetched=${c.__fetched()}`);
 
-  c = mkCtx({ isBinanceBackoffActive: () => true });
+  c = mkCtx({ isBinanceBackoffActive: () => true, isExecBackoffActive: () => true });
   r = await c.getPositionRiskCached('k', 's', {});
   ok('C1c backoff + forceFresh=false → stale döner', r[0].positionAmt === '1');
 
-  c = mkCtx({ isBinanceBackoffActive: () => true });
+  c = mkCtx({ isBinanceBackoffActive: () => true, isExecBackoffActive: () => true });
   let threw = false, msg = '';
   try { await c.getPositionRiskCached('k', 's', { __forceFresh: true }); } catch (e) { threw = true; msg = e.message; }
   ok('C1d backoff + forceFresh=true → THROW (stale yok)', threw, msg.slice(0, 60));
@@ -222,8 +224,8 @@ console.log('\n── C5  Kalıcı unresolved-order kilidi ' + '─'.repeat(32))
 console.log('\n── C6  Kimlik + strateji sözleşmesi ' + '─'.repeat(34));
 {
   const has = (re) => re.test(src);
-  ok('C6a build V4.7.4.10', has(/V4_7_4_10_FRESHNESS_BUDGET_RISK41_10X/));
-  ok('C6b session 4_7_4_10', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_10_FB1/));
+  ok('C6a build V4.7.4.11', has(/V4_7_4_11_SPLIT_BACKOFF_RISK41_10X/));
+  ok('C6b session 4_7_4_10', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_11_SB1/));
   ok('C6c eski kimlik kalmadı', !has(/V4_7_4_9_EXIT_CONTRACT/) && !has(/4_7_4_9_EC1/));
   ok('C6d status yeni bayraklar', has(/strictForceFreshPositionTruth:true/) && has(/leverageProofHardGate:true/) && has(/persistentUnresolvedLocks:true/));
   ok('C6e R493 giriş kapısı aktif', has(/const storyWait = \['PUSU','REJECT'\]\.includes\(authority\.action\);/));

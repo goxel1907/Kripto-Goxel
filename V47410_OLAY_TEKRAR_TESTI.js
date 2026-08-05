@@ -105,7 +105,8 @@ console.log('\n══ SENARYO 4 — K1: API bogulmasi tekrar olur mu? ' + '═'.
       phase:'',lastError:null,lastErrorAt:0,lastErrorType:null,lastDurationMs:0},
     POS_RISK_TTL_ACTIVE:30000,POS_RISK_TTL_NORMAL:30000,POS_RISK_RATELIMIT_MS:60000,POS_RISK_INFLIGHT_WAIT_MS:14000,
     v592ParityStats:{freshCacheHits:0},resetStuckPositionRiskInflight:()=>{},keyFingerprint:()=>'FP',
-    isBinanceBackoffActive:()=>false,getBinanceBackoffMs:()=>3e4,makeBinanceBackoffError:m=>new Error(m),
+    isBinanceBackoffActive:()=>false,getBinanceBackoffMs:()=>3e4,
+    isExecBackoffActive:()=>false,getExecBackoffMs:()=>3e4,makeBinanceBackoffError:m=>new Error(m),
     isPositionRiskRateLimitError:()=>false,safeErrMsg:e=>String(e),pushCritical:()=>{},
     fetchPositionRiskRaw:async()=>{netCalls++;return [{symbol:'X',positionAmt:'1'}];},
     Date,Math,Number,String,Object,Array,Boolean,Promise,setTimeout,clearTimeout,Infinity,console});

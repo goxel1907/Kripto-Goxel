@@ -287,7 +287,7 @@ const BINANCE_EXECUTION_FAPI = 'https://testnet.binancefuture.com';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
-const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_10_FB1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_10_FB1';
+const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_11_SB1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_11_SB1';
 const TESTNET_SESSION_TAG = TESTNET_SESSION_RESET_ID.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,48) || 'EXACT_V592_72H_1';
 const TESTNET_SESSION_AUTO_STOP = String(process.env.TESTNET_SESSION_AUTO_STOP ?? '1') !== '0';
 const TESTNET_SESSION_PATH = path.join(TESTNET_STATE_DIR, 'v592_exact_testnet_session.json');
@@ -389,7 +389,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_4_10_FRESHNESS_BUDGET_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_4_11_SPLIT_BACKOFF_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -823,7 +823,8 @@ const binanceGov = {
   minuteStart: Date.now(),
   usedWeight: 0,
   usedOrders: 0,
-  backoffUntil: 0,
+  backoffUntil: 0,      // PUBLIC  = fapi.binance.com     (mainnet piyasa verisi)
+  execBackoffUntil: 0,  // EXEC    = testnet.binancefuture.com (imzali emir/hesap)
   last429At: 0,
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms)||0)));
@@ -880,11 +881,17 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
   binanceGov[key] = prev.then(job, job);
   return binanceGov[key];
 }
-function registerBinanceBackoff(reason='rate-limit', seconds=45) {
+// V4.7.4.11-L: fapi.binance.com (PUBLIC/mainnet) ve testnet.binancefuture.com (EXEC)
+// AYRI hostlardir, AYRI rate-limit kovalaridir. Tek global fren yuzunden testnet
+// tarafindaki 418, mainnet taramasini da donduruyordu -> bot hic tarama yapamiyordu.
+function registerBinanceBackoff(reason='rate-limit', seconds=45, domain='PUBLIC') {
   const sec = Math.max(5, Math.min(180, Number(seconds)||45));
-  binanceGov.backoffUntil = Math.max(binanceGov.backoffUntil || 0, Date.now() + sec*1000);
+  const dom = String(domain||'PUBLIC').toUpperCase();
+  const until = Date.now() + sec*1000;
+  if (dom==='EXEC'   || dom==='BOTH') binanceGov.execBackoffUntil = Math.max(binanceGov.execBackoffUntil || 0, until);
+  if (dom==='PUBLIC' || dom==='BOTH') binanceGov.backoffUntil     = Math.max(binanceGov.backoffUntil     || 0, until);
   binanceGov.last429At = Date.now();
-  try { pushCritical('BINANCE_BACKOFF', `${reason}: ${sec}sn istek bekleme`, {seconds:sec, reason}, 'WARNING'); } catch(_) {}
+  try { pushCritical('BINANCE_BACKOFF', `${reason}: ${sec}sn istek bekleme [${dom}]`, {seconds:sec, reason, domain:dom}, 'WARNING'); } catch(_) {}
 }
 // R95: Binance 418/429 geldiğinde istek bekleyip taramayı kilitleme; merkezi frenle güvenli dur.
 function isBinanceBackoffActive() {
@@ -893,6 +900,13 @@ function isBinanceBackoffActive() {
 function getBinanceBackoffMs() {
   return Math.max(0, Number(binanceGov.backoffUntil || 0) - Date.now());
 }
+// V4.7.4.11-L: imzali testnet yolu icin ayri fren.
+function isExecBackoffActive() {
+  return Date.now() < Number(binanceGov.execBackoffUntil || 0);
+}
+function getExecBackoffMs() {
+  return Math.max(0, Number(binanceGov.execBackoffUntil || 0) - Date.now());
+}
 function makeBinanceBackoffError(reason='Binance istek freni', seconds=45, status=null) {
   const e = new Error(`${reason}: ${Math.ceil(Number(seconds)||0)}sn merkezi istek freni`);
   e.code = 'BINANCE_BACKOFF_ACTIVE';
@@ -900,12 +914,12 @@ function makeBinanceBackoffError(reason='Binance istek freni', seconds=45, statu
   e.retryAfter = Number(seconds)||0;
   return e;
 }
-function registerHttpBackoffAndThrow(scope, status, retryHeader) {
+function registerHttpBackoffAndThrow(scope, status, retryHeader, domain='PUBLIC') {
   // R154: 418 global backoff 180sn→60sn. positionRisk kendi cooldown'unda ayrıca 90sn bekler.
   // 180sn tüm sistemi durduruyordu; 60sn yeterli — positionRisk zaten kendi TTL/cooldown ile korunur.
   const retry = parseInt(retryHeader || (Number(status) === 418 ? '60' : '60'), 10);
   const sec = Math.max(Number(status) === 418 ? 60 : 30, Math.min(120, Number(retry)||60));
-  registerBinanceBackoff(`HTTP ${status} ${scope}`, sec);
+  registerBinanceBackoff(`HTTP ${status} ${scope}`, sec, domain);
   throw makeBinanceBackoffError(`HTTP ${status} ${scope}`, sec, status);
 }
 
@@ -934,7 +948,7 @@ async function bAlgo(apiKey, apiSecret, params, _retry=false) {
   });
   r48638SyncGovHeaders(res);
   if (res.status === 429 || res.status === 418) {
-    registerHttpBackoffAndThrow('algoOrder', res.status, res.headers.get('Retry-After'));
+    registerHttpBackoffAndThrow('algoOrder', res.status, res.headers.get('Retry-After'), 'EXEC');
   }
   const text = await res.text();
   let data;
@@ -945,7 +959,7 @@ async function bAlgo(apiKey, apiSecret, params, _retry=false) {
       await syncBinanceTime(true);
       return bAlgo(apiKey, apiSecret, params, true);
     }
-    if (Number(data.code) === -1003) registerBinanceBackoff('Binance -1003 algoOrder', 60);
+    if (Number(data.code) === -1003) registerBinanceBackoff('Binance -1003 algoOrder', 60, 'EXEC');
     throw new Error(formatBinanceError('/fapi/v1/algoOrder', data));
   }
   return data;
@@ -1038,11 +1052,11 @@ async function liveOpenBracketOrders(apiKey, apiSecret, symbol, opts={}) {
     // Cache yoksa boş döner; state.currentSL/targetTP zaten panel/manager için kaynak olur.
     // V4.7.4.6-G4: backoff sirasinda bos dizi donmek SL/TP proof'unu sahte basarisiz yapar.
     // Cache yoksa kisa bekleyip bir kez daha dene; yine yoksa cagirana belirsizligi bildir.
-    if (isBinanceBackoffActive()) {
+    if (isExecBackoffActive()) {
       await sleep(1500);
       const retry = getBracketOrdersCached(symbol, ttlMs*2);
       if (retry) return retry;
-      if (isBinanceBackoffActive()) return [];
+      if (isExecBackoffActive()) return [];
     }
   }
   const algo = await liveOpenAlgoOrders(apiKey, apiSecret, symbol);
@@ -1465,11 +1479,11 @@ async function bPub(path, qs='') {
   const url=`${FAPI}${path}${qs?'?'+qs:''}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
   r48638SyncGovHeaders(r);
-  if(r.status===429||r.status===418){registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'));}
+  if(r.status===429||r.status===418){registerHttpBackoffAndThrow(path, r.status, r.headers.get('Retry-After'), 'PUBLIC');}
   const text=await r.text();
   try{
     const data = JSON.parse(text);
-    if (data && data.code === -1003) { registerBinanceBackoff('Binance -1003 public', 60); throw new Error(formatBinanceError(path, data)); }
+    if (data && data.code === -1003) { registerBinanceBackoff('Binance -1003 public', 60, 'PUBLIC'); throw new Error(formatBinanceError(path, data)); }
     return data;
   }catch(e){ if (e.message && e.message.includes(path)) throw e; throw new Error(`JSON hatası: ${text.substring(0,80)}`);}
 }
@@ -1594,7 +1608,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
       const res = await fetch(finalUrl, options);
       r48638SyncGovHeaders(res);
       if (res.status === 429 || res.status === 418) {
-        registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'));
+        registerHttpBackoffAndThrow(path, res.status, res.headers.get('Retry-After'), 'EXEC');
       }
       text = await res.text();  // gövde okuma da try içinde — "Invalid response body" burada yakalanır
       netErr = null;
@@ -1620,7 +1634,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
       await syncBinanceTime(true);
       return bReq(apiKey,apiSecret,method,path,params,timeout,true);
     }
-    if (Number(data.code) === -1003) registerBinanceBackoff(`Binance -1003 ${path}`, 60);
+    if (Number(data.code) === -1003) registerBinanceBackoff(`Binance -1003 ${path}`, 60, 'EXEC');
     throw new Error(formatBinanceError(path, data));
   }
   return data;
@@ -1712,13 +1726,13 @@ async function getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh=false,allow
   signedAccountCache.requests++;
   const fresh=signedAccountCache.data&&signedAccountCache.lastApiKey===apiFp&&now-signedAccountCache.ts<SIGNED_ACCOUNT_TTL_MS;
   if(!forceFresh&&fresh)return {account:signedAccountCache.data,source:signedAccountCache.lastSource,stale:false,ageMs:now-signedAccountCache.ts,cacheHit:true};
-  if(isBinanceBackoffActive()){
+  if(isExecBackoffActive()){
     // V4.7.4.1-F02: backoff sirasinda POSITION_TRUTH icin eski pozisyon ASLA kullanilmaz.
     if(allowStale&&purpose!=='POSITION_TRUTH'&&signedAccountCache.data&&signedAccountCache.lastApiKey===apiFp){
       signedAccountCache.staleServed++;
       return {account:signedAccountCache.data,source:signedAccountCache.lastSource,stale:true,ageMs:now-signedAccountCache.ts,cacheHit:true,warning:'BINANCE_BACKOFF_STALE_ACCOUNT'};
     }
-    throw makeBinanceBackoffError('Signed account snapshot backoff',Math.ceil(getBinanceBackoffMs()/1000),418);
+    throw makeBinanceBackoffError('Signed account snapshot backoff',Math.ceil(getExecBackoffMs()/1000),418);
   }
   // V4.7.4.1-F02: forceFresh + allowStale=false (POSITION_TRUTH) paylasilan inflight'a
   // KATILMAZ. Inflight'i baslatan PANEL cagrisinin closure'i allowStale:true ise hata
@@ -1903,10 +1917,10 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   delete queryParams.__maxAgeMs;
 
   // R95: Binance 418/429 merkezi istek freni aktifken yeni positionRisk isteği açma.
-  if (isBinanceBackoffActive()) {
+  if (isExecBackoffActive()) {
     // V4.7.4.2-C1: forceFresh (emir yolu) backoff sirasinda ESKI pozisyonu ASLA kullanmaz.
     if (!forceFresh && posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, queryParams);
-    throw makeBinanceBackoffError('Binance geçici istek freni', Math.ceil(getBinanceBackoffMs()/1000), 418);
+    throw makeBinanceBackoffError('Binance geçici istek freni', Math.ceil(getExecBackoffMs()/1000), 418);
   }
 
   // -1003 cooldown aktifse cache döndür; cache yoksa yeni emir akışını güvenli durdur.
@@ -6438,7 +6452,7 @@ async function r495FetchExactClosed1m(fullSymbol,candidateTs){
     const url=`${FAPI}/fapi/v1/klines?${qs}`;
     const res=await fetch(url,{signal:AbortSignal.timeout(6000)});
     r48638SyncGovHeaders(res);
-    if(res.status===429||res.status===418)registerHttpBackoffAndThrow('/fapi/v1/klines:R495_EXACT',res.status,res.headers.get('Retry-After'));
+    if(res.status===429||res.status===418)registerHttpBackoffAndThrow('/fapi/v1/klines:R495_EXACT',res.status,res.headers.get('Retry-After'),'PUBLIC');
     const text=await res.text();
     let data;try{data=JSON.parse(text);}catch(_){throw new Error(`R495 exact 1m JSON hatası: ${text.slice(0,100)}`);}
     if(!res.ok||!Array.isArray(data))throw new Error(formatBinanceError('/fapi/v1/klines:R495_EXACT',data));
@@ -18496,7 +18510,7 @@ app.post('/api/positions', async (req, res) => {
         brackets.hasSL=true; brackets.hasTP=true;
         brackets.sl=state.currentSL||state.stopLoss||null;
         brackets.tp=state.targetTP||state.tpPrice||state.target||null;
-      } else if (!isBinanceBackoffActive()) {
+      } else if (!isExecBackoffActive()) {
         try{
           const orders=await liveOpenBracketOrders(apiKey,apiSecret,full,{ttlMs:60_000});
           brackets.source='rest-cache';
@@ -21380,6 +21394,9 @@ app.get('/api/diagnostics/status', (_req, res) => {
     },
     binanceRest: {
       backoffActive: isBinanceBackoffActive(),
+      execBackoffActive: isExecBackoffActive(),
+      execBackoffMs: getExecBackoffMs(),
+      publicBackoffMs: getBinanceBackoffMs(),
       backoffMs: getBinanceBackoffMs(),
       usedWeight: binanceGov.usedWeight,
       queueActive: !!binanceGov.q,
@@ -21472,6 +21489,9 @@ app.get('/api/health', (_req, res) => {
         positionRisk,
         binanceRest: {
           backoffActive: isBinanceBackoffActive(),
+      execBackoffActive: isExecBackoffActive(),
+      execBackoffMs: getExecBackoffMs(),
+      publicBackoffMs: getBinanceBackoffMs(),
           backoffMs: getBinanceBackoffMs(),
           backoffUntil: Number(binanceGov.backoffUntil || 0),
           usedWeight: binanceGov.usedWeight,
@@ -21938,6 +21958,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     autoScanState.phase = 'POZİSYON_KONTROL';
 
     // R95: Binance 418/429 merkezi freni aktifken yeni REST yükü bindirme, taramayı güvenli beklet.
+    // V4.7.4.11-L7: tarama YALNIZ mainnet (PUBLIC) freni aktifken durur.
+    // Testnet 418'i taramayi durdurmaz; aday/funnel kaniti yazilmaya devam eder,
+    // yalnizca emir gonderimi EXEC freni tarafindan engellenir.
     if (isBinanceBackoffActive()) {
       const rem = Math.ceil(getBinanceBackoffMs()/1000);
       resetStuckPositionRiskInflight('auto-scan-backoff');
@@ -25409,9 +25432,9 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
 async function syncPositions() {
   if (!autoConfig?.enabled || !autoConfig?.apiKey || !autoConfig?.apiSecret) return;
   try {
-    if (isBinanceBackoffActive()) {
+    if (isExecBackoffActive()) {
       resetStuckPositionRiskInflight('syncPositions-backoff');
-      autoScanState.lastAction = `Binance geçici istek freni ${Math.ceil(getBinanceBackoffMs()/1000)}sn — pozisyon senkronu bekliyor`;
+      autoScanState.lastAction = `Binance testnet istek freni ${Math.ceil(getExecBackoffMs()/1000)}sn — pozisyon senkronu bekliyor`;
       return;
     }
     const posData = await getPositionRiskCached(autoConfig.apiKey, autoConfig.apiSecret);
@@ -25495,7 +25518,7 @@ async function syncPositions() {
         const lastKnown = lastKnownPositions?.[sym] || {};
         // R379: json (Railway geçici disk) deploy'da silinir — gerçek SL/TP Binance'teki açık emirlerden okunur.
         let r379SL = 0, r379TP = 0;
-        if (!(lastKnown.currentSL || lastKnown.slPrice) && !isBinanceBackoffActive()) {
+        if (!(lastKnown.currentSL || lastKnown.slPrice) && !isExecBackoffActive()) {
           try {
             const _o = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
             r379SL = orderTriggerPrice(_o.find(x => orderKind(x) === 'SL')) || 0;
@@ -25553,7 +25576,7 @@ async function syncPositions() {
         // En sağlam kaynak: gerçek SL fiyatından türet (currentSL restore'da korunuyor).
         let liveSLGuard = 0;
         try {
-          if (!isBinanceBackoffActive()) {
+          if (!isExecBackoffActive()) {
             const _guardOrders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
             liveSLGuard = orderTriggerPrice(_guardOrders.find(x=>orderKind(x)==='SL')) || 0;
           }
@@ -25599,7 +25622,7 @@ async function syncPositions() {
         const stForBracket = trailingState.get(sym) || {};
         let hasSL = !!(stForBracket.sltpVerified && stForBracket.currentSL);
         let hasTP = !!(stForBracket.sltpVerified && stForBracket.targetTP);
-        if ((!hasSL || !hasTP) && !isBinanceBackoffActive()) {
+        if ((!hasSL || !hasTP) && !isExecBackoffActive()) {
           const orders = await liveOpenBracketOrders(autoConfig.apiKey, autoConfig.apiSecret, sym, {ttlMs:60_000});
           const liveSLOrder = orders.find(o => orderKind(o) === 'SL');
           const liveTPOrder = orders.find(o => orderKind(o) === 'TP');
