@@ -1,6 +1,6 @@
 {
-  "name": "lazarus-v592-testnet-exact-closed1m-v4-7-4-3-order-gate-fix",
-  "version": "5.9.2-testnet-exact-closed1m-v4.7.4.3",
+  "name": "lazarus-v592-testnet-exact-closed1m-v4-7-4-5-full-funnel",
+  "version": "5.9.2-testnet-exact-closed1m-v4.7.4.5",
   "private": true,
   "main": "server.js",
   "scripts": {
