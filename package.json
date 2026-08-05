@@ -1,18 +1,13 @@
 {
-  "name": "lazarus-v592-testnet-exact-closed1m-r495-v4-7-2-signed-priority",
-  "version": "5.9.2-testnet-exact-closed1m-r495-v4.7.2",
+  "name": "lazarus-v592-testnet-exact-closed1m-v4-7-4-2-strict-truth",
+  "version": "5.9.2-testnet-exact-closed1m-v4.7.4.2",
   "private": true,
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js",
+    "test": "node V4742_STRICT_TRUTH_TEST.js && node V4741_BEHAVIOURAL_TEST.js && node V474_PARITY_SAFETY_TEST.js"
   },
-  "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "ws": "^8.17.1"
-  }
+  "engines": { "node": ">=22" },
+  "dependencies": { "express": "^4.18.2", "cors": "^2.8.5", "ws": "^8.17.1" }
 }
