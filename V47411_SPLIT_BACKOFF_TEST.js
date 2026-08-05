@@ -117,7 +117,11 @@ ok('J2 min hold duruyor', /function v592MinHoldGuard/.test(src)&&/minHoldBlocks\
 ok('K1 tazelik butcesi duruyor', /freshCacheHits\+\+/.test(src));
 ok('build etiketi V4_7_4_11', /V4_7_4_11_SPLIT_BACKOFF_RISK41_10X/.test(src));
 ok('eski etiket kalmadi', !/V4_7_4_10_FRESHNESS_BUDGET/.test(src));
-ok('telemetri execBackoffActive', cnt('execBackoffActive:')===2, `${cnt('execBackoffActive:')}`);
+ok('telemetri execBackoffActive x4 (panel+stats)', cnt('execBackoffActive:')===4, `${cnt('execBackoffActive:')}`);
+ok('parityV4741.stats backoff tasiyor', cnt('stats:\\{\\.\\.\\.v592ParityStats,execBackoffActive')===2,
+   `${cnt('stats:\\{\\.\\.\\.v592ParityStats,execBackoffActive')}`);
+ok('stats publicBackoffMs tasiyor', cnt('publicBackoffMs:getBinanceBackoffMs\\(\\)')===2);
+ok('mode etiketi V47411', cnt('V47411_')===2 && !/mode:'V47410_/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);
