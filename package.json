@@ -1,6 +1,6 @@
 {
-  "name": "lazarus-v592-testnet-exact-closed1m-v4-7-4-7-pit-align",
-  "version": "5.9.2-testnet-exact-closed1m-v4.7.4.7",
+  "name": "lazarus-v592-testnet-exact-closed1m-v4-7-4-8-status-fix",
+  "version": "5.9.2-testnet-exact-closed1m-v4.7.4.8",
   "private": true,
   "main": "server.js",
   "scripts": {

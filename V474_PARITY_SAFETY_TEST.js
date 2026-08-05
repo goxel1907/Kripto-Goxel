@@ -116,8 +116,8 @@ ok('A13 3. mum kapanmadan MARKET verilmez', r.action !== 'MARKET', r.code);
 console.log('\n── B) V4.7.4 yama dogrulamasi (statik) ' + '─'.repeat(31));
 
 // P0 kimlik
-must('B0a build V4_7_4_3', /LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_4_7_PIT_ALIGN_RISK41_10X'/);
-must('B0b session 4_7_4_7', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_7_PA1/);
+must('B0a build V4_7_4_3', /LAZARUS_BUILD = 'R493_V5_9_2_TESTNET_EXACT_CLOSED1M_R495_V4_7_4_8_STATUS_FIX_RISK41_10X'/);
+must('B0b session 4_7_4_8', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_8_SF1/);
 mustNot('B0c story-shadow bayragi KALDIRILDI (F01)', /const V592_STORY_AUTHORITY_SHADOW_ONLY=/);
 must('B0d leverage lock sabiti', /const V592_LEVERAGE_LOCK=/);
 must('B0e idempotency sabiti', /const V592_ORDER_IDEMPOTENCY=/);
