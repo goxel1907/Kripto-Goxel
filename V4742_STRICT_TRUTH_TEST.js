@@ -222,9 +222,9 @@ console.log('\n── C5  Kalıcı unresolved-order kilidi ' + '─'.repeat(32))
 console.log('\n── C6  Kimlik + strateji sözleşmesi ' + '─'.repeat(34));
 {
   const has = (re) => re.test(src);
-  ok('C6a build V4.7.4.5', has(/V4_7_4_5_FULL_FUNNEL_DATASET_RISK41_10X/));
-  ok('C6b session 4_7_4_5', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_5_FD1/));
-  ok('C6c eski kimlik kalmadı', !has(/V4_7_4_4_RESEARCH_DATASET/) && !has(/4_7_4_4_RD1/));
+  ok('C6a build V4.7.4.7', has(/V4_7_4_7_PIT_ALIGN_RISK41_10X/));
+  ok('C6b session 4_7_4_7', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_7_PA1/));
+  ok('C6c eski kimlik kalmadı', !has(/V4_7_4_6_PROTECTION_FIX/) && !has(/4_7_4_6_PF1/));
   ok('C6d status yeni bayraklar', has(/strictForceFreshPositionTruth:true/) && has(/leverageProofHardGate:true/) && has(/persistentUnresolvedLocks:true/));
   ok('C6e R493 giriş kapısı aktif', has(/const storyWait = \['PUSU','REJECT'\]\.includes\(authority\.action\);/));
   ok('C6f story-shadow bayrağı yok', !has(/const V592_STORY_AUTHORITY_SHADOW_ONLY=/));
