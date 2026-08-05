@@ -20,7 +20,9 @@ console.log('── I1  Status bloklarinda tanimsiz sabit YOK ' + '─'.repeat(2
   const blocks=[...src.matchAll(/parityV4741:\{[\s\S]{0,1600}?\},(?:strictForceFresh|accountSnapshot|dualLane)/g)].map(x=>x[0]);
   ok('I1a iki status blogu bulundu', blocks.length===2, `${blocks.length}`);
   const bad=[];
-  for(const b of blocks) for(const m of b.matchAll(/\b([A-Z][A-Z0-9_]{4,})\b/g))
+  // V4.7.4.9: tirnak icindeki metinler SABIT DEGILDIR — taramadan cikar.
+  const strip=t=>t.replace(/'(?:[^'\\]|\\.)*'/g,"''").replace(/"(?:[^"\\]|\\.)*"/g,'""').replace(/`(?:[^`\\]|\\.)*`/g,'``');
+  for(const b of blocks) for(const m of strip(b).matchAll(/\b([A-Z][A-Z0-9_]{4,})\b/g))
     if(!declared.has(m[1]) && !bad.includes(m[1])) bad.push(m[1]);
   ok('I1b tanimsiz BUYUK_HARF sabit yok', bad.length===0, bad.join(', '));
 }
@@ -41,8 +43,8 @@ console.log('\n── I2  Bilinen tuzaklar ' + '─'.repeat(46));
 }
 console.log('\n── I3  Kimlik ' + '─'.repeat(56));
 {
-  ok('I3a build V4.7.4.8', /V4_7_4_8_STATUS_FIX_RISK41_10X/.test(src));
-  ok('I3b session 4_7_4_8_SF1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_8_SF1/.test(src));
+  ok('I3a build V4.7.4.9', /V4_7_4_9_EXIT_CONTRACT_RISK41_10X/.test(src));
+  ok('I3b session 4_7_4_9_SF1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_9_EC1/.test(src));
   ok('I3c PIT hizalama duruyor', /R497_PIT_MAX_RANK=Math\.max/.test(src)&&/strictEligible/.test(src));
   ok('I3d G1/G2 koruma duruyor', /__forceFresh:true\}\);/.test(src)&&/'POST_FILL_POSITION_PROOF'/.test(src));
   ok('I3e sozlesme degismedi', /R497_SLOT_MARGIN_USDT \|\| 41/.test(src)&&/R495_FINAL_RISK_PCT \|\| 4/.test(src));
