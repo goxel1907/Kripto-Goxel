@@ -44,7 +44,8 @@ console.log('\n── G2  Dolum sonrasi pozisyon kaniti (fail-closed) ' + '─'.
   ok('G2e kanit varsa SL\\/TP devam eder', /_via\} pozisyonu dogruladi; SL\/TP yazimi devam ediyor/.test(src));
   ok('G2f hicbir kanit yoksa POSITION_ALREADY_CLOSED', /if\(!_proofOpen\)\{[\s\S]{0,200}POSITION_ALREADY_CLOSED/.test(src));
   ok('G2g rescue sayaci', /v592ParityStats\.postFillProofRescues\+\+/.test(src));
-  ok('G2h freshStart artik let (yeniden atanabilir)', /let freshStart = await freshOpenPositionForSymbol/.test(src));
+  ok('G2h freshStart artik let (yeniden atanabilir)',
+   /let freshStart = firstInstall/.test(src) && /: await freshOpenPositionForSymbol/.test(src));
   ok('G2i SL\/TP yolu SIKI butce kullaniyor', /freshOpenPositionForSymbol\(apiKey, apiSecret, symbol, 3, POS_FRESH_ORDER_MS\)/.test(src));
 }
 
@@ -77,8 +78,8 @@ console.log('\n── G4  418 sirasinda bracket proof sahte basarisiz olmaz ' + 
 console.log('\n── G5  Kimlik + sozlesme ' + '─'.repeat(45));
 {
   const h=re=>re.test(src);
-  ok('G5a build V4.7.4.12', h(/V4_7_4_12_WAIT_ATTRIBUTION_RISK41_10X/));
-  ok('G5b session 4_7_4_12_WA1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_12_WA1/));
+  ok('G5a build V4.7.4.14', h(/V4_7_4_14_CLOSE_RESEARCH_RISK41_10X/));
+  ok('G5b session 4_7_4_14_CR1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_14_CR1/));
   ok('G5c eski kimlik yok', !h(/V4_7_4_9_EXIT_CONTRACT/));
   ok('G5d yeni bayraklar', h(/postFillPositionProof:true/)&&h(/evidenceOrderDedup:true/));
   ok('G5e slot 41', h(/R497_SLOT_MARGIN_USDT \|\| 41/));
