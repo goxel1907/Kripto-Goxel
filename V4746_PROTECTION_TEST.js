@@ -24,13 +24,15 @@ const sb=(e={})=>vm.createContext({Date,Math,Number,String,Object,Array,Boolean,
 console.log('── G1  freshOpenPositionForSymbol GERCEK force-fresh ' + '─'.repeat(18));
 {
   let seen=[];
-  const ctx=sb({getPositionRiskCached:async(k,s,p)=>{seen.push(p);return [{symbol:'SYNUSDT',positionAmt:'691'}];}});
+  const ctx=sb({POS_FRESH_MANAGER_MS:8000,POS_FRESH_ORDER_MS:3000,
+    getPositionRiskCached:async(k,s,p)=>{seen.push(p);return [{symbol:'SYNUSDT',positionAmt:'691'}];}});
   vm.runInContext(grab('async function freshOpenPositionForSymbol'),ctx);
   const r=await ctx.freshOpenPositionForSymbol('k','s','SYNUSDT',1);
   ok('G1a pozisyon bulundu', r.open===true);
   ok('G1b __forceFresh:true gecildi', seen[0] && seen[0].__forceFresh===true, JSON.stringify(seen[0]));
   ok('G1c symbol de gecildi', seen[0] && seen[0].symbol==='SYNUSDT');
   ok('G1d eski "cache bypass" yorumu kalmadi', !/getPositionRiskCached\(apiKey, apiSecret, \{symbol:sym\}\); \/\/ symbol-specific: cache bypass/.test(src));
+  ok('G1e V4.7.4.10: yas siniri da gecildi', seen[0] && seen[0].__maxAgeMs===8000, JSON.stringify(seen[0]));
 }
 
 console.log('\n── G2  Dolum sonrasi pozisyon kaniti (fail-closed) ' + '─'.repeat(20));
@@ -43,6 +45,7 @@ console.log('\n── G2  Dolum sonrasi pozisyon kaniti (fail-closed) ' + '─'.
   ok('G2f hicbir kanit yoksa POSITION_ALREADY_CLOSED', /if\(!_proofOpen\)\{[\s\S]{0,200}POSITION_ALREADY_CLOSED/.test(src));
   ok('G2g rescue sayaci', /v592ParityStats\.postFillProofRescues\+\+/.test(src));
   ok('G2h freshStart artik let (yeniden atanabilir)', /let freshStart = await freshOpenPositionForSymbol/.test(src));
+  ok('G2i SL\/TP yolu SIKI butce kullaniyor', /freshOpenPositionForSymbol\(apiKey, apiSecret, symbol, 3, POS_FRESH_ORDER_MS\)/.test(src));
 }
 
 console.log('\n── G3  Ayni emir icin ikinci kanit kaydi acilmaz ' + '─'.repeat(22));
@@ -74,9 +77,9 @@ console.log('\n── G4  418 sirasinda bracket proof sahte basarisiz olmaz ' + 
 console.log('\n── G5  Kimlik + sozlesme ' + '─'.repeat(45));
 {
   const h=re=>re.test(src);
-  ok('G5a build V4.7.4.9', h(/V4_7_4_9_EXIT_CONTRACT_RISK41_10X/));
-  ok('G5b session 4_7_4_9_PF1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_9_EC1/));
-  ok('G5c eski kimlik yok', !h(/V4_7_4_8_STATUS_FIX/));
+  ok('G5a build V4.7.4.10', h(/V4_7_4_10_FRESHNESS_BUDGET_RISK41_10X/));
+  ok('G5b session 4_7_4_10_PF1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_10_FB1/));
+  ok('G5c eski kimlik yok', !h(/V4_7_4_9_EXIT_CONTRACT/));
   ok('G5d yeni bayraklar', h(/postFillPositionProof:true/)&&h(/evidenceOrderDedup:true/));
   ok('G5e slot 41', h(/R497_SLOT_MARGIN_USDT \|\| 41/));
   ok('G5f max 2', h(/R486_MAX_POSITIONS \|\| 2/));
