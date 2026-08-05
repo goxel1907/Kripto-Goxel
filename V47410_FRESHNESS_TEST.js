@@ -91,8 +91,8 @@ console.log('\n── K3  Butceler ve cagri yerleri ' + '─'.repeat(36));
 console.log('\n── K4  Onceki sozlesme bozulmadi ' + '─'.repeat(36));
 {
   const h=re=>re.test(src);
-  ok('K4a build V4.7.4.11', h(/V4_7_4_11_SPLIT_BACKOFF_RISK41_10X/));
-  ok('K4b session 4_7_4_11_SB1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_11_SB1/));
+  ok('K4a build V4.7.4.12', h(/V4_7_4_12_WAIT_ATTRIBUTION_RISK41_10X/));
+  ok('K4b session 4_7_4_12_WA1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_12_WA1/));
   ok('K4c J1 koruma koruma', h(/'PROTECTION_KEPT_EXISTING'/));
   ok('K4d J2 min hold', h(/function v592MinHoldGuard/));
   ok('K4e J3 bayat emir', h(/'ORDER_ABORTED_STALE'/));
