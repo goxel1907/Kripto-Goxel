@@ -81,9 +81,9 @@ ok('periyodik yenileme', /setInterval\(\(\)=>\{v592RefreshTestnetUniverse\(false
 }
 
 console.log('\n══ P — kimlik ve guvenlik ' + '═'.repeat(48));
-ok('build V4_7_4_20', /V4_7_4_20_EXIT_REASON_PARITY_RISK41_10X/.test(src));
+ok('build V4_7_4_21', /V4_7_4_21_UNPROTECTED_EXCEPTION_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_11_SPLIT_BACKOFF/.test(src));
-ok('session 4_7_4_20_EP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_20_EP1/.test(src));
+ok('session 4_7_4_21_UP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_21_UP1/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('L fren ayrimi duruyor', /function isExecBackoffActive/.test(src)&&/execBackoffUntil/.test(src));
 ok('J1 duruyor', /protectionKeptExisting\+\+/.test(src));

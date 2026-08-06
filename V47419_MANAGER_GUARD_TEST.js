@@ -31,7 +31,9 @@ ok('SEBEP: guard tek yerden cagriliyordu', /v592MinHoldGuard TEK bir yerden cagr
 
 console.log('\n══ B — guard artik yonetici cikisinda ' + '═'.repeat(36));
 ok('cagri yeri 2 oldu (tanim haric)', cnt('v592MinHoldGuard\\(')===3, `${cnt('v592MinHoldGuard\\(')}`);
-ok('managePosition icinde cagri', /const _mg = v592MinHoldGuard\(sym, `MANAGER_\$\{action\.type\}`\)/.test(src));
+// V4.7.4.21-AH2: korumasiz pozisyonda guard atlanir -> ucdeger ifade
+ok('managePosition icinde cagri', /const _mg = _unprotected \? \{blocked:false\} : v592MinHoldGuard\(sym, `MANAGER_\$\{action\.type\}`\)/.test(src));
+ok('korumasizda guard atlanir (V4.7.4.21)', /_unprotected \? \{blocked:false\}/.test(src));
 ok('exact mod kosulu', /if \(V592_EXACT_BACKTEST_AUTHORITY && action\.type === 'EMERGENCY_EXIT'/.test(src));
 ok('bloke olunca return null', /if \(_mg\.blocked\) \{[\s\S]{0,500}?return null;/.test(src));
 {const gi=src.indexOf("const _mg = v592MinHoldGuard(sym");
@@ -90,9 +92,9 @@ ok('S cikis arastirmasi', /closeSnap=rec\.closeResearchSnapshot/.test(src));
 ok('L fren ayrimi', /function isExecBackoffActive/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_20', /V4_7_4_20_EXIT_REASON_PARITY_RISK41_10X/.test(src));
+ok('build V4_7_4_21', /V4_7_4_21_UNPROTECTED_EXCEPTION_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_18_FAST_PROTECT/.test(src));
-ok('session 4_7_4_20_EP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_20_EP1/.test(src));
+ok('session 4_7_4_21_UP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_21_UP1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

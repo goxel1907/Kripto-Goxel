@@ -87,13 +87,15 @@ ok('5 uretec golgede', cnt('v592ShadowNonBacktestExit\\(sym,')===7, `${cnt('v592
 for(const [n,re] of [['R14',"'R14_HARD_LOSS'"],['R42',"'R42_ABSOLUTE_DAMAGE'"],
   ['R41',"'R41_EARLY_DAMAGE'"],['CVD flip',"'CVD_FLIP'"],['cascade',"'ADVERSE_CASCADE'"]])
   ok(`${n} golgede`, cnt(re)>=2);
-ok('kapida TIP kontrolu once', src.indexOf('if (!v592ExitTypeAllowed(action.type))')<src.indexOf('const _mg = v592MinHoldGuard(sym'));
+// V4.7.4.21-AH2: kosula korumasiz istisnasi eklendi
+ok('kapida TIP kontrolu once',
+   src.indexOf('if (!_unprotected && !v592ExitTypeAllowed(action.type))')<src.indexOf('const _mg = _unprotected'));
 ok('golgede return null', /v592ParityStats\.exitTypeShadowed\+\+;[\s\S]{0,600}?return null;/.test(src));
 ok('SL\/TP korumasi KALKMADI', /protectionVerified/.test(src)&&/installSLTPWithProof/.test(src));
 ok('ENV ile kapatilabilir', /V592_EXIT_TYPE_WHITELIST \?\? '1'/.test(src));
 
 console.log('\n══ F — onceki duzeltmeler ' + '═'.repeat(48));
-for(const [n,re] of [['AC yonetici guard',/const _mg = v592MinHoldGuard\(sym, `MANAGER_/],
+for(const [n,re] of [['AC yonetici guard',/v592MinHoldGuard\(sym, `MANAGER_\$\{action\.type\}`\)/],
   ['AA1 cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1\)/],
   ['AA2 ledger dedup',/function v592CloseAlreadyRecorded/],
   ['Q koruma-once',/PROTECT_FIRST_NO_PRECHECK/],['W giris mum paritesi',/candidateToEntryMs:180000/],
@@ -101,8 +103,8 @@ for(const [n,re] of [['AC yonetici guard',/const _mg = v592MinHoldGuard\(sym, `M
   ['L fren ayrimi',/function isExecBackoffActive/],['O testnet evreni',/v592IsTestnetTradable/],
   ['S cikis arastirmasi',/closeSnap=rec\.closeResearchSnapshot/],
   ['testnet hard-lock',/const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/],
-  ['build V4_7_4_20',/V4_7_4_20_EXIT_REASON_PARITY_RISK41_10X/],
-  ['session 4_7_4_20_EP1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_20_EP1/]]) ok(n, re.test(src));
+  ['build V4_7_4_21',/V4_7_4_21_UNPROTECTED_EXCEPTION_RISK41_10X/],
+  ['session 4_7_4_21_UP1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_21_UP1/]]) ok(n, re.test(src));
 ok('eski build yok', !/V4_7_4_19_MANAGER_EXIT_GUARD/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
