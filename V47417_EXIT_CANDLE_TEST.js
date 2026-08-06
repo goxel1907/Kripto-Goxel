@@ -102,7 +102,8 @@ for(const c of ['exitCandleDeferred','exitCandleAllowed'])
   ok(`sayac ${c}`, cnt(`${c}:0`)===1 && cnt(`v592ParityStats\\.${c}\\+\\+`)===1);
 ok('telemetri exitCandleParity', cnt('exitCandleParity:V592_EXIT_CANDLE_PARITY')===2);
 ok('sozlesmede olculmus degerler', cnt('exitTsMod60000:59999')===2
-   && cnt('DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12')===2);
+   && cnt('DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12')===4,
+   'V4.7.4.20-AG3 backtestExitCounts ekledi -> 2+2=4');
 
 console.log('\n══ E — giris paritesi ve oncekiler bozulmadi ' + '═'.repeat(29));
 ok('W giris mum paritesi', /V592_ENTRY_CANDLE_PARITY/.test(src)&&/candidateToEntryMs:180000/.test(src));
@@ -116,9 +117,9 @@ ok('N WAIT atribusyonu', /waitSource:row\?\.waitSource\|\|null/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('V4.5 secici 35/TOP_GAINER/0.35', /V592_V45_MS_SCORE_MIN.*35/.test(src)&&/V592_V45_FIRST_OBSTACLE_RR_MIN.*0\.35/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_19', /V4_7_4_19_MANAGER_EXIT_GUARD_RISK41_10X/.test(src));
+ok('build V4_7_4_20', /V4_7_4_20_EXIT_REASON_PARITY_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_16_ENTRY_CANDLE_PARITY/.test(src));
-ok('session 4_7_4_19_MG1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_19_MG1/.test(src));
+ok('session 4_7_4_20_EP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_20_EP1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);
