@@ -84,9 +84,9 @@ ok('N WAIT atribusyonu', /waitSource:row\?\.waitSource\|\|null/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('R493 kapisi 0.35', /R493_MIN_FIRST_OBSTACLE_RR/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_17', /V4_7_4_17_CANDLE_PARITY_RISK41_10X/.test(src));
+ok('build V4_7_4_18', /V4_7_4_18_FAST_PROTECT_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_15_ATTEMPT_LIFECYCLE/.test(src));
-ok('session 4_7_4_17_CP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_17_CP1/.test(src));
+ok('session 4_7_4_18_FP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_18_FP1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);
