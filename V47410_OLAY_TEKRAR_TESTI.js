@@ -61,7 +61,7 @@ for(const o of OLAYLAR){
 console.log('\n══ SENARYO 2 — J2: erken kapatma engelleniyor mu? ' + '═'.repeat(25));
 {
   const mkGuard=(exact,ageMs)=>{
-    const ctx=vm.createContext({V592_EXACT_BACKTEST_AUTHORITY:exact,V592_MIN_HOLD_MS:60000,
+    const ctx=vm.createContext({V592_EXACT_BACKTEST_AUTHORITY:exact,V592_MIN_HOLD_MS:60000,v592ExitCandleGate:()=>({blocked:false}),
       trailingState:new Map([['X',{openedAt:Date.now()-ageMs}]]),
       r501OrderLifeSnapshot:()=>({}),r501OrderLifeMark:()=>{},
       v592ParityStats:{minHoldBlocks:0},Date,Number,String,Math,console});

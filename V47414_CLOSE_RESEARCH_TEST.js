@@ -75,7 +75,7 @@ console.log('\n══ E — hesaplama dogrulugu (simulasyon) ' + '═'.repeat(34
   ok('gercek 0 CALISIR', d(0,0.5,6)===-0.5, 'sifir gecerli deger');
   ok('kaynakta r501Num2 var', /function r501Num2\(v\)/.test(src));
   ok('kaynakta r501Delta var', /function r501Delta\(a,b,p=6\)/.test(src));
-  ok('tum deltalar r501Delta kullaniyor (5 kullanim + 1 tanim)', cnt('r501Delta\\(')===6, `${cnt('r501Delta\\(')}`);
+  ok('tum deltalar r501Delta kullaniyor (6 kullanim + 1 tanim)', cnt('r501Delta\\(')===7, `${cnt('r501Delta\\(')}`);
 }
 
 console.log('\n══ F — pasiflik ve onceki duzeltmeler ' + '═'.repeat(36));
@@ -86,9 +86,9 @@ ok('N WAIT atribusyonu duruyor', /waitSource:row\?\.waitSource\|\|null/.test(src
 ok('O testnet evreni duruyor', /v592IsTestnetTradable/.test(src));
 ok('arastirma PASIF kalir', /exitImpact:false/.test(src)&&cnt('researchFieldsPassive')>=1);
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_14', /V4_7_4_14_CLOSE_RESEARCH_RISK41_10X/.test(src));
+ok('build V4_7_4_17', /V4_7_4_17_CANDLE_PARITY_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_13_PROTECT_FIRST/.test(src));
-ok('session 4_7_4_14_CR1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_14_CR1/.test(src));
+ok('session 4_7_4_17_CP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_17_CP1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

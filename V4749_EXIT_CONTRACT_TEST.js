@@ -32,6 +32,8 @@ console.log('\n── J2  Minimum tutus 60sn (backtest tabani) ' + '─'.repeat(
 {
   const mk=(exact,openedAgoMs,minHold)=>{
     const ctx=vm.createContext({V592_EXACT_BACKTEST_AUTHORITY:exact,V592_MIN_HOLD_MS:minHold,
+      // V4.7.4.17: minHoldGuard artik once mum kapisina bakiyor.
+      v592ExitCandleGate:()=>({blocked:false,reason:'TEST_OPEN'}),
       trailingState:new Map([['SYNUSDT',{openedAt:Date.now()-openedAgoMs}]]),
       r501OrderLifeSnapshot:()=>({}), r501OrderLifeMark:()=>{},
       v592ParityStats:{minHoldBlocks:0}, Date,Number,String,Math,console});
@@ -48,10 +50,17 @@ console.log('\n── J2  Minimum tutus 60sn (backtest tabani) ' + '─'.repeat(
   ok('J2h acil kapatma guard\'a bagli', /_g=v592MinHoldGuard\(pos\?\.symbol\|\|pos\?\.sym,'EMERGENCY_BRACKET'\)/.test(src));
   ok('J2i bloke edilince deferred doner', /return \{closed:false,deferred:true,minHoldGuard:true/.test(src));
   ok('J2j varsayilan 60000', /V592_MIN_HOLD_MS\|\|60000/.test(src));
+  ok('J2k CIKIS artik mum kapanisinda (V4.7.4.17-Y)', /function v592ExitCandleGate/.test(src)
+     && /\{const _c=v592ExitCandleGate\(symbol,reason\);/.test(src));
+  ok('J2l backtest olcumu 725/725 exitTs%60000', /exitTsMod60000:59999/.test(src));
 }
 console.log('\n── J3  Bayat karar ile emir gonderilmez ' + '─'.repeat(28));
 {
-  ok('J3a gecikme olculuyor', /const _lag=_reqAt\?Date\.now\(\)-_reqAt:0;/.test(src));
+  // V4.7.4.16-W: asil kural artik 1m MUM siniri. ms olcumu kanit olarak duruyor.
+  ok('J3a gecikme olculuyor', /const _lag=_reqAt\?_now-_reqAt:0;/.test(src));
+  ok('J3a2 ASIL kural mum tabanli', /ORDER_ABORTED_STALE.*rule:'ENTRY_CANDLE_PARITY'/s.test(src)
+     && /Giris mumu gecti/.test(src));
+  ok('J3a3 backtest 180000ms sozlesmesi', /candidateToEntryMs:180000/.test(src));
   ok('J3b limit asilinca throw', /Emir hazirligi \$\{Math\.round\(_lag\/1000\)\}sn surdu/.test(src));
   ok('J3c ORDER_ABORTED_STALE kaydi', /'ORDER_ABORTED_STALE'/.test(src));
   ok('J3d sayac', /staleOrderAborts\+\+/.test(src));
@@ -70,8 +79,8 @@ console.log('\n── J4  Backtest disi cikis sayiliyor ' + '─'.repeat(31));
 console.log('\n── J5  Onceki duzeltmeler + sozlesme ' + '─'.repeat(31));
 {
   const h=re=>re.test(src);
-  ok('J5a build V4.7.4.14', h(/V4_7_4_14_CLOSE_RESEARCH_RISK41_10X/));
-  ok('J5b session 4_7_4_14_CR1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_14_CR1/));
+  ok('J5a build V4.7.4.17', h(/V4_7_4_17_CANDLE_PARITY_RISK41_10X/));
+  ok('J5b session 4_7_4_17_CP1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_17_CP1/));
   ok('J5c G1 forceFresh', h(/__forceFresh:true,/));
   ok('J5d G2 post-fill proof', h(/'POST_FILL_POSITION_PROOF'/));
   ok('J5e G3 dedup', h(/'EVIDENCE_DUPLICATE_SUPPRESSED'/));

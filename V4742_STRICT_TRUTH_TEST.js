@@ -224,8 +224,8 @@ console.log('\n── C5  Kalıcı unresolved-order kilidi ' + '─'.repeat(32))
 console.log('\n── C6  Kimlik + strateji sözleşmesi ' + '─'.repeat(34));
 {
   const has = (re) => re.test(src);
-  ok('C6a build V4.7.4.14', has(/V4_7_4_14_CLOSE_RESEARCH_RISK41_10X/));
-  ok('C6b session 4_7_4_10', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_14_CR1/));
+  ok('C6a build V4.7.4.17', has(/V4_7_4_17_CANDLE_PARITY_RISK41_10X/));
+  ok('C6b session 4_7_4_10', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_17_CP1/));
   ok('C6c eski kimlik kalmadı', !has(/V4_7_4_9_EXIT_CONTRACT/) && !has(/4_7_4_9_EC1/));
   ok('C6d status yeni bayraklar', has(/strictForceFreshPositionTruth:true/) && has(/leverageProofHardGate:true/) && has(/persistentUnresolvedLocks:true/));
   ok('C6e R493 giriş kapısı aktif', has(/const storyWait = \['PUSU','REJECT'\]\.includes\(authority\.action\);/));
