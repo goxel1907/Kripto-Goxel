@@ -218,11 +218,11 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('r501PassiveRows yalniz endpointten cagriliyor', cnt('r501PassiveRows\\(\\)')<=3);
 
 console.log('\n== G -- surum etiketleri ' + '='.repeat(49));
-ok('build V4_7_4_27', /V4_7_4_27_CSV_REPORT_RISK41_10X/.test(src));
-ok('session 4_7_4_27_CR1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_27_CR1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_26_FULL_PARAMS_RISK41_10X/.test(src));
+ok('build V4_7_4_28', /V4_7_4_28_CLOSE_FUNNEL_RISK41_10X/.test(src));
+ok('session 4_7_4_28_CF1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_28_CF1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_27_CSV_REPORT_RISK41_10X/.test(src));
 ok('eski session kalmadi', !/4_7_4_25_OV1/.test(src));
-ok('kanit modu guncel', /V47427_CSV_REPORT_EXACT_CLOSED_1M/.test(src));
+ok('kanit modu guncel', /V47428_CLOSE_FUNNEL_EXACT_CLOSED_1M/.test(src));
 
 console.log('\n== H -- onceki duzeltmeler ' + '='.repeat(47));
 for(const [n,re] of [

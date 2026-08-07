@@ -90,7 +90,8 @@ console.log('\n══ C — ledger mukerrer kapanis ' + '═'.repeat(43));
   ok('farkli islem etkilenmez', ctx.v592CloseAlreadyRecorded('BASKA_1')===false);
   ok('TTL 6 saat', /V592_CLOSE_DEDUP_TTL_MS=6\*60\*60\*1000/.test(src));
   ok('dedup r501EvidenceClose girisinde', /if\(v592CloseAlreadyRecorded\(String\(row\.id\)\)\)\{/.test(src));
-  ok('sayac ledgerCloseDedup', cnt('ledgerCloseDedup:0')===1 && cnt('ledgerCloseDedup\\+\\+')===1);
+  // V4.7.4.28-AS1: v592FinalizeClose de ayni dedup sayacini kullaniyor -> 2 artis noktasi.
+  ok('sayac ledgerCloseDedup', cnt('ledgerCloseDedup:0')===1 && cnt('ledgerCloseDedup\\+\\+')===2);
   ok('CLOSE_DEDUP_SUPPRESSED izi', /'CLOSE_DEDUP_SUPPRESSED'/.test(src));
   ok('06.08 olcumu belgelenmis', /TRADE_CLOSE_RECORDED 10 kez yazildi/.test(src));
 }
@@ -107,9 +108,9 @@ ok('J2 min hold', /function v592MinHoldGuard/.test(src));
 ok('L fren ayrimi', /function isExecBackoffActive/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_27', /V4_7_4_27_CSV_REPORT_RISK41_10X/.test(src));
+ok('build V4_7_4_28', /V4_7_4_28_CLOSE_FUNNEL_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_17_CANDLE_PARITY/.test(src));
-ok('session 4_7_4_27_CR1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_27_CR1/.test(src));
+ok('session 4_7_4_28_CF1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_28_CF1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);
