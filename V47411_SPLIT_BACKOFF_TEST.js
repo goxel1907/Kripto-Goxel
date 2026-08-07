@@ -115,13 +115,13 @@ ok('mainnet yalniz public', /const FAPI = 'https:\/\/fapi\.binance\.com'/.test(s
 ok('J1 koruma korumasi duruyor', /V592_PROTECT_KEEP_EXISTING/.test(src)&&/protectionKeptExisting\+\+/.test(src));
 ok('J2 min hold duruyor', /function v592MinHoldGuard/.test(src)&&/minHoldBlocks\+\+/.test(src));
 ok('K1 tazelik butcesi duruyor', /freshCacheHits\+\+/.test(src));
-ok('build etiketi V4_7_4_11', /V4_7_4_21_UNPROTECTED_EXCEPTION_RISK41_10X/.test(src));
+ok('build etiketi V4_7_4_11', /V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
 ok('eski etiket kalmadi', !/V4_7_4_10_FRESHNESS_BUDGET/.test(src));
 ok('telemetri execBackoffActive x4 (panel+stats)', cnt('execBackoffActive:')===4, `${cnt('execBackoffActive:')}`);
 ok('parityV4741.stats backoff tasiyor', cnt('stats:\\{\\.\\.\\.v592ParityStats,execBackoffActive')===2,
    `${cnt('stats:\\{\\.\\.\\.v592ParityStats,execBackoffActive')}`);
 ok('stats publicBackoffMs tasiyor', cnt('publicBackoffMs:getBinanceBackoffMs\\(\\)')===2);
-ok('mode etiketi V47421', cnt('V47421_')===2 && !/mode:'V474(1[0-9]|20)_/.test(src));
+ok('mode etiketi V47423', cnt('V47423_')===2 && !/mode:'V474(1[0-9]|2[0-2])_/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

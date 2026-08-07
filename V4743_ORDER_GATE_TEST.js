@@ -30,8 +30,8 @@ ok('D2a blok kaniti funnel\'a yaziliyor', /type:'R493_FINAL_LOCK_BLOCK'/.test(sr
 ok('D2b safetyCode kanitta', /safetyCode:_r493FinalCode/.test(src));
 ok('D3a r493GateBlocks sayaci artiyor', /v592ParityStats\.r493GateBlocks\+\+/.test(src));
 // kimlik
-ok('D4a build V4.7.4.21', /V4_7_4_21_UNPROTECTED_EXCEPTION_RISK41_10X/.test(src));
-ok('D4b session 4_7_4_10', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_21_UP1/.test(src));
+ok('D4a build V4.7.4.23', /V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
+ok('D4b session 4_7_4_10', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/.test(src));
 ok('D4c eski kimlik yok', !/V4_7_4_9_EXIT_CONTRACT_RISK41_10X/.test(src));
 // sozlesme degismedi
 ok('D5a slot 41', /R497_SLOT_MARGIN_USDT \|\| 41/.test(src));

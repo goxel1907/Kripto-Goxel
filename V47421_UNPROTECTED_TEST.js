@@ -92,8 +92,8 @@ for(const [n,re] of [['AG beyaz liste',/const V592_BACKTEST_EXIT_TYPES = Object\
   ['L fren ayrimi',/function isExecBackoffActive/],['O testnet evreni',/v592IsTestnetTradable/],
   ['S cikis arastirmasi',/closeSnap=rec\.closeResearchSnapshot/],
   ['testnet hard-lock',/const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/],
-  ['build V4_7_4_21',/V4_7_4_21_UNPROTECTED_EXCEPTION_RISK41_10X/],
-  ['session 4_7_4_21_UP1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_21_UP1/]]) ok(n, re.test(src));
+  ['build V4_7_4_23',/V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/],
+  ['session 4_7_4_23_PP1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/]]) ok(n, re.test(src));
 ok('eski build yok', !/V4_7_4_20_EXIT_REASON_PARITY/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
