@@ -79,8 +79,8 @@ console.log('\n── J4  Backtest disi cikis sayiliyor ' + '─'.repeat(31));
 console.log('\n── J5  Onceki duzeltmeler + sozlesme ' + '─'.repeat(31));
 {
   const h=re=>re.test(src);
-  ok('J5a build V4.7.4.24', h(/V4_7_4_24_PROTECT_KEEP_RISK41_10X/));
-  ok('J5b session 4_7_4_24_PK1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/));
+  ok('J5a build V4.7.4.27', h(/V4_7_4_27_CSV_REPORT_RISK41_10X/));
+  ok('J5b session 4_7_4_27_CR1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_27_CR1/));
   ok('J5c G1 forceFresh', h(/__forceFresh:true,/));
   ok('J5d G2 post-fill proof', h(/'POST_FILL_POSITION_PROOF'/));
   ok('J5e G3 dedup', h(/'EVIDENCE_DUPLICATE_SUPPRESSED'/));

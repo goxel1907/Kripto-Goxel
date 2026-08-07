@@ -69,12 +69,12 @@ ok('defter yine recordTradeOpen/Close ile dolar',
    /function recordTradeOpen/.test(src) && /function recordTradeClose/.test(src));
 
 console.log('\n== D -- AL3 pasif parametre disa aktarimi ' + '='.repeat(32));
-ok('r501PassiveRows var', /function r501PassiveRows\(\)/.test(src));
+ok('r501PassiveRows var', /function r501PassiveRows\(shapeOnly\)/.test(src));
 ok('passive.csv endpoint', /app\.get\('\/api\/evidence\/passive\.csv'/.test(src));
 ok('passive.json endpoint', /app\.get\('\/api\/evidence\/passive\.json'/.test(src));
 ok('CSV indirme adi', /filename="lazarus_pasif_parametreler\.csv"/.test(src));
 {
-  const f=grab('function r501PassiveRows');
+  const f=grab('function r501PassiveRows(shapeOnly)');
   for(const [n,re] of [
     ['giris anlik goruntusu', /ENTRY_FILL_RECONCILED\|\|st\.ENTRY_FILL_OBSERVED/],
     ['cikis anlik goruntusu', /rec\.closeResearchSnapshot/],
@@ -110,7 +110,7 @@ ok('CSV indirme adi', /filename="lazarus_pasif_parametreler\.csv"/.test(src));
 
 console.log('\n== D2 -- r501PassiveRows canli kosum (4 gercek islem) ' + '='.repeat(20));
 {
-  const fnSrc=grab('function r501PassiveRows');
+  const fnSrc=grab('function r501PassiveRows(shapeOnly)');
   const KAYIT={
     ON:{pnl:1.654,roi:25.77,hold:14520000,mar:6.57,
         e:{cvd:{ratio:0.62,delta:1200,trend:'BULLISH'},tick:{deltaRatio:0.31,vpin:{vpin:0.18,toxicity:'LOW',direction:'BUY',bucketCount:12},whaleBias:'BUY'},
@@ -133,7 +133,10 @@ console.log('\n== D2 -- r501PassiveRows canli kosum (4 gercek islem) ' + '='.rep
         c:null}
   };
   const idx={trades:Object.keys(KAYIT).map(s=>({id:s}))};
-  const sandbox={console,
+  const sandbox={console,Object,Math,Number,Array,
+    // V4.7.4.26-AQ: r501PassiveRows artik rest turevlerini de cagiriyor.
+    // Bu test pasif ALAN duzlestirmesini olcer; rest turevleri V47426'da test edilir.
+    r501RestDerive:()=>({}), r501KlineDerive:()=>{},
     r501EvidenceIndex:idx,
     r501TradePath:(id)=>id,
     r501GzipRead:(id)=>{const k=KAYIT[id];if(!k)return null;return{
@@ -215,11 +218,11 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('r501PassiveRows yalniz endpointten cagriliyor', cnt('r501PassiveRows\\(\\)')<=3);
 
 console.log('\n== G -- surum etiketleri ' + '='.repeat(49));
-ok('build V4_7_4_24', /V4_7_4_24_PROTECT_KEEP_RISK41_10X/.test(src));
-ok('session 4_7_4_24_PK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
-ok('eski session kalmadi', !/4_7_4_23_PP1/.test(src));
-ok('kanit modu guncel', /V47424_PROTECT_KEEP_EXACT_CLOSED_1M/.test(src));
+ok('build V4_7_4_27', /V4_7_4_27_CSV_REPORT_RISK41_10X/.test(src));
+ok('session 4_7_4_27_CR1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_27_CR1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_26_FULL_PARAMS_RISK41_10X/.test(src));
+ok('eski session kalmadi', !/4_7_4_25_OV1/.test(src));
+ok('kanit modu guncel', /V47427_CSV_REPORT_EXACT_CLOSED_1M/.test(src));
 
 console.log('\n== H -- onceki duzeltmeler ' + '='.repeat(47));
 for(const [n,re] of [

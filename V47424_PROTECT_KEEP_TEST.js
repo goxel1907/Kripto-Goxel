@@ -142,10 +142,10 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 
 console.log('\n== G -- surum etiketleri ' + '='.repeat(49));
-ok('build V4_7_4_24', /V4_7_4_24_PROTECT_KEEP_RISK41_10X/.test(src));
-ok('session 4_7_4_24_PK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
-ok('eski session kalmadi', !/4_7_4_23_PP1/.test(src));
+ok('build V4_7_4_27', /V4_7_4_27_CSV_REPORT_RISK41_10X/.test(src));
+ok('session 4_7_4_27_CR1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_27_CR1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_26_FULL_PARAMS_RISK41_10X/.test(src));
+ok('eski session kalmadi', !/4_7_4_25_OV1/.test(src));
 ok('telemetri: yetim koruma silmez', /orphanNeverCancelsProtection:true/.test(src));
 ok('telemetri: kanit tum sebepler', /closeProofAllReasons:true/.test(src));
 ok('telemetri her iki endpointte', cnt('orphanNeverCancelsProtection:true')>=2);
