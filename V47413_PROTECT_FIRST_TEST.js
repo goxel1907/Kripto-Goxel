@@ -26,7 +26,7 @@ function mkCtx({firstInstall,borsadaKoruma,pozisyonVar,log}){
   const ctx=vm.createContext({
     V592_PROTECT_KEEP_EXISTING:true, POS_FRESH_ORDER_MS:3000, POS_FRESH_MANAGER_MS:8000,
     v592ParityStats:{protectionKeptExisting:0,protectFirstInstalls:0,protectFirstMs:0,
-                     orphanProtectionCleaned:0,postWriteProofFail:0,postFillProofRescues:0},
+                     orphanProtectionCleaned:0,orphanCheckDeferred:0,orphanCancelSuppressed:0,postWriteProofFail:0,postFillProofRescues:0},
     r501OrderLifeMark:(sym,st)=>{log.push(`${String(saat).padStart(5)}ms  ${st}`);},
     verifyAlgoSLTPVisible:async()=>{ilerle(GECIKME.openOrders);log.push(`${String(saat).padStart(5)}ms  [ag] openOrders`);
       const g=yazildi||borsadaKoruma;
@@ -76,10 +76,13 @@ console.log('\n══ B — yetim koruma temizligi ' + '═'.repeat(43));
   const log=[];
   const c=mkCtx({firstInstall:true,borsadaKoruma:false,pozisyonVar:false,log});
   const r=await c.installSLTPWithProof('k','s','X','SELL',1,2,'X',{firstInstall:true});
-  ok('pozisyon yoksa skippedClosed', r.skippedClosed===true, JSON.stringify(r).slice(0,90));
-  ok('yetim koruma iptal edildi', r.orphanCleaned===true && log.some(x=>x.includes('cancelAlgoOrders')));
-  ok('sayac orphanProtectionCleaned', c.v592ParityStats.orphanProtectionCleaned===1);
-  ok('ORPHAN_PROTECTION_CLEANED izi', log.some(x=>x.includes('ORPHAN_PROTECTION_CLEANED')));
+  // V4.7.4.24-AN2: DAVRANIS DEGISTI. Eskiden bu dal korumayi IPTAL ediyordu.
+  // 07.08 HEIUSDT vakasi kanitladi ki bu okuma yanlis olabiliyor ve sonuc
+  // KORUMASIZ CANLI POZISYON. Artik koruma BIRAKILIR, sembol supheli sayilir.
+  ok('koruma IPTAL EDILMEDI (AN2)', r.ok===true, JSON.stringify(r).slice(0,90));
+  ok('yetim dalinda cancelAlgoOrders CAGRILMADI', !log.some(x=>x.includes('cancelAlgoOrders')));
+  ok('sayac orphanCheckDeferred', c.v592ParityStats.orphanCheckDeferred===1);
+  ok('ORPHAN_CHECK_DEFERRED izi', log.some(x=>x.includes('ORPHAN_CHECK_DEFERRED')));
   ok('koruma YINE DE once yazildi', log.some(x=>x.includes('SL YAZILDI')),
      'once yaz, sonra temizle — ters degil');
 }
@@ -105,7 +108,7 @@ ok('emir yolu firstInstall:true', cnt("\\{firstInstall:true\\}")===1);
 ok('yonetici cagrilari opts VERMIYOR', cnt("installSLTPWithProof\\(apiKey, apiSecret, sym, cSide, safeNewSL")===1
    && cnt("installSLTPWithProof\\(autoConfig\\.apiKey")===1);
 ok('PROTECTION_LATENCY olcumu', /r501OrderLifeMark\(sym,'PROTECTION_LATENCY'/.test(src));
-for(const [c,n] of [['protectFirstInstalls',1],['orphanProtectionCleaned',1],['postWriteProofFail',2]])
+for(const [c,n] of [['protectFirstInstalls',1],['orphanCheckDeferred',1],['postWriteProofFail',2]])
   ok(`sayac ${c}`, cnt(`${c}:0`)===1 && cnt(`v592ParityStats\\.${c}\\+\\+`)===n,
      `${cnt(`v592ParityStats\\.${c}\\+\\+`)}`);
 ok('telemetri protectFirstActive', cnt('protectFirstActive:true')===2);
@@ -120,9 +123,9 @@ ok('N WAIT atribusyonu', /waitSource:row\?\.waitSource\|\|null/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('G2 post-fill kanit kurtarma', /postFillProofRescues\+\+/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_23', /V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
+ok('build V4_7_4_24', /V4_7_4_24_PROTECT_KEEP_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_12_WAIT_ATTRIBUTION/.test(src));
-ok('session 4_7_4_23_PP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/.test(src));
+ok('session 4_7_4_24_PK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

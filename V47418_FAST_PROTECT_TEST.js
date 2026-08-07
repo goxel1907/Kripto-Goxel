@@ -66,7 +66,7 @@ console.log('══ A — 06.08 ACT vakasi: koruma gecikmesi ' + '═'.repeat(32
 }
 
 console.log('\n══ B — kaynak sozlesmesi ' + '═'.repeat(49));
-ok('ilk denemede cancel atlanir', /const _skipCancel = \(firstInstall && attempt === 1\)/.test(src));
+ok('ilk denemede cancel atlanir', /const _skipCancel = \(firstInstall && attempt === 1/.test(src));
 ok('2. denemede cancel YAPILIR', /\} else \{\s*\n\s*await cancelAlgoOrders\(apiKey, apiSecret, symbol\);/.test(src));
 ok('SL+TP Promise.all ile PARALEL', /const \[slOrder, tpOrder\] = await Promise\.all\(\[/.test(src));
 ok('sirali placeAlgoSL/TP kalmadi', !/const slOrder = await placeAlgoSL[\s\S]{0,120}const tpOrder = await placeAlgoTP/.test(src));
@@ -97,7 +97,7 @@ console.log('\n══ C — ledger mukerrer kapanis ' + '═'.repeat(43));
 
 console.log('\n══ D — onceki duzeltmeler bozulmadi ' + '═'.repeat(38));
 ok('Q koruma-once', /PROTECT_FIRST_NO_PRECHECK/.test(src)&&/protectFirstInstalls\+\+/.test(src));
-ok('Q4 yetim koruma temizligi', /orphanProtectionCleaned\+\+/.test(src));
+ok('Q4 yetim kontrolu (AN2: artik SILMIYOR, erteliyor)', /orphanCheckDeferred\+\+/.test(src));
 ok('W giris mum paritesi', /candidateToEntryMs:180000/.test(src));
 ok('Y cikis mum paritesi', /function v592ExitCandleGate/.test(src));
 ok('U deneme yasam dongusu', /const isNewAttempt = \(stage==='ORDER_REQUEST_RECEIVED'\)/.test(src));
@@ -107,9 +107,9 @@ ok('J2 min hold', /function v592MinHoldGuard/.test(src));
 ok('L fren ayrimi', /function isExecBackoffActive/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_23', /V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
+ok('build V4_7_4_24', /V4_7_4_24_PROTECT_KEEP_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_17_CANDLE_PARITY/.test(src));
-ok('session 4_7_4_23_PP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/.test(src));
+ok('session 4_7_4_24_PK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

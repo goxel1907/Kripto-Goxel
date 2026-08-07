@@ -215,11 +215,11 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('r501PassiveRows yalniz endpointten cagriliyor', cnt('r501PassiveRows\\(\\)')<=3);
 
 console.log('\n== G -- surum etiketleri ' + '='.repeat(49));
-ok('build V4_7_4_23', /V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
-ok('session 4_7_4_23_PP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_22_CLOSE_PROOF_RISK41_10X/.test(src));
-ok('eski session kalmadi', !/4_7_4_22_CP1/.test(src));
-ok('kanit modu guncel', /V47423_PASSIVE_PARAMS_EXACT_CLOSED_1M/.test(src));
+ok('build V4_7_4_24', /V4_7_4_24_PROTECT_KEEP_RISK41_10X/.test(src));
+ok('session 4_7_4_24_PK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
+ok('eski session kalmadi', !/4_7_4_23_PP1/.test(src));
+ok('kanit modu guncel', /V47424_PROTECT_KEEP_EXACT_CLOSED_1M/.test(src));
 
 console.log('\n== H -- onceki duzeltmeler ' + '='.repeat(47));
 for(const [n,re] of [
@@ -231,7 +231,7 @@ for(const [n,re] of [
   ['U deneme yasam dongusu',/lifecycleAttemptResets/],
   ['W giris mumu',/function v592CandleIndex/],
   ['Y cikis mumu',/function v592ExitCandleGate/],
-  ['AA cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1\)/],
+  ['AA cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1/],
   ['AC yonetici guard',/v592MinHoldGuard\(sym, `MANAGER_/],
   ['AE golge cikis',/function v592ShadowNonBacktestExit/],
   ['AG beyaz liste',/function v592ExitTypeAllowed/],

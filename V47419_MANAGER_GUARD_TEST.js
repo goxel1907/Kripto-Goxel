@@ -84,7 +84,7 @@ ok('manuel /api/close guard ALMAZ',
    src.indexOf("app.post('/api/close'")>0 && !/app\.post\('\/api\/close'[\s\S]{0,900}?v592MinHoldGuard/.test(src));
 ok('kaldirac paritesi kapatmasi guard ALMAZ (guvenlik)',
    !/LEVERAGE_PARITY_FAILED[\s\S]{0,400}?v592MinHoldGuard/.test(src));
-ok('AA1 cancel atlama', /const _skipCancel = \(firstInstall && attempt === 1\)/.test(src));
+ok('AA1 cancel atlama', /const _skipCancel = \(firstInstall && attempt === 1/.test(src));
 ok('AA2 ledger dedup', /function v592CloseAlreadyRecorded/.test(src));
 ok('Q koruma-once', /PROTECT_FIRST_NO_PRECHECK/.test(src));
 ok('W giris mum paritesi', /candidateToEntryMs:180000/.test(src));
@@ -92,9 +92,9 @@ ok('S cikis arastirmasi', /closeSnap=rec\.closeResearchSnapshot/.test(src));
 ok('L fren ayrimi', /function isExecBackoffActive/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_23', /V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/.test(src));
+ok('build V4_7_4_24', /V4_7_4_24_PROTECT_KEEP_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_18_FAST_PROTECT/.test(src));
-ok('session 4_7_4_23_PP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/.test(src));
+ok('session 4_7_4_24_PK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

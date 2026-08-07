@@ -85,15 +85,15 @@ console.log('\n══ F — onceki duzeltmeler ' + '═'.repeat(48));
 for(const [n,re] of [['AG beyaz liste',/const V592_BACKTEST_EXIT_TYPES = Object\.freeze/],
   ['AE golge yardimcisi',/function v592ShadowNonBacktestExit/],
   ['AC yonetici guard',/v592MinHoldGuard\(sym, `MANAGER_/],
-  ['AA1 cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1\)/],
+  ['AA1 cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1/],
   ['AA2 ledger dedup',/function v592CloseAlreadyRecorded/],
   ['Q koruma-once',/PROTECT_FIRST_NO_PRECHECK/],['W giris mum paritesi',/candidateToEntryMs:180000/],
   ['Y cikis mum paritesi',/function v592ExitCandleGate/],['J2 min hold',/function v592MinHoldGuard/],
   ['L fren ayrimi',/function isExecBackoffActive/],['O testnet evreni',/v592IsTestnetTradable/],
   ['S cikis arastirmasi',/closeSnap=rec\.closeResearchSnapshot/],
   ['testnet hard-lock',/const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/],
-  ['build V4_7_4_23',/V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/],
-  ['session 4_7_4_23_PP1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/]]) ok(n, re.test(src));
+  ['build V4_7_4_24',/V4_7_4_24_PROTECT_KEEP_RISK41_10X/],
+  ['session 4_7_4_24_PK1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/]]) ok(n, re.test(src));
 ok('eski build yok', !/V4_7_4_20_EXIT_REASON_PARITY/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);

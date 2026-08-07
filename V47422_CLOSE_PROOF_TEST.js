@@ -63,8 +63,11 @@ console.log('\n══ C — kapanis pozitif kanit istiyor ' + '═'.repeat(37));
 }
 
 console.log('\n══ D — cleanupClosedPositionState kapisi ' + '═'.repeat(33));
-ok('SYNC_ ile baslayan kapanis kanit ister', /String\(reason\|\|''\)\.startsWith\('SYNC_'\)/.test(src));
-ok('POSITION_ALREADY_CLOSED da kanit ister', /reason==='POSITION_ALREADY_CLOSED'/.test(src));
+// V4.7.4.24-AN1: beyaz liste KALDIRILDI — kanit artik VARSAYILAN, muafiyet acik yazilir.
+ok('kanit VARSAYILAN (beyaz liste yok)', /if\(!V592_CLOSE_PROOF_EXEMPT\.includes/.test(src));
+ok('muafiyet listesi acikca tanimli', /V592_CLOSE_PROOF_EXEMPT = \['EXCHANGE_CONFIRMED_FILL','MANUAL_OPERATOR_FORCE'\]/.test(src));
+ok('SYNC_ kapanisi hala kanit ister', !['EXCHANGE_CONFIRMED_FILL','MANUAL_OPERATOR_FORCE'].includes('SYNC_POSITION_ALREADY_CLOSED_BEFORE_SLTP_RESCUE'));
+ok('POSITION_ALREADY_CLOSED hala kanit ister', !['EXCHANGE_CONFIRMED_FILL','MANUAL_OPERATOR_FORCE'].includes('POSITION_ALREADY_CLOSED'));
 ok('kanit yoksa aborted doner', /return \{aborted:true,proof:_cp\}/.test(src));
 ok('CLOSE_ABORTED_NO_PROOF izi', /CLOSE_ABORTED_NO_PROOF/.test(src));
 for(const c of ['falseFlatPrevented','closeProofRequired','closeProofFailed'])
@@ -74,7 +77,10 @@ ok('telemetri kanit sarti', cnt('closeRequiresPositiveProof:true')===2);
 console.log('\n══ E — emir yolu kapanislari ETKILENMEDI ' + '═'.repeat(33));
 ok('FRESH_POSITION_ZERO kanit istemez', /cleanupClosedPositionState\(symbol, 'FRESH_POSITION_ZERO_BEFORE_SLTP'\)/.test(src));
 ok('ALGO_-4509 kanit istemez', /cleanupClosedPositionState\(symbol, 'ALGO_-4509_POSITION_ALREADY_CLOSED'\)/.test(src));
-ok('POSITION_GONE_AFTER_PROTECT kanit istemez', /cleanupClosedPositionState\(symbol, 'POSITION_GONE_AFTER_PROTECT'\)/.test(src));
+// AJ2'nin ACIGI: bu sebep beyaz listede yoktu, kanit kapisini ATLIYORDU.
+// 07.08 HEIUSDT tam bu yoldan "kapandi" diye kaydedildi. AN1 kapatti.
+ok('POSITION_GONE_AFTER_PROTECT artik CAGRILMIYOR',
+   !/cleanupClosedPositionState\(\s*symbol\s*,\s*'POSITION_GONE_AFTER_PROTECT'/.test(src));
 console.log('    (bunlar zaten G2/Q4 kendi kanitlarini topluyor)');
 
 console.log('\n══ F — onceki duzeltmeler ' + '═'.repeat(48));
@@ -82,15 +88,15 @@ for(const [n,re] of [['AH korumasiz istisna',/function v592PositionProtection\(s
   ['AG beyaz liste',/const V592_BACKTEST_EXIT_TYPES = Object\.freeze/],
   ['AE golge',/function v592ShadowNonBacktestExit/],
   ['AC yonetici guard',/v592MinHoldGuard\(sym, `MANAGER_/],
-  ['AA1 cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1\)/],
+  ['AA1 cancel atlama',/const _skipCancel = \(firstInstall && attempt === 1/],
   ['AA2 ledger dedup',/function v592CloseAlreadyRecorded/],
   ['Q koruma-once',/PROTECT_FIRST_NO_PRECHECK/],['W giris mum paritesi',/candidateToEntryMs:180000/],
   ['Y cikis mum paritesi',/function v592ExitCandleGate/],
   ['L fren ayrimi',/function isExecBackoffActive/],['O testnet evreni',/v592IsTestnetTradable/],
   ['S cikis arastirmasi',/closeSnap=rec\.closeResearchSnapshot/],
   ['testnet hard-lock',/const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/],
-  ['build V4_7_4_23',/V4_7_4_23_PASSIVE_PARAMS_RISK41_10X/],
-  ['session 4_7_4_23_PP1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_23_PP1/]]) ok(n, re.test(src));
+  ['build V4_7_4_24',/V4_7_4_24_PROTECT_KEEP_RISK41_10X/],
+  ['session 4_7_4_24_PK1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_24_PK1/]]) ok(n, re.test(src));
 ok('eski build yok', !/V4_7_4_21_UNPROTECTED_EXCEPTION/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
