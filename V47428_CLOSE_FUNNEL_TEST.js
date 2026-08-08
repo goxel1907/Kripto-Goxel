@@ -44,8 +44,8 @@ ok('3 kapsanmayan cagri yeri yazili', /satir ~19786 emergencyCloseIfBracketMissi
 
 console.log('\n== B -- AS1: tek kapanis hunisi ' + '='.repeat(42));
 {
-  const f=grab('function v592FinalizeClose');
-  ok('v592FinalizeClose var', /function v592FinalizeClose\(sym, state, cls, reason='UNKNOWN'\)/.test(src));
+  const f=grab('async function v592FinalizeClose');
+  ok('v592FinalizeClose var', /async function v592FinalizeClose\(sym, state, cls, reason='UNKNOWN'\)/.test(src));
   ok('idempotent (v592CloseAlreadyRecorded)', /v592CloseAlreadyRecorded\(anahtar\)/.test(f));
   ok('tekrar cagrida dedup sayaci', /v592ParityStats\.ledgerCloseDedup\+\+/.test(f));
   ok('recordTradeClose cagriliyor', /recordTradeClose\(S, st, c\)/.test(f));
@@ -97,11 +97,11 @@ ok('R14 hasar korumasi', /code:'R14_HARD_LOSS_GUARD',label:'Acil hasar korumasi 
 
 console.log('\n== D -- v592FinalizeClose canli kosum ' + '='.repeat(36));
 {
-  const f=grab('function v592FinalizeClose');
+  const f=grab('async function v592FinalizeClose');
   const mk=()=>{
     const log=[]; const ts=new Map([['SKYAIUSDT',{openedAt:1000,side:'LONG',ledgerTradeId:'SKYAI_1'}]]);
     const kapali=new Set();
-    const sb={console,Date,Number,String,Object,
+    const sb={console,Date,Number,String,Object,Promise,
       normalizeSymbol:(x)=>String(x).toUpperCase(),
       trailingState:ts, lastKnownPositions:{},
       v592CloseAlreadyRecorded:(id)=>{ if(kapali.has(id))return true; kapali.add(id); return false; },
@@ -115,7 +115,7 @@ console.log('\n== D -- v592FinalizeClose canli kosum ' + '='.repeat(36));
     return {F:sb.F, log, ts, stats:sb.v592ParityStats};
   };
   const a=mk();
-  const r1=a.F('SKYAIUSDT',null,{code:'TAKE_PROFIT'},'TEST');
+  const r1=await a.F('SKYAIUSDT',null,{code:'TAKE_PROFIT'},'TEST');
   ok('defter kaydi yazildi', a.log.some(x=>x.startsWith('recordTradeClose:SKYAIUSDT')), a.log.join(' | '));
   ok('trailingState silindi', !a.ts.has('SKYAIUSDT'));
   ok('lastKnown temizlendi', a.log.includes('forget:SKYAIUSDT'));
@@ -124,7 +124,7 @@ console.log('\n== D -- v592FinalizeClose canli kosum ' + '='.repeat(36));
   ok('donus ok', r1.ok===true);
   // idempotency
   const say=a.log.filter(x=>x.startsWith('recordTradeClose')).length;
-  const r2=a.F('SKYAIUSDT',{openedAt:1000,ledgerTradeId:'SKYAI_1'},{code:'TAKE_PROFIT'},'TEST');
+  const r2=await a.F('SKYAIUSDT',{openedAt:1000,ledgerTradeId:'SKYAI_1'},{code:'TAKE_PROFIT'},'TEST');
   ok('IKINCI cagri defteri TEKRAR yazmadi',
      a.log.filter(x=>x.startsWith('recordTradeClose')).length===say);
   ok('ikinci cagri dedup dondu', r2.dedup===true);
@@ -132,7 +132,7 @@ console.log('\n== D -- v592FinalizeClose canli kosum ' + '='.repeat(36));
   // recordTradeClose patlarsa
   const b=mk(); b.F.toString();
   const sb2=(()=>{ const log=[]; const ts=new Map([['XUSDT',{openedAt:5}]]);
-    const s2={console,Date,Number,String,Object,normalizeSymbol:x=>String(x).toUpperCase(),
+    const s2={console,Date,Number,String,Object,Promise,normalizeSymbol:x=>String(x).toUpperCase(),
       trailingState:ts,lastKnownPositions:{},v592CloseAlreadyRecorded:()=>false,
       recordTradeClose:()=>{throw new Error('defter bozuk');},
       forgetKnownPosition:()=>{},saveLastKnownPositions:()=>{},
@@ -219,9 +219,9 @@ ok('AG cikis beyaz listesi duruyor', /const V592_BACKTEST_EXIT_TYPES = Object\.f
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
-ok('build V4_7_4_28', /V4_7_4_28_CLOSE_FUNNEL_RISK41_10X/.test(src));
-ok('session 4_7_4_28_CF1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_28_CF1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_27_CSV_REPORT_RISK41_10X/.test(src));
+ok('build V4_7_4_29', /V4_7_4_29_CLOSE_PNL_RISK41_10X/.test(src));
+ok('session 4_7_4_29_CP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_29_CP1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_28_CLOSE_FUNNEL_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);
