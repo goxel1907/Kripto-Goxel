@@ -98,7 +98,9 @@ console.log('\n== E -- dongu ve sarkma korumasi ' + '='.repeat(41));
 {
   const f=grab('async function v592ProbeCycle');
   ok('kapali ise hemen doner', /if\(!V592_PROBE_ACTIVE\) return;/.test(f));
-  ok('anahtar yoksa doner', /if\(!apiKey\|\|!apiSecret\) return;/.test(f));
+  // V4.7.4.39-BD1: artik once ENV yedegi denenir, cikis SAYACLI.
+  ok('kimlik cozumu ENV yedekli', /const _c=v592ProbeCreds\(\)/.test(f));
+  ok('kimlik yoksa SAYACLI doner', /skippedNoCreds[\s\S]{0,120}return;/.test(f));
   ok('ONCE suresi dolanlari kapatir', f.indexOf('v592ProbeCloseOne')<f.indexOf('v592ProbeOpenOne'));
   // V4.7.4.37-BB1: ayri anahtar kaldirildi; tarama ile AYNI onbellek paylasilir (agirlik 40 tasarrufu)
   ok('top-N ticker paylasimli onbellekten', /cached\('futures_tickers',FUTURES_TICKERS_CACHE_MS/.test(f));
@@ -193,9 +195,9 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
 ok('cikis beyaz listesi duruyor', /const V592_BACKTEST_EXIT_TYPES = Object\.freeze/.test(src));
-ok('build V4_7_4_38', /V4_7_4_38_PROBE_RETRY_RISK41_10X/.test(src));
-ok('session 4_7_4_38_PR2', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_38_PR2/.test(src));
-ok('eski build kalmadi', !/V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
+ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
+ok('session 4_7_4_40_DD1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_40_DD1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

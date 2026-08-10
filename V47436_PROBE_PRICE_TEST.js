@@ -151,8 +151,8 @@ for(const [n,re] of [['AS1 tek huni',/async function v592FinalizeClose/],
 ok('calcVPIN karar yolu dokunulmadi', /if \(!trades \|\| trades\.length < bucketSize \* 3\) return null;/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
-ok('build V4_7_4_38', /V4_7_4_38_PROBE_RETRY_RISK41_10X/.test(src));
-ok('eski build kalmadi', !/V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
+ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
+ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

@@ -142,9 +142,9 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 
 console.log('\n== G -- surum etiketleri ' + '='.repeat(49));
-ok('build V4_7_4_38', /V4_7_4_38_PROBE_RETRY_RISK41_10X/.test(src));
-ok('session 4_7_4_38_PR2', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_38_PR2/.test(src));
-ok('eski build kalmadi', !/V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
+ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
+ok('session 4_7_4_40_DD1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_40_DD1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
 ok('eski session kalmadi', !/4_7_4_25_OV1/.test(src));
 ok('telemetri: yetim koruma silmez', /orphanNeverCancelsProtection:true/.test(src));
 ok('telemetri: kanit tum sebepler', /closeProofAllReasons:true/.test(src));
