@@ -78,10 +78,10 @@ console.log('\n══ C — ledger mukerrer kapanis ' + '═'.repeat(43));
 {
   const ctx=vm.createContext({v592ParityStats:{ledgerCloseDedup:0},r501OrderLifeMark:()=>{},
     Date:{now:()=>1786007325577},Map,Number,String,console});
-  // kaynaktaki iki sabiti de yukle (dedup haritasi + TTL)
-  vm.runInContext(src.match(/const v592ClosedOnce=new Map\(\);[^\n]*/)[0],ctx);
-  vm.runInContext(src.match(/const V592_CLOSE_DEDUP_TTL_MS=[^;]*;/)[0],ctx);
-  vm.runInContext(grab('function v592CloseAlreadyRecorded'),ctx);
+  // V4.7.4.31-AU1: TTL + iki map + uc fonksiyon tek blok halinde geliyor.
+  // Ayri ayri yuklemek 'already declared' hatasi veriyordu.
+  vm.runInContext(src.slice(src.indexOf('const V592_CLOSE_DEDUP_TTL_MS='),
+                            src.indexOf('function v592EvidenceAlreadyClosed')+130),ctx);
   const ID='ACT_1786006063360';
   ok('1. kapanis -> kaydedilir', ctx.v592CloseAlreadyRecorded(ID)===false);
   ok('2. kapanis -> BASTIRILIR', ctx.v592CloseAlreadyRecorded(ID)===true);
@@ -89,9 +89,11 @@ console.log('\n══ C — ledger mukerrer kapanis ' + '═'.repeat(43));
   ok(`06.08: 10 kapanis -> 1 kayit + ${bastirilan} bastirildi`, bastirilan===9);
   ok('farkli islem etkilenmez', ctx.v592CloseAlreadyRecorded('BASKA_1')===false);
   ok('TTL 6 saat', /V592_CLOSE_DEDUP_TTL_MS=6\*60\*60\*1000/.test(src));
-  ok('dedup r501EvidenceClose girisinde', /if\(v592CloseAlreadyRecorded\(String\(row\.id\)\)\)\{/.test(src));
+  ok('kanit dedup r501EvidenceClose girisinde', /if\(v592EvidenceAlreadyClosed\(String\(row\.id\)\)\)\{/.test(src));
   // V4.7.4.28-AS1: v592FinalizeClose de ayni dedup sayacini kullaniyor -> 2 artis noktasi.
-  ok('sayac ledgerCloseDedup', cnt('ledgerCloseDedup:0')===1 && cnt('ledgerCloseDedup\\+\\+')===2);
+  // V4.7.4.31-AU1: kanit tarafi kendi sayacina gecti -> defter sayaci 1 yerde
+  ok('sayac ledgerCloseDedup', cnt('ledgerCloseDedup:0')===1 && cnt('ledgerCloseDedup\\+\\+')===1);
+  ok('kanit ayri sayac', cnt('evidenceCloseDedup\\+\\+')===1);
   ok('CLOSE_DEDUP_SUPPRESSED izi', /'CLOSE_DEDUP_SUPPRESSED'/.test(src));
   ok('06.08 olcumu belgelenmis', /TRADE_CLOSE_RECORDED 10 kez yazildi/.test(src));
 }
@@ -108,9 +110,9 @@ ok('J2 min hold', /function v592MinHoldGuard/.test(src));
 ok('L fren ayrimi', /function isExecBackoffActive/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_29', /V4_7_4_29_CLOSE_PNL_RISK41_10X/.test(src));
+ok('build V4_7_4_33', /V4_7_4_33_DISK_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_17_CANDLE_PARITY/.test(src));
-ok('session 4_7_4_29_CP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_29_CP1/.test(src));
+ok('session 4_7_4_33_DK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);

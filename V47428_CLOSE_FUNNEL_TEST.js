@@ -170,7 +170,9 @@ console.log('\n== F -- supurge canli kosum ' + '='.repeat(46));
     const sb={console,Date,Number,String,Object,Array,Promise,
       R501_EVIDENCE_ACTIVE:true,
       normalizeSymbol:x=>String(x).toUpperCase(),
-      r501ActiveEvidence:new Map([['A',{status:'OPEN',symbol:'SKYAIUSDT',openedAt:Date.now()-opts.yasMs}]]),
+      r501ActiveEvidence:new Map([['A',{id:'A',status:'OPEN',symbol:'SKYAIUSDT',openedAt:Date.now()-opts.yasMs,_finalized:false}]]),
+      r501PersistRec:()=>{},
+      V592_SWEEP_MAX_ATTEMPTS:3, v592SweepAttempts:new Map(),
       trailingState:new Map(opts.yonetiliyor?[['SKYAIUSDT',{}]]:[]),
       v592CloseProof:async()=>opts.kanit,
       v592FinalizeClose:(s,a,b,r)=>{log.push('finalize:'+s+':'+r);return{ok:true};},
@@ -178,7 +180,7 @@ console.log('\n== F -- supurge canli kosum ' + '='.repeat(46));
       logAuto:(m)=>log.push('log'),
       pushCritical:()=>{},
       V592_SWEEP_MIN_AGE_MS:180000,
-      v592ParityStats:{sweepChecked:0,sweepNoProof:0,sweepFinalized:0}};
+      v592ParityStats:{sweepChecked:0,sweepNoProof:0,sweepFinalized:0,sweepGaveUp:0,sweepRecorderForceClosed:0}};
     vm.createContext(sb);
     vm.runInContext(f+';globalThis.S=v592OrphanLedgerSweep;',sb);
     await sb.S();
@@ -219,9 +221,9 @@ ok('AG cikis beyaz listesi duruyor', /const V592_BACKTEST_EXIT_TYPES = Object\.f
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
-ok('build V4_7_4_29', /V4_7_4_29_CLOSE_PNL_RISK41_10X/.test(src));
-ok('session 4_7_4_29_CP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_29_CP1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_28_CLOSE_FUNNEL_RISK41_10X/.test(src));
+ok('build V4_7_4_33', /V4_7_4_33_DISK_RISK41_10X/.test(src));
+ok('session 4_7_4_33_DK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_32_PROBE_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

@@ -130,7 +130,8 @@ console.log('\n== E -- KAR/ZARAR etiketi artik uretilebilir ' + '='.repeat(29));
   const f=grab('function r501PassiveRows(shapeOnly)');
   ok('sonuc pnlUSDT den tureniyor', /sonuc:\(n\(rec\.close\?\.pnlUSDT\)>0\?'KAR'/.test(f));
   ok('pnlUSDT rec.close dan okunuyor', /pnlUSDT:n\(rec\.close\?\.pnlUSDT\)/.test(f));
-  ok('exitReason rec.close dan', /exitReason:rec\.close\?\.reason\?\?rec\.close\?\.code/.test(f));
+  // V4.7.4.31-AU2: once .exitReason, sonra .exitLabel, sonra eski yedekler
+  ok('exitReason rec.close.exitReason dan', /exitReason:rec\.close\?\.exitReason\?\?rec\.close\?\.exitLabel/.test(f));
   ok('r501EvidenceClose realizedPnl i kullaniyor', /pnlUSDT:row\.pnlUSDT\?\?cls\.realizedPnl/.test(src));
   ok('r501EvidenceClose roiPct i kullaniyor', /roiPct:row\.roiPct\?\?cls\.roiPct/.test(src));
   ok('r501EvidenceClose exitReason i kullaniyor', /exitReason:row\.exitReason\?\?cls\.code/.test(src));
@@ -165,9 +166,9 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
 ok('telemetri closePnlClassified', /closePnlClassified:true/.test(src));
-ok('build V4_7_4_29', /V4_7_4_29_CLOSE_PNL_RISK41_10X/.test(src));
-ok('session 4_7_4_29_CP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_29_CP1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_28_CLOSE_FUNNEL_RISK41_10X/.test(src));
+ok('build V4_7_4_33', /V4_7_4_33_DISK_RISK41_10X/.test(src));
+ok('session 4_7_4_33_DK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_32_PROBE_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);
