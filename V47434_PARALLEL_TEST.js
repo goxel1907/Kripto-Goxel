@@ -85,7 +85,9 @@ ok('esik ENV ile', /V592_PROBE_PRESSURE_MS = Math\.max\(2000, Number\(process\.e
   ok('public backoff kontrolu', /isBinanceBackoffActive\(\)\) baski='PUBLIC_BACKOFF'/.test(f));
   ok('positionRisk yavasligi', /baski='POSITION_RISK_SLOW'/.test(f));
   ok('positionRisk takilmasi', /baski='POSITION_RISK_INFLIGHT'/.test(f));
-  ok('baskida YENI ACILIS YOK', /if\(baski\)\{[\s\S]{0,200}return;/.test(f));
+  // V4.7.4.38-BC1: dal buyudu (60 sn tekrar planlama), ama YENI ACILIS yine YOK.
+  ok('baskida YENI ACILIS YOK', /if\(baski\)\{[\s\S]{0,1400}return;   \/\/ acik olanlar yukarida kapatildi; YENI acilis yok/.test(f));
+  ok('baskida 60 sn tekrar planlanir', /V592_PROBE_RETRY_MS/.test(f));
   ok('ama ACIK olanlar KAPATILIR (once)', f.indexOf('v592ProbeCloseOne') < f.indexOf('if(baski)'));
   ok('sayac + sebep', /yieldedUnderPressure/.test(f) && /lastYieldReason=baski/.test(f));
 }
@@ -147,8 +149,8 @@ ok('calcVPIN karar yolu dokunulmadi', /if \(!trades \|\| trades\.length < bucket
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
-ok('build V4_7_4_37', /V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
-ok('eski build kalmadi', !/V4_7_4_36_PROBE_PRICE_RISK41_10X/.test(src));
+ok('build V4_7_4_38', /V4_7_4_38_PROBE_RETRY_RISK41_10X/.test(src));
+ok('eski build kalmadi', !/V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

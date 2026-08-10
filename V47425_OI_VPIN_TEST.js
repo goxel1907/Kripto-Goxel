@@ -186,9 +186,9 @@ ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src) && /V592_V45_FIRST_OBSTACLE_RR_MIN/.test(src));
 
 console.log('\n== H -- surum ' + '='.repeat(60));
-ok('build V4_7_4_37', /V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
-ok('session 4_7_4_37_PM1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_37_PM1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_36_PROBE_PRICE_RISK41_10X/.test(src));
+ok('build V4_7_4_38', /V4_7_4_38_PROBE_RETRY_RISK41_10X/.test(src));
+ok('session 4_7_4_38_PR2', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_38_PR2/.test(src));
+ok('eski build kalmadi', !/V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
 ok('eski session kalmadi', !/4_7_4_25_OV1/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
