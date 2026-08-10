@@ -87,6 +87,7 @@ console.log('\n== D -- fiyat zinciri canli kosum ' + '='.repeat(40));
       v592ProbeSnapshot:()=>({}), v592ProbeDecisionNow:()=>({}),
       bReq:async(k,s,m,p2)=>{log.push('order:'+p2);return{orderId:1,avgPrice:book||tick||ticker||mark};},
       r501EvidenceFunnel:()=>{}, safeErrMsg:e=>String(e),
+      v592ProbeSaveState:()=>{},   // V4.7.4.41-BF1 stub
       V592_PROBE_MARGIN_USDT:15, V592_PROBE_LEVERAGE:10,
       v592ProbeStats:{opened:0,openFailed:0,skippedNotTradable:0,skippedStrategyBusy:0,
                       skippedNoPrice:0,skippedNoQty:0,lastSkipReason:null,priceSource:null}};
@@ -151,8 +152,8 @@ for(const [n,re] of [['AS1 tek huni',/async function v592FinalizeClose/],
 ok('calcVPIN karar yolu dokunulmadi', /if \(!trades \|\| trades\.length < bucketSize \* 3\) return null;/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
-ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
-ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
+ok('build V4_7_4_41', /V4_7_4_41_PROBE_PERSIST_RISK41_10X/.test(src));
+ok('eski build kalmadi', !/V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

@@ -91,7 +91,10 @@ console.log('\n== D -- SONDA emir yolu ' + '='.repeat(50));
   ok('kapanis fiyati yoksa defter/mum yedegi', /r501CurrentBook\(S\)\?\.mid/.test(f));
   ok('PnL hesaplaniyor', /pnlUSDT:pnl/.test(f));
   ok('sonuc etiketi KAR/ZARAR', /pnl>0\?'KAR':pnl<0\?'ZARAR'/.test(f));
-  ok('finally ile her halukarda temizlenir', /finally\{ v592ProbeOpen\.delete\(S\); \}/.test(f));
+  // V4.7.4.41-BF2: finally artik KOSULLU — kapanis dogrulanmadiysa kayit
+  // takipte kalir ve tekrar denenir; yalniz basarida silinir.
+  ok('finally kapanis dogrulanmissa siler', /if\(p2 && p2\._closeOk!==true\)/.test(f));
+  ok('basarisizda kayit KORUNUR', /p2\._closeAttempts=Number/.test(f));
 }
 
 console.log('\n== E -- dongu ve sarkma korumasi ' + '='.repeat(41));
@@ -195,9 +198,9 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
 ok('cikis beyaz listesi duruyor', /const V592_BACKTEST_EXIT_TYPES = Object\.freeze/.test(src));
-ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
-ok('session 4_7_4_40_DD1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_40_DD1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
+ok('build V4_7_4_41', /V4_7_4_41_PROBE_PERSIST_RISK41_10X/.test(src));
+ok('session 4_7_4_41_PS1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_41_PS1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

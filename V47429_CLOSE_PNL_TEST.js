@@ -166,9 +166,9 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
 ok('telemetri closePnlClassified', /closePnlClassified:true/.test(src));
-ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
-ok('session 4_7_4_40_DD1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_40_DD1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
+ok('build V4_7_4_41', /V4_7_4_41_PROBE_PERSIST_RISK41_10X/.test(src));
+ok('session 4_7_4_41_PS1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_41_PS1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

@@ -43,7 +43,8 @@ console.log('\n== B -- BE1: senkron kilit ' + '='.repeat(47));
   ok('zaman damgasi', /p\._closingAt=Date\.now\(\)/.test(f));
   ok('yaris sayaci', /closeRaceBlocked/.test(f));
   ok('60 sn sonra tekrar denenebilir', /< 60000/.test(f));
-  ok('finally hala temizliyor', /finally\{ v592ProbeOpen\.delete\(S\); \}/.test(f));
+  // V4.7.4.41-BF2: kosullu temizlik
+  ok('finally basarida siler', /\} else \{\s*\n\s*v592ProbeOpen\.delete\(S\);\s*\n\s*\}/.test(f));
 }
 {
   // yarisi izole kosur
@@ -137,8 +138,8 @@ for(const [n,re] of [['BD1 ENV kimlik',/function v592ProbeCreds/],['BC1 tekrar',
 ok('calcVPIN karar yolu dokunulmadi', /if \(!trades \|\| trades\.length < bucketSize \* 3\) return null;/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
-ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
-ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
+ok('build V4_7_4_41', /V4_7_4_41_PROBE_PERSIST_RISK41_10X/.test(src));
+ok('eski build kalmadi', !/V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

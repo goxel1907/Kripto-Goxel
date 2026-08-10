@@ -49,7 +49,8 @@ ok('v592ProbePreempt var', /async function v592ProbePreempt\(apiKey,apiSecret,sy
   ok('hata yutulur (strateji emri engellenmez)', /catch\(_\)\{ return false; \}/.test(f));
 }
 ok('sonda satirinda preempted alani', /preempted:!!p\.preempted/.test(src));
-ok('cikis sebebi ayrisiyor', /exitReason:p\.preempted\?'STRATEGY_PREEMPT':'TIMED_EXIT'/.test(src));
+// V4.7.4.41-BF3b: RESTART_RECOVERY dali eklendi.
+ok('cikis sebebi ayrisiyor', /exitReason:p\._recovered\?'RESTART_RECOVERY':\(p\.preempted\?'STRATEGY_PREEMPT':'TIMED_EXIT'\)/.test(src));
 ok('CSV sutununda preempted', /preempted:!!r\.preempted/.test(src));
 
 console.log('\n== C -- AX1 canli kosum: birlesme onlendi mi ' + '='.repeat(29));
@@ -149,8 +150,8 @@ ok('calcVPIN karar yolu dokunulmadi', /if \(!trades \|\| trades\.length < bucket
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
-ok('build V4_7_4_40', /V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
-ok('eski build kalmadi', !/V4_7_4_39_PROBE_CREDS_RISK41_10X/.test(src));
+ok('build V4_7_4_41', /V4_7_4_41_PROBE_PERSIST_RISK41_10X/.test(src));
+ok('eski build kalmadi', !/V4_7_4_40_PROBE_DEDUP_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);
