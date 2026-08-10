@@ -100,7 +100,8 @@ console.log('\n== E -- dongu ve sarkma korumasi ' + '='.repeat(41));
   ok('kapali ise hemen doner', /if\(!V592_PROBE_ACTIVE\) return;/.test(f));
   ok('anahtar yoksa doner', /if\(!apiKey\|\|!apiSecret\) return;/.test(f));
   ok('ONCE suresi dolanlari kapatir', f.indexOf('v592ProbeCloseOne')<f.indexOf('v592ProbeOpenOne'));
-  ok('top-N ticker onbellekli', /cached\('probe_tickers',45000/.test(f));
+  // V4.7.4.37-BB1: ayri anahtar kaldirildi; tarama ile AYNI onbellek paylasilir (agirlik 40 tasarrufu)
+  ok('top-N ticker paylasimli onbellekten', /cached\('futures_tickers',FUTURES_TICKERS_CACHE_MS/.test(f));
   ok('max acik limiti', /if\(v592ProbeOpen\.size>=V592_PROBE_MAX_OPEN\)/.test(f));
 }
 // V4.7.4.35-AY2: esik HOLD_MS+60000 -> tam HOLD_MS, periyot 30sn -> 15sn.
@@ -190,9 +191,9 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
 ok('cikis beyaz listesi duruyor', /const V592_BACKTEST_EXIT_TYPES = Object\.freeze/.test(src));
-ok('build V4_7_4_36', /V4_7_4_36_PROBE_PRICE_RISK41_10X/.test(src));
-ok('session 4_7_4_36_PP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_36_PP1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_35_ROTATE_RISK41_10X/.test(src));
+ok('build V4_7_4_37', /V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
+ok('session 4_7_4_37_PM1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_37_PM1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_36_PROBE_PRICE_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

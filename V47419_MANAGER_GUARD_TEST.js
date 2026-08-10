@@ -92,9 +92,9 @@ ok('S cikis arastirmasi', /closeSnap=rec\.closeResearchSnapshot/.test(src));
 ok('L fren ayrimi', /function isExecBackoffActive/.test(src));
 ok('O testnet evreni', /v592IsTestnetTradable/.test(src));
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
-ok('build V4_7_4_36', /V4_7_4_36_PROBE_PRICE_RISK41_10X/.test(src));
+ok('build V4_7_4_37', /V4_7_4_37_PROBE_MAP_RISK41_10X/.test(src));
 ok('eski build yok', !/V4_7_4_18_FAST_PROTECT/.test(src));
-ok('session 4_7_4_36_PP1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_36_PP1/.test(src));
+ok('session 4_7_4_37_PM1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_37_PM1/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
 console.log(fail?`SONUC: FAIL — ${pass} gecti, ${fail} dustu`:`SONUC: PASS — ${pass} gecti, 0 dustu`);
