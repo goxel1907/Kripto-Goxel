@@ -78,8 +78,8 @@ console.log('\n── G4  418 sirasinda bracket proof sahte basarisiz olmaz ' + 
 console.log('\n── G5  Kimlik + sozlesme ' + '─'.repeat(45));
 {
   const h=re=>re.test(src);
-  ok('G5a build V4.7.4.35', h(/V4_7_4_35_ROTATE_RISK41_10X/));
-  ok('G5b session 4_7_4_35_RT1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_35_RT1/));
+  ok('G5a build V4.7.4.36', h(/V4_7_4_36_PROBE_PRICE_RISK41_10X/));
+  ok('G5b session 4_7_4_36_PP1', h(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_36_PP1/));
   ok('G5c eski kimlik yok', !h(/V4_7_4_9_EXIT_CONTRACT/));
   ok('G5d yeni bayraklar', h(/postFillPositionProof:true/)&&h(/evidenceOrderDedup:true/));
   ok('G5e slot 41', h(/R497_SLOT_MARGIN_USDT \|\| 41/));

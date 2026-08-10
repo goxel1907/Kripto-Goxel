@@ -158,8 +158,8 @@ ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.bina
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('telemetri rawProfile', /rawProfile:R501_RAW_PROFILE/.test(src));
 ok('telemetri analysisBundle', /analysisBundle:'\/api\/evidence\/analysis-bundle\.zip'/.test(src));
-ok('build V4_7_4_35', /V4_7_4_35_ROTATE_RISK41_10X/.test(src));
-ok('eski build kalmadi', !/V4_7_4_34_PARALLEL_RISK41_10X/.test(src));
+ok('build V4_7_4_36', /V4_7_4_36_PROBE_PRICE_RISK41_10X/.test(src));
+ok('eski build kalmadi', !/V4_7_4_35_ROTATE_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);
