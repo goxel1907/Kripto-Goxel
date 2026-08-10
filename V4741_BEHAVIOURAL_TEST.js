@@ -49,7 +49,7 @@ function grab(decl) {
   return src.slice(i, k);
 }
 function sandbox(extra = {}) {
-  const ctx = {
+  const ctx = { v592ProbePreempt: async()=>false,
     Date, Math, Number, String, Object, Array, Boolean, JSON, Promise, Map, Set, Error,
     Infinity, NaN, isNaN, parseFloat, parseInt, crypto, console, setTimeout, clearTimeout,
     ...extra
@@ -113,7 +113,7 @@ console.log('\n── T2  R495 fixture: MARKET / TACTICAL / PUSU ' + '─'.repea
 
 console.log('\n── T3  Deterministik clientOrderId + restart dayanıklılığı ' + '─'.repeat(12));
 {
-  const S = 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1';
+  const S = 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_35_RT1';
   const mk = (sess) => { const c = sandbox({ TESTNET_SESSION_RESET_ID: sess }); run(c, grab('function v592DeterministicClientOrderId')); return c; };
   const ctx = mk(S);
   const cid = (s, side, key) => run(ctx, `v592DeterministicClientOrderId(${JSON.stringify(s)},${JSON.stringify(side)},${JSON.stringify(key)})`);
@@ -274,8 +274,8 @@ console.log('\n── T9  F01 geri alındı + sözleşme değişmedi ' + '─'.r
   ok('T9g max 2', has(/R486_MAX_POSITIONS \|\| 2/));
   ok('T9h risk 4', has(/R495_FINAL_RISK_PCT \|\| 4/));
   ok('T9i testnet hard-lock', has(/BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/));
-  ok('T9j build V4.7.4.33', has(/V4_7_4_33_DISK_RISK41_10X/));
-  ok('T9k session 4_7_4_10', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1/));
+  ok('T9j build V4.7.4.35', has(/V4_7_4_35_ROTATE_RISK41_10X/));
+  ok('T9k session 4_7_4_10', has(/V592_EXACT_CLOSED1M_R495_72H_4_7_4_35_RT1/));
   ok('T9l emir yazmada retry yok', has(/const maxAttempts = \(sensitiveSigned \|\| orderWrite\) \? 1 : 3;/));
   ok('T9m R495 LIVE piyasa saati', has(/const now=marketNow\(\),fullSymbol=normalizeSymbol\(symbol\)/));
 }

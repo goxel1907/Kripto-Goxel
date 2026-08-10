@@ -150,9 +150,9 @@ ok('calcVPIN karar yolu dokunulmadi', /if \(!trades \|\| trades\.length < bucket
 ok('testnet hard-lock', /const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/.test(src));
 ok('giris sozlesmesi 180000', /candidateToEntryMs:180000/.test(src));
 ok('V45 esikleri degismedi', /V592_V45_MS_SCORE_MIN/.test(src));
-ok('build V4_7_4_33', /V4_7_4_33_DISK_RISK41_10X/.test(src));
-ok('session 4_7_4_33_DK1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1/.test(src));
-ok('eski build kalmadi', !/V4_7_4_32_PROBE_RISK41_10X/.test(src));
+ok('build V4_7_4_35', /V4_7_4_35_ROTATE_RISK41_10X/.test(src));
+ok('session 4_7_4_35_RT1', /V592_EXACT_CLOSED1M_R495_72H_4_7_4_35_RT1/.test(src));
+ok('eski build kalmadi', !/V4_7_4_34_PARALLEL_RISK41_10X/.test(src));
 
 console.log(`\n${'='.repeat(74)}`);
 console.log(fail?`SONUC: FAIL -- ${pass} gecti, ${fail} dustu`:`SONUC: PASS -- ${pass} gecti, 0 dustu`);

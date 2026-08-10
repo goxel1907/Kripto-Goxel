@@ -95,8 +95,8 @@ for(const [n,re] of [['AH korumasiz istisna',/function v592PositionProtection\(s
   ['L fren ayrimi',/function isExecBackoffActive/],['O testnet evreni',/v592IsTestnetTradable/],
   ['S cikis arastirmasi',/closeSnap=rec\.closeResearchSnapshot/],
   ['testnet hard-lock',/const BINANCE_EXECUTION_FAPI = 'https:\/\/testnet\.binancefuture\.com'/],
-  ['build V4_7_4_33',/V4_7_4_33_DISK_RISK41_10X/],
-  ['session 4_7_4_33_DK1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_33_DK1/]]) ok(n, re.test(src));
+  ['build V4_7_4_35',/V4_7_4_35_ROTATE_RISK41_10X/],
+  ['session 4_7_4_35_RT1',/V592_EXACT_CLOSED1M_R495_72H_4_7_4_35_RT1/]]) ok(n, re.test(src));
 ok('eski build yok', !/V4_7_4_21_UNPROTECTED_EXCEPTION/.test(src));
 
 console.log(`\n${'═'.repeat(74)}`);
