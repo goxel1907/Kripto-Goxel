@@ -393,7 +393,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_2_LEVLOCK_BOTH_ENDS_NOPROBE_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_3_TESTNET_UNIVERSE_PREFILTER_NOPROBE_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -508,6 +508,26 @@ const v592ParityStats={freshCacheHits:0,minHoldBlocks:0,staleOrderAborts:0,prote
 // BTWUSDT mainnette var, testnette yok -> /fapi/v1/leverage -1121 Invalid symbol.
 // Bu evren onceden cekilir; testnette islem gormeyen sembol karara hic girmez.
 const v592TestnetUniverse={set:null,ts:0,fetching:false,lastError:null,lastErrorAt:0};
+// ══ V5.0.3 — TESTNET SEMBOL EVRENI ON-FILTRESI ═══════════════════════
+// OLCULDU 11.08 (V502A_72H_TEMIZ_OLCUM_2): bot 5,7 saatte 2 gecerli sinyal
+// uretti, IKISI DE emir aninda reddedildi:
+//   21:30 CLOUSDT  TACTICAL · R495 2 oy · ilk engel R/R 1,68 · 24s +%18,6
+//   21:33 CRWVUSDT LONG · lev 10 · marj 11,37
+//   ikisi de -> SYMBOL_NOT_ON_TESTNET
+// Kok sebep: bu kontrol emir yolunun ICINDE (v592SendMainOrder oncesi).
+// Aday listesi kurulurken YOKTU. Bot mainnet top-gainer'i analiz ediyor,
+// en iyisini seciyor, tum zinciri yurutuyor, son anda islemi TAMAMEN
+// kaybediyor — sonraki adaya da gecmiyor.
+// Olculen fark: mainnet uygun evren 683, testnet evreni 528 (%23) ve fark
+// rastgele degil; top gainer'lar agirlikli olarak yeni listelenen coinler,
+// testnette tam da onlar yok.
+//
+// SAPMA KAYDI: bu YALNIZ TESTNET icindir. Backtest mainnet sembolleriyle
+// kostu ve orada her aday islem gorebiliyordu. Canlida mainnet=mainnet
+// oldugu icin filtre devreye GIRMEZ. Bu bir parite duzeltmesi degil,
+// testnet borsasinin eksik listesine karsi olcum kurtarma islemidir.
+const V503_TESTNET_UNIVERSE_PREFILTER = BINANCE_EXECUTION_ENV==='TESTNET'
+  && String(process.env.V503_TESTNET_UNIVERSE_PREFILTER ?? '1') !== '0';
 const V592_TESTNET_UNIVERSE_TTL_MS=Math.max(300000,Math.min(86400000,Number(process.env.TESTNET_UNIVERSE_TTL_MS||21600000)));
 async function v592RefreshTestnetUniverse(force=false){
   const now=Date.now();
@@ -23660,6 +23680,43 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         logAuto(`🧭 R482 kaynak-korumalı sıra: ${autoScanState.r481Oncelik.map(x=>`${x.coin}[K${x.kaynakSeridi}]:${x.tip||'YOK'}(${x.stratejiSkor??'-'})`).join(' · ')}`);
       } catch(e) { logAuto(`⚠️ R481 ön-sıralama hata verdi, R428 sırası korunuyor: ${String(e?.message||e).slice(0,120)}`); }
     } else { try{ scanList.forEach((c,i)=>{c.r481OriginalRank=i+1;}); }catch(_){} }
+
+    // ══ V503: testnet evren on-filtresi ════════════════════════════════
+    // FAIL-OPEN: evren alinamazsa filtre uygulanmaz (islem durmasin), ama
+    // SAYAC artar — sessiz erken donus yok.
+    if (V503_TESTNET_UNIVERSE_PREFILTER) {
+      try {
+        const _uni = await v592RefreshTestnetUniverse();
+        if (_uni && _uni.size > 0) {
+          const _once = scanList.length, _elenen = [];
+          scanList = scanList.filter(c => {
+            const _s = normalizeSymbol(c.fullSymbol || c.symbol);
+            if (_uni.has(_s)) return true;
+            _elenen.push(_s.replace('USDT',''));
+            return false;
+          });
+          v592ParityStats.testnetUniversePrefiltered =
+            (v592ParityStats.testnetUniversePrefiltered||0) + _elenen.length;
+          v592ParityStats.testnetUniversePrefilterRuns =
+            (v592ParityStats.testnetUniversePrefilterRuns||0) + 1;
+          if (_elenen.length) {
+            logAuto(`\u{1F9EA} V503 testnet evren on-filtresi: ${_once} aday \u2192 ${scanList.length} · elenen: ${_elenen.slice(0,10).join(', ')}${_elenen.length>10?'\u2026':''}`);
+            try{ r501EvidenceFunnel({type:'TESTNET_UNIVERSE_PREFILTER',action:'PREFILTER',
+              authority:'TESTNET_EXECUTION',symbol:null,decisionImpact:true,orderBlocking:false,
+              before:_once,kept:scanList.length,removed:_elenen,
+              reason:`testnet exchangeInfo listesinde olmayan ${_elenen.length} aday analiz oncesi elendi`}); }catch(_){}
+          }
+        } else {
+          v592ParityStats.testnetUniversePrefilterSkipped =
+            (v592ParityStats.testnetUniversePrefilterSkipped||0) + 1;
+          logAuto('\u26A0\uFE0F V503 testnet evreni bos/alinamadi \u2014 on-filtre bu taramada uygulanmadi (fail-open)');
+        }
+      } catch(_v503e) {
+        v592ParityStats.testnetUniversePrefilterError =
+          (v592ParityStats.testnetUniversePrefilterError||0) + 1;
+        logAuto(`\u26A0\uFE0F V503 on-filtre hata: ${String(_v503e?.message||_v503e).slice(0,110)}`);
+      }
+    }
 
     for (const [scanIdx, coin] of scanList.entries()) {
       coin.gainerRank = Number(coin.r481OriginalRank || scanIdx + 1); // R481: sıralama değişse de piyasa gainer sırası korunur
