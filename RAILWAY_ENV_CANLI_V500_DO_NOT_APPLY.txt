@@ -1,0 +1,37 @@
+# V501 NOTU: BU ESKI V5.0.0 CANLI ENV DOSYASIDIR. UYGULAMA. V5.0.1 aday paket LIVE modda bilinen parite engelleri nedeniyle fail-closed durur.
+
+# ════════════════════════════════════════════════════════════════════
+# LAZARUS CANLI V5.0.0 — RAILWAY ENV
+# ════════════════════════════════════════════════════════════════════
+# BU DOSYAYI HENUZ UYGULAMA. Temiz testnet olcumu gelmeden canli acilmaz.
+# Mevcut ENV'ini SILME/DEGISTIRME — asagidakiler YALNIZ canli deploy icin.
+#
+# Raw Editor KULLANMA: mevcut listende API anahtarlarin gorunmuyor,
+# yapistirirsan SILINIRLER. Tek tek ekle.
+# ════════════════════════════════════════════════════════════════════
+
+# ── 1) ORTAM ────────────────────────────────────────────────────────
+BINANCE_EXECUTION_ENV="LIVE"
+
+# ── 2) GERCEK PARA ANAHTARLARI (yeni degisken adlari) ───────────────
+# Binance ana hesap. Withdrawal izni ASLA verme. IP kisitlamasi onerilir.
+BINANCE_LIVE_API_KEY="<binance mainnet api key>"
+BINANCE_LIVE_API_SECRET="<binance mainnet api secret>"
+
+# ── 3) ACIK SILAHLANDIRMA ───────────────────────────────────────────
+# Bu tam olarak bu dizge olmazsa bot ISLEM ACMAZ (yanlislikla deploy koruması).
+LAZARUS_LIVE_ARM="CANLI-PARA-ONAY"
+
+# ── 4) OTURUM ───────────────────────────────────────────────────────
+TESTNET_SESSION_RESET_ID="CANLI_V5_0_0_ILK_OTURUM"
+TESTNET_SESSION_AUTO_STOP="0"          # canlida 72 saat otomatik durdurma yok
+
+# ════════════════════════════════════════════════════════════════════
+# DEGISTIRME — backtest sozlesmesi. Bunlari "0" yaparsan acilis kapisi
+# emir yolunu KAPATIR (kasitli davranis):
+#   V592_EXACT_BACKTEST_AUTHORITY   varsayilan 1
+#   V592_V45_TESTNET_ACTIVE         varsayilan 1
+# ════════════════════════════════════════════════════════════════════
+# SONDA: canli surumde KOD OLARAK YOK. V592_PROBE_* degiskenleri
+# canli deployda gereksizdir, okunmazlar.
+# ════════════════════════════════════════════════════════════════════

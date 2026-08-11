@@ -1,0 +1,20 @@
+{
+  "name": "lazarus-canli-v5-0-0-live-c1-c5-noprobe",
+  "version": "5.0.0-canli",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js",
+    "test": "node V500_CANLI_TEST.js",
+    "test:tumu": "node 99_TEST_KOSUCU.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.17.1"
+  }
+}

@@ -1,0 +1,20 @@
+const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const cp=require('child_process');
+const root=__dirname;
+let pass=0,fail=0;
+const ok=(n,c,d)=>c?(pass++,console.log('  pass  '+n)):(fail++,console.error('  FAIL  '+n+(d?' :: '+d:'')));
+const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+console.log('══ V502A — REPRODUCIBILITY / INTEGRITY ══');
+const a=sha(path.join(root,'server.js')), b=sha(path.join(root,'server.rebuilt.js'));
+ok('server.js == server.rebuilt.js SHA',a===b,`${a} != ${b}`);
+ok('V502 server expected SHA',a==='16b2baf3cba97a4f8d533cc47fa9f4429fbe2faf27dfe59585148b76ea24bc70',a);
+const build=fs.readFileSync(path.join(root,'00_BUILD_TRANSFORMASYONU.py'),'utf8');
+for(const t of ['T13_V502_BUILD_ADI','T14_V502_LEV_LOCK_BAS','T15_V502_R283_EXACT_BYPASS','T16_V502_GATE_MARKER','T17_V502_BLOCKER6']) ok('build transform '+t,build.includes(t));
+const blockers=JSON.parse(fs.readFileSync(path.join(root,'RELEASE_BLOCKERS_V501.json'),'utf8'));
+ok('blocker registry B1..B6',blockers.blockers.length===6 && ['B1','B2','B3','B4','B5','B6'].every(id=>blockers.blockers.some(x=>x.id===id)));
+const man=fs.readFileSync(path.join(root,'MANIFEST_SHA256.txt'),'utf8').trim().split(/\r?\n/).filter(Boolean);
+const seen=new Set(); let dupe=[]; let bad=[];
+for(const line of man){ const m=line.match(/^([0-9a-f]{64})  (.+)$/); if(!m){bad.push('FORMAT:'+line);continue;} const [,h,f]=m; if(seen.has(f))dupe.push(f);seen.add(f); const p=path.join(root,f); if(!fs.existsSync(p)||sha(p)!==h)bad.push(f); }
+ok('manifest unique paths',dupe.length===0,dupe.join(','));
+ok('manifest all hashes match',bad.length===0,bad.join(','));
+console.log(`SONUC: ${pass} gecti, ${fail} kaldi`); process.exit(fail?1:0);
