@@ -396,7 +396,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_7_LEVPROOF_RETRY_NOPROBE_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_8_BACKOFF_HONORED_NOPROBE_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1007,13 +1007,42 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
 // V4.7.4.11-L: fapi.binance.com (PUBLIC/mainnet) ve testnet.binancefuture.com (EXEC)
 // AYRI hostlardir, AYRI rate-limit kovalaridir. Tek global fren yuzunden testnet
 // tarafindaki 418, mainnet taramasini da donduruyordu -> bot hic tarama yapamiyordu.
+// ══ V5.0.8 — BACKOFF KALICILIGI ═════════════════════════════════════
+// binanceGov.execBackoffUntil YALNIZ BELLEKTEYDI. Restart onu sifirliyordu;
+// bot yasak ortasinda acilip hemen cagri yapiyor ve yasagi uzatiyordu.
+// Bu, daha once katalogladigim "restart'ta olen state" hata sinifidir (BF).
+const V508_BACKOFF_MAX_SEC = Math.max(60, Math.min(7200, Number(process.env.V508_BACKOFF_MAX_SEC || 3600)));
+const V508_BACKOFF_PATH = path.join(String(process.env.TESTNET_STATE_DIR||'/data').trim()||'/data','lazarus_binance_backoff.json');
+function v508SaveBackoff(){
+  try{
+    const tmp=V508_BACKOFF_PATH+'.tmp';
+    fs.writeFileSync(tmp,JSON.stringify({v:1,
+      execBackoffUntil:Number(binanceGov.execBackoffUntil||0),
+      backoffUntil:Number(binanceGov.backoffUntil||0),
+      savedAt:Date.now()}));
+    fs.renameSync(tmp,V508_BACKOFF_PATH);   // atomik
+  }catch(_){}
+}
+function v508LoadBackoff(){
+  try{
+    const j=JSON.parse(fs.readFileSync(V508_BACKOFF_PATH,'utf8'));
+    const now=Date.now();
+    const e=Number(j.execBackoffUntil||0), p2=Number(j.backoffUntil||0);
+    if(e>now) binanceGov.execBackoffUntil=Math.max(binanceGov.execBackoffUntil||0,e);
+    if(p2>now) binanceGov.backoffUntil=Math.max(binanceGov.backoffUntil||0,p2);
+    if(e>now||p2>now) try{console.log(`[V508] onceki yasak surdurulyor: EXEC ${Math.max(0,Math.ceil((e-now)/1000))}sn · PUBLIC ${Math.max(0,Math.ceil((p2-now)/1000))}sn`);}catch(_){}
+  }catch(_){}
+}
+try{ v508LoadBackoff(); }catch(_){}   // V5.0.8: acilista onceki yasagi surdur
 function registerBinanceBackoff(reason='rate-limit', seconds=45, domain='PUBLIC') {
-  const sec = Math.max(5, Math.min(180, Number(seconds)||45));
+  // V5.0.8: ikinci tavan da kaldirildi. Binance'in verdigi sureye uyulur.
+  const sec = Math.max(5, Math.min(V508_BACKOFF_MAX_SEC, Number(seconds)||45));
   const dom = String(domain||'PUBLIC').toUpperCase();
   const until = Date.now() + sec*1000;
   if (dom==='EXEC'   || dom==='BOTH') binanceGov.execBackoffUntil = Math.max(binanceGov.execBackoffUntil || 0, until);
   if (dom==='PUBLIC' || dom==='BOTH') binanceGov.backoffUntil     = Math.max(binanceGov.backoffUntil     || 0, until);
   binanceGov.last429At = Date.now();
+  v508SaveBackoff();   // V5.0.8: restart yasagi sifirlamasin
   try { pushCritical('BINANCE_BACKOFF', `${reason}: ${sec}sn istek bekleme [${dom}]`, {seconds:sec, reason, domain:dom}, 'WARNING'); } catch(_) {}
 }
 // R95: Binance 418/429 geldiğinde istek bekleyip taramayı kilitleme; merkezi frenle güvenli dur.
@@ -1025,7 +1054,13 @@ function getBinanceBackoffMs() {
 }
 // V4.7.4.11-L: imzali testnet yolu icin ayri fren.
 function isExecBackoffActive() {
-  return Date.now() < Number(binanceGov.execBackoffUntil || 0);
+  const aktif = Date.now() < Number(binanceGov.execBackoffUntil || 0);
+  // V5.0.8: yasak sirasinda engellenen cagri sayilir. Bu sayac dusuyorsa
+  // duzeltme calisiyordur; yuksek kaliyorsa cagri yollari hala zorluyordur.
+  if(aktif){
+    try{ v592ParityStats.execBackoffBlocked=(v592ParityStats.execBackoffBlocked||0)+1; }catch(_){}
+  }
+  return aktif;
 }
 function getExecBackoffMs() {
   return Math.max(0, Number(binanceGov.execBackoffUntil || 0) - Date.now());
@@ -1047,8 +1082,22 @@ function registerHttpBackoffAndThrow(scope, status, retryHeader, domain='PUBLIC'
     reason:`HTTP ${status} ${domain} ${String(scope||'').slice(0,80)}`}); }catch(_){}
   // R154: 418 global backoff 180sn→60sn. positionRisk kendi cooldown'unda ayrıca 90sn bekler.
   // 180sn tüm sistemi durduruyordu; 60sn yeterli — positionRisk zaten kendi TTL/cooldown ile korunur.
+  // ══ V5.0.8 — YASAK SURESINE GERCEKTEN UYULUYOR ════════════════════
+  // OLCULDU 12.08 (V507_72H_TEMIZ_1): 4,9 saatte 29 adet 418. 28 olayin 25'i
+  // ONCEKI YASAK BITMEDEN yapilan cagriydi. Ornek:
+  //   14:43:38  retryAfter 3441 sn (57 dk)
+  //   14:45:45  -> 127 sn sonra tekrar arandi (tam 120sn tavani)
+  // Zincirin nasil buyudugu:
+  //   18:31:46 yasak   69 sn -> 33 sn erken cagri  -> yasak  879 sn
+  //   18:44:38 yasak 1760 sn -> 142 sn erken cagri -> yasak 2077 sn
+  // Binance tekrarlanan ihlalde yasagi UZATIR. Birlesik gercek yasak suresi
+  // olcum penceresinin %45'i oldu (2,2 saat / 4,9 saat).
+  //
+  // KOK SEBEP: Math.min(120, retry). Binance 3441 dedi, kod 120'ye kirpti.
+  // Eski yorum "180sn tum sistemi durduruyordu; 60sn yeterli" diyordu — ama
+  // erken cagri sistemi durdurmuyor, YASAGI BUYUTUYOR. Beklemek daha ucuz.
   const retry = parseInt(retryHeader || (Number(status) === 418 ? '60' : '60'), 10);
-  const sec = Math.max(Number(status) === 418 ? 60 : 30, Math.min(120, Number(retry)||60));
+  const sec = Math.max(Number(status) === 418 ? 60 : 30, Math.min(V508_BACKOFF_MAX_SEC, Number(retry)||60));
   registerBinanceBackoff(`HTTP ${status} ${scope}`, sec, domain);
   throw makeBinanceBackoffError(`HTTP ${status} ${scope}`, sec, status);
 }

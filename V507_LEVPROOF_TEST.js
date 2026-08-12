@@ -54,7 +54,7 @@ ok('V503 on-filtre', has('V503 testnet evren on-filtresi'));
 ok('V502 kaldirac cift kilidi', has('V502-A: KALDIRAC KILIDI'));
 ok('parite kapisi', has('function v592BootParityGate'));
 ok('SONDA yok', !has('/api/probe'));
-ok('build V5_0_7', has('V5_0_7_LEVPROOF_RETRY'));
+ok('build V5_0_7', (has('V5_0_7_LEVPROOF_RETRY') || src.includes('V5_0_8_BACKOFF_HONORED')));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);
 process.exit(fail?1:0);
