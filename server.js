@@ -396,7 +396,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_5_VOTE_EXACT_BACKTEST_NOPROBE_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_6_LOSS_TELEMETRY_NOPROBE_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -19370,6 +19370,15 @@ app.post('/api/order', async (req, res) => {
        source:_r495?.entryTs?'R495_ENTRY_TS':'LIFECYCLE'});}catch(_){}
      if(V592_EXACT_BACKTEST_AUTHORITY&&V592_ENTRY_CANDLE_PARITY&&Number.isFinite(_drift)){
        if(_drift>V592_ENTRY_CANDLE_MAX_DRIFT){
+         // V5.0.6: drift blogu artik funnel'a da yazilir. Backtest girisi
+         // candidateTs+180000 (725/725 sapmasiz) yani drift 0. Muhafiz DOGRU
+         // calisiyor; sorun veriyi gec almamiz. Kac emrin bu yuzden dustugunu
+         // ve drift dagilimini olcebilmek icin kayit sart.
+         try{ r501EvidenceFunnel({type:'ENTRY_CANDLE_DRIFT_BLOCK',action:'ENTRY_CANDLE_DRIFT_BLOCK',
+           authority:'EXACT_V592_EXECUTION',symbol:normalizeSymbol(sym),decisionImpact:true,
+           orderBlocking:true,candleDrift:_drift,maxAllowed:V592_ENTRY_CANDLE_MAX_DRIFT,
+           requestToSendMs:_lag,entryCandle:_entryCandle,nowCandle:_nowCandle,
+           reason:`giris mumu gecti: drift ${_drift} > izin ${V592_ENTRY_CANDLE_MAX_DRIFT}`}); }catch(_){}
          v592ParityStats.entryCandleAborts++; v592ParityStats.staleOrderAborts++;
          if(_drift>v592ParityStats.entryCandleDriftMax)v592ParityStats.entryCandleDriftMax=_drift;
          try{r501OrderLifeMark(sym,'ORDER_ABORTED_STALE',{candleDrift:_drift,maxDrift:V592_ENTRY_CANDLE_MAX_DRIFT,
@@ -19572,6 +19581,14 @@ app.post('/api/order', async (req, res) => {
     const rejection=v592ClassifyExchangeRejection(e),life=r501OrderLifeMark(sym,'ORDER_REJECTED',{attemptId:orderAttemptId,reason:safeErrMsg(e),rejection,rejectedAt:Date.now()});r501ExecutionRejection(sym,e,life,{side:String(side||'').toUpperCase(),requestedLeverage:Number(leverage),requestedMarginUSDT:Number(usdtAmount)});
     try{r501EvidenceFunnel({type:'ORDER_REJECTED',symbol:sym,attemptId:orderAttemptId,action:'ORDER_REJECTED',authority:'EXACT_V592_EXECUTION',side:String(side||'').toUpperCase(),reason:safeErrMsg(e),rejection,decisionImpact:false});}catch(_){}
     pushCritical('ORDER_ROUTE_ERROR', `${sym}: ${e.message}`);
+    // ══ V5.0.6 — KAYIP EMIR OLCULEBILIR OLSUN ═══════════════════════
+    // OLCULDU 12.08: panelde ORDER_ROUTE_ERROR gorunuyordu ama funnel'da
+    // 0 kayit vardi — yalnizca pushCritical'a gidiyordu. Bu yuzden "7 TACTICAL
+    // kabul edildi, 3'u emir asamasina ulasti" derken kalan 4'un NEREDE
+    // oldugunu sayamadim. Artik funnel'a yaziliyor: kayip emirler sayilabilir.
+    try{ r501EvidenceFunnel({type:'ORDER_ROUTE_ERROR',action:'ORDER_ROUTE_ERROR',
+      authority:'TESTNET_EXECUTION',symbol:normalizeSymbol(sym),decisionImpact:true,
+      orderBlocking:true,reason:String(e&&e.message||e).slice(0,300)}); }catch(_){}
     res.status(400).json({error:e.message});
   }
 });
@@ -23180,6 +23197,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
   if (autoRunning) {
     const age = Date.now() - Number(autoScanState.lastScanStart || 0);
     if (age > 75_000) {
+      // V5.0.6: watchdog olayi funnel'a da yazilir — tarama gecikmesi ile
+      // giris mumu drift'i arasindaki iliski ancak boyle olculebilir.
+      try{ r501EvidenceFunnel({type:'AUTO_SCAN_WATCHDOG',action:'SCAN_STUCK',
+        authority:'AUTO_PIPELINE',symbol:autoScanState.currentSymbol||null,decisionImpact:false,
+        ageMs:age,phase:autoScanState.phase,checked:autoScanState.checked||0,
+        reason:`tarama ${Math.round(age/1000)}sn takildi`}); }catch(_){}
       pushCritical('AUTO_SCAN_WATCHDOG', `Tarama ${Math.round(age/1000)}sn takıldı; kilit temizlendi`, {ageMs:age, phase:autoScanState.phase}, 'WARNING');
       autoRunning = false;
       autoScanState.running = false;

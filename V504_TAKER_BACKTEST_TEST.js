@@ -44,7 +44,7 @@ ok('HIGH=1.00 (V501)', has("r491EnvNumber('R493_HIGH_FACTOR', 1.00"));
 ok('SONDA yok', !has('/api/probe') && !has('v592ProbeCycle'));
 
 console.log('\n══ E — SURUM ' + '═'.repeat(58));
-ok('build V5_0_4', (has('V5_0_4_TAKER_FROM_BACKTEST') || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')));
+ok('build V5_0_4', ((has('V5_0_4_TAKER_FROM_BACKTEST') || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);
 process.exit(fail?1:0);
