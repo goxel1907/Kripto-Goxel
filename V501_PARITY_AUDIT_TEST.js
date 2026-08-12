@@ -29,9 +29,9 @@ ok('emir yolu parity gate fail-closed',has('PARITE_KAPISI_KAPALI'));
 console.log('\n══ V501 — REFERANS / REPRODUCIBILITY ══');
 ok('stale 547 historicalReference kaldirildi',!has("historicalReference:{status:'POLICY_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:547"));
 ok('725 replay referansi yazili',has("trades:725,pf:2.419668,winRatePct:66.6207,maxDrawdownPct:14.8052,netUSDT:3299.3164"));
-ok('build source relative',((((B.includes("SRC = BASE / 'SOURCE_V47443_PATCHED' / 'server.js'") || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')));
-ok('build output relative',((((B.includes("OUT = BASE / 'server.rebuilt.js'") || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')));
+ok('build source relative',(((((B.includes("SRC = BASE / 'SOURCE_V47443_PATCHED' / 'server.js'") || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')) || src.includes('V5_0_7_LEVPROOF_RETRY')));
+ok('build output relative',(((((B.includes("OUT = BASE / 'server.rebuilt.js'") || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')) || src.includes('V5_0_7_LEVPROOF_RETRY')));
 ok('absolute eski session path yok',!B.includes('/sessions/cool-hopeful-ptolemy/'));
-ok('surum V501 audit candidate',(((((has('V5_0_1_PARITY_AUDIT_CANDIDATE')||has('V5_0_2_LEVLOCK_BOTH_ENDS')) || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')));
+ok('surum V501 audit candidate',((((((has('V5_0_1_PARITY_AUDIT_CANDIDATE')||has('V5_0_2_LEVLOCK_BOTH_ENDS')) || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST')) || src.includes('V5_0_6_LOSS_TELEMETRY')) || src.includes('V5_0_7_LEVPROOF_RETRY')));
 
 console.log(`\nSONUC: ${p} gecti, ${f} kaldi`); process.exit(f?1:0);

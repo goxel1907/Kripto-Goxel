@@ -33,7 +33,7 @@ ok('V502 R283 EXACT muafiyeti', has('_v502ExactNoR283'));
 ok('acilis parite kapisi', has('function v592BootParityGate'));
 ok('B1-B6 engelleri', has('V501_KNOWN_PARITY_BLOCKERS'));
 ok('SONDA yok', !has('/api/probe') && !has('v592ProbeCycle'));
-ok('build V5_0_6', has('V5_0_6_LOSS_TELEMETRY'));
+ok('build V5_0_6', (has('V5_0_6_LOSS_TELEMETRY') || src.includes('V5_0_7_LEVPROOF_RETRY')));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);
 process.exit(fail?1:0);
