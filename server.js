@@ -113,6 +113,8 @@ function evaluateClosed1m({
   atr,
   now = Date.now(),
   takerRatioMin = 0.50,
+  // V5.0.5: backtestin R495 oyunda taker sarti YOKTU. Varsayilan KAPALI.
+  takerVoteActive = false,
   adverseAtrMax = 0.85,
   driftAtrMax = 0.85,
   driftAtrMin = -0.35,
@@ -183,7 +185,7 @@ function evaluateClosed1m({
   }
 
   const votes = bars.reduce(
-    (sum, x) => sum + (x.close > x.open && x.takerRatio >= takerRatioMin ? 1 : 0),
+    (sum, x) => sum + (x.close > x.open && (!takerVoteActive || x.takerRatio >= takerRatioMin) ? 1 : 0),
     0
   );
   const finalPrice = bars[2].close;
@@ -207,7 +209,8 @@ function evaluateClosed1m({
       quoteVolume: x.quoteVolume,
       takerBuyQuote: x.takerBuyQuote,
       takerRatio: x.takerRatio,
-      vote: x.close > x.open && x.takerRatio >= takerRatioMin,
+      vote: x.close > x.open && (!takerVoteActive || x.takerRatio >= takerRatioMin),
+      takerVoteActive,
     })),
   };
 
@@ -393,7 +396,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_3_TESTNET_UNIVERSE_PREFILTER_NOPROBE_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_5_VOTE_EXACT_BACKTEST_NOPROBE_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -5534,7 +5537,37 @@ const R495_FINAL_RISK_PCT = Math.max(1, Math.min(6, Number(process.env.R495_FINA
 const R495_MAX_ENTRY_DRIFT_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R495_MAX_ENTRY_DRIFT_ATR || .85)));
 const R495_MIN_ENTRY_DRIFT_ATR = Math.max(-1.50, Math.min(-.05, Number(process.env.R495_MIN_ENTRY_DRIFT_ATR || -.35)));
 const R495_MAX_ADVERSE_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R495_MAX_ADVERSE_ATR || .85)));
-const R495_TAKER_RATIO_MIN = Math.max(.40, Math.min(.70, Number(process.env.R495_TAKER_RATIO_MIN || .50)));
+// ══ V5.0.4 — R495 TAKER ESIGI BACKTESTTEN TURETILDI ═════════════════
+// OLCULDU: backtestin 1.461 kabul edilmis sinyalinde takerRatio
+//   min 0,2199 · p05 0,4294 · medyan 0,5405 · max 0,9898
+// Eski deger 0,50 backtestin DORTTE BIRINI keserdi (366/1461 = %25,1).
+// Eski clamp tabani 0,40 ise ENV'den daha dusuk deger yazmayi IMKANSIZ
+// kiliyordu — V5.0.1'de duzelttigimiz Math.max(0.70,...) tuzaginin aynisi.
+//
+// Diger uc R495 limiti zaten backtest verisinden turetilmisti (limit ~ gozlenen uc):
+//   MAX_ENTRY_DRIFT_ATR 0,85 vs backtest max 0,848  -> 0 red
+//   MIN_ENTRY_DRIFT_ATR -0,35 vs backtest min -0,149 -> 0 red
+//   MAX_ADVERSE_ATR     0,85 vs backtest max 0,847  -> 0 red
+// Dorduncusu turetilmemisti. 0,20 ile backtestin 1461/1461'i gecer.
+//
+// UYARI: MATCHED_SIGNALS'taki takerRatio SINYAL duzeyindedir; canli oy MUM
+// basina bakar. Bu yuzden %25,1 gosterge niteligindedir, birebir degil.
+// Kesin olan: 0,50 backtestten turetilmedi, 0,20 turetildi.
+const R495_TAKER_RATIO_MIN = Math.max(.20, Math.min(.70, Number(process.env.R495_TAKER_RATIO_MIN || .20)));
+const V504_BACKTEST_TAKER_MIN_OBSERVED = 0.2199;
+// ══ V5.0.5 — R495 OYUNDA TAKER SARTI YOK ════════════════════════════
+// UC TEST, BACKTESTIN 1.461 KABUL EDILMIS SINYALI UZERINDE:
+//  1) Canli karar mantigi (oy sayisi -> aksiyon, drift/adverse limitleri)
+//     backtest sonucunu 1461/1461 UYUSMAYAN 0 ile yeniden uretiyor. DOGRU.
+//  2) takerRatio medyani votes=3'te 0,5459 · votes=2'de 0,5402 (fark +0,0057).
+//     Oy takerRatio ile ILISKISIZ.
+//  3) BELIRLEYICI: votes=3 olan 140 sinyalin 36'sinda (%25,7) takerRatio<0,50,
+//     en dususu 0,2680. Eger oy her uc mumda takerRatio>=0,50 isteseydi
+//     sinyal duzeyinde 0,2680'lik bir votes=3 IMKANSIZ olurdu.
+// SONUC: backtestin oyu yalnizca close>open idi. Taker sarti canliya
+// sonradan eklenmis, backtestte karsiligi olmayan bir kapidir.
+// Varsayilan KAPALI. Acilirsa acilis kapisi emir yolunu kapatir.
+const R495_TAKER_VOTE_ACTIVE = String(process.env.R495_TAKER_VOTE_ACTIVE ?? '0') === '1';
 const R495_TACTICAL_FLOOR_ATR = Math.max(-.50, Math.min(0, Number(process.env.R495_TACTICAL_FLOOR_ATR || -.15)));
 const R495_WINDOW_MAX_MS = Math.max(180000, Math.min(240000, Number(process.env.R495_WINDOW_MAX_MS || 190000)));
 const R495_ACCEPTED_COOLDOWN_MIN = Math.max(5, Math.min(60, Number(process.env.R495_ACCEPTED_COOLDOWN_MIN || 20)));
@@ -6750,6 +6783,7 @@ async function r495LiveAcceptanceArbiter(symbol,story={},baseAuthority={},ctx={}
           atr:arm.candidate.atr,
           now,
           takerRatioMin:R495_TAKER_RATIO_MIN,
+          takerVoteActive:R495_TAKER_VOTE_ACTIVE,
           adverseAtrMax:R495_MAX_ADVERSE_ATR,
           driftAtrMax:R495_MAX_ENTRY_DRIFT_ATR,
           driftAtrMin:R495_MIN_ENTRY_DRIFT_ATR,
@@ -27451,6 +27485,15 @@ function v592BootParityGate(){
   if(String(R497_ABOVE_CAP_MODE)!=='HOLD_FIXED') hata.push(`ABOVE_CAP_HOLD_FIXED_DEGIL:${R497_ABOVE_CAP_MODE}`);
   if(Number(R486_MAX_POSITIONS)!==2) hata.push(`MAX_POS_2_DEGIL:${R486_MAX_POSITIONS}`);
   if(!eq(R495_FINAL_RISK_PCT,4)) hata.push(`RISK_4_DEGIL:${R495_FINAL_RISK_PCT}`);
+  // V504: R495'in DORT limiti de backtest verisinden turetilmis olmali.
+  // Elle konmus "makul gorunen" sayi kabul edilmez.
+  // V505: backtestin oyunda taker sarti yoktu; acikken parite bozulur.
+  if(R495_TAKER_VOTE_ACTIVE) hata.push('R495_TAKER_OYU_ACIK_BACKTESTTE_YOK');
+  if(R495_TAKER_VOTE_ACTIVE && Number(R495_TAKER_RATIO_MIN) > V504_BACKTEST_TAKER_MIN_OBSERVED)
+    hata.push(`TAKER_ESIGI_BACKTEST_USTU:${R495_TAKER_RATIO_MIN}>${V504_BACKTEST_TAKER_MIN_OBSERVED}`);
+  if(Number(R495_MAX_ENTRY_DRIFT_ATR) < 0.848) hata.push(`DRIFT_MAX_BACKTEST_ALTI:${R495_MAX_ENTRY_DRIFT_ATR}`);
+  if(Number(R495_MIN_ENTRY_DRIFT_ATR) > -0.149) hata.push(`DRIFT_MIN_BACKTEST_USTU:${R495_MIN_ENTRY_DRIFT_ATR}`);
+  if(Number(R495_MAX_ADVERSE_ATR) < 0.847) hata.push(`ADVERSE_MAX_BACKTEST_ALTI:${R495_MAX_ADVERSE_ATR}`);
   if(R490_DD_THROTTLE_ACTIVE!==true) hata.push('DD_THROTTLE_KAPALI');
   if(!eq(R490_DD_START,0.08)||!eq(R490_DD_FULL,0.30)||!eq(R490_DD_FLOOR,0.45)) hata.push(`DD_SOZLESME_UYUSMAZ:${R490_DD_START}/${R490_DD_FULL}/${R490_DD_FLOOR}`);
   if(!eq(R493_HIGH_FACTOR,1.00)||!eq(R493_MID_FACTOR,0.90)||!eq(R493_LOW_FACTOR,0.60)) hata.push(`QUALITY_FACTOR_UYUSMAZ:${R493_HIGH_FACTOR}/${R493_MID_FACTOR}/${R493_LOW_FACTOR}`);

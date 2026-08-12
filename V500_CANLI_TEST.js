@@ -101,7 +101,7 @@ ok('ayri dedup Map\'leri DURUYOR (AU1)', has('const v592ClosedOnce') && has('con
 ok('kapanis ispati varsayilan DURUYOR (AN1)', has('V592_CLOSE_PROOF_EXEMPT'));
 
 console.log('\n══ H — SURUM KIMLIGI ' + '═'.repeat(51));
-ok('surum adi V501 PARITY AUDIT ADAYI', ((has('V5_0_1_PARITY_AUDIT_CANDIDATE')||has('V5_0_2_LEVLOCK_BOTH_ENDS')) || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER'))); // V501: V500 temel C1-C5 regresyonu yeni build adina uyarlandi
+ok('surum adi V501 PARITY AUDIT ADAYI', ((((has('V5_0_1_PARITY_AUDIT_CANDIDATE')||has('V5_0_2_LEVLOCK_BOTH_ENDS')) || src.includes('V5_0_3_TESTNET_UNIVERSE_PREFILTER')) || src.includes('V5_0_4_TAKER_FROM_BACKTEST')) || src.includes('V5_0_5_VOTE_EXACT_BACKTEST'))); // V501: V500 temel C1-C5 regresyonu yeni build adina uyarlandi
 ok('kaynak politika SHA korundu', has("V592_POLICY_SOURCE_SHA256 = '5bd66193f328ca74e86fb608ea2e5ebe45b52816abab1817177925ea0e51fe1d'"));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);

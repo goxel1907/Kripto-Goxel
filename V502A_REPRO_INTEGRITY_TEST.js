@@ -7,7 +7,7 @@ const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'
 console.log('══ V502A — REPRODUCIBILITY / INTEGRITY ══');
 const a=sha(path.join(root,'server.js')), b=sha(path.join(root,'server.rebuilt.js'));
 ok('server.js == server.rebuilt.js SHA',a===b,`${a} != ${b}`);
-ok('V502 server expected SHA',a==='6cd5794f5750aeb7704bad07ce2d66c441bd8af0525b31af91db0d8cc19af4dc',a);
+ok('V502 server expected SHA',a==='fecca1cc884052e5afb7d0f1becc6f2e3a0d1b72ed55679c81dd44b0354cad96',a);
 const build=fs.readFileSync(path.join(root,'00_BUILD_TRANSFORMASYONU.py'),'utf8');
 for(const t of ['T13_V502_BUILD_ADI','T14_V502_LEV_LOCK_BAS','T15_V502_R283_EXACT_BYPASS','T16_V502_GATE_MARKER','T17_V502_BLOCKER6']) ok('build transform '+t,build.includes(t));
 const blockers=JSON.parse(fs.readFileSync(path.join(root,'RELEASE_BLOCKERS_V501.json'),'utf8'));

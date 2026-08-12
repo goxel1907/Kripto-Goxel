@@ -9,9 +9,9 @@ with tempfile.TemporaryDirectory() as td:
     td = pathlib.Path(td)
     (td/'SOURCE_V47443_PATCHED').mkdir()
     shutil.copy(kaynak, td/'SOURCE_V47443_PATCHED'/'server.js')
-    for betik in ('00_BUILD_TRANSFORMASYONU.py','00_V503_YAMA.py'):
+    for betik in ('00_BUILD_TRANSFORMASYONU.py','00_V503_YAMA.py','00_V504_YAMA.py','00_V505_YAMA.py'):
         shutil.copy(kok/betik, td/betik)
-    for betik in ('00_BUILD_TRANSFORMASYONU.py','00_V503_YAMA.py'):
+    for betik in ('00_BUILD_TRANSFORMASYONU.py','00_V503_YAMA.py','00_V504_YAMA.py','00_V505_YAMA.py'):
         r = subprocess.run([sys.executable, betik], cwd=td, capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f'ZINCIR DURDU [{betik}]:\n{r.stdout}\n{r.stderr}')
