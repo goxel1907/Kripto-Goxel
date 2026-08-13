@@ -396,7 +396,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_9_SL_CONTRACT_LOCKED_NOPROBE_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_1_0_SCAN_DECOUPLED_SL_CONTRACT_LOCKED_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1074,13 +1074,21 @@ function getBinanceBackoffMs() {
 }
 // V4.7.4.11-L: imzali testnet yolu icin ayri fren.
 function isExecBackoffActive() {
-  const aktif = Date.now() < Number(binanceGov.execBackoffUntil || 0);
-  // V5.0.8: yasak sirasinda engellenen cagri sayilir. Bu sayac dusuyorsa
-  // duzeltme calisiyordur; yuksek kaliyorsa cagri yollari hala zorluyordur.
-  if(aktif){
-    try{ v592ParityStats.execBackoffBlocked=(v592ParityStats.execBackoffBlocked||0)+1; }catch(_){}
-  }
-  return aktif;
+  // V5.1.0 DUZELTME: V5.0.8'de sayac BU FONKSIYONUN ICINDEYDI. Fonksiyonu
+  // status endpoint'i de cagiriyor (execBackoffActive: isExecBackoffActive()),
+  // yani JSON'a her bakista sayi artiyordu. Engellenen cagriyi degil GOZLEMCIYI
+  // olcuyordu -> devir belgesindeki AS3 sinifi. Sayac artik gercek engelleme
+  // noktalarina tasindi ve HANGI kapinin kestigi ayri ayri yaziliyor.
+  return Date.now() < Number(binanceGov.execBackoffUntil || 0);
+}
+// V5.1.0: gercek engelleme noktasi. AS2 (sayacsiz erken return/throw) icin:
+// her erken cikisin kendi sayaci var ve nerede kesildigi kayitli.
+function noteExecBackoffBlock(nerede) {
+  try{
+    v592ParityStats.execBackoffBlocked=(v592ParityStats.execBackoffBlocked||0)+1;
+    v592ParityStats.execBackoffBlockedBy=v592ParityStats.execBackoffBlockedBy||{};
+    v592ParityStats.execBackoffBlockedBy[nerede]=(v592ParityStats.execBackoffBlockedBy[nerede]||0)+1;
+  }catch(_){}
 }
 function getExecBackoffMs() {
   return Math.max(0, Number(binanceGov.execBackoffUntil || 0) - Date.now());
@@ -1888,6 +1896,7 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   if (!emergencyBypass && isExecBackoffActive()) {
     const _kalanMs = getExecBackoffMs();
     try{ v592ParityStats.execBackoffBlockedAtBreq=(v592ParityStats.execBackoffBlockedAtBreq||0)+1; }catch(_){}
+    noteExecBackoffBlock('bReq');
     try{ if(typeof r501EvidenceFunnel==='function') r501EvidenceFunnel({
       type:'EXEC_BACKOFF_BLOCK',action:'BACKOFF_BLOCK',authority:'TESTNET_EXECUTION',
       symbol:null,decisionImpact:true,orderBlocking:true,path:String(path||'').slice(0,80),
@@ -2054,6 +2063,7 @@ async function getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh=false,allow
       signedAccountCache.staleServed++;
       return {account:signedAccountCache.data,source:signedAccountCache.lastSource,stale:true,ageMs:now-signedAccountCache.ts,cacheHit:true,warning:'BINANCE_BACKOFF_STALE_ACCOUNT'};
     }
+    noteExecBackoffBlock('accountSnapshot');
     throw makeBinanceBackoffError('Signed account snapshot backoff',Math.ceil(getExecBackoffMs()/1000),418);
   }
   // V4.7.4.1-F02: forceFresh + allowStale=false (POSITION_TRUTH) paylasilan inflight'a
@@ -2255,6 +2265,12 @@ async function getPositionRiskCached(apiKey, apiSecret, params={}) {
   if (isExecBackoffActive()) {
     // V4.7.4.2-C1: forceFresh (emir yolu) backoff sirasinda ESKI pozisyonu ASLA kullanmaz.
     if (!forceFresh && posRiskCache.data && posRiskCache.lastApiKey === apiFp) return filterPositionRiskRows(posRiskCache.data, queryParams);
+    // V5.1.0: bu firlatis panelde gorunmuyordu. lastErrorType yazilmadigi icin
+    // panel "hata serisi 0" gosterirken 10 saniyede bir hata veriyorduk (AS2).
+    noteExecBackoffBlock('positionRisk');
+    posRiskCache.lastError='EXEC_BACKOFF';
+    posRiskCache.lastErrorAt=Date.now();
+    posRiskCache.lastErrorType='EXEC_BACKOFF';
     throw makeBinanceBackoffError('Binance geçici istek freni', Math.ceil(getExecBackoffMs()/1000), 418);
   }
 
@@ -9985,6 +10001,13 @@ function r501EnsureCurrentSessionEvidence(){
 }
 r501EnsureCurrentSessionEvidence();
 // V4.7.4.2-C5: kilitli sembolleri boot'ta borsa ile uzlastir (bloklamadan, gecikmeli).
+// V5.1.0: OLCULDU — lockedSymbols ["BEATUSDT"] varken symbolLocks 0 idi.
+// Yani kilit bu oturumda ALINMADI, diskten geri yuklendi ve boot reconcile
+// onu cozemedi (buyuk ihtimalle imzali cagri 418 yedigi icin). Boot'ta tek
+// deneme vardi; basarisiz olursa sembol SONSUZA DEK kapali kaliyordu.
+// Kilit silinmiyor (duplicate emir riski) — uzlastirma 30 dakikada bir
+// TEKRARLANIYOR; cagrilar duzelince kilit kendiliginden cozulur.
+setInterval(()=>{v592BootReconcileLocks().catch(e=>console.log('[V510] periyodik reconcile:',String(e?.message||e).slice(0,120)))},30*60*1000);
 setTimeout(()=>{v592BootReconcileLocks().catch(e=>console.log('[V4742] boot reconcile:',String(e?.message||e).slice(0,120)));},8000).unref?.();
 
 function r501RawTradeDir(id){return path.join(R501_RAW_ARCHIVE_DIR,r501SafeId(id));}
@@ -22896,6 +22919,10 @@ app.get('/api/health', (_req, res) => {
         enabled: !!cfg.enabled,
         running: !!autoRunning,
         phase: scan.phase || null,
+        // V5.1.0: panel "neden emir yok" sorusunu artik kendi basina yanitlayabilsin.
+        // Eskiden tarama sessizce dusuyordu ve panelde hicbir iz yoktu.
+        posTruthUnavailable: !!scan.posTruthUnavailable,
+        posTruthError: scan.posTruthError || null,
         currentSymbol: scan.currentSymbol || null,
         checked: scan.checked ?? 0,
         opened: scan.opened ?? 0,
@@ -23430,10 +23457,42 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
 
     // 1. Mevcut pozisyonları kontrol et
-    const posData = await getPositionRiskCached(apiKey,apiSecret);
+    // ══ V5.1.0 — TARAMA IMZALI CAGRIYA BAGIMLI DEGIL ═══════════════════
+    // OLCULDU 13.08 (V509 oturumu): waitV45Selector 0, waitR495 0,
+    // freshCacheHits 0, marketTimeSyncedAt 0 -> selector bu oturumda BIR KEZ
+    // BILE calismadi. Panel "positionRisk son basarili —" diyordu: imzali
+    // hesap cagrisi boot'tan beri hic tutmamis (paylasimli Railway IP'sinde
+    // testnet 418'i). getPositionRiskCached cache bossa FIRLATIYOR (R95 dali);
+    // firlatinca runAutoScan POZISYON_KONTROL fazinda oluyor ve hicbir sembol
+    // degerlendirilmiyordu.
+    //
+    // Oysa aday uretimi + funnel kaniti YALNIZ PUBLIC LIVE veriyle olur;
+    // imzali cagri gerektirmez. Uc satir yukaridaki kendi yorumumuz da bunu
+    // vaat ediyordu: "Testnet 418'i taramayi durdurmaz; aday/funnel kaniti
+    // yazilmaya devam eder, yalnizca emir gonderimi engellenir."
+    // Kod o vaadi tutmuyordu. Simdi tutuyor:
+    //   - pozisyon gercegi alinamazsa TARAMA DEVAM eder (kanit birikir)
+    //   - EMIR YOLU o turda SERT KAPALI (V510-B)
+    // Guvenlik: emir yolu zaten getPositionRiskTruth (forceFresh) kullanir ve
+    // o da firlatir; V510-B ikinci ve acik bir kapidir. Ikisi de fail-closed.
+    let posData=null, posTruthUnavailable=false, posTruthError=null;
+    try {
+      posData = await getPositionRiskCached(apiKey,apiSecret);
+    } catch(e) {
+      posTruthUnavailable = true;
+      posTruthError = String(e?.message||e).slice(0,120);
+      try{ v592ParityStats.scanWithoutPosTruth=(v592ParityStats.scanWithoutPosTruth||0)+1; }catch(_){}
+      try{ if(typeof r501EvidenceFunnel==='function') r501EvidenceFunnel({
+        type:'POS_TRUTH_UNAVAILABLE',action:'SCAN_CONTINUES_ORDERS_BLOCKED',
+        authority:'TESTNET_EXECUTION',symbol:null,decisionImpact:false,orderBlocking:true,
+        reason:posTruthError}); }catch(_){}
+      logAuto(`⚠️ Pozisyon gerçeği alınamadı — tarama sürüyor, emir yolu kapalı: ${posTruthError}`);
+    }
     const openPos = Array.isArray(posData)
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
+    autoScanState.posTruthUnavailable = posTruthUnavailable;
+    autoScanState.posTruthError = posTruthError;
     autoScanState.livePositions = openPos.length;
     autoScanState.positionCount = openPos.length;
     // R30: aynı yönde korele coinlere yığılmayı azalt. Max pozisyon 3 olsa bile
@@ -26398,6 +26457,24 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             }
           }
         } catch(_e) {}
+        // ══ V5.1.0 — POZISYON GERCEGI YOKSA EMIR GONDERILMEZ ════════════
+        // V510-A taramanin devam etmesini saglar; buraya gelen aday kaniti
+        // yazilir ama emir CIKMAZ. Sebep: imzali cagri tutmadiysa openPos bu
+        // turda 0 gorunur; max-pozisyon mantigi guvenilmez olur.
+        // baselineWouldTrade:true -> bu kayit "backtest islem acardi" demektir;
+        // 72 saatlik olcumde kac sinyalin sirf altyapi yuzunden kacirildigi
+        // buradan sayilir.
+        if (posTruthUnavailable) {
+          try{ v592ParityStats.orderBlockedNoPosTruth=(v592ParityStats.orderBlockedNoPosTruth||0)+1; }catch(_){}
+          try{ if(typeof r501EvidenceFunnel==='function') r501EvidenceFunnel({
+            type:'ORDER_BLOCKED_NO_POS_TRUTH',action:'WOULD_ORDER',
+            authority:'EXACT_V592_EXECUTION',symbol:normalizeSymbol(coin.fullSymbol||coin.symbol),
+            decisionImpact:true,orderBlocking:true,baselineWouldTrade:true,
+            reason:`pozisyon gercegi yok: ${posTruthError||'bilinmiyor'}`}); }catch(_){}
+          logAuto(`⛔ ${coin.symbol} sinyal VAR ama pozisyon gerçeği yok — emir gönderilmedi (kanıt yazıldı)`);
+          markAutoSkip(coin.symbol, 'Pozisyon gerçeği yok — emir kapalı', {rec:recommendation, score});
+          continue;
+        }
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} (Binance yedek · canlı kesiş ~-%2) kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
           method:'POST',

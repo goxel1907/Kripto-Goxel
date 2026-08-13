@@ -69,7 +69,7 @@ for(const [a,t] of [['V508 backoff suresi','V508_BACKOFF_MAX_SEC'],['V507 kaldir
   ['V504 taker sabiti','V504_BACKTEST_TAKER_MIN_OBSERVED = 0.2199'],['V503 on-filtre','V503 testnet evren on-filtresi'],
   ['V502 kaldirac kilidi','V502-A: KALDIRAC KILIDI'],['parite kapisi','function v592BootParityGate']]) ok(a, has(t));
 ok('SONDA yok', !has('/api/probe'));
-ok('build V5_0_9', has('V5_0_9_SL_CONTRACT_LOCKED'));
+ok('build SL_CONTRACT_LOCKED korunuyor', has('SL_CONTRACT_LOCKED'));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);
 process.exit(fail?1:0);

@@ -80,7 +80,7 @@ ok('cagri bayragi geciriyor', has('takerVoteActive:R495_TAKER_VOTE_ACTIVE'));
 ok('kapi acikken emri durdurur', has('R495_TAKER_OYU_ACIK_BACKTESTTE_YOK'));
 ok('uc testin kaniti kaynakta', has('1461/1461') && has('%25,7') && has('0,2680'));
 ok('onceki surumler duruyor', has('V504_BACKTEST_TAKER_MIN_OBSERVED') && has('V503 testnet evren on-filtresi') && has('V502-A: KALDIRAC KILIDI'));
-ok('build V5_0_5', ((((has('V5_0_5_VOTE_EXACT_BACKTEST') || src.includes('V5_0_6_LOSS_TELEMETRY')) || src.includes('V5_0_7_LEVPROOF_RETRY')) || src.includes('V5_0_8_BACKOFF_HONORED')) || src.includes('V5_0_9_SL_CONTRACT_LOCKED')));
+ok('build V5_0_5', ((((has('V5_0_5_VOTE_EXACT_BACKTEST') || src.includes('V5_0_6_LOSS_TELEMETRY')) || src.includes('V5_0_7_LEVPROOF_RETRY')) || src.includes('V5_0_8_BACKOFF_HONORED')) || src.includes('V5_0_9_SL_CONTRACT_LOCKED') || src.includes('V5_1_0_SCAN_DECOUPLED')));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);
 process.exit(fail?1:0);

@@ -61,7 +61,7 @@ for(const [ad,t] of [['V507 kaldirac retry','V507_LEVERAGE_PROOF_MAX_ATTEMPTS'],
   ['V502 kaldirac cift kilidi','V502-A: KALDIRAC KILIDI'],['parite kapisi','function v592BootParityGate'],
   ['B1-B6 engelleri','V501_KNOWN_PARITY_BLOCKERS']]) ok(ad, has(t));
 ok('SONDA yok', !has('/api/probe'));
-ok('build V5_0_8', (has('V5_0_8_BACKOFF_HONORED') || src.includes('V5_0_9_SL_CONTRACT_LOCKED')));
+ok('build V5_0_8', (has('V5_0_8_BACKOFF_HONORED') || src.includes('V5_0_9_SL_CONTRACT_LOCKED') || src.includes('V5_1_0_SCAN_DECOUPLED')));
 
 console.log(`\n${'═'.repeat(72)}\nSONUC: ${pass} gecti, ${fail} kaldi`);
 process.exit(fail?1:0);
