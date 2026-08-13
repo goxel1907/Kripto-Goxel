@@ -396,7 +396,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_1_0_SCAN_DECOUPLED_SL_CONTRACT_LOCKED_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_1_1_NO_HANG_SCAN_DECOUPLED_SL_CONTRACT_LOCKED_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1024,6 +1024,13 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
 // Formul r495Exact.candidateMetaFromCompact5m icinde ZATEN vardi; kimse
 // backtest verisine karsi sinamamisti. "Kayip uretici" kayip degilmis.
 // Bu sabitler acilis kapisinda denetlenir ki bir daha sessizce degismesin.
+// ══ V5.1.1 — ZAMAN ASIMI SABITLERI ═════════════════════════════════
+// Node fetch'in VARSAYILAN TIMEOUT'U YOKTUR. Timeout verilmeyen her fetch
+// ust kaynak takilirsa SONSUZA DEK bekler. Tarama dongusunde bu, botun
+// tamamen olmesi demek (olculdu: 8+ dakika, 0 tarama, log yok).
+const V511_SCAN_WATCHDOG_MS   = Math.max(120000, Math.min(1800000, Number(process.env.V511_SCAN_WATCHDOG_MS||360000)));
+const V511_MOOD_FETCH_MS      = Math.max(1500, Math.min(15000, Number(process.env.V511_MOOD_FETCH_MS||4000)));
+const V511_ORDER_FETCH_MS     = Math.max(10000, Math.min(120000, Number(process.env.V511_ORDER_FETCH_MS||45000)));
 const V509_SL_ATR_CARPANI   = 1.45;
 const V509_SL_ATR_PERIYOT   = 14;
 const V509_SL_LOW_PENCERE   = 7;
@@ -9338,7 +9345,9 @@ async function getCoinglass(symbol) {
 app.get('/api/market-mood', async (req, res) => {
   try {
     const fg = await cached('fear_greed', 60*60*1000, async () => {
-      const r = await fetch('https://api.alternative.me/fng/?limit=3');
+      // V5.1.1: zincirin kokU. Timeout'suzdu; 1 saatlik cache bitince ve
+      // ust kaynak takilinca handler hic donmuyordu.
+      const r = await fetch('https://api.alternative.me/fng/?limit=3',{signal:AbortSignal.timeout(V511_MOOD_FETCH_MS)});
       return r.json();
     });
     const val = parseInt(fg.data[0].value);
@@ -22749,6 +22758,10 @@ async function _r308RunAiCandidateReviewAfterScan_DISABLED() {
         r308SetLastAiDecision({status:'AI_EMİR_YOLDA', symbol:sym, ai, quality:q, candidate:r, order:{state:'YOLDA', margin, leverage:lev}});
         logAuto(`🚀 ${sym} AI PRO TRADER CANLI EMİR: ${ai.side} · güven:${ai.confidence}% · RR:${q.rr.toFixed(2)} · SL:${q.slPct.toFixed(2)}% · marj:${margin}USDT lev:${lev}x`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
+          // V5.1.1: emir cagrisi da timeout'suzdu; takilirsa tarama dongusu
+          // yine sonsuza dek kilitlenirdi. Emir yolu uzun surebilir ama
+          // SONSUZ suremez.
+          signal: AbortSignal.timeout(V511_ORDER_FETCH_MS),
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({
             apiKey: cfg.apiKey, apiSecret: cfg.apiSecret,
@@ -22922,6 +22935,10 @@ app.get('/api/health', (_req, res) => {
         // V5.1.0: panel "neden emir yok" sorusunu artik kendi basina yanitlayabilsin.
         // Eskiden tarama sessizce dusuyordu ve panelde hicbir iz yoktu.
         posTruthUnavailable: !!scan.posTruthUnavailable,
+        // V5.1.1: "calisiyor" ile "takilmis" panelde ayirt edilebilsin.
+        scanRunningMs: (autoRunning && Number(scan.lastScanStart||0)>0) ? (Date.now()-Number(scan.lastScanStart)) : 0,
+        scanWatchdogMs: V511_SCAN_WATCHDOG_MS,
+        scanWatchdogResets: Number(v592ParityStats?.scanWatchdogResets||0),
         posTruthError: scan.posTruthError || null,
         currentSymbol: scan.currentSymbol || null,
         checked: scan.checked ?? 0,
@@ -23676,8 +23693,13 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     let fgSignal = 'NEUTRAL';
     try {
       const [calRes, fgRes] = await Promise.allSettled([
-        fetch(`http://localhost:${PORT}/api/calendar`).then(r=>r.json()),
-        fetch(`http://localhost:${PORT}/api/market-mood`).then(r=>r.json()),
+        // V5.1.1: TIMEOUT EKLENDI. Bu iki satir botun tamamini durduruyordu.
+        // Ikisi de allSettled icinde ve ikisi de BILGI amacli:
+        //   calendar    -> yalniz log, taramayi durdurmuyor (R308T)
+        //   market-mood -> fgSignal, basarisizsa 'NEUTRAL'e duser
+        // Yani zaman asimi kararlari degistirmez, sadece donmayi onler.
+        fetch(`http://localhost:${PORT}/api/calendar`,{signal:AbortSignal.timeout(V511_MOOD_FETCH_MS)}).then(r=>r.json()),
+        fetch(`http://localhost:${PORT}/api/market-mood`,{signal:AbortSignal.timeout(V511_MOOD_FETCH_MS)}).then(r=>r.json()),
       ]);
       if (calRes.status==='fulfilled' && calRes.value?.dangerZone) {
         // R308T: Haber saati TARAMAYI DURDURMUYOR — sadece bilgi logu. AI zaten her coini kendi okuyor.
@@ -26477,6 +26499,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         }
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} (Binance yedek · canlı kesiş ~-%2) kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
+          // V5.1.1: emir cagrisi da timeout'suzdu; takilirsa tarama dongusu
+          // yine sonsuza dek kilitlenirdi. Emir yolu uzun surebilir ama
+          // SONSUZ suremez.
+          signal: AbortSignal.timeout(V511_ORDER_FETCH_MS),
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({
@@ -26799,7 +26825,27 @@ function startAutoTrader() {
     if(autoTimer)clearTimeout(autoTimer);
     autoTimer=setTimeout(async()=>{
       // Hedefli wake tam tarama saatine taşmışsa 120sn daha erteleme; 10sn sonra yeniden dene.
-      if(autoRunning){ scheduleNextScan(10_000); return; }
+      if(autoRunning){
+        // V5.1.1 BEKCI: autoRunning sonsuza dek true kalabiliyordu ve
+        // zamanlayici her 10 saniyede sessizce erteliyordu. Olculdu:
+        // tek tarama 8+ dakika, 0 sembol, hic log. Artik takilirsa
+        // zorla sifirlanir ve KRITIK olarak kaydedilir.
+        const _sure = Date.now() - Number(autoScanState?.lastScanStart||0);
+        if (Number(autoScanState?.lastScanStart||0) > 0 && _sure > V511_SCAN_WATCHDOG_MS) {
+          try{ v592ParityStats.scanWatchdogResets=(v592ParityStats.scanWatchdogResets||0)+1; }catch(_){}
+          try{ pushCritical('SCAN_WATCHDOG_RESET',
+            `tarama ${Math.round(_sure/1000)}sn takildi (faz ${autoScanState?.phase||'?'}) — zorla sifirlandi`,
+            {phase:autoScanState?.phase||null, ms:_sure}, 'CRITICAL'); }catch(_){}
+          try{ if(typeof r501EvidenceFunnel==='function') r501EvidenceFunnel({
+            type:'SCAN_WATCHDOG_RESET',action:'FORCE_RESET',authority:'AUTO_SCAN',symbol:null,
+            decisionImpact:false,phase:autoScanState?.phase||null,stuckMs:_sure,
+            reason:'tarama dongusu takildi, bekci sifirladi'}); }catch(_){}
+          logAuto(`🚨 Tarama ${Math.round(_sure/60000)} dakikadır takılı (faz ${autoScanState?.phase||'?'}) — zorla sıfırlandı`);
+          autoRunning=false;
+          autoScanState.running=false;
+          autoScanState.lastScanEnd=Date.now();
+        } else { scheduleNextScan(10_000); return; }
+      }
       let result=null;
       try{result=await runAutoScan();}catch(_){}
       scheduleNextScan(result?.skipped==='busy'?10_000:null);
@@ -27810,3 +27856,24 @@ app.get('/api/canli/parity-gate',(_req,res)=>{res.set('Cache-Control','no-store'
       entryCandleParity:V592_ENTRY_CANDLE_PARITY,exitCandleParity:V592_EXIT_CANDLE_PARITY,
       exitTypeWhitelist:V592_EXIT_TYPE_WHITELIST,leverageLock:V592_LEVERAGE_LOCK,minHoldMs:V592_MIN_HOLD_MS},
     serverTime:Date.now()});});
+
+{
+  "name": "lazarus-canli-v5-0-0-live-c1-c5-noprobe",
+  "version": "5.0.0-canli",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js",
+    "test": "node V500_CANLI_TEST.js",
+    "test:tumu": "node 99_TEST_KOSUCU.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.17.1"
+  }
+}
