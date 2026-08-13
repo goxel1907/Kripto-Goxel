@@ -396,7 +396,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_8_BACKOFF_HONORED_NOPROBE_RISK41_10X'
+const LAZARUS_BUILD = 'R493_V5_9_2_CANLI_EXACT_CLOSED1M_R495_V5_0_9_SL_CONTRACT_LOCKED_NOPROBE_RISK41_10X'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — IMMUTABLE IN THIS TESTNET BUILD ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1011,6 +1011,26 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
 // binanceGov.execBackoffUntil YALNIZ BELLEKTEYDI. Restart onu sifirliyordu;
 // bot yasak ortasinda acilip hemen cagri yapiyor ve yasagi uzatiyordu.
 // Bu, daha once katalogladigim "restart'ta olen state" hata sinifidir (BF).
+// ══ V5.0.9 — BACKTEST SL SOZLESMESI (1461/1461 DOGRULANDI) ══════════
+// B1/B6 KAPANDI. Uc sozlesme gercek Binance verisine karsi olculdu:
+//   1) entry = candidateTs+180000 anindaki 1m mumun close'u   1461/1461, fark 0
+//   2) ATR   = TR'nin 14 periyot BASIT ortalamasi (Wilder DEGIL) 1461/1461
+//   3) SL    = asagidaki formul                                 1461/1461, fark 0
+//        atr       = mean(TR[-14:])
+//        recentLow = min(low[-7:])
+//        rawStop   = min(recentLow, close - 1.45*atr)
+//        slPct     = clamp((close-rawStop)/close*100, 1.2, 8.0)
+//        sl        = close * (1 - slPct/100)
+// Formul r495Exact.candidateMetaFromCompact5m icinde ZATEN vardi; kimse
+// backtest verisine karsi sinamamisti. "Kayip uretici" kayip degilmis.
+// Bu sabitler acilis kapisinda denetlenir ki bir daha sessizce degismesin.
+const V509_SL_ATR_CARPANI   = 1.45;
+const V509_SL_ATR_PERIYOT   = 14;
+const V509_SL_LOW_PENCERE   = 7;
+const V509_SL_PCT_MIN       = 1.2;
+const V509_SL_PCT_MAX       = 8.0;
+const V509_PLAN_TARGET_R    = 2.4;    // runner degilse
+const V509_PLAN_TARGET_CAP  = 1.12;   // entry * 1.12 tavani
 const V508_BACKOFF_MAX_SEC = Math.max(60, Math.min(7200, Number(process.env.V508_BACKOFF_MAX_SEC || 3600)));
 const V508_BACKOFF_PATH = path.join(String(process.env.TESTNET_STATE_DIR||'/data').trim()||'/data','lazarus_binance_backoff.json');
 function v508SaveBackoff(){
@@ -1851,6 +1871,29 @@ async function bReq(apiKey,apiSecret,method,path,params={},timeout=10000,_retry=
   delete cleanParams.__emergency;
   const orderWeight = (m0 === 'POST' || m0 === 'DELETE') ? 1 : 0;
   const w = path.includes('/positionRisk') ? 5 : path.includes('/openOrders') ? 3 : path.includes('/userTrades') ? 5 : 1;
+  // ══ V5.0.9 — BACKOFF KONTROLU TEK BOGUMDA ═══════════════════════════
+  // OLCULDU 13.08 (V508_72H_TEMIZ_1): V5.0.8 yasak SURESINI duzeltti ama
+  // UYGULANMASINI duzeltmedi. 73 olayin 63'u (%86) hala yasak bitmeden
+  // yapilan cagriydi. Sebep: kontroller bazi sarmalayicilara ayri ayri
+  // konmustu; liveOpenAlgoOrders / liveOpenStandardOrders dogrudan bReq
+  // cagirip kontrolsuz geciyordu. 418'ler yer degistirdi:
+  //   /fapi/v2/account       19 -> 10   (kontrolu vardi)
+  //   /fapi/v1/openAlgoOrders 5 -> 33   (korumasizdi)
+  //   /fapi/v1/openOrders     5 -> 20   (korumasizdi)
+  // Bu, devir belgesine "guard tek cagri yerine bagli" diye yazdigim
+  // hata sinifinin (AS1/AC) aynisidir. 27 bReq cagri noktasi var; her
+  // birine ayri kontrol koymak yerine TEK bogumda kesiliyor.
+  //
+  // ACIL YOL MUAF: pozisyon kapatmak yasak yuzunden engellenirse daha kotu olur.
+  if (!emergencyBypass && isExecBackoffActive()) {
+    const _kalanMs = getExecBackoffMs();
+    try{ v592ParityStats.execBackoffBlockedAtBreq=(v592ParityStats.execBackoffBlockedAtBreq||0)+1; }catch(_){}
+    try{ if(typeof r501EvidenceFunnel==='function') r501EvidenceFunnel({
+      type:'EXEC_BACKOFF_BLOCK',action:'BACKOFF_BLOCK',authority:'TESTNET_EXECUTION',
+      symbol:null,decisionImpact:true,orderBlocking:true,path:String(path||'').slice(0,80),
+      remainingMs:_kalanMs,reason:`yasak aktif, cagri gonderilmedi (${Math.ceil(_kalanMs/1000)}sn kaldi)`}); }catch(_){}
+    throw makeBinanceBackoffError(`Exec backoff aktif ${path}`, Math.ceil(_kalanMs/1000), 418);
+  }
   await binanceThrottle(`${emergencyBypass ? 'EMERGENCY' : 'SIGNED'}:${path}`, w, orderWeight);
   if (!lastTimeSync) await syncBinanceTime(false);
   const ts = Date.now() + binanceTimeOffset;
@@ -25695,6 +25738,16 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                   } else {
                     if(_r495.plan?.ok){
                       ai.entry=Number(_r495.plan.entry);ai.sl=Number(_r495.plan.stop);ai.tp=Number(_r495.plan.target);ai.r495ExactPlan=_r495.plan;
+                    // V509: SL parite kaniti her islemde birikir. CYS'de TP'nin
+                    // buildAcceptedPlan formulunden geldigini aritmetikle gosterdim
+                    // ama o n=1'di. Artik her islem kendi kanitini yaziyor.
+                    try{ r501EvidenceFunnel({type:'SL_PARITY_PROOF',action:'SL_PARITY_PROOF',
+                      authority:'EXACT_V592_EXECUTION',symbol:normalizeSymbol(coin.fullSymbol||coin.symbol),
+                      decisionImpact:false,planEntry:Number(_r495.plan.entry),planStop:Number(_r495.plan.stop),
+                      planTarget:Number(_r495.plan.target),planSlPct:Number(_r495.plan.entrySlPct),
+                      planRunner:!!_r495.plan.runner,planTargetR:Number(_r495.plan.targetR),
+                      candidateStop:Number(_r495?.candidate?.stop ?? _r495.plan.stop),
+                      reason:'emir SL/TP kaynagi: r495Exact buildAcceptedPlan'}); }catch(_){}
                     }
                     if(String(_r495.action)==='TACTICAL') ai.karKosma='TACTICAL';
                     ai.reasoning=`${String(ai.reasoning||'')} · ${_r495.reason} · kapalı1m oy ${_r495.votes??'—'}/3 · drift ${_r495.driftAtr??'—'} ATR · risk×${Number(_r495.riskScale||0).toFixed(2)}`;
@@ -27607,6 +27660,16 @@ function v592BootParityGate(){
   // Elle konmus "makul gorunen" sayi kabul edilmez.
   // V505: backtestin oyunda taker sarti yoktu; acikken parite bozulur.
   if(R495_TAKER_VOTE_ACTIVE) hata.push('R495_TAKER_OYU_ACIK_BACKTESTTE_YOK');
+  // V509: SL sozlesmesi sabitleri kaynakta duruyor mu (1461/1461 dogrulandi)
+  if(!eq(V509_SL_ATR_CARPANI,1.45))  hata.push(`SL_ATR_CARPANI_145_DEGIL:${V509_SL_ATR_CARPANI}`);
+  if(Number(V509_SL_ATR_PERIYOT)!==14) hata.push(`SL_ATR_PERIYOT_14_DEGIL:${V509_SL_ATR_PERIYOT}`);
+  if(Number(V509_SL_LOW_PENCERE)!==7)  hata.push(`SL_LOW_PENCERE_7_DEGIL:${V509_SL_LOW_PENCERE}`);
+  if(!eq(V509_SL_PCT_MIN,1.2)||!eq(V509_SL_PCT_MAX,8.0)) hata.push(`SL_CLAMP_UYUSMAZ:${V509_SL_PCT_MIN}/${V509_SL_PCT_MAX}`);
+  if(!eq(V509_PLAN_TARGET_R,2.4))    hata.push(`PLAN_TARGET_R_24_DEGIL:${V509_PLAN_TARGET_R}`);
+  if(!eq(V509_PLAN_TARGET_CAP,1.12)) hata.push(`PLAN_TARGET_CAP_112_DEGIL:${V509_PLAN_TARGET_CAP}`);
+  // kaynak kodda formulun kendisi de duruyor mu
+  if(!(typeof r495Exact==='object' && typeof r495Exact.buildAcceptedPlan==='function'))
+    hata.push('R495_EXACT_PLAN_URETICI_YOK');
   if(R495_TAKER_VOTE_ACTIVE && Number(R495_TAKER_RATIO_MIN) > V504_BACKTEST_TAKER_MIN_OBSERVED)
     hata.push(`TAKER_ESIGI_BACKTEST_USTU:${R495_TAKER_RATIO_MIN}>${V504_BACKTEST_TAKER_MIN_OBSERVED}`);
   if(Number(R495_MAX_ENTRY_DRIFT_ATR) < 0.848) hata.push(`DRIFT_MAX_BACKTEST_ALTI:${R495_MAX_ENTRY_DRIFT_ATR}`);
