@@ -19776,8 +19776,44 @@ app.post('/api/order', async (req, res) => {
         proof:_appliedLeverageProof,lastError:_lpLastErr,
         reason:`kaldirac ispati ${_lpAttempt} denemede ${Number.isFinite(_appliedLeverageProof)?'ALINDI':'ALINAMADI'}`}); }catch(_){}
     }
+    // ═══ V606 ═══ (A) HAFIF YEDEK ISPAT YOLU
+    // fetchPositionRiskRaw agir hesap-anlik goruntusunu kullanir ve fail-closed'dir.
+    // Canlida 19sn surdugu olculdu; 5x1800ms butcesi yetismiyor ve ispat null kaliyor.
+    // Burada cok daha ucuz olan dogrudan positionRisk ucu denenir.
+    if(!Number.isFinite(_appliedLeverageProof)){
+      try{
+        const _v606Rows = await bReq(apiKey,apiSecret,'GET','/fapi/v2/positionRisk',{symbol:sym},8000);
+        const _v606Row = Array.isArray(_v606Rows)
+          ? _v606Rows.find(x=>String(x.symbol||'').toUpperCase()===sym && Math.abs(Number(x.positionAmt||0))>0)
+          : null;
+        const _v606Lev = _v606Row ? (Number(_v606Row.leverage||0)||null) : null;
+        if(Number.isFinite(_v606Lev)){
+          _appliedLeverageProof=_v606Lev;
+          try{ logAuto(`[V606] ${sym} kaldirac ispati yedek yoldan alindi: ${_v606Lev}x`); }catch(_){}
+        }
+      }catch(_v606e){ try{ logAuto(`[V606] ${sym} yedek ispat yolu da basarisiz: ${safeErrMsg(_v606e).slice(0,90)}`); }catch(_){} }
+    }
     const _expectedLeverage=(V592_EXACT_BACKTEST_AUTHORITY&&V592_LEVERAGE_LOCK>0)?V592_LEVERAGE_LOCK:Number(leverage);
     _leverageParityOk = Number.isFinite(_appliedLeverageProof) && _appliedLeverageProof===_expectedLeverage;
+    // ═══ V606 ═══ (B) "ISPAT YOK" ile "KALDIRAC YANLIS" ARTIK AYNI SEY DEGIL.
+    // Kaldirac emirden ONCE setSymbolLeverageSafe + safeLeverage!==LOCK kapisiyla
+    // zaten dogrulandi; emir o kapidan gecmeden gonderilmiyor. Ispatin okunamamasi
+    // bir API yavasligidir, parite ihlali degil. Dolmus ve KORUNMUS pozisyonu bu
+    // yuzden market'ten kapatmak canlida sadece cift taker odetiyor.
+    //   ispat ALINDI + FARKLI -> eski sert davranis (kapat + kilitle)
+    //   ispat ALINAMADI       -> uyari + funnel, pozisyon durur
+    // Eski davranis: V606_LEV_PROOF_SERT=1
+    const _v606Sert = String(process.env.V606_LEV_PROOF_SERT||'0')==='1';
+    const _v606IspatVar = Number.isFinite(_appliedLeverageProof);
+    if(!_v606IspatVar && !_v606Sert){
+      v592ParityStats.leverageProofUnverified=(v592ParityStats.leverageProofUnverified||0)+1;
+      try{ logAuto(`[V606] ${sym} kaldirac ispati ALINAMADI (${_lpAttempt} deneme, son hata: ${_lpLastErr||'-'}) — emir oncesi kaldirac ${safeLeverage}x dogrulanmisti, pozisyon KAPATILMADI`); }catch(_){}
+      try{ r501EvidenceFunnel({type:'LEVERAGE_PROOF_UNVERIFIED',action:'LEVERAGE_PROOF_UNVERIFIED',
+        authority:'EXACT_V592_EXECUTION',symbol:normalizeSymbol(sym),decisionImpact:false,
+        expected:_expectedLeverage,preOrderLeverage:safeLeverage,attempts:_lpAttempt,lastError:_lpLastErr,
+        reason:'LEVERAGE_PROOF_UNVERIFIED_POSITION_KEPT'}); }catch(_){}
+      _leverageParityOk = true;
+    }
     if(V592_EXACT_BACKTEST_AUTHORITY&&V592_LEVERAGE_LOCK>0&&!_leverageParityOk){
       // V4.7.4.2-C3: SERT KAPI. Borsa 10x'i kanitlamazsa PROTECTION_VERIFIED YAZILMAZ,
       // basarili cevap DONMEZ, sembol kilitlenir ve fill guvenli sekilde kapatilir.
