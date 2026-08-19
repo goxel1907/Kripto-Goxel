@@ -623,8 +623,13 @@ const v592SymbolOrderLocks=new Map();
 // V4.7.4.2-C5: kilitler artik /data uzerinde KALICI. Railway restart'i kilidi silmez.
 const V592_LOCK_PATH=path.join(String(process.env.TESTNET_STATE_DIR||'/data').trim()||'/data','unresolved_orders.json');
 try{
-  v592RefreshTestnetUniverse(true).catch(()=>null);
-  setInterval(()=>{v592RefreshTestnetUniverse(false).catch(()=>null);},Math.max(300000,V592_TESTNET_UNIVERSE_TTL_MS/4)).unref?.();
+  // ═══ V605 ═══ Yalniz TESTNET. LIVE'da V503_TESTNET_UNIVERSE_PREFILTER zaten
+  // kapali oldugu icin bu cagri hicbir ise yaramiyordu; sadece Binance agirligi
+  // harcayip basarisiz olunca "TESTNET_UNIVERSE exchangeInfo HTTP 418" alarmi basiyordu.
+  if (BINANCE_EXECUTION_ENV === 'TESTNET') {
+    v592RefreshTestnetUniverse(true).catch(()=>null);
+    setInterval(()=>{v592RefreshTestnetUniverse(false).catch(()=>null);},Math.max(300000,V592_TESTNET_UNIVERSE_TTL_MS/4)).unref?.();
+  }
 }catch(_){}
 function v592PersistLocks(){
   try{
