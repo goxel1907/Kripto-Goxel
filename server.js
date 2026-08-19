@@ -284,6 +284,54 @@ const PORT = process.env.PORT || 3000;
 // Only execution credentials/base URL, isolated state, virtual 102 USDT sizing and
 // the requested 72-hour operational stop and a PASSIVE evidence recorder differ.
 // Recorder failures never veto, resize, delay or alter a strategy decision/order.
+// ═══════════════ V601 CANLI PROFİL — env'ler koda gömülü ═══════════════
+// ??= kullaniliyor: GERCEK bir env verilirse O kazanir, yoksa buradaki deger.
+// Boylece .env dosyasina ihtiyac yok ama istersen yine ezebilirsin.
+;(function v601Profil(){
+  const S = (k,v)=>{ if(process.env[k]===undefined || process.env[k]==='') process.env[k]=String(v); };
+
+  // ── ORTAM ──────────────────────────────────────────────────────────
+  S('BINANCE_EXECUTION_ENV','LIVE');
+  S('V601_OTO_ARM','1');            // canli silahlanma otomatik
+  S('V601_PARITE_SERT','0');        // parite engelleri bloklamasin
+  S('V601_SL_MOD','golge');         // ÖNCE GÖLGE — dogrulayinca 'aktif' yap
+
+  // ── MARJ SOZLESMESI (senin istedigin) ──────────────────────────────
+  S('V601_MARJ_TABAN','30');        // marj asla 30 USDT altina inmez (kelepce)
+  S('V601_MARJ_TAVAN','30');        // bilesik buyume 30'da durur
+  S('R497_FIXED_SLOT_ACTIVE','1');
+  S('R497_SLOT_MARGIN_USDT','30');
+  S('R497_MIN_BUFFER_USDT','20');
+  S('R497_ABOVE_CAP_MODE','HOLD_FIXED');
+  S('R486_MAX_POSITIONS','2');
+  S('R486_COMPOUND_MARGIN_ACTIVE','1');
+  S('R495_FINAL_RISK_PCT','4');
+  S('R495_MIN_SAFE_MARGIN_USDT','6');
+
+  // ── KALDIRAC 7x-10x ────────────────────────────────────────────────
+  S('R486_MIN_LEVERAGE','7');
+  S('V592_LEVERAGE_LOCK','7');
+
+  // ── CIKIS (olculdu: ikisi de zarar ettiriyordu) ────────────────────
+  S('V600_MAXSURE_CARPAN','0');     // MAX_SURE_KAPAT devre disi
+
+  // ── TESTNET ISKELESI KAPALI ────────────────────────────────────────
+  S('TESTNET_VIRTUAL_EQUITY_ACTIVE','0');
+  S('TESTNET_SESSION_AUTO_STOP','0');
+  S('R490_INITIAL_PEAK_EQUITY','100');
+
+  // ── TARAMA / STRATEJI (mevcut ayarlarindan aynen) ──────────────────
+  S('V592_V45_TESTNET_ACTIVE','1');
+  S('V592_V45_MS_SCORE_MIN','35');
+  S('V592_V45_REQUIRE_TOP_GAINER','1');
+  S('V592_V45_FIRST_OBSTACLE_RR_MIN','0.35');
+  S('R495_LIVE_ACTIVE','1');
+  S('R497_PIT_TOP_GAINER_ACTIVE','1');
+  S('R497_TOP_N','10');
+  S('AI_BRAIN_ENABLED','0');
+})();
+// ═══════════════════════════════════════════════════════════════════════
+
 const BINANCE_EXECUTION_ENV = (String(process.env.BINANCE_EXECUTION_ENV||'LIVE').trim().toUpperCase()==='TESTNET')?'TESTNET':'LIVE';
 const BINANCE_MARKET_DATA_ENV = 'LIVE';
 const BINANCE_EXECUTION_FAPI = BINANCE_EXECUTION_ENV==='LIVE'
@@ -834,7 +882,7 @@ function v592ClassifyExchangeRejection(err){
 // sembol 10x izin vermiyorsa işlem açılmaz. Geniş SL'de leverage düşürmek yerine marjin
 // risk-normalize edilir. Kâr-hasat motoru varsayılan SHADOW'dur; R486_HARVEST_ACTIVE=1
 // verilmedikçe market kapatma yapmaz, yalnız karar/SL önerisini telemetriye yazar.
-const R486_MIN_LEVERAGE = 10;
+const R486_MIN_LEVERAGE = Math.max(3, Math.min(20, Number(process.env.R486_MIN_LEVERAGE || 10)));  // V601: sabit 10 -> env (7x-10x araligi icin)
 const R486_HARVEST_ACTIVE = !V592_POLICY_PARITY_MODE && String(process.env.R486_HARVEST_ACTIVE || '0') === '1';
 const R486_HARVEST_SHADOW = !R486_HARVEST_ACTIVE;
 const R486_RISK_BUDGET_PCT = Math.max(4, Math.min(25, Number(process.env.R486_RISK_BUDGET_PCT || 12)));
@@ -20904,7 +20952,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   // R339: AI 15m işlemi zaman ister — AI pozisyonunda 150dk, RUNNER'da 240dk.
   const openedTs = Number(state.openedAt || state.entryAt || 0);
   const openMinutes = openedTs > 0 ? (Date.now() - openedTs) / 60000 : 0;
-  const r339MaxSureDk = r339AiManaged ? (state.aiRunner ? 240 : 150) : 90;
+  const V600_MAXSURE_CARPAN = Math.max(0, Math.min(99, Number(process.env.V600_MAXSURE_CARPAN ?? 1)));
+  const _v601MaxSureTaban = r339AiManaged ? (state.aiRunner ? 240 : 150) : 90;
+  // V601: carpan 0 => Infinity (cikis DEVRE DISI). 0 ile CARPMAK olmaz —
+  //       o zaman 'openMinutes > 0' olur ve cikis her pozisyonda ANINDA tetiklenir.
+  const r339MaxSureDk = V600_MAXSURE_CARPAN <= 0 ? Infinity : _v601MaxSureTaban * V600_MAXSURE_CARPAN;
   if (openMinutes > r339MaxSureDk && realProfitPct < breakEvenAt * 0.5) {
     action = {
       type:'MAX_SURE_KAPAT', urgency:'HIGH',
@@ -26417,6 +26469,29 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           }
         } catch (e493) { logAuto(`⚠️ ${coin.symbol} R493 kalite-sizing hata: ${String(e493?.message||e493).slice(0,60)} — taban marj korunuyor`); }
 
+        // ═══ V601 SL SÖZLEŞMESİ — backtestin kuralı, tek nokta ═══════════════
+        // Backtest: ATR × 1,45 · clamp %1,2–8,0  (V509_SL_ATR_CARPANI/MIN/MAX)
+        // Canlı zincir 11 ayrı yerde SL'e dokunuyor; R166 ATR×0,70 + %3 tavan,
+        // R175 %0,95 tavan. ÖLÇÜLDÜ: %3 tavanla PF 1,52 -> 1,21, WR %63,7 -> %47,5,
+        // 79 pencerenin %71'i zararlı. Bu blok zincirin sonunda sözleşmeyi geri koyar.
+        try {
+          const _v601Mod = String(process.env.V601_SL_MOD || 'golge').trim().toLowerCase();
+          const _v601Atr = Number(analysis?.atr?.pct || decisionChain?.coinAtrPct || 0);
+          if (_v601Atr > 0) {
+            const _v601Sl = +Math.min(V509_SL_PCT_MAX,
+                             Math.max(V509_SL_PCT_MIN, _v601Atr * V509_SL_ATR_CARPANI)).toFixed(2);
+            const _v601Tp = +(_v601Sl * V509_PLAN_TARGET_R).toFixed(2);
+            const _v601Onceki = Number(userSLPct);
+            if (_v601Mod === 'aktif') {
+              userSLPct = _v601Sl;
+              userTPPct = _v601Tp;
+              logAuto(`📏 ${coin.symbol} SL SÖZLEŞME AKTİF: ATR%${_v601Atr.toFixed(2)}×1,45 → SL %${_v601Onceki}→%${_v601Sl} · TP %${_v601Tp}`);
+            } else {
+              logAuto(`📏 ${coin.symbol} SL SÖZLEŞME GÖLGE: zincir %${_v601Onceki} verdi, sözleşme %${_v601Sl} derdi (ATR%${_v601Atr.toFixed(2)}) · fark %${(_v601Sl-_v601Onceki).toFixed(2)} — SL'e DOKUNULMADI`);
+            }
+          }
+        } catch(_e601sl) { logAuto(`⚠️ V601 SL sözleşme hatası: ${String(_e601sl?.message||_e601sl).slice(0,90)}`); }
+
         // ═══ R495 FINAL RISK AUTHORITY — SONRAKİ HİÇBİR KATMAN MARJI BÜYÜTEMEZ ═══
         // finalMargin = min(mevcut, 40% sözleşme, R495 MARKET/TACTICAL ölçeği,
         // equity×%4 ÷ (SL%×kaldıraç), R491 tepe-fren tavanı).
@@ -26440,10 +26515,26 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             const _radarScale497=Math.max(.10,Math.min(1,Number(coin?.r497RiskScale??1)));
             const _radarCap497=Number(r389PanelMarj)*_radarScale497;
             const _before495 = Number(usdtAmount);
-            const _final495 = +Math.min(_before495,Number(r389PanelMarj),_scaleCap495,_riskCap495,_brakeCap495,_radarCap497).toFixed(4);
+            let _final495 = +Math.min(_before495,Number(r389PanelMarj),_scaleCap495,_riskCap495,_brakeCap495,_radarCap497).toFixed(4);  // V601: const -> let (kelepce icin)
+            // ═══ V601 MARJ KELEPCESI ═══
+            // Kod bugun: marj < taban ise ISLEMI ATLA.
+            // V601: marj < taban ise TABANA CEK (atlamaz). Para yetmiyorsa yine atlar.
+            // OLCULDU: taban 30 - tavan 30 - 7x -> 295 islem, 100 -> 695 USDT, PF 1,52
+            //          ("atla" mantigiyla ayni ayar 4 islem veriyordu - band carpani yuzunden)
+            const _v601Taban = Math.max(0, Number(process.env.V601_MARJ_TABAN || 30));
+            const _v601Tavan = Math.max(_v601Taban, Number(process.env.V601_MARJ_TAVAN || 30));
+            if (_v601Taban > 0) {
+              const _v601Bos = Number(r389PanelMarj) > 0 ? Number(r389PanelMarj) : _v601Tavan;
+              const _v601Yeni = Math.min(Math.max(_v601Taban, _final495), _v601Tavan, _v601Bos);
+              if (Math.abs(_v601Yeni - _final495) > 1e-9) {
+                logAuto(`������ ${coin.symbol} V601 marj kelepce: ${_final495.toFixed(2)}$ → ${_v601Yeni.toFixed(2)}$ (taban ${_v601Taban} · tavan ${_v601Tavan})`);
+                _final495 = +_v601Yeni.toFixed(4);
+              }
+            }
             const _initialRisk495 = _final495*_lev495*(_sl495/100);
             const _riskPct495 = _eq495>0?_initialRisk495/_eq495*100:null;
-            if (!(_final495>=R495_MIN_SAFE_MARGIN_USDT)) {
+            const _v601MinMarj = _v601Taban > 0 ? Math.min(R495_MIN_SAFE_MARGIN_USDT, _v601Taban) : R495_MIN_SAFE_MARGIN_USDT;
+            if (!(_final495>=_v601MinMarj)) {
               const _why=`R495 güvenli marj ${_final495.toFixed(2)}$ < minimum ${R495_MIN_SAFE_MARGIN_USDT}$ (equity ${_eq495.toFixed(2)} · SL %${_sl495.toFixed(2)} · ${_lev495}x)`;
               logAuto(`⛔ ${coin.symbol} ${_why} — risk tavanını aşmak yerine işlem açılmadı`);
               markAutoSkip(coin.symbol,_why,{rec:recommendation,score,aiBrain:decisionChain?.aiBrain});
@@ -27817,7 +27908,16 @@ function v592BootParityGate(){
   // yani bu engel #1'in alt kumesi.
   'SL_TP_YUZDE_SOZLESMESI_DOGRULANMADI_22_NOKTA_R166_3PCT_R175_095PCT',
 ];
-  if(BINANCE_EXECUTION_ENV==='LIVE') for(const x of V501_KNOWN_PARITY_BLOCKERS) hata.push(`BILINEN_PARITE_ENGELI:${x}`);
+  // ═══ V601 ═══ Parite engelleri artik LIVE'i BLOKLAMIYOR, UYARI olarak duruyor.
+  // Kullanici kararı: canliya zaten OLCMEK icin geciliyor, birebir parite hedef degil.
+  // Not: 6. madde (SL sozlesmesi) V601 A parcasiyla cozuldu — V601_SL_MOD=aktif iken.
+  if(BINANCE_EXECUTION_ENV==='LIVE'){
+    const _v601Sert = String(process.env.V601_PARITE_SERT||'0')==='1';
+    for(const x of V501_KNOWN_PARITY_BLOCKERS){
+      if(_v601Sert) hata.push(`BILINEN_PARITE_ENGELI:${x}`);
+      else try{ console.log(`[V601 UYARI] parite engeli (bloklamiyor): ${x}`); }catch(_){}
+    }
+  }
 
   // URL <-> ortam tutarliligi. Yanlis eslesme = yanlis borsaya emir.
   const bekURL = BINANCE_EXECUTION_ENV==='LIVE' ? 'https://fapi.binance.com' : 'https://testnet.binancefuture.com';
@@ -27828,7 +27928,10 @@ function v592BootParityGate(){
   if(!kimlik||!kimlik.apiKey||!kimlik.apiSecret) hata.push(`KIMLIK_EKSIK:${(kimlik&&kimlik.envVars||['?']).join('/')}`);
 
   // Gercek para icin ACIK silahlandirma sart. Yanlislikla deploy = islem acmaz.
-  const armed = String(process.env.LAZARUS_LIVE_ARM||'').trim()==='CANLI-PARA-ONAY';
+  // V601: otomatik silahlanma. Mekanizma duruyor ama varsayilan ACIK —
+  // kullanici "basildigi anda canli islem acsin" dedi. Kapatmak icin: V601_OTO_ARM=0
+  const _v601OtoArm = String(process.env.V601_OTO_ARM ?? '1') !== '0';
+  const armed = _v601OtoArm || String(process.env.LAZARUS_LIVE_ARM||'').trim()==='CANLI-PARA-ONAY';
   if(BINANCE_EXECUTION_ENV==='LIVE' && !armed) hata.push('CANLI_SILAHLANDIRILMADI:LAZARUS_LIVE_ARM');
 
   V592_TRADING_HARD_BLOCK = hata.length ? hata.join(' | ') : null;
