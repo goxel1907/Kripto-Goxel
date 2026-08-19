@@ -20750,6 +20750,30 @@ function r486AutonomousProfitBrain({sym,side,pnlPct,realProfitPct,entryPrice,cur
 
 // Ana pozisyon yöneticisi
 async function managePosition(apiKey, apiSecret, pos) {
+  // ═══ V607 ═══ KAR KILIDI / TRAILING SL KAPISI
+  // 108 gunluk olcumde be_lock ve trailing OLU idi (carpan x0 == x3, ort. tutus 1,1s).
+  // Backtest cikis kumesi: INITIAL_SL / TARGET / DYNAMIC_STOP / MAX_TIME_NO_PROGRESS / MAX_24H.
+  // Kar kilidi bu kumede YOK; canlida acik kalinca kazananlar erken kesiliyor
+  // (MUBARAK: TP +26 USDT idi, kar kilidi ~+4,4 USDT'de kapatti) ve kodun kendisi bunu
+  // 'NON_BACKTEST_EXIT' diye isaretliyor. Kaybedenler tam SL'i yediginden PF cokuyor.
+  // Borsadaki ILK SL/TP emirlerine DOKUNULMAZ; yalnizca SL'i ilerletme kapatilir.
+  // Geri acmak icin: V607_KAR_KILIDI=1
+  const _v607KarKilidi = String(process.env.V607_KAR_KILIDI || '0') === '1';
+  if (!_v607KarKilidi) {
+    try {
+      if (autoConfig) {
+        autoConfig.trailingPct = 0;
+        autoConfig.trailStep = 0;
+        autoConfig.breakEvenPct = 0;
+      }
+      const _v607St = trailingState.get(pos.symbol);
+      if (_v607St) {
+        if (_v607St.config) { _v607St.config.trailing = false; _v607St.config.trailingPct = 0; _v607St.config.trailStep = 0; _v607St.config.breakEvenPct = 0; }
+        _v607St.breakEvenSet = true;          // BE kurulmus say -> tekrar kurmaya calismaz
+        _v607St.profitLockLevel = 99;         // merdiven en ustte say -> yeni kademe tetiklenmez
+      }
+    } catch (_v607e) {}
+  }
   const sym = pos.symbol;
   const side = pos.side;
   const isLong = side === 'LONG';
@@ -27232,13 +27256,24 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
     pnlVal = approxPnlFromPrice;
   }
   if (code === 'EXTERNAL_OR_MANUAL' && Number.isFinite(pnlVal)) {
-    const _korumaVar = !!(state?.currentSLAlgoId || state?.tpAlgoId); // botun Binance'e yazdığı SL/TP/trailing emri kayıtlı mı
+    // ═══ V608 ═══ ETIKET DUZELTMESI.
+    // Bu dala DUSULMESI, kapanis fiyatinin SL'e de TP'ye de %1,25'ten UZAK oldugunu
+    // KANITLAR (yukaridaki nearTP/nearSL testleri gecilemedi). Yani bu bir koruma
+    // emri dolumu DEGILDIR. Eski kod, botun SL/TP emri kayitli diye (her zaman kayitli)
+    // "manuel DEGIL" yaziyordu — kullanicinin elle Market Close'unu yanlis etiketliyordu.
+    const _v608SlUzak = (closePrice > 0 && sl > 0) ? pctDiff(closePrice, sl) : null;
+    const _v608TpUzak = (closePrice > 0 && tp > 0) ? pctDiff(closePrice, tp) : null;
+    const _korumaVar = false; // V608: bu dalda koruma dolumu olamaz — kanit yukaridaki testler
     // V4.7.4.9-J4: backtestte bu kodun karsiligi YOK. Sayilir ve kanita yazilir.
     try{if(V592_EXACT_BACKTEST_AUTHORITY){v592ParityStats.nonBacktestExits++;
       r501OrderLifeMark(symbol,'NON_BACKTEST_EXIT',{code:pnlVal>0?'BINANCE_PROFIT_CLOSE':'BINANCE_LOSS_CLOSE',
-        backtestExitReasons:['INITIAL_SL','TARGET','DYNAMIC_STOP','MAX_TIME_NO_PROGRESS','MAX_24H'],pnl:pnlVal});}}catch(_){}
-    if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = _korumaVar ? 'Binance koruma emri (SL-kâr kilidi/TP/trailing) doldu — kârda (manuel DEĞİL)' : 'Binance kapanışı kârda'; emoji = '✅'; }
-    if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = _korumaVar ? 'Binance koruma emri (SL) doldu — zararda (manuel DEĞİL)' : 'Binance kapanışı zararda'; emoji = '❌'; }
+        backtestExitReasons:['INITIAL_SL','TARGET','DYNAMIC_STOP','MAX_TIME_NO_PROGRESS','MAX_24H'],pnl:pnlVal,
+        siniflandirma:'MANUEL_VEYA_HARICI', kapanisFiyati:closePrice, slSeviyesi:sl, tpSeviyesi:tp,
+        slUzaklikPct:_v608SlUzak, tpUzaklikPct:_v608TpUzak, tolerans:tol});}}catch(_){}
+    const _v608Nerede = (Number.isFinite(_v608SlUzak) && Number.isFinite(_v608TpUzak))
+      ? ` (SL'e %${_v608SlUzak.toFixed(2)}, TP'ye %${_v608TpUzak.toFixed(2)} uzak — ikisi de değil)` : '';
+    if (pnlVal > 0) { code = 'BINANCE_PROFIT_CLOSE'; label = `Manuel/harici kapanış — kârda${_v608Nerede}`; emoji = '✅'; }
+    if (pnlVal < 0) { code = 'BINANCE_LOSS_CLOSE'; label = `Manuel/harici kapanış — zararda${_v608Nerede}`; emoji = '❌'; }
   }
   // R370-E: zarar kapanışında coini zarar-takibine kaydet (2 zarar/90dk = 2 saat blok)
   try { if (Number.isFinite(pnlVal) && pnlVal < -0.01 && typeof r370CoinZararKaydet === 'function') r370CoinZararKaydet(symbol); } catch(_) {}
