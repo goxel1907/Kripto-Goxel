@@ -340,6 +340,9 @@ const BINANCE_EXECUTION_FAPI = BINANCE_EXECUTION_ENV==='LIVE'
 // FAIL-CLOSED: parite kapisi calisip TEMIZ demeden hicbir emir gonderilemez.
 let V592_TRADING_HARD_BLOCK = 'BOOT_PARITY_GATE_NOT_RUN';
 const TESTNET_STATE_DIR = String(process.env.TESTNET_STATE_DIR || '/data').trim() || '/data';
+// ═══ V604 ═══ /api/analyze zaman asimi env'e acildi. Eskiden iki cagri noktasinda
+// da 30000 sabitti ve adaylarin ~%38'i "aborted due to timeout" ile dusuyordu.
+const V604_ANALYZE_TIMEOUT_MS = Math.max(10000, Math.min(180000, Number(process.env.V604_ANALYZE_TIMEOUT_MS || 60000)));
 try { fs.mkdirSync(TESTNET_STATE_DIR, {recursive:true}); } catch (_) {}
 const TESTNET_SESSION_HOURS = Math.max(1, Math.min(72, Number(process.env.TESTNET_SESSION_HOURS || 72)));
 const TESTNET_SESSION_RESET_ID = String(process.env.TESTNET_SESSION_RESET_ID || 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_43_AF1').trim() || 'V592_EXACT_CLOSED1M_R495_72H_4_7_4_43_AF1';
@@ -10493,7 +10496,11 @@ function r501OrderKeyOf(row={},state={}){
   return null;
 }
 function r501EvidenceOpen(row={},state={}){
-  if(!R501_EVIDENCE_ACTIVE||BINANCE_EXECUTION_ENV!=='TESTNET'||!row?.id)return null;const id=String(row.id);if(r501ActiveEvidence.has(id))return r501ActiveEvidence.get(id);
+  // ═══ V604 ═══ ORTAM KAPISI KALDIRILDI. Eskiden BINANCE_EXECUTION_ENV!=='TESTNET'
+  // sarti vardi; canliya gecince bu fonksiyon null donuyor ve islem basina kanit
+  // kaydinin TAMAMI (Kanit sekmesi, passive.csv, raw bundle, trade index) olusmuyordu.
+  // Kanit motoru pasiftir: sizingImpact:false, exitImpact:false — karar vermez.
+  if(!R501_EVIDENCE_ACTIVE||!row?.id)return null;const id=String(row.id);if(r501ActiveEvidence.has(id))return r501ActiveEvidence.get(id);
   const _ok=r501OrderKeyOf(row,state);
   if(_ok){
     const prev=r501SeenOrderKeys.get(_ok);
@@ -23982,7 +23989,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         scanList.forEach((c,i)=>{ c.r481OriginalRank=i+1; c.gainerRank=i+1; });
         const q=[...scanList]; const workers=[]; const conc=Math.max(1,Math.min(6,Number(process.env.R481_PREPASS_CONCURRENCY||3)||3));
         const worker=async()=>{ while(q.length){ const coin=q.shift(); if(!coin)break; try{
-          const analysis=await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`,{signal:AbortSignal.timeout(30000)}).then(r=>r.json());
+          const analysis=await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`,{signal:AbortSignal.timeout(V604_ANALYZE_TIMEOUT_MS)}).then(r=>r.json());
           coin.__r481Analysis=analysis;
           if(analysis?.ok && !analysis?.isExpired && analysis?.freshness!=='EXPIRED'){
             const dc=analysis.decisionChain||{}; const karar=r447MekanikKarar(coin.symbol,r481MekanikVeri(coin,analysis,dc));
@@ -24068,7 +24075,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
       }
 
       try {
-        const analysis = coin.__r481Analysis || await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`,{signal:AbortSignal.timeout(30000)})
+        const analysis = coin.__r481Analysis || await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`,{signal:AbortSignal.timeout(V604_ANALYZE_TIMEOUT_MS)})
           .then(r=>r.json());
         if (!analysis.ok) {
           const emsg = String(analysis.error || analysis.code || 'Analiz OK değil').slice(0,90);
@@ -26475,20 +26482,35 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         // R175 %0,95 tavan. ÖLÇÜLDÜ: %3 tavanla PF 1,52 -> 1,21, WR %63,7 -> %47,5,
         // 79 pencerenin %71'i zararlı. Bu blok zincirin sonunda sözleşmeyi geri koyar.
         try {
-          const _v601Mod = String(process.env.V601_SL_MOD || 'golge').trim().toLowerCase();
-          const _v601Atr = Number(analysis?.atr?.pct || decisionChain?.coinAtrPct || 0);
-          if (_v601Atr > 0) {
-            const _v601Sl = +Math.min(V509_SL_PCT_MAX,
-                             Math.max(V509_SL_PCT_MIN, _v601Atr * V509_SL_ATR_CARPANI)).toFixed(2);
-            const _v601Tp = +(_v601Sl * V509_PLAN_TARGET_R).toFixed(2);
-            const _v601Onceki = Number(userSLPct);
-            if (_v601Mod === 'aktif') {
-              userSLPct = _v601Sl;
-              userTPPct = _v601Tp;
-              logAuto(`📏 ${coin.symbol} SL SÖZLEŞME AKTİF: ATR%${_v601Atr.toFixed(2)}×1,45 → SL %${_v601Onceki}→%${_v601Sl} · TP %${_v601Tp}`);
+          // ═══ V603 ═══ SL sozlesmesi artik EL YAPIMI FORMUL DEGIL.
+          // Kodun kendi dogrulanmis ureticisinden okunuyor:
+          //   r495Exact.candidateMetaFromCompact5m -> stop  (5m, son 7 low, ATR14x1.45, clamp 1.2-8.0)
+          //   r495Exact.buildAcceptedPlan          -> entrySlPct / target
+          // V601'deki ATR_1h x 1.45 YANLISTI: gercek islemlerde hep %8 tavana dayaniyordu.
+          const _v603Mod  = String(process.env.V601_SL_MOD || 'golge').trim().toLowerCase();
+          const _v603Plan = decisionChain?.aiBrain?.r495Live?.plan
+                         || decisionChain?.r495Live?.plan
+                         || decisionChain?.aiBrain?.authority?.plan
+                         || null;
+          const _v603Sl = Number(_v603Plan?.entrySlPct);
+          const _v603En = Number(_v603Plan?.entry);
+          const _v603Hd = Number(_v603Plan?.target);
+          const _v603Ok = Number.isFinite(_v603Sl) && _v603Sl >= 0.5 && _v603Sl <= 10;
+          if (_v603Ok) {
+            const _v603SlR = +_v603Sl.toFixed(2);
+            const _v603TpR = (Number.isFinite(_v603En) && Number.isFinite(_v603Hd) && _v603En > 0)
+              ? +(((_v603Hd - _v603En) / _v603En) * 100).toFixed(2)
+              : +(_v603SlR * (_v603Plan?.targetR || 2.4)).toFixed(2);
+            const _v603Onceki = Number(userSLPct);
+            if (_v603Mod === 'aktif') {
+              userSLPct = _v603SlR;
+              if (_v603TpR > 0) userTPPct = _v603TpR;
+              logAuto(`[V603] ${coin.symbol} SL SOZLESME AKTIF: plan SL %${_v603Onceki}->%${_v603SlR} · TP %${_v603TpR} (R${_v603Plan?.targetR||2.4}${_v603Plan?.runner?' runner':''})`);
             } else {
-              logAuto(`📏 ${coin.symbol} SL SÖZLEŞME GÖLGE: zincir %${_v601Onceki} verdi, sözleşme %${_v601Sl} derdi (ATR%${_v601Atr.toFixed(2)}) · fark %${(_v601Sl-_v601Onceki).toFixed(2)} — SL'e DOKUNULMADI`);
+              logAuto(`[V603] ${coin.symbol} SL SOZLESME GOLGE: zincir %${_v603Onceki} verdi, plan %${_v603SlR} derdi · fark %${(_v603SlR-_v603Onceki).toFixed(2)} — SL'e DOKUNULMADI`);
             }
+          } else if (_v603Mod === 'aktif') {
+            logAuto(`[V603] ${coin.symbol} SL SOZLESME: R495 plani yok/gecersiz (${_v603Plan?.entrySlPct ?? 'yok'}) — zincir SL'i %${Number(userSLPct)} korundu`);
           }
         } catch(_e601sl) { logAuto(`⚠️ V601 SL sözleşme hatası: ${String(_e601sl?.message||_e601sl).slice(0,90)}`); }
 
@@ -26524,8 +26546,20 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             const _v601Taban = Math.max(0, Number(process.env.V601_MARJ_TABAN || 30));
             const _v601Tavan = Math.max(_v601Taban, Number(process.env.V601_MARJ_TAVAN || 30));
             if (_v601Taban > 0) {
-              const _v601Bos = Number(r389PanelMarj) > 0 ? Number(r389PanelMarj) : _v601Tavan;
-              const _v601Yeni = Math.min(Math.max(_v601Taban, _final495), _v601Tavan, _v601Bos);
+              // ═══ V603 ═══ Taban MUTLAK. Fiziksel sinir R490 dusus-freni degil, TAMPON.
+              // V601'de _v601Bos = r389PanelMarj idi; o deger zaten ddT.factor ile kirpilmis
+              // geliyordu, dolayisiyla taban 30 sessizce delinip 20'lerde islem aciliyordu.
+              const _v603Eq = Number(r372BilesikMeta?.equity) > 0 ? Number(r372BilesikMeta.equity) : 0;
+              const _v603Bos = _v603Eq > 0
+                ? Math.max(0, (_v603Eq - R497_MIN_BUFFER_USDT) / Math.max(1, R486_MAX_POSITIONS))
+                : Math.max(Number(r389PanelMarj) || 0, _v601Tavan);
+              if (_v603Bos + 1e-9 < _v601Taban) {
+                const _why603 = `V603 taban korumasi: kullanilabilir ${_v603Bos.toFixed(2)}$ < taban ${_v601Taban}$ (equity ${_v603Eq.toFixed(2)} · tampon ${R497_MIN_BUFFER_USDT}$ · ${R486_MAX_POSITIONS} poz)`;
+                logAuto(`[V603] ${coin.symbol} ${_why603} — kucultmek yerine islem ACILMADI`);
+                markAutoSkip(coin.symbol, _why603, {rec:recommendation, score, aiBrain:decisionChain?.aiBrain});
+                continue;
+              }
+              const _v601Yeni = Math.min(Math.max(_v601Taban, _final495), _v601Tavan, _v603Bos);
               if (Math.abs(_v601Yeni - _final495) > 1e-9) {
                 logAuto(`������ ${coin.symbol} V601 marj kelepce: ${_final495.toFixed(2)}$ → ${_v601Yeni.toFixed(2)}$ (taban ${_v601Taban} · tavan ${_v601Tavan})`);
                 _final495 = +_v601Yeni.toFixed(4);
