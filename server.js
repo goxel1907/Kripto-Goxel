@@ -27849,7 +27849,15 @@ function v592BootParityGate(){
   };
   for(const [ad,deger] of Object.entries(sozlesme)) if(!deger) hata.push(`SOZLESME_KAPALI:${ad}`);
 
-  if(Number(V592_LEVERAGE_LOCK)!==10) hata.push(`KALDIRAC_KILIDI_10_DEGIL:${V592_LEVERAGE_LOCK}`);
+  // ═══ V602 ═══ Kilit degeri artik V601 sozlesmesinden gelir (olculen kurulum 7x).
+  // Kontrol KALKMADI: lock == R486_MIN_LEVERAGE tutarliligi aranir.
+  // Eski sert sozlesme (10x) icin: V601_PARITE_SERT=1
+  {
+    const _v602Sert = String(process.env.V601_PARITE_SERT||'0')==='1';
+    const _v602BekLev = _v602Sert ? 10 : Math.max(1, Number(R486_MIN_LEVERAGE)||7);
+    if(Number(V592_LEVERAGE_LOCK)!==_v602BekLev)
+      hata.push(`KALDIRAC_KILIDI_UYUSMAZ:${V592_LEVERAGE_LOCK}!=${_v602BekLev}`);
+  }
   if(Number(V592_MIN_HOLD_MS)<=0)     hata.push('MIN_HOLD_KAPALI');
   if(V592_PROBE_ACTIVE!==false)       hata.push('SONDA_CANLIDA_AKTIF');
   // V502: kaldirac kilidi zincirin HER IKI ucunda mi? Tek uc yeterli degil —
@@ -27865,7 +27873,14 @@ function v592BootParityGate(){
   if(!eq(R493_MIN_FIRST_OBSTACLE_RR,0.35)) hata.push(`R493_FO_035_DEGIL:${R493_MIN_FIRST_OBSTACLE_RR}`);
   if(!eq(R486_FIRST_OBSTACLE_MIN_RR,0.35)) hata.push(`R486_FO_035_DEGIL:${R486_FIRST_OBSTACLE_MIN_RR}`);
   if(R497_FIXED_SLOT_ACTIVE!==true) hata.push('FIXED_SLOT_KAPALI');
-  if(!eq(R497_SLOT_MARGIN_USDT,41)) hata.push(`SLOT_41_DEGIL:${R497_SLOT_MARGIN_USDT}`);
+  // ═══ V602 ═══ Slot marji V601 marj tavaniyla eslesmeli (olculen kurulum 30$).
+  // Eski sert sozlesme (41$) icin: V601_PARITE_SERT=1
+  {
+    const _v602Sert = String(process.env.V601_PARITE_SERT||'0')==='1';
+    const _v602BekSlot = _v602Sert ? 41 : Math.max(6, Number(process.env.V601_MARJ_TAVAN || 30));
+    if(!eq(R497_SLOT_MARGIN_USDT,_v602BekSlot))
+      hata.push(`SLOT_MARJ_UYUSMAZ:${R497_SLOT_MARGIN_USDT}!=${_v602BekSlot}`);
+  }
   if(!eq(R497_MIN_BUFFER_USDT,20)) hata.push(`BUFFER_20_DEGIL:${R497_MIN_BUFFER_USDT}`);
   if(String(R497_ABOVE_CAP_MODE)!=='HOLD_FIXED') hata.push(`ABOVE_CAP_HOLD_FIXED_DEGIL:${R497_ABOVE_CAP_MODE}`);
   if(Number(R486_MAX_POSITIONS)!==2) hata.push(`MAX_POS_2_DEGIL:${R486_MAX_POSITIONS}`);
