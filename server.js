@@ -24139,6 +24139,18 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         continue;
       }
 
+      // ═══ V609 ═══ On-gecis bu sembolde zaten takildiysa ANA DONGUDE TEKRAR DENEME.
+      // On-gecis paralel (R481_PREPASS_CONCURRENCY), ana dongu SIRALI. Timeout olan
+      // sembol icin __r481Analysis bos kalir ve burasi ayni takilan ucu tekrar cagirip
+      // 30 saniye daha bekler — bu sure tarama suresine birebir eklenir.
+      // Olculdu: AUTO_COIN_* loglari tam 30,0 sn araliklarla sirali diziliyordu.
+      // Eski davranis icin: V609_ON_GECIS_TEKRAR=1
+      if (coin.__r481PrepassError && String(process.env.V609_ON_GECIS_TEKRAR||'0') !== '1') {
+        const _v609Msg = `Ön-analiz zaten başarısız (${String(coin.__r481PrepassError).slice(0,70)}) — ana döngüde tekrar denenmedi`;
+        try { logAuto(`[V609] ${coin.symbol} ${_v609Msg}`); } catch(_) {}
+        markAutoSkip(coin.symbol, _v609Msg, {rec:'ERR', tier:'ERR', reason:'V609_PREPASS_ALREADY_FAILED'});
+        continue;
+      }
       try {
         const analysis = coin.__r481Analysis || await fetch(`http://localhost:${PORT}/api/analyze/${coin.fullSymbol}`,{signal:AbortSignal.timeout(V604_ANALYZE_TIMEOUT_MS)})
           .then(r=>r.json());
