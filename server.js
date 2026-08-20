@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_1_7_CANLI_RATE_SAFE_MICRO_ASSIST'
+const LAZARUS_BUILD = 'V6_1_8_CANLI_SCAN_CADENCE_GUARD'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -27871,7 +27871,14 @@ function startAutoTrader() {
   // Kapanmış HTF bağlamı korunur; workers/targeted wake arada tek sembolü derin tarar.
   // Tam tarama periyodu gerçek Binance used-weight başlıklarına göre 90-240sn adaptiftir.
   function scheduleNextScan(overrideMs=null) {
-    const waitMs=Number.isFinite(Number(overrideMs))?Math.max(5000,Number(overrideMs)):r48638AdaptiveScanIntervalMs();
+    // V6.1.8: null/undefined normal adaptif zamanlama demektir. Number(null) === 0
+    // oldugu icin eski kontrol null'u gecerli override sanip her tam taramadan sonra
+    // 5000ms'e sikistiriyordu. Sonuc: 21-31sn tarama + 5sn ara, public agirlik
+    // tavaninin asilmasi ve panel/status gecikmesi. Yalniz gercek, pozitif bir sayi
+    // verildiginde (ornegin busy retry=10sn) override uygulanir.
+    const overrideNum=Number(overrideMs);
+    const hasOverride=overrideMs!==null&&overrideMs!==undefined&&Number.isFinite(overrideNum)&&overrideNum>0;
+    const waitMs=hasOverride?Math.max(5000,overrideNum):r48638AdaptiveScanIntervalMs();
     autoScanState.nextScanDue=Date.now()+waitMs;
     if(autoTimer)clearTimeout(autoTimer);
     autoTimer=setTimeout(async()=>{
@@ -27899,7 +27906,7 @@ function startAutoTrader() {
       }
       let result=null;
       try{result=await runAutoScan();}catch(_){}
-      scheduleNextScan(result?.skipped==='busy'?10_000:null);
+      scheduleNextScan(result?.skipped==='busy'?10_000:undefined);
     },waitMs);
   }
   scheduleNextScan();
