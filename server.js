@@ -1008,9 +1008,17 @@ const binanceGov = {
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms)||0)));
 function _resetGovWindowIfNeeded() {
+  // ═══ V612 ═══ PENCERE DUVAR SAATINE HIZALANDI.
+  // Binance'in x-mbx-used-weight-1m sayaci duvar saati dakikasinda sifirlanir.
+  // Eski kod pencereyi "now"dan baslatiyordu; iki pencere hicbir zaman ortusmuyor,
+  // r48638SyncGovHeaders'in Math.max'i eski tepe degeri bir dakikaya kadar
+  // kilitli tutuyor ve HER public cagri dakika sonuna kadar uyutuluyordu
+  // (AbortSignal.timeout(30000) once patliyor -> analiz timeout -> 16/16 atlama).
   const now = Date.now();
-  if (now - binanceGov.minuteStart >= 60_000) {
-    binanceGov.minuteStart = now;
+  const _w612 = Math.floor(now / 60000) * 60000;
+  if (binanceGov.windowId !== _w612) {
+    binanceGov.windowId = _w612;
+    binanceGov.minuteStart = _w612;
     binanceGov.usedWeight = 0;
     binanceGov.usedOrders = 0;
   }
@@ -1029,7 +1037,24 @@ function r48638SyncGovHeaders(res) {
 }
 const BINANCE_WEIGHT_LIMIT_1M = 2400;
 const BINANCE_SIGNED_PRIORITY_CEILING = 2320;
-const BINANCE_PUBLIC_RESEARCH_CEILING = 900;
+// ═══ V611 ═══ Public arastirma tavani 900 idi; Binance'in gercek siniri 2400.
+// Olculdu: usedWeight 1463 (imzali cagrilar ayni kovayi kullaniyor) > 900 ->
+// HER public cagri dakika sonuna kadar uyutuluyordu -> 16/16 sembol timeout.
+// 429/418 korumasi (registerHttpBackoffAndThrow) aynen yerinde.
+// ═══ V612 ═══ TEK BUTCE MODELI.
+// TESTNET'te public (fapi.binance.com) ve imzali (testnet.binancefuture.com) AYRI
+// IP kovalariydi. CANLIDA IKISI DE fapi.binance.com -> TEK kova, tek 2400.
+// Iki bagimsiz tavan yerine: toplam sinir eksi emir rezervi.
+const V612_AGIRLIK_SINIR = Math.max(600, Math.min(2400, Number(process.env.V612_AGIRLIK_SINIR || 2400)));
+const V612_EMIR_REZERV   = Math.max(100, Math.min(1200, Number(process.env.V612_EMIR_REZERV   || 500)));
+const BINANCE_PUBLIC_RESEARCH_CEILING = (function(){
+  const _ov = Number(process.env.V611_PUBLIC_CEILING || 0);
+  if (_ov > 0) return Math.max(300, Math.min(2300, _ov));            // eski kacis kapisi
+  return Math.max(300, Math.min(2300, V612_AGIRLIK_SINIR - V612_EMIR_REZERV));
+})();
+// ═══ V611 ═══ Public cagrilar arasi yapay gecikme. 180ms idi; tek sirali kuyrukta
+// 16 cagri = 2,9sn/sembol, 24 sembol = 69sn sirf bekleme.
+const V611_PUBLIC_DELAY_MS = Math.max(0, Math.min(500, Number(process.env.V611_PUBLIC_DELAY_MS || 60)));
 function r48638GovLoadRatio() {
   _resetGovWindowIfNeeded();
   return Math.max(0, Math.min(1.25, Number(binanceGov.usedWeight||0) / BINANCE_WEIGHT_LIMIT_1M));
@@ -1051,7 +1076,7 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
     }
     binanceGov.usedWeight += weight;
     binanceGov.usedOrders += orderWeight;
-    const baseDelay = orderWeight ? 50 : (executionCritical ? 15 : (s.includes('PUBLIC') ? 180 : 100));
+    const baseDelay = orderWeight ? 50 : (executionCritical ? 15 : (s.includes('PUBLIC') ? V611_PUBLIC_DELAY_MS : 100));  // V611
     await sleep(baseDelay);
     if(/positionRisk/i.test(s))posRiskCache.lastGovernorWaitMs=Math.max(0,Date.now()-started-baseDelay);
   };
@@ -1842,7 +1867,278 @@ function _v610Ttl(path, qs){
   }
   return 0;
 }
+// ═══ V612 ═══ "NEHIR" — WEBSOCKET MUM AKISI
+// Mum verisi Binance'te WS uzerinden AGIRLIKSIZ akar. Kodda aggTrade/depth/forceOrder
+// akislari zaten vardi; mum akisi hic yoktu ve tum mumlar REST'ten cekiliyordu
+// (analiz basina 29 agirlik, TOP24 taramasinda ~700 agirlik yalniz mumlar icin).
+// Depo ILK REST cevabindan tohumlanir (ekstra istek YOK), sonra WS ile akar.
+const V612_NEHIR        = String(process.env.V612_NEHIR ?? '1') !== '0';
+const V612_NEHIR_MAX    = Math.max(20,  Math.min(900,  Number(process.env.V612_NEHIR_MAX_AKIS || 240)));
+const V612_NEHIR_SHARD  = Math.max(10,  Math.min(200,  Number(process.env.V612_NEHIR_SHARD    || 60)));
+const V612_NEHIR_BOSTA_DK = Math.max(3, Math.min(120,  Number(process.env.V612_NEHIR_BOSTA_DK || 25)));
+const V612_DENETIM_DK   = Math.max(2,   Math.min(240,  Number(process.env.V612_DENETIM_DK     || 10)));
+const V612_MUM_TUT      = 260;   // depoda tutulan azami kapali mum sayisi
+const _v612IvMs = {'1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'2h':7200000,'4h':14400000,'6h':21600000,'8h':28800000,'12h':43200000,'1d':86400000};
+const _v612Store = new Map();    // "BTCUSDT|15m" -> kayit
+const _v612Baglantilar = [];     // {ws, akislar:Set, kapaliMi}
+let   _v612SonKurulum = 0, _v612SonDenetim = 0, _v612Kuruluyor = false;
+const _v612Sayac = {wsOlay:0, wsDusme:0, depodan:0, restten:0, uyusmazlik:0, kapatilan:0, tohum:0};
+
+function _v612Kayit(sym, iv){
+  const key = sym + '|' + iv;
+  let rec = _v612Store.get(key);
+  if (!rec) {
+    rec = {symbol:sym, interval:iv, ivMs:_v612IvMs[iv]||0, rows:[], forming:null,
+           restFormingVar:null, seededAt:0, lastWsAt:0, lastReqAt:0, bosluk:false,
+           kapali:false, kapatmaSebebi:null, wsOlay:0, depodan:0, restten:0,
+           denetimSira:false, denetimBekleyen:null};
+    _v612Store.set(key, rec);
+  }
+  return rec;
+}
+
+// path+qs -> {symbol, interval, limit} | null   (startTime/endTime iceren istekler HARIC)
+function _v612Coz(path, qs){
+  if (!V612_NEHIR) return null;
+  const p = String(path||'');
+  if (!p.includes('/klines')) return null;
+  const q = String(qs||'');
+  if (/startTime=|endTime=|fromId=/i.test(q)) return null;          // tam tarihli istek -> daima REST
+  const ms = /(?:^|&)symbol=([A-Za-z0-9]+)/.exec(q);
+  const mi = /(?:^|&)interval=([0-9a-zA-Z]+)/.exec(q);
+  if (!ms || !mi) return null;
+  const iv = mi[1];
+  if (!_v612IvMs[iv]) return null;
+  const ml = /(?:^|&)limit=(\d+)/.exec(q);
+  const limit = ml ? Math.max(1, Number(ml[1])) : 500;
+  if (limit > V612_MUM_TUT) return null;                            // depo bu kadar tutmuyor
+  return {symbol: String(ms[1]).toUpperCase(), interval: iv, limit};
+}
+
+function _v612Satir(k){
+  return [Number(k.t), String(k.o), String(k.h), String(k.l), String(k.c), String(k.v),
+          Number(k.T), String(k.q), Number(k.n), String(k.V), String(k.Q), String(k.B ?? '0')];
+}
+
+function _v612WsOlay(d){
+  try{
+    const k = d && d.k; if (!k || !k.i) return;
+    const sym = String(d.s || k.s || '').toUpperCase(); if (!sym) return;
+    const rec = _v612Store.get(sym + '|' + k.i); if (!rec || rec.kapali) return;
+    const row = _v612Satir(k);
+    if (!Number.isFinite(row[0]) || !(row[0] > 0)) return;
+    rec.lastWsAt = Date.now(); rec.wsOlay++; _v612Sayac.wsOlay++;
+    if (k.x === true) {
+      const son = rec.rows[rec.rows.length-1];
+      if (son && Number(son[0]) === row[0]) { rec.rows[rec.rows.length-1] = row; }
+      else if (!son || row[0] > Number(son[0])) {
+        if (son && row[0] !== Number(son[0]) + rec.ivMs) rec.bosluk = true;   // atlanan mum -> REST'e dus
+        rec.rows.push(row);
+        if (rec.rows.length > V612_MUM_TUT) rec.rows.splice(0, rec.rows.length - V612_MUM_TUT);
+      }
+      if (rec.forming && Number(rec.forming[0]) <= row[0]) rec.forming = null;
+    } else {
+      rec.forming = row;
+    }
+  }catch(_){}
+}
+
+// Depodan cevap. SARTLARIN HEPSI saglanmazsa null -> cagri REST'e duser.
+function _v612Sun(sym, iv, limit){
+  if (!V612_NEHIR) return null;
+  const rec = _v612Store.get(sym + '|' + iv);
+  if (!rec || rec.kapali || rec.bosluk || !rec.seededAt || !rec.ivMs) return null;
+  if (rec.denetimSira) return null;                                  // mutabakat turu: zorla REST
+  const now = Date.now();
+  const bayatSinir = Math.max(20000, Math.min(rec.ivMs, 120000));
+  if (!rec.lastWsAt || (now - rec.lastWsAt) > bayatSinir) return null;   // akis bayat
+  const barBasi   = Math.floor(now / rec.ivMs) * rec.ivMs;
+  const sonKapali = barBasi - rec.ivMs;
+  const son = rec.rows[rec.rows.length-1];
+  if (!son || Number(son[0]) !== sonKapali) return null;              // geride kalmis
+  const n = Math.min(rec.rows.length, 12);
+  for (let i = rec.rows.length - n + 1; i < rec.rows.length; i++) {
+    if (Number(rec.rows[i][0]) !== Number(rec.rows[i-1][0]) + rec.ivMs) return null;  // bosluk
+  }
+  if (rec.restFormingVar === true) {
+    const f = (rec.forming && Number(rec.forming[0]) === barBasi) ? rec.forming : null;
+    if (!f) return null;
+    if (rec.rows.length < (limit - 1)) return null;
+    const out = rec.rows.slice(-(limit-1)).map(r=>r.slice()); out.push(f.slice());
+    return out;
+  }
+  if (rec.restFormingVar === false) {
+    if (rec.rows.length < limit) return null;
+    return rec.rows.slice(-limit).map(r=>r.slice());
+  }
+  return null;                                                        // sozlesme henuz gozlemlenmedi
+}
+
+// REST cevabindan tohumla + (denetim turuysa) mutabakat yap.
+function _v612Tohumla(sym, iv, rows){
+  try{
+    if (!V612_NEHIR || !Array.isArray(rows) || rows.length < 3) return;
+    const ivMs = _v612IvMs[iv]; if (!ivMs) return;
+    const rec = _v612Kayit(sym, iv); if (rec.kapali) return;
+    const now = Date.now();
+    const son = rows[rows.length-1];
+    if (!Array.isArray(son) || !Number.isFinite(Number(son[0]))) return;
+    // GOZLEM: REST olusan (kapanmamis) mumu da donduruyor mu?
+    const olusanVar = Number(son[6]) > now;
+    const kapaliDizi = olusanVar ? rows.slice(0,-1) : rows.slice();
+    if (kapaliDizi.length < 2) return;
+    // tazelik: eski onbellekten gelen cevapla depoyu geri sarma
+    const sonKapaliBeklenen = Math.floor(now/ivMs)*ivMs - ivMs;
+    const sonKapaliGelen = Number(kapaliDizi[kapaliDizi.length-1][0]);
+    if (!(sonKapaliGelen >= sonKapaliBeklenen - ivMs)) return;
+
+    // ── MUTABAKAT ──
+    if (rec.denetimSira) {
+      rec.denetimSira = false;
+      const bekl = rec.denetimBekleyen; rec.denetimBekleyen = null;
+      if (Array.isArray(bekl) && bekl.length >= 3) {
+        const a = bekl.slice(-3), b = kapaliDizi.slice(-3);
+        let ayni = a.length === b.length;
+        if (ayni) for (let i=0;i<a.length;i++){
+          if (Number(a[i][0])!==Number(b[i][0]) || String(a[i][1])!==String(b[i][1]) ||
+              String(a[i][2])!==String(b[i][2]) || String(a[i][3])!==String(b[i][3]) ||
+              String(a[i][4])!==String(b[i][4])) { ayni = false; break; }
+        }
+        if (!ayni) {
+          rec.kapali = true; rec.kapatmaSebebi = 'MUTABAKAT_UYUSMAZLIGI';
+          _v612Sayac.uyusmazlik++; _v612Sayac.kapatilan++;
+          try{ logAuto(`\u26a0\ufe0f [V612] ${sym} ${iv} NEHIR KAPATILDI \u2014 REST ile mutabakat tutmadi, bu anahtar REST'e dondu`); }catch(_){}
+          return;
+        }
+      }
+    }
+
+    rec.ivMs = ivMs;
+    rec.restFormingVar = olusanVar;
+    rec.rows = kapaliDizi.slice(-V612_MUM_TUT).map(r=>r.slice());
+    rec.forming = olusanVar ? son.slice() : null;
+    rec.bosluk = false;
+    if (!rec.seededAt) _v612Sayac.tohum++;
+    rec.seededAt = now;
+  }catch(_){}
+}
+
+function _v612Not(m){
+  if (!V612_NEHIR) return;
+  const rec = _v612Kayit(m.symbol, m.interval);
+  rec.lastReqAt = Date.now();
+  rec.ivMs = rec.ivMs || _v612IvMs[m.interval] || 0;
+}
+
+// ── WS baglanti yonetimi: istenen (sembol,zaman dilimi) kumesi degisince yeniden kur ──
+function _v612IstenenAkislar(){
+  const now = Date.now(), bosta = V612_NEHIR_BOSTA_DK*60000;
+  const aday = [];
+  for (const rec of _v612Store.values()){
+    if (rec.kapali) continue;
+    if (!rec.lastReqAt || (now - rec.lastReqAt) > bosta) continue;
+    aday.push(rec);
+  }
+  aday.sort((a,b)=> b.lastReqAt - a.lastReqAt);
+  return aday.slice(0, V612_NEHIR_MAX)
+             .map(r => `${r.symbol.toLowerCase()}@kline_${r.interval}`);
+}
+
+function _v612BaglantiKur(akislar, idx){
+  const url = `${FAPI_WS_MARKET}/stream?streams=${akislar.join('/')}`;
+  const slot = {ws:null, akislar:new Set(akislar), idx, acikMi:false, hata:0};
+  try{
+    const ws = new WebSocket(url);
+    slot.ws = ws;
+    ws.on('open', ()=>{ slot.acikMi = true; });
+    ws.on('message', (raw)=>{
+      try{
+        const j = JSON.parse(raw.toString());
+        const d = j && (j.data || j);
+        if (d && d.e === 'kline') _v612WsOlay(d);
+      }catch(_){}
+    });
+    ws.on('error', ()=>{ slot.hata++; });
+    ws.on('close', ()=>{ slot.acikMi = false; _v612Sayac.wsDusme++; slot.akislar = new Set(); });
+    try{ ws.on('ping', ()=>{ try{ ws.pong(); }catch(_){}} ); }catch(_){}
+  }catch(_){ slot.akislar = new Set(); }
+  _v612Baglantilar[idx] = slot;
+}
+
+function _v612NehirKur(){
+  if (!V612_NEHIR || _v612Kuruluyor) return;
+  _v612Kuruluyor = true;
+  try{
+    const istenen = _v612IstenenAkislar();
+    const parca = [];
+    for (let i=0;i<istenen.length;i+=V612_NEHIR_SHARD) parca.push(istenen.slice(i, i+V612_NEHIR_SHARD));
+    for (let i=0;i<parca.length;i++){
+      const mevcut = _v612Baglantilar[i];
+      const ayni = mevcut && mevcut.acikMi && mevcut.akislar.size === parca[i].length &&
+                   parca[i].every(s=>mevcut.akislar.has(s));
+      if (ayni) continue;
+      try{ mevcut?.ws?.close?.(); }catch(_){}
+      _v612BaglantiKur(parca[i], i);
+    }
+    for (let i=parca.length;i<_v612Baglantilar.length;i++){
+      try{ _v612Baglantilar[i]?.ws?.close?.(); }catch(_){}
+      _v612Baglantilar[i] = null;
+    }
+    _v612SonKurulum = Date.now();
+  }catch(_){}
+  finally{ _v612Kuruluyor = false; }
+}
+
+// mutabakat sirasi: her turda EN ESKI denetlenmis bir anahtari zorla REST'e dusur
+function _v612DenetimSec(){
+  try{
+    const now = Date.now();
+    if (now - _v612SonDenetim < V612_DENETIM_DK*60000) return;
+    _v612SonDenetim = now;
+    let hedef = null;
+    for (const rec of _v612Store.values()){
+      if (rec.kapali || !rec.seededAt || rec.denetimSira) continue;
+      if (!rec.depodan) continue;                       // hic depodan sunmadiysa denetlemeye gerek yok
+      if (!hedef || (rec.sonDenetim||0) < (hedef.sonDenetim||0)) hedef = rec;
+    }
+    if (!hedef) return;
+    hedef.sonDenetim = now;
+    hedef.denetimBekleyen = hedef.rows.slice(-3).map(r=>r.slice());
+    hedef.denetimSira = true;                            // bir sonraki cagri REST'e duser ve karsilastirilir
+  }catch(_){}
+}
+
+if (V612_NEHIR) {
+  try{
+    const _t612 = setInterval(()=>{ _v612NehirKur(); _v612DenetimSec(); }, 15000);
+    _t612.unref?.();
+  }catch(_){}
+}
+
 async function bPub(path, qs='') {
+  // ═══ V612 ═══ once NEHIR (WS mum deposu), sonra V610 onbellegi, sonra REST
+  const _m612 = _v612Coz(path, qs);
+  if (_m612) {
+    _v612Not(_m612);
+    const _hit = _v612Sun(_m612.symbol, _m612.interval, _m612.limit);
+    if (_hit) {
+      const _r = _v612Store.get(_m612.symbol+'|'+_m612.interval);
+      if (_r) _r.depodan++;
+      _v612Sayac.depodan++;
+      return _hit;
+    }
+  }
+  const _sonuc = await _v612BPubOnbellek(path, qs);
+  if (_m612) {
+    const _r = _v612Store.get(_m612.symbol+'|'+_m612.interval);
+    if (_r) _r.restten++;
+    _v612Sayac.restten++;
+    _v612Tohumla(_m612.symbol, _m612.interval, _sonuc);
+  }
+  return _sonuc;
+}
+
+async function _v612BPubOnbellek(path, qs='') {
   // ═══ V610 ═══ onbellek + ucus-halinde birlestirme
   if (String(process.env.V610_ONBELLEK || '1') !== '0') {
     const _k = String(path||'') + '|' + String(qs||'');
@@ -10425,14 +10721,29 @@ function r501EvidenceFunnel(ev={}){
 async function r501HttpJson(url,timeoutMs=9000){
   const t0=Date.now();let timer=null;
   try{
-    const ctrl=new AbortController();timer=setTimeout(()=>ctrl.abort(),timeoutMs);const res=await fetch(url,{signal:ctrl.signal,headers:{'User-Agent':'Lazarus-V592-Dual-Lane-EOM/4.3','Accept':'application/json'}});const text=await res.text();let data=null;try{data=JSON.parse(text);}catch(_){data=text.slice(0,500);}return {ok:res.ok,status:res.status,data,latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(new URL(url)).pathname};
+    const ctrl=new AbortController();timer=setTimeout(()=>ctrl.abort(),timeoutMs);const res=await fetch(url,{signal:ctrl.signal,headers:{'User-Agent':'Lazarus-V592-Dual-Lane-EOM/4.3','Accept':'application/json'}});try{r48638SyncGovHeaders(res);}catch(_){}const text=await res.text();let data=null;try{data=JSON.parse(text);}catch(_){data=text.slice(0,500);}return {ok:res.ok,status:res.status,data,latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(new URL(url)).pathname};
   }catch(e){return {ok:false,status:0,error:safeErrMsg(e),latencyMs:Date.now()-t0,capturedAt:Date.now(),urlPath:(()=>{try{return(new URL(url)).pathname}catch(_){return''}})()};}
   finally{if(timer)clearTimeout(timer);}
 }
 const r501PublicQueue=[];let r501PublicQueueBusy=false;let r501PublicQueueLastAt=0;
 function r501QueuePublic(task){return new Promise(resolve=>{r501PublicQueue.push({task,resolve});r501DrainPublicQueue();});}
 async function r501DrainPublicQueue(){if(r501PublicQueueBusy)return;r501PublicQueueBusy=true;try{while(r501PublicQueue.length){const x=r501PublicQueue.shift(),wait=Math.max(0,250-(Date.now()-r501PublicQueueLastAt));if(wait)await new Promise(r=>setTimeout(r,wait));let out;try{out=await x.task();}catch(e){out={ok:false,status:0,error:safeErrMsg(e),capturedAt:Date.now()};}r501PublicQueueLastAt=Date.now();try{x.resolve(out);}catch(_){}}}finally{r501PublicQueueBusy=false;}}
-function r501Pub(endpoint,params={}){const u=new URL(endpoint,FAPI);for(const[k,v]of Object.entries(params)){if(v!==undefined&&v!==null&&v!=='')u.searchParams.set(k,String(v));}return r501QueuePublic(()=>r501HttpJson(u.toString()));}
+// ═══ V612 ═══ KANIT TOPLAYICI ARTIK GOVERNOR'A YAZIYOR.
+// r501RestBundle tek seferde ~92 agirlik harciyordu (aggTrades limit=1000 = 20,
+// 12 x klines limit=120 = 60, depth limit=100 = 5, ...) ve bunlarin hicbiri
+// binanceGov'a islenmiyordu. Governor kendi harcadigini bilmedigi icin public
+// tarama acliktan oluyordu. Kanit toplama KAPANMAZ, sadece sayilir.
+function _v612R501Agirlik(endpoint, params){
+  const p = String(endpoint||''), lim = Number(params?.limit||0);
+  if (p.includes('/aggTrades'))    return lim > 500 ? 20 : (lim > 100 ? 5 : 2);
+  if (p.includes('/klines'))       return lim > 100 ? 5 : 2;
+  if (p.includes('/depth'))        return lim > 100 ? 10 : 5;
+  if (p.includes('/ticker/24hr'))  return params?.symbol ? 1 : 40;
+  return 1;
+}
+function r501Pub(endpoint,params={}){const u=new URL(endpoint,FAPI);for(const[k,v]of Object.entries(params)){if(v!==undefined&&v!==null&&v!=='')u.searchParams.set(k,String(v));}
+  const _w = _v612R501Agirlik(endpoint, params);
+  return r501QueuePublic(async ()=>{ try{ await binanceThrottle('PUBLIC_REST:R501_KANIT', _w, 0); }catch(_){} return r501HttpJson(u.toString()); });}
 
 function r501AggSummary(rows=[]){
   let buy=0,sell=0,qty=0,notional=0,firstTs=null,lastTs=null;
@@ -19443,6 +19754,43 @@ app.get('/api/analyze/:symbol', async (req, res) => {
 
 // ── HESAP ─────────────────────────────────────────────────────────────────────
 // ── RAILWAY IP — Binance IP whitelist için ────────────────────────────────────
+// ═══ V612 ═══ NEHIR DURUM UCU — disaridan dogrulanabilir olsun diye.
+// Beklenen saglikli tablo: akislar>0, depodan >> restten, uyusmazlik=0, kapatilan=0.
+app.get('/api/v612/nehir', (_req, res) => {
+  try{
+    const now = Date.now();
+    const anahtarlar = [];
+    for (const rec of _v612Store.values()){
+      anahtarlar.push({
+        sembol: rec.symbol, dilim: rec.interval,
+        tohumlandi: !!rec.seededAt,
+        restOlusanMumVeriyor: rec.restFormingVar,
+        kapaliMum: rec.rows.length,
+        sonKapaliOpenTime: rec.rows.length ? Number(rec.rows[rec.rows.length-1][0]) : null,
+        beklenenSonKapali: rec.ivMs ? (Math.floor(now/rec.ivMs)*rec.ivMs - rec.ivMs) : null,
+        olusanMumVar: !!rec.forming,
+        wsYasSn: rec.lastWsAt ? Math.round((now-rec.lastWsAt)/1000) : null,
+        wsOlay: rec.wsOlay, depodan: rec.depodan, restten: rec.restten,
+        bosluk: !!rec.bosluk, kapali: !!rec.kapali, kapatmaSebebi: rec.kapatmaSebebi
+      });
+    }
+    anahtarlar.sort((a,b)=> (b.depodan+b.restten)-(a.depodan+a.restten));
+    res.json({ok:true, build:LAZARUS_BUILD, aktif:V612_NEHIR,
+      ayar:{maxAkis:V612_NEHIR_MAX, shard:V612_NEHIR_SHARD, bostaDk:V612_NEHIR_BOSTA_DK, denetimDk:V612_DENETIM_DK, mumTut:V612_MUM_TUT},
+      baglanti: _v612Baglantilar.filter(Boolean).map((s,i)=>({no:i, acik:!!s.acikMi, akisSayisi:s.akislar.size, hata:s.hata})),
+      sayac: _v612Sayac,
+      governor: {
+        pencereBasi: binanceGov.minuteStart,
+        pencereDuvarSaatiHizali: binanceGov.minuteStart === Math.floor(binanceGov.minuteStart/60000)*60000,
+        kullanilanAgirlik: binanceGov.usedWeight,
+        publicTavan: BINANCE_PUBLIC_RESEARCH_CEILING,
+        toplamSinir: V612_AGIRLIK_SINIR,
+        emirRezerv: V612_EMIR_REZERV
+      },
+      anahtarSayisi: anahtarlar.length, anahtarlar: anahtarlar.slice(0,120)});
+  }catch(e){ res.status(500).json({ok:false, error:String(e?.message||e)}); }
+});
+
 app.get('/api/my-ip', async (_req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   const providers = [
