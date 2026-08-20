@@ -1,11 +1,12 @@
 {
-  "name": "lazarus-v610-canli",
-  "version": "6.1.0",
+  "name": "lazarus-v614-canli",
+  "version": "6.1.4",
   "private": true,
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js",
+    "test": "node --test tests/*.test.js"
   },
   "engines": {
     "node": ">=22"
