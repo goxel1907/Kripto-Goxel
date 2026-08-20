@@ -1817,7 +1817,56 @@ async function installSLTPWithProof(apiKey, apiSecret, symbol, closeSide, slPric
   };
 }
 
+// ═══ V610 ═══ MUM RITMINE KILITLI PUBLIC ONBELLEK ("nehir")
+// Kapali mum verisi bir sonraki mum kapanana kadar degismez; o yuzden TTL'i
+// sabit saniye degil, BIR SONRAKI MUM KAPANISI belirler. Alt zaman dilimleri
+// hizli, ust zaman dilimleri yavas tazelenir. Emir defteri hic onbellege alinmaz.
+const _v610Cache = new Map();      // key -> {t, exp, val}
+const _v610Inflight = new Map();   // key -> Promise   (ayni istek iki kez ucmaz)
+const _v610IvMs = {'1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'2h':7200000,'4h':14400000,'6h':21600000,'12h':43200000,'1d':86400000};
+const _v610IvCap = {'1m':30000,'3m':60000,'5m':90000,'15m':240000,'30m':480000,'1h':900000,'2h':1200000,'4h':1800000,'6h':2400000,'12h':3000000,'1d':3600000};
+function _v610Ttl(path, qs){
+  const p = String(path||''), q = String(qs||'');
+  if (/\/depth/i.test(p)) return 0;                                  // emir defteri: ASLA
+  if (/\/ticker\/24hr/i.test(p)) return 20000;                        // tum piyasa dokumu
+  if (/\/openInterest$|\/premiumIndex/i.test(p)) return 15000;
+  if (/futures\/data/i.test(p)) return 60000;
+  if (/\/klines/i.test(p)) {
+    const m = /interval=([0-9a-zA-Z]+)/.exec(q);
+    const iv = m ? m[1] : '';
+    const ms = _v610IvMs[iv]; const cap = _v610IvCap[iv];
+    if (!ms || !cap) return 0;
+    const now = Date.now();
+    const nextClose = Math.ceil(now/ms)*ms;                            // bir sonraki mum kapanisi
+    return Math.max(3000, Math.min(cap, (nextClose - now) + 2000));    // +2sn Binance yayin payi
+  }
+  return 0;
+}
 async function bPub(path, qs='') {
+  // ═══ V610 ═══ onbellek + ucus-halinde birlestirme
+  if (String(process.env.V610_ONBELLEK || '1') !== '0') {
+    const _k = String(path||'') + '|' + String(qs||'');
+    const _ttl = _v610Ttl(path, qs);
+    if (_ttl > 0) {
+      const _c = _v610Cache.get(_k);
+      if (_c && _c.exp > Date.now()) return _c.val;
+    }
+    const _fly = _v610Inflight.get(_k);
+    if (_fly) return _fly;                                             // ayni istek zaten uculuyor
+    const _pr = (async () => {
+      const _out = await _bPubRaw(path, qs);
+      if (_ttl > 0) {
+        _v610Cache.set(_k, {t:Date.now(), exp:Date.now()+_ttl, val:_out});
+        if (_v610Cache.size > 4000) { for (const kk of [..._v610Cache.keys()].slice(0,1500)) _v610Cache.delete(kk); }
+      }
+      return _out;
+    })();
+    _v610Inflight.set(_k, _pr);
+    try { return await _pr; } finally { _v610Inflight.delete(_k); }
+  }
+  return _bPubRaw(path, qs);
+}
+async function _bPubRaw(path, qs='') {
   const now=Date.now();
   _resetGovWindowIfNeeded();
   const passiveResearch=/\/(depth|openInterest|fundingRate|premiumIndex|futures\/data|ticker\/bookTicker)/i.test(String(path||''));
