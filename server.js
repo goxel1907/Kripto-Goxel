@@ -306,15 +306,16 @@ app.get(['/', '/index.html'], (_req,res)=>{
   S('V601_PARITE_SERT','0');        // parite engelleri bloklamasin
   S('V601_SL_MOD','golge');         // ÖNCE GÖLGE — dogrulayinca 'aktif' yap
 
-  // ── MARJ SOZLESMESI (senin istedigin) ──────────────────────────────
-  S('V601_MARJ_TABAN','30');        // normal sizing tabani; R491/R495/R497 guvenlik tavani daha onceliklidir
-  S('V601_MARJ_TAVAN','30');        // bilesik buyume 30'da durur
+  // ── MARJ SOZLESMESI (30$ mutlak taban, 100$ bilesik tavan) ─────────
+  S('V601_MARJ_TABAN','30');
+  S('V601_MARJ_TAVAN','100');
   S('R497_FIXED_SLOT_ACTIVE','1');
   S('R497_SLOT_MARGIN_USDT','30');
   S('R497_MIN_BUFFER_USDT','20');
-  S('R497_ABOVE_CAP_MODE','HOLD_FIXED');
+  S('R497_ABOVE_CAP_MODE','PCT_COMPOUND');
   S('R486_MAX_POSITIONS','2');
   S('R486_COMPOUND_MARGIN_ACTIVE','1');
+  S('R486_ABSOLUTE_MIN_MARGIN','30');
   S('R495_FINAL_RISK_PCT','4');
   S('R495_MIN_SAFE_MARGIN_USDT','6');
 
@@ -457,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_1_4_CANLI_SL_REWRITE_STOP_NOW'
+const LAZARUS_BUILD = 'V6_1_5_CANLI_MARGIN_30_100_HARD'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6233,11 +6234,15 @@ const R497_MIN_QUOTE_VOLUME = Math.max(1_000_000, Number(process.env.R497_MIN_QU
 const R497_LIQUID_CONTROL_SHADOW_ACTIVE = String(process.env.R497_LIQUID_CONTROL_SHADOW_ACTIVE ?? '1') !== '0';
 const R497_MEDIUM_RISK_SCALE = Math.max(.20, Math.min(.90, Number(process.env.R497_MEDIUM_RISK_SCALE || .55)));
 const R497_WEAK_RISK_SCALE = Math.max(.10, Math.min(.60, Number(process.env.R497_WEAK_RISK_SCALE || .25)));
+// V6.1.5 kullanici marj sozlesmesi: env'de eski 15/30/HOLD_FIXED degerleri kalsa
+// bile gercek emir 30$ altina inemez ve bilesik slot 100$ ustune cikamaz.
+const V601_HARD_MARGIN_FLOOR_USDT = 30;
+const V601_HARD_MARGIN_CAP_USDT = 100;
 const R497_FIXED_SLOT_ACTIVE = String(process.env.R497_FIXED_SLOT_ACTIVE ?? '1') !== '0';
-const R497_SLOT_MARGIN_USDT = Math.max(6, Math.min(5000, Number(process.env.R497_SLOT_MARGIN_USDT || 30)));
+const R497_SLOT_MARGIN_USDT = V601_HARD_MARGIN_FLOOR_USDT;
 const R497_MIN_BUFFER_USDT = Math.max(0, Math.min(5000, Number(process.env.R497_MIN_BUFFER_USDT || 20)));
 const R497_FIXED_UNTIL_EQUITY_USDT = Math.max(R497_SLOT_MARGIN_USDT*2+R497_MIN_BUFFER_USDT, Number(process.env.R497_FIXED_UNTIL_EQUITY_USDT || 200));
-const R497_ABOVE_CAP_MODE = String(process.env.R497_ABOVE_CAP_MODE || 'HOLD_FIXED').trim().toUpperCase();
+const R497_ABOVE_CAP_MODE = 'PCT_COMPOUND';
 const R496_SHADOW_ACTIVE = String(process.env.R496_SHADOW_ACTIVE ?? '1') !== '0';
 // Sanal test modu acilirsa varsayilan baslangic 100 USDT'dir; canlida bu yol kapali olmalidir.
 const TESTNET_VIRTUAL_EQUITY_ACTIVE = String(process.env.TESTNET_VIRTUAL_EQUITY_ACTIVE ?? '1') !== '0';
@@ -6283,7 +6288,7 @@ function r496ShadowRecord(payload={}) {
   if(r496ShadowRecent.length>500)r496ShadowRecent.length=500;
 }
 
-const R486_ABSOLUTE_MIN_MARGIN = Math.max(0, Number(process.env.R486_ABSOLUTE_MIN_MARGIN || 0));
+const R486_ABSOLUTE_MIN_MARGIN = V601_HARD_MARGIN_FLOOR_USDT;
 const R486_FINAL_SL_LEV_RISK_ROI = Math.max(15, Math.min(60, Number(process.env.R486_FINAL_SL_LEV_RISK_ROI || 25)));
 
 // ═══ R490 DRAWDOWN THROTTLE — sermaye koruma · durable state + atomik yazım + açık telemetri ═══
@@ -6489,12 +6494,16 @@ function r48636CompoundMarginFromEquity(equity, maxPositions=R486_MAX_POSITIONS)
   if (!(eq > 0)) return {ok:false,equity:0,margin:0,perPositionPct:0,totalUsePct:0,bufferPct:0};
   const ddT = r490DdThrottleFactor(eq);
   if (R497_FIXED_SLOT_ACTIVE) {
-    // Şimdilik 200$ sonrasında da aynı 41$ slot tutulur. Sonraki karar yalnız ENV ile değiştirilir.
+    // 200$ equity'ye kadar 30$ sabit slot; sonrasinda yuzdesel bilesik buyume,
+    // fakat her kosulda 30$ taban / 100$ tavan sozlesmesi korunur.
     let rawSlot=R497_SLOT_MARGIN_USDT;
     if (eq>R497_FIXED_UNTIL_EQUITY_USDT && R497_ABOVE_CAP_MODE==='PCT_COMPOUND') rawSlot=eq*R486_MARGIN_PER_POSITION_PCT;
+    rawSlot=Math.max(V601_HARD_MARGIN_FLOOR_USDT,Math.min(V601_HARD_MARGIN_CAP_USDT,rawSlot));
     const maxPerByBuffer=Math.max(0,(eq-R497_MIN_BUFFER_USDT)/mp);
     const slot=Math.max(0,Math.min(rawSlot,maxPerByBuffer));
-    const margin=slot*ddT.factor;
+    const margin=maxPerByBuffer>=V601_HARD_MARGIN_FLOOR_USDT
+      ? Math.min(V601_HARD_MARGIN_CAP_USDT,Math.max(V601_HARD_MARGIN_FLOOR_USDT,slot*ddT.factor))
+      : slot;
     return {ok:margin>0,equity:+eq.toFixed(8),margin:+margin.toFixed(2),maxPositions:mp,
       fixedSlotActive:true,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquity:R497_FIXED_UNTIL_EQUITY_USDT,
       aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,
@@ -20018,10 +20027,14 @@ app.get('/api/chart/live/:symbol', async (req,res)=>{
 
 // ── EMİR AÇ ──────────────────────────────────────────────────────────────────
 app.post('/api/order', async (req, res) => {
-  const{symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount,maxPositions}=req.body;
+  const{symbol,side,leverage,marginType,targetPrice,stopPrice,usdtAmount:requestedUsdtAmount,maxPositions}=req.body;
   const{apiKey,apiSecret}=r486391BinanceCreds();
-  if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!usdtAmount)
+  const _v615RequestedMargin=Number(requestedUsdtAmount);
+  if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!Number.isFinite(_v615RequestedMargin)||_v615RequestedMargin<=0)
     return res.status(400).json({error:'Eksik parametre'});
+  // V6.1.5 tek ve ortak emir sozlesmesi: otomatik, AI ve panel dahil tum giris
+  // yollarinda gercek marj 30 USDT'den az, 100 USDT'den fazla olamaz.
+  const usdtAmount=+Math.max(V601_HARD_MARGIN_FLOOR_USDT,Math.min(V601_HARD_MARGIN_CAP_USDT,_v615RequestedMargin)).toFixed(4);
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
   // V6.1.4: Durdur'a basılmadan önce başlayan bir tarama, uzun analiz/API
   // bekleyişinden dönüp emir gönderemez. Manuel panel emirlerinde autoOrder yoktur.
@@ -20032,7 +20045,7 @@ app.post('/api/order', async (req, res) => {
       return res.status(409).json({ok:false,error:'AUTO_STOPPED_BEFORE_ORDER_SEND',requestGeneration,currentGeneration:autoStopGeneration});
     }
   }
-  const orderAttemptId=`${sym}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;r501OrderLifeMark(sym,'ORDER_REQUEST_RECEIVED',{attemptId:orderAttemptId,side:String(side||'').toUpperCase(),requestedLeverage:Number(leverage),requestedMarginUSDT:Number(usdtAmount),targetPrice:Number(targetPrice),stopPrice:Number(stopPrice)});
+  const orderAttemptId=`${sym}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;r501OrderLifeMark(sym,'ORDER_REQUEST_RECEIVED',{attemptId:orderAttemptId,side:String(side||'').toUpperCase(),requestedLeverage:Number(leverage),requestedMarginUSDT:_v615RequestedMargin,effectiveMarginUSDT:usdtAmount,marginContractAdjusted:Math.abs(usdtAmount-_v615RequestedMargin)>1e-9,targetPrice:Number(targetPrice),stopPrice:Number(stopPrice)});
   const isLong=side.toUpperCase()==='LONG';
   const oSide=isLong?'BUY':'SELL', cSide=isLong?'SELL':'BUY';
   try{
@@ -24057,7 +24070,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:'R497: point-in-time SOFT risk-scale (hard veto yok) + R495 exact üç kapalı 1m kabul; slot başı sabit 41$ · min 20$ tampon · 200$ üstü HOLD_FIXED; R496 shadow',scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:`R497: point-in-time SOFT risk-scale + R495 exact üç kapalı 1m kabul; mutlak marj ${V601_HARD_MARGIN_FLOOR_USDT}$–${V601_HARD_MARGIN_CAP_USDT}$ · ${R497_FIXED_UNTIL_EQUITY_USDT}$ üstü ${R497_ABOVE_CAP_MODE}; R496 shadow`,scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -27258,13 +27271,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             const _radarCap497=Number(r389PanelMarj)*_radarScale497;
             const _before495 = Number(usdtAmount);
             let _final495 = +Math.min(_before495,Number(r389PanelMarj),_scaleCap495,_riskCap495,_brakeCap495,_radarCap497).toFixed(4);  // V601: const -> let (kelepce icin)
-            // ═══ V601 MARJ KELEPCESI ═══
-            // Taban normal sizing icin hedeftir; R491/R495/R497 guvenlik tavanlari
-            // marji tabanin altina indirmisse taban bunlari geri buyutemez.
-            // OLCULDU: taban 30 - tavan 30 - 7x -> 295 islem, 100 -> 695 USDT, PF 1,52
-            //          ("atla" mantigiyla ayni ayar 4 islem veriyordu - band carpani yuzunden)
-            const _v601Taban = Math.max(0, Number(process.env.V601_MARJ_TABAN || 30));
-            const _v601Tavan = Math.max(_v601Taban, Number(process.env.V601_MARJ_TAVAN || 30));
+            // ═══ V601 MUTLAK MARJ SOZLESMESI ═══
+            // R491/R493/R495/R497 risk olcekleri firsati siniflandirabilir; fakat gercek emir
+            // aciliyorsa 30$ altina indiremez. Fiziksel tampon 30$'i karsilamiyorsa kucuk emir
+            // gondermek yerine fail-closed atlanir. Bilesik buyumenin sert tavani 100$'dir.
+            const _v601Taban = V601_HARD_MARGIN_FLOOR_USDT;
+            const _v601Tavan = V601_HARD_MARGIN_CAP_USDT;
             if (_v601Taban > 0) {
               // ═══ V603 ═══ Taban MUTLAK. Fiziksel sinir R490 dusus-freni degil, TAMPON.
               // V601'de _v601Bos = r389PanelMarj idi; o deger zaten ddT.factor ile kirpilmis
@@ -27279,11 +27291,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                 markAutoSkip(coin.symbol, _why603, {rec:recommendation, score, aiBrain:decisionChain?.aiBrain});
                 continue;
               }
-              // V601 tabani bir risk tavanini ASLA yukari itemez. R491/R495/R497
-              // _final495'i kucultmusse bu guvenlik karari kesin otoritedir.
-              const _v601Yeni = Math.min(_final495, _v601Tavan, _v603Bos);
+              const _v601Yeni = Math.max(_v601Taban, Math.min(_final495, _v601Tavan, _v603Bos));
               if (_final495 + 1e-9 < _v601Taban) {
-                logAuto(`🛑 ${coin.symbol} V601 taban ${_v601Taban}$ uygulanmadi: R491/R495/R497 guvenlik tavani ${_final495.toFixed(2)}$ daha oncelikli`);
+                logAuto(`🧱 ${coin.symbol} V601 MUTLAK TABAN: R491/R493/R495/R497 ${_final495.toFixed(2)}$ onerdi → ${_v601Taban.toFixed(2)}$ uygulandi`);
               }
               if (Math.abs(_v601Yeni - _final495) > 1e-9) {
                 logAuto(` ${coin.symbol} V601 marj kelepce: ${_final495.toFixed(2)}$ → ${_v601Yeni.toFixed(2)}$ (taban ${_v601Taban} · tavan ${_v601Tavan})`);
@@ -27292,7 +27302,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             }
             const _initialRisk495 = _final495*_lev495*(_sl495/100);
             const _riskPct495 = _eq495>0?_initialRisk495/_eq495*100:null;
-            const _v601MinMarj = _v601Taban > 0 ? Math.min(R495_MIN_SAFE_MARGIN_USDT, _v601Taban) : R495_MIN_SAFE_MARGIN_USDT;
+            const _v601MinMarj = Math.max(R495_MIN_SAFE_MARGIN_USDT, _v601Taban);
             if (!(_final495>=_v601MinMarj)) {
               const _why=`R495 güvenli marj ${_final495.toFixed(2)}$ < minimum ${R495_MIN_SAFE_MARGIN_USDT}$ (equity ${_eq495.toFixed(2)} · SL %${_sl495.toFixed(2)} · ${_lev495}x)`;
               logAuto(`⛔ ${coin.symbol} ${_why} — risk tavanını aşmak yerine işlem açılmadı`);
@@ -27351,6 +27361,17 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           try{r501OrderLifeMark(coin.fullSymbol,'ORDER_REJECTED',{reason:'AUTO_STOP_GENERATION_STALE',scanStopGeneration,currentGeneration:autoStopGeneration});}catch(_){ }
           return {skipped:'stopped'};
         }
+        // V6.1.5 son savunma: gelecekte eklenecek hicbir sizing katmani da /api/order'a
+        // 30$ altinda veya 100$ ustunde marj tasiyamasin.
+        const _v615MarginBeforeOrder=Number(usdtAmount);
+        if(!Number.isFinite(_v615MarginBeforeOrder)||_v615MarginBeforeOrder<=0){
+          const _v615Why=`V615 emir marji gecersiz: ${String(usdtAmount)}`;
+          logAuto(`⛔ ${coin.symbol} ${_v615Why} — emir gonderilmedi`);
+          markAutoSkip(coin.symbol,_v615Why,{rec:recommendation,score,aiBrain:decisionChain?.aiBrain});
+          continue;
+        }
+        usdtAmount=+Math.max(V601_HARD_MARGIN_FLOOR_USDT,Math.min(_v615MarginBeforeOrder,V601_HARD_MARGIN_CAP_USDT)).toFixed(4);
+        if(Math.abs(usdtAmount-_v615MarginBeforeOrder)>1e-9) logAuto(`🛡️ ${coin.symbol} V615 mutlak marj sozlesmesi: ${_v615MarginBeforeOrder.toFixed(2)}$ → ${usdtAmount.toFixed(2)}$`);
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} (Binance yedek · canlı kesiş ~-%2) kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
           // V5.1.1: emir cagrisi da timeout'suzdu; takilirsa tarama dongusu
@@ -28543,7 +28564,7 @@ function r613ExecutionStatusPayload(){
     marketDataEnvironment:BINANCE_MARKET_DATA_ENV,executionBase:isLive?'Binance USD-M Futures LIVE':'Binance USD-M Futures Testnet',
     hardLockedTestnet:!isLive,liveTrading:isLive,armed,credentialsReady:!!(c.apiKey&&c.apiSecret),
     credentialSource:c.source,requiredEnv:c.envVars,session:isLive?null:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR,
-    sizing:{fixedSlotUSDT:R497_SLOT_MARGIN_USDT,minLeverage:R486_MIN_LEVERAGE,maxPositions:R486_MAX_POSITIONS,minBufferUSDT:R497_MIN_BUFFER_USDT},
+    sizing:{fixedSlotUSDT:R497_SLOT_MARGIN_USDT,hardFloorUSDT:V601_HARD_MARGIN_FLOOR_USDT,hardCapUSDT:V601_HARD_MARGIN_CAP_USDT,compoundMode:R497_ABOVE_CAP_MODE,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,minLeverage:R486_MIN_LEVERAGE,maxPositions:R486_MAX_POSITIONS,minBufferUSDT:R497_MIN_BUFFER_USDT},
     parityGate:{ok:!V592_TRADING_HARD_BLOCK,hardBlock:V592_TRADING_HARD_BLOCK},
     parityPolicy:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,policyParity:true,fullCandidateRegenerationIndependentlyReproducible:false,r501Gate:false,r502Gate:false,liveResearchDecisionImpact:false,liveResearchSizingImpact:false,liveResearchOrderBlocking:false,evidenceMode:'PASSIVE_DUAL_LANE_EOM_ATC_RECORDER_V4_4'}};
 }
@@ -28669,16 +28690,12 @@ function v592BootParityGate(){
   if(!eq(R493_MIN_FIRST_OBSTACLE_RR,0.35)) hata.push(`R493_FO_035_DEGIL:${R493_MIN_FIRST_OBSTACLE_RR}`);
   if(!eq(R486_FIRST_OBSTACLE_MIN_RR,0.35)) hata.push(`R486_FO_035_DEGIL:${R486_FIRST_OBSTACLE_MIN_RR}`);
   if(R497_FIXED_SLOT_ACTIVE!==true) hata.push('FIXED_SLOT_KAPALI');
-  // ═══ V602 ═══ Slot marji V601 marj tavaniyla eslesmeli (olculen kurulum 30$).
-  // Eski sert sozlesme (41$) icin: V601_PARITE_SERT=1
-  {
-    const _v602Sert = String(process.env.V601_PARITE_SERT||'0')==='1';
-    const _v602BekSlot = _v602Sert ? 41 : Math.max(6, Number(process.env.V601_MARJ_TAVAN || 30));
-    if(!eq(R497_SLOT_MARGIN_USDT,_v602BekSlot))
-      hata.push(`SLOT_MARJ_UYUSMAZ:${R497_SLOT_MARGIN_USDT}!=${_v602BekSlot}`);
-  }
+  // V6.1.5: slot tabani 30$, bilesik buyume tavani 100$; iki kavram ayridir.
+  if(!eq(R497_SLOT_MARGIN_USDT,V601_HARD_MARGIN_FLOOR_USDT))
+    hata.push(`SLOT_MARJ_TABANI_UYUSMAZ:${R497_SLOT_MARGIN_USDT}!=${V601_HARD_MARGIN_FLOOR_USDT}`);
+  if(!eq(V601_HARD_MARGIN_CAP_USDT,100)) hata.push(`MARJ_TAVANI_100_DEGIL:${V601_HARD_MARGIN_CAP_USDT}`);
   if(!eq(R497_MIN_BUFFER_USDT,20)) hata.push(`BUFFER_20_DEGIL:${R497_MIN_BUFFER_USDT}`);
-  if(String(R497_ABOVE_CAP_MODE)!=='HOLD_FIXED') hata.push(`ABOVE_CAP_HOLD_FIXED_DEGIL:${R497_ABOVE_CAP_MODE}`);
+  if(String(R497_ABOVE_CAP_MODE)!=='PCT_COMPOUND') hata.push(`ABOVE_CAP_PCT_COMPOUND_DEGIL:${R497_ABOVE_CAP_MODE}`);
   if(Number(R486_MAX_POSITIONS)!==2) hata.push(`MAX_POS_2_DEGIL:${R486_MAX_POSITIONS}`);
   if(!eq(R495_FINAL_RISK_PCT,4)) hata.push(`RISK_4_DEGIL:${R495_FINAL_RISK_PCT}`);
   // V504: R495'in DORT limiti de backtest verisinden turetilmis olmali.
