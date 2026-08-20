@@ -373,7 +373,7 @@ let testnetSessionState=initTestnetSession();
 let testnetExpiryLogAt=0;
 function testnetSessionStatus(){
   const now=Date.now(), expiresAt=Number(testnetSessionState?.expiresAt||0), remainingMs=Math.max(0,expiresAt-now);
-  return {executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,
+  return {executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:BINANCE_EXECUTION_ENV==='TESTNET',
     resetId:TESTNET_SESSION_RESET_ID,startedAt:Number(testnetSessionState?.startedAt||now),expiresAt,configuredHours:TESTNET_SESSION_HOURS,
     unlimited:false,expired:remainingMs<=0,remainingMs,autoStopOnExpiry:TESTNET_SESSION_AUTO_STOP};
 }
@@ -458,28 +458,40 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_1_8_CANLI_SCAN_CADENCE_GUARD'
+const LAZARUS_BUILD = 'V6_1_9_GRAPH_FIRST_WEIGHTED_OPPORTUNITY'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
-// liquidation or source-freshness history. Those sensors therefore remain LIVE and
-// fully archived, but are neutralized before strategy scoring/gating/sizing.
-// Existing OHLCV/chart/PIT/R495/R497 policy remains active. Execution safety remains
-// active only for Testnet credentials, current position truth, margin/precision,
-// exchange acceptance, real SL/TP verification and reduce-only exits.
+// liquidation or source-freshness history. The historical authority remains the
+// OHLCV/chart layer. V6.1.9 additionally consumes a separate, rate-limited live
+// confirmation snapshot: it contributes only 30% of opportunity score, never opens
+// or vetoes alone and never changes size/exit. Execution safety is independent.
 const V592_POLICY_PARITY_MODE = true;
 const V592_RESEARCH_PASSIVE_ONLY = true;
-// V6.1.7: Canli mikro veriyi eski (bloklayan) analiz hot-path'ine geri acmiyoruz.
-// Bunun yerine TOP24 icin arka planda, ayri butceli bir yardimci katman kullanilir.
-// Katman yalniz esit/benzer kapali-OHLCV adaylarinin siralamasinda tie-break yapar;
-// islem acmaz, baseline adayi veto etmez, marji/SL/TP'yi veya cikisi degistirmez.
-// Veri yok/bayat/butce doluysa sifir puanla fail-open olur; tarama onu ASLA beklemez.
+// Canli mikro veri eski bloklayan analiz hot-path'ine geri acilmaz. TOP24 icin arka
+// planda ayri butceli yardimci katman kullanilir. V6.1.9'da bu katman grafik-firsat
+// puaninin %30'luk teyididir; tek basina emir acmaz/veto etmez, marj/SL/TP/cikisi
+// degistirmez. Veri yok/bayat/butce doluysa NOTR olur; tarama onu ASLA beklemez.
 const V614_MICRO_ASSIST_ACTIVE = String(process.env.V614_MICRO_ASSIST_ACTIVE ?? '1') !== '0';
 const V614_MICRO_REST_BUDGET_1M = Math.max(0, Math.min(120, Number(process.env.V614_MICRO_REST_BUDGET_1M ?? 48)));
 const V614_MICRO_MAX_GOV_LOAD = Math.max(0.20, Math.min(0.60, Number(process.env.V614_MICRO_MAX_GOV_LOAD ?? 0.50)));
 const V614_MICRO_TOP_N = Math.max(4, Math.min(24, Number(process.env.V614_MICRO_TOP_N ?? 24)));
-// V4.7: Giriş otoritesi yalnız backtestte gözlenebilir kapalı OHLCV/PIT + V4.5 + R495.
-// R300 ve R486 hikâye sonucu aynı anda SHADOW olarak kaydedilir; emir kararı vermez.
+// V6.1.9: Islem sayisi hedef degildir. TOP10, TOP24 ve full-market patlama
+// workerlarinda grafik otoritesi gucluyse firsat; canli mikro veri bekleten seri
+// kapilar yerine agirlikli yardimci kanittir. Grafik toplam kararin %70'idir.
+// Kalan %30: gercek alis/satis akisi %15, OI %7, order-book %5, funding %3.
+// Veri yoksa NOTR kabul edilir; tek bir mikro alan ne emir acar ne de veto eder.
+const V619_GRAPH_OPPORTUNITY_ACTIVE = String(process.env.V619_GRAPH_OPPORTUNITY_ACTIVE ?? '1') !== '0';
+const V619_TOP10_SCORE_MIN = Math.max(45, Math.min(85, Number(process.env.V619_TOP10_SCORE_MIN ?? 58)));
+const V619_TOP24_SCORE_MIN = Math.max(48, Math.min(90, Number(process.env.V619_TOP24_SCORE_MIN ?? 64)));
+const V619_EXPLOSION_SCORE_MIN = Math.max(48, Math.min(90, Number(process.env.V619_EXPLOSION_SCORE_MIN ?? 62)));
+const V619_TOP10_FAST_SCORE_MIN = Math.max(V619_TOP10_SCORE_MIN, Math.min(95, Number(process.env.V619_TOP10_FAST_SCORE_MIN ?? 64)));
+const V619_TOP24_FAST_SCORE_MIN = Math.max(V619_TOP24_SCORE_MIN, Math.min(95, Number(process.env.V619_TOP24_FAST_SCORE_MIN ?? 69)));
+const V619_EXPLOSION_FAST_SCORE_MIN = Math.max(V619_EXPLOSION_SCORE_MIN, Math.min(95, Number(process.env.V619_EXPLOSION_FAST_SCORE_MIN ?? 67)));
+// V6.1.9: Ana otorite kapali OHLCV/PIT + 15m grafik hikayesidir. TOP10/TOP24 ve
+// patlama worker firsatlari R619'da grafik %70 + canli teyit %30 birlesimiyle okunur.
+// Bu yeni hizli-firsat koprusu historical backtestte yoktur; durum ucu bunu acikca
+// backtestAligned:false bildirir. R493/TRAP ve emir guvenlikleri degismez.
 // CANLI-C1: ESKIDEN "BINANCE_EXECUTION_ENV==='TESTNET' &&" ile basliyordu.
 // Canliya gecince SESSIZCE false olurdu ve 27 cagri noktasinda davranis degisirdi:
 // kaldirac kilidi, giris/cikis mum paritesi, cikis tipi beyaz listesi,
@@ -511,11 +523,10 @@ function r592NeutralizeDecisionData(data={}){
 
 
 // ═══ V4.2 DUAL-LANE MEASUREMENT CONTRACT ═════════════════════════════════════
-// Lane A (AUTHORITY): yalnız backtestte gözlenebilir kapanmış OHLCV/chart/PIT/R495/R497
-// girdileri ve yürütme güvenliği. Lane B (RESEARCH): order-book/OI/funding/likidasyon,
-// raw aggTrade/tick-CVD, kaynak tazeliği, bağımsız Fibonacci ölçümü, fill gecikmesi ve
-// exchange rejection. Lane B hiçbir koşulda karar, miktar veya emir kapısı değildir.
-const V592_MEASUREMENT_MODE='V617_EXACT_CLOSED_1M_R495_WITH_RATE_SAFE_MICRO_RANK_TIEBREAK';
+// Grafik lane'i %70 ana otoritedir. Rate-safe V614 order-flow/OI/order-book/funding
+// snapshot'i %30 yardimci teyittir. Yardimci veri tek basina emir kapisi, miktar veya
+// cikis otoritesi degildir; eksik veri NOTR'dur ve taramayi bekletmez.
+const V592_MEASUREMENT_MODE='V619_GRAPH_FIRST_WEIGHTED_OPPORTUNITY';
 // ═══ V4.7.4 PARITE + YURUTME GUVENLIGI ANAHTARLARI ═══════════════════════════
 // Bu dort anahtar, backtest karar sozlesmesine donmek icin eklendi. Hepsi ENV ile
 // kapatilabilir; kapatildiginda davranis birebir V4.7.3'tur.
@@ -2607,7 +2618,7 @@ async function getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh=false,allow
 // TEKRAR GONDERILMEZ; borsaya ayni clientOrderId ile sorulur. Emir gecmisse o
 // emir kullanilir, gecmemisse hata firlatilir. Duplicate pozisyon imkansizlasir.
 // V4.7.4.1-F04: clientOrderId ARTIK DETERMINISTIK.
-// session reset ID + symbol + side + R495 signalKey/candidateTs -> sabit hash.
+// session reset ID + symbol + side + R495/R619 signalKey/candidateTs -> sabit hash.
 // Railway yeniden baslasa bile ayni sinyal ayni clientOrderId'yi uretir; borsa
 // sorgusu ikinci POST'u engeller.
 function v592DecisionKeyFor(sym,side,explicit){
@@ -2678,7 +2689,7 @@ async function v592SendMainOrderIdempotent(apiKey,apiSecret,sym,oSide,qty,decisi
   const key=v592DecisionKeyFor(sym,oSide==='BUY'?'LONG':'SHORT',decisionKey);
   if(!key){
     try{r501OrderLifeMark(sym,'ORDER_REJECTED',{reason:'MISSING_STABLE_DECISION_KEY'});}catch(_){}
-    throw new Error(`MISSING_STABLE_DECISION_KEY: ${sym} icin stabil R495 signalKey/candidateTs yok; deterministik clientOrderId uretilemez, emir gonderilmedi.`);
+    throw new Error(`MISSING_STABLE_DECISION_KEY: ${sym} icin stabil R495/R619 signalKey/candidateTs yok; deterministik clientOrderId uretilemez, emir gonderilmedi.`);
   }
   const cid=v592DeterministicClientOrderId(sym,oSide==='BUY'?'LONG':'SHORT',key);
   // F04: POST oncesi ayni cid borsada var mi? Restart sonrasi ikinci POST buradan durur.
@@ -4200,42 +4211,49 @@ function r614ScheduleUniverse(symbols=[]){
   setTimeout(()=>{r614MicroState.scheduled=false;r614RefreshUniverse().catch(()=>{});},1500);
 }
 function r614MicroAssist(symbol){
-  const full=normalizeSymbol(symbol),now=Date.now(),evidence=[];let score=0,signals=0;
-  if(!V614_MICRO_ASSIST_ACTIVE||!full)return {score:0,label:'OFF',signals:0,evidence:[],decisionImpact:'NONE'};
+  const full=normalizeSymbol(symbol),now=Date.now(),evidence=[];
+  const components={flow:null,oi:null,book:null,funding:null};
+  const weights={flow:15,oi:7,book:5,funding:3};
+  let weightedPoints=0,coverageWeight=0,signals=0;
+  const clamp=(n,lo=-1,hi=1)=>Math.max(lo,Math.min(hi,Number(n)||0));
+  const add=(name,norm,label)=>{const n=clamp(norm),w=weights[name];components[name]={norm:+n.toFixed(4),weight:w,points:+(n*w).toFixed(4),label};weightedPoints+=n*w;coverageWeight+=w;signals++;evidence.push(label);};
+  if(!V614_MICRO_ASSIST_ACTIVE||!full)return {score:0,weightedSupportPct:0,coveragePct:0,label:'OFF',signals:0,evidence:[],components,decisionImpact:'NONE'};
   try{
     const eng=tickStore.get(full),lastTick=Number(eng?.r130LastMsgTs||eng?.lastTicks?.at?.(-1)?.ts||0);
     if(lastTick&&now-lastTick<=3000){
       const t=getTickAnalysisRaw(full),r=Number(t?.recent30s?.total)>0 ? (Number(t.recent30s.buy)/Number(t.recent30s.total)*100) : NaN;
       if(Number.isFinite(r)&&Number(t?.recent30s?.trades||0)>=10){
-        signals++;const p=r>=58?2:r>=54?1:r<=42?-2:r<=46?-1:0;score+=p;
-        evidence.push(`FLOW30 ${r.toFixed(1)}% ${p>=0?'+':''}${p}`);
+        add('flow',(r-50)/12,`FLOW30 ${r.toFixed(1)}%`);
       }
     }else{
       const c=cvdStore.get(full),age=c?.lastUpdate?now-c.lastUpdate:Infinity,total=Number(c?.buy||0)+Number(c?.sell||0);
-      if(age<=5000&&total>0){const r=Number(c.buy)/total*100;signals++;const p=r>=60?1:r<=40?-1:0;score+=p;evidence.push(`CVD ${r.toFixed(1)}% ${p>=0?'+':''}${p}`);}
+      if(age<=5000&&total>0){const r=Number(c.buy)/total*100;add('flow',(r-50)/15,`CVD ${r.toFixed(1)}%`);}
     }
   }catch(_){}
   try{
     const row=r614MicroState.cache.get(full),h=Array.isArray(row?.oiHist)?row.oiHist:[];
     if(row?.oiHistTs&&now-row.oiHistTs<=360000&&h.length>=2){
       const a=Number(h.at(-2)?.sumOpenInterest),b=Number(h.at(-1)?.sumOpenInterest);
-      if(a>0&&Number.isFinite(b)){const ch=(b-a)/a*100;signals++;const p=ch>=0.35?1:ch<=-0.35?-1:0;score+=p;evidence.push(`OI5m ${ch>=0?'+':''}${ch.toFixed(2)}% ${p>=0?'+':''}${p}`);}
+      if(a>0&&Number.isFinite(b)){const ch=(b-a)/a*100;add('oi',ch/0.60,`OI5m ${ch>=0?'+':''}${ch.toFixed(2)}%`);}
     }
     if(row?.premiumTs&&now-row.premiumTs<=360000){
       const f=Number(row?.premium?.lastFundingRate);
-      if(Number.isFinite(f)){signals++;const p=f>=0.0015?-1:f<=-0.0005?0.5:0;score+=p;evidence.push(`fund ${(f*100).toFixed(3)}% ${p>=0?'+':''}${p}`);}
+      if(Number.isFinite(f)){const n=f>=0.0015?-1:f>=0.0008?-.5:f<=-0.0005?.5:0;add('funding',n,`fund ${(f*100).toFixed(3)}%`);}
     }
   }catch(_){}
   try{
     const fs=r371FlowStore.get(full),age=fs?.lastBookAt?now-fs.lastBookAt:Infinity;
     if(age<=2000&&fs?.bookReady){
       let bid=0,ask=0;for(const [p,q] of fs.book.bids)bid+=Number(p)*Number(q);for(const [p,q] of fs.book.asks)ask+=Number(p)*Number(q);
-      if(bid+ask>0){const imb=(bid-ask)/(bid+ask)*100;signals++;const p=imb>=25?0.5:imb<=-25?-0.5:0;score+=p;evidence.push(`BOOK ${imb>=0?'+':''}${imb.toFixed(1)}% ${p>=0?'+':''}${p}`);}
+      if(bid+ask>0){const imb=(bid-ask)/(bid+ask)*100;add('book',imb/35,`BOOK ${imb>=0?'+':''}${imb.toFixed(1)}%`);}
     }
   }catch(_){}
-  score=Math.max(-3.5,Math.min(3.5,score));
-  return {score:+score.toFixed(2),label:score>=2?'DESTEK':score<=-2?'KARŞI':'NÖTR',signals,evidence,
-    decisionImpact:'RANK_TIEBREAK_ONLY',orderBlocking:false,sizingImpact:false,exitImpact:false};
+  weightedPoints=Math.max(-30,Math.min(30,weightedPoints));
+  const weightedSupportPct=weightedPoints/30*100,coveragePct=coverageWeight/30*100;
+  const score=Math.max(-3.5,Math.min(3.5,weightedPoints/30*3.5));
+  return {score:+score.toFixed(2),weightedPoints:+weightedPoints.toFixed(3),weightedSupportPct:+weightedSupportPct.toFixed(2),coveragePct:+coveragePct.toFixed(1),
+    weights,label:weightedSupportPct>=25?'DESTEK':weightedSupportPct<=-25?'KARŞI':'NÖTR',signals,evidence,components,
+    decisionImpact:'WEIGHTED_CONFIRMATION_ONLY',orderBlocking:false,sizingImpact:false,exitImpact:false};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -7625,6 +7643,81 @@ async function r495LiveAcceptanceArbiter(symbol,story={},baseAuthority={},ctx={}
   arm.lastDecision=row;
   if(result?.final){arm.finalized=true;r495ClearExactWake(key);}
   return {...baseAuthority,...row,active:true,r495Active:true,r495Action:action,action,riskScale,priority:action==='PUSU',leverageBoost:action==='MARKET',baseAuthority:{action:baseAction,reason:baseAuthority?.reason||null,riskScale:Number(baseAuthority?.riskScale??1)},r493EntrySafety:baseAuthority?.r493EntrySafety||ctx?.entryTruth?.r493EntrySafety||null};
+}
+
+const v619OpportunityStats={evaluated:0,allowed:0,fast:0,top10:0,top24:0,explosion:0,last:null};
+function r619GraphOpportunityArbiter(coin={},analysis={},decision={},ai={},v45={}){
+  const clamp=(n,lo=0,hi=100)=>Math.max(lo,Math.min(hi,Number(n)||0));
+  const story=ai?.story||decision?.r483Story||{},truth=story?.entryTruth||{};
+  const pit=v592PitSelectionMeta(coin,decision),rank=Number(pit?.rank||coin?.r481OriginalRank||coin?.gainerRank||99);
+  const worker=!!(r493IsWorkerCandidate(coin)||Number(story?.source?.lane)<3||story?.workerPulse);
+  const top10=!worker&&rank<=10,top24=!worker&&rank>10&&rank<=24;
+  const lane=worker?'PATLAMA_WORKER':top10?'TOP10':top24?'TOP24':'DISARI';
+  const micro=coin?.__r614Micro||r614MicroAssist(coin?.fullSymbol||coin?.symbol);
+  const f=v45?.features||{},m=story?.microConsensus||{},edge=decision?.r190Edge||{};
+  const proofMap={
+    vcpBreakout:!!f.vcpBreakout,
+    orbAcceptance:!!(f.orbAccepted||f.orbRetest),
+    auctionReclaim:!!(f.auctionAccepted||f.vwapReclaim||f.avwapReclaim||f.pocReclaim),
+    structuredContinuation:!!(story?.structuredContinuation||story?.trendBreaks?.bull),
+    microContinuation:!!m.confirmedContinuation,
+    pullbackReclaim:!!(m.confirmedPullback||story?.validatedTrendRetest),
+    intrabarMtf:!!(m.intrabarMtfObvious||story?.intrabarMtfObvious),
+    earlyIgnition:!!m.earlyIgnition,
+    prebreakoutWorker:!!(m.ghostPrebreakout||story?.workerPulse),
+    earlyFlowStructure:!!(edge.earlyContinuation||edge.squeeze||edge?.r194SwingBreak?.strong),
+    mechanicalSignature:!!(coin?.__r481Karar?.ok||decision?.r455MekanikImza)
+  };
+  const proofs=Object.entries(proofMap).filter(([,ok])=>ok).map(([k])=>k);
+  const v45Score=clamp(f.score),quality=clamp(story?.quality),confidence=clamp(ai?.confidence??decision?.brainConfidence);
+  // Grafik puani: kapanmis OHLCV/V4.5 ana olcum; 15m hikaye ve mekanik guven tamamlayici.
+  const graphScore=clamp(.55*v45Score+.25*quality+.20*confidence+Math.min(12,proofs.length*2.5));
+  // Mikro veri NOTR=50 etrafinda yardim eder. Eksik alan sifir puandir; bekleme/veto degildir.
+  const weightedSupportPct=clamp(Number(micro?.weightedSupportPct||0),-100,100);
+  const dataScore=clamp(50+weightedSupportPct*.5);
+  const decisionScore=clamp(graphScore*.70+dataScore*.30);
+  const minScore=worker?V619_EXPLOSION_SCORE_MIN:top10?V619_TOP10_SCORE_MIN:V619_TOP24_SCORE_MIN;
+  const fastMin=worker?V619_EXPLOSION_FAST_SCORE_MIN:top10?V619_TOP10_FAST_SCORE_MIN:V619_TOP24_FAST_SCORE_MIN;
+  const proofMin=top10?1:2;
+  const firstRR=Number(truth?.firstObstacleRR??f.firstObstacleRR);
+  const entry=Number(ai?.entry||0),sl=Number(ai?.sl||0),tp=Number(ai?.tp||0);
+  const timing=String(story?.timing||'').toUpperCase();
+  const hardReasons=[];
+  if(!V619_GRAPH_OPPORTUNITY_ACTIVE)hardReasons.push('OFF');
+  if(lane==='DISARI')hardReasons.push('TOP24_VEYA_WORKER_DISI');
+  if(!(Number.isFinite(firstRR)&&firstRR>=R493_MIN_FIRST_OBSTACLE_RR))hardReasons.push('FIRST_OBSTACLE_RR');
+  if(truth?.marketAllowed===false||['TRAP','WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','AVOID_LONG'].includes(timing))hardReasons.push('GIRIS_SOZLESMESI_WAIT_TRAP');
+  if(!(entry>0&&sl>0&&tp>0&&sl<entry&&tp>entry))hardReasons.push('PLAN_DIRECTION');
+  if(proofs.length<proofMin)hardReasons.push(`GRAFIK_KANITI_${proofs.length}/${proofMin}`);
+  const adverseGraph=!!(m.postImpulseReject||f.failedBreak||story?.targetRejection||(edge.lateTrapRisk&&!edge.squeeze));
+  const allowed=hardReasons.length===0&&decisionScore>=minScore;
+  const fastEntry=allowed&&!adverseGraph&&decisionScore>=fastMin;
+  const out={active:V619_GRAPH_OPPORTUNITY_ACTIVE,lane,rank,worker,top10,top24,allowed,fastEntry,
+    graphScore:+graphScore.toFixed(2),dataScore:+dataScore.toFixed(2),decisionScore:+decisionScore.toFixed(2),
+    minScore,fastMin,proofMin,proofs,proofMap,adverseGraph,hardReasons,firstObstacleRR:Number.isFinite(firstRR)?firstRR:null,
+    micro:{weightedSupportPct:+weightedSupportPct.toFixed(2),coveragePct:Number(micro?.coveragePct||0),signals:Number(micro?.signals||0),label:micro?.label||'NOTR',components:micro?.components||null,evidence:micro?.evidence||[]},
+    weights:{chart:.70,data:.30,flow:.15,openInterest:.07,orderBook:.05,funding:.03},
+    reason:`${lane} grafik ${graphScore.toFixed(1)}×%70 + veri ${dataScore.toFixed(1)}×%30 = ${decisionScore.toFixed(1)} / ${fastEntry?'HIZLI_GIRIS':allowed?'R495_NORMAL':'BEKLE'}`};
+  v619OpportunityStats.evaluated++;if(allowed)v619OpportunityStats.allowed++;if(fastEntry)v619OpportunityStats.fast++;
+  if(lane==='TOP10')v619OpportunityStats.top10++;else if(lane==='TOP24')v619OpportunityStats.top24++;else if(lane==='PATLAMA_WORKER')v619OpportunityStats.explosion++;
+  v619OpportunityStats.last={...out,symbol:normalizeSymbol(coin?.fullSymbol||coin?.symbol),at:Date.now()};
+  return out;
+}
+function r619FastAcceptanceAuthority(symbol,coin={},ai={},opportunity={},candidate={}){
+  const now=Date.now(),sym=r495Sym(symbol),fallbackTs=Math.floor(now/300000)*300000;
+  const candidateTs=Number(candidate?.candidateTs)>0?Number(candidate.candidateTs):fallbackTs;
+  const key=`R619:${sym}:${Math.trunc(candidateTs)}`;
+  const entry=Number(ai?.entry||0),stop=Number(ai?.sl||0),target=Number(ai?.tp||0);
+  const entrySlPct=entry>0&&stop>0?Math.abs(entry-stop)/entry*100:null;
+  const targetR=entry>0&&stop>0&&target>0?Math.abs(target-entry)/Math.max(1e-12,Math.abs(entry-stop)):null;
+  const plan={schema:'LAZARUS_R619_GRAPH_FAST_PLAN_V1',ok:entry>0&&stop>0&&target>0,entry,stop,target,
+    entrySlPct:Number.isFinite(entrySlPct)?+entrySlPct.toFixed(4):null,targetR:Number.isFinite(targetR)?+targetR.toFixed(4):null,runner:String(ai?.karKosma||'').toUpperCase()==='RUNNER'};
+  r495LastAcceptedBySymbol.set(sym,{candidateTs,entryTs:now,action:'MARKET',key,at:now,source:'R619_GRAPH_FAST'});
+  return {active:true,r495Active:true,r495Action:'MARKET',action:'MARKET',riskScale:1,priority:false,leverageBoost:true,
+    code:'R619_GRAPH_OPPORTUNITY_FAST',signalKey:key,key,ts:now,entryTs:now,candidate:{...(candidate||{}),candidateTs},plan,
+    decisionBasis:'GRAPH_70_WEIGHTED_LIVE_CONFIRMATION_30',r619Opportunity:opportunity,
+    reason:`R619 bariz grafik firsati: ${opportunity?.reason||'agirlikli karar'}; zorunlu 3dk R495 beklemesi uygulanmadi`,
+    r493EntrySafety:ai?.authority?.r493EntrySafety||ai?.story?.entryTruth?.r493EntrySafety||null};
 }
 function r495StatusPayload(limit=30){
   const now=Date.now(),armed=[...r495ArmedCandidates.values()];
@@ -11277,6 +11370,37 @@ function r501Status(){
   const trades=r501EvidenceIndex.trades||[],closed=trades.filter(x=>x.status==='CLOSED'),avg=closed.length?closed.reduce((s,x)=>s+Number(x.completeness||0),0)/closed.length:0;
   return {ok:true,schema:R501_EVIDENCE_SCHEMA,build:LAZARUS_BUILD,session:TESTNET_SESSION_RESET_ID,sessionTag:TESTNET_SESSION_TAG,currentSessionOnly:true,sessionStartedAt:Number(testnetSessionState?.startedAt||0),executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,enabled:R501_EVIDENCE_ACTIVE,mode:'V617_EXACT_CLOSED1M_R495_WITH_RATE_SAFE_MICRO_RANK_TIEBREAK',microAssistDecisionImpact:'RANK_TIEBREAK_ONLY',strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,policyContract:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,baselineCoreFunctionsPreserved:true,exactV592Behavior:false,exactClosed1mR495:true,activeClosedOhlcvSelector:V592_V45_RULE_ID,researchFieldsPassive:V592_RESEARCH_FIELDS,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false},positionRisk:{lastSuccessAt:Number(posRiskCache.lastSuccessAt||0),successAgeMs:posRiskCache.lastSuccessAt?Date.now()-Number(posRiskCache.lastSuccessAt):null,inflight:!!posRiskCache.fetching,inflightAgeMs:posRiskCache.fetching?Date.now()-Number(posRiskCache.inflightStartedAt||0):0,phase:posRiskCache.phase,lastDurationMs:posRiskCache.lastDurationMs,lastGovernorWaitMs:posRiskCache.lastGovernorWaitMs,lastAttemptAt:posRiskCache.lastAttemptAt,lastError:posRiskCache.lastError,lastErrorType:posRiskCache.lastErrorType,consecutiveFailures:Number(posRiskCache.consecutiveFailures||0),source:posRiskCache.lastSource},parityV4741:{r493EntryGateActive:R493_ENTRY_SAFETY_ACTIVE,r493MinFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,storyAuthorityShadowOnly:false,leverageLock:V592_LEVERAGE_LOCK,orderIdempotency:V592_ORDER_IDEMPOTENCY,deterministicClientOrderId:true,r493FinalLockCodeFixed:true,backtestComparableDataset:true,funnelCarriesDecisionFeatures:true,postFillPositionProof:true,evidenceOrderDedup:true,positionFreshness:{orderMs:POS_FRESH_ORDER_MS,managerMs:POS_FRESH_MANAGER_MS,inflightWaitMs:POS_RISK_INFLIGHT_WAIT_MS},backtestEntryContract:{rule:'ENTRY_AT_THIRD_CLOSED_1M',candidateBoundary:'5m_CLOSE',candidateToEntryMs:180000,measuredFrom:'725/725 backtest islemi, sapma yok',candleParityActive:V592_ENTRY_CANDLE_PARITY,maxCandleDrift:V592_ENTRY_CANDLE_MAX_DRIFT},backtestExitContract:{minHoldMs:V592_MIN_HOLD_MS,maxRequestToSendMs:V592_MAX_REQUEST_TO_SEND_MS,keepExistingProtection:V592_PROTECT_KEEP_EXISTING,exitAtCandleClose:V592_EXIT_CANDLE_PARITY,exitWindowMs:V592_EXIT_CANDLE_WINDOW_MS,measured:{exitTsMod60000:59999,sample:'725/725',minHoldSec:{DYNAMIC_STOP:60,TARGET:120,INITIAL_SL:300,MAX_TIME_NO_PROGRESS:14400},counts:{DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12}},allowedExits:['INITIAL_SL','TARGET','DYNAMIC_STOP','MAX_TIME_NO_PROGRESS','MAX_24H']},pitTopGainer:{maxRank:R497_PIT_MAX_RANK,minHits:R497_PIT_MIN_HITS,backtestAligned:(R497_PIT_MAX_RANK>=99&&R497_PIT_MIN_HITS<=0),minChange24hPct:R497_MIN_CHANGE_24H},strictForceFreshPositionTruth:true,orderTruthMaxAgeMs:ORDER_TRUTH_MAX_AGE_MS,leverageProofHardGate:true,persistentUnresolvedLocks:true,lockFile:V592_LOCK_PATH,marketClockGuardMs:V592_MARKET_CLOCK_GUARD_MS,marketTimeOffsetMs:marketTimeOffset,marketTimeSyncedAt,stats:{...v592ParityStats,execBackoffActive:isExecBackoffActive(),execBackoffMs:getExecBackoffMs(),publicBackoffActive:isBinanceBackoffActive(),publicBackoffMs:getBinanceBackoffMs(),testnetUniverseKnown:!!(v592TestnetUniverse.set&&v592TestnetUniverse.set.size),testnetUniverseAgeMs:v592TestnetUniverse.ts?Date.now()-v592TestnetUniverse.ts:null,testnetUniverseError:v592TestnetUniverse.lastError,protectFirstActive:true,protectFirstLastMs:v592ParityStats.protectFirstMs,lifecyclePerAttempt:true,entryCandleParity:V592_ENTRY_CANDLE_PARITY,entryCandleMaxDrift:V592_ENTRY_CANDLE_MAX_DRIFT,backtestCandidateToEntryMs:180000,exitCandleParity:V592_EXIT_CANDLE_PARITY,exitCandleWindowMs:V592_EXIT_CANDLE_WINDOW_MS,protectFirstSkipsCancel:true,protectWritesParallel:true,ledgerCloseDedupActive:true,managerExitGuardActive:true,minHoldGuardCallSites:2,nonBacktestExitsShadowed:V592_EXACT_BACKTEST_AUTHORITY,shadowedExitRules:['R14_HARD_LOSS','R42_ABSOLUTE_DAMAGE','R41_EARLY_DAMAGE','CVD_FLIP','ADVERSE_CASCADE'],exitTypeWhitelistActive:V592_EXIT_TYPE_WHITELIST,allowedExitTypes:V592_BACKTEST_EXIT_TYPES,backtestExitCounts:{DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12},unprotectedExitException:true,adoptedPositionsNotParity:true,falseFlatProtection:'R344_FORCE_FRESH_FAIL_OPEN',closeRequiresPositiveProof:true,ledgerEvidenceOnly:V592_LEDGER_EVIDENCE_ONLY,aggTradeStream:'FAPI_WS_MARKET',passiveParamsCsv:'/api/evidence/passive.csv',orphanNeverCancelsProtection:true,closeProofAllReasons:true,possibleOrphanSymbols:[...v592PossibleOrphans],passiveVpinActive:true,vpinAuthorityUntouched:true,oiCacheFallback:true,singleCloseFunnel:true,orphanLedgerSweep:true,closeCallSitesCovered:5,closePnlClassified:true,dedupScopesSeparated:true,sweepMaxAttempts:V592_SWEEP_MAX_ATTEMPTS,exitReasonFieldFixed:true,probeActive:V592_PROBE_ACTIVE,probeStrategyImpact:false,probeLedgerIsolated:true,phantomLedgerGuard:true,probeManagerExitIsolated:true,virtualEquityPhantomFilter:true,exitGuardPrecedenceFixed:true,rawProfile:R501_RAW_PROFILE,rawSuspended:r501RawSuspended,diskUsedMB:r501DiskState.lastMB,diskLimitMB:R501_DISK_LIMIT_MB,analysisBundle:'/api/evidence/analysis-bundle.zip',probeOpenNow:v592ProbeSlotOffset(),probeStats:v592ProbeStats,passiveFamilies:['cvd','tick','vpin','orderflow','orderbook','volume_rvol','atr_body','oi','funding','taker_longshort','liquidations','iceberg','fibonacci','timeframe_structure','freshness']},lockedSymbols:[...v592SymbolOrderLocks.keys()]},accountSnapshot:{lastSuccessAt:Number(signedAccountCache.lastSuccessAt||0),successAgeMs:signedAccountCache.lastSuccessAt?Date.now()-Number(signedAccountCache.lastSuccessAt):null,inflight:!!signedAccountCache.inflight,inflightAgeMs:signedAccountCache.inflightStartedAt?Date.now()-Number(signedAccountCache.inflightStartedAt):0,lastDurationMs:signedAccountCache.lastDurationMs,lastError:signedAccountCache.lastError,lastErrorAt:signedAccountCache.lastErrorAt,source:signedAccountCache.lastSource,ttlMs:SIGNED_ACCOUNT_TTL_MS,requests:signedAccountCache.requests,networkCalls:signedAccountCache.networkCalls,staleServed:signedAccountCache.staleServed},publicResearchQueue:{pending:r501PublicQueue.length,busy:r501PublicQueueBusy,lastAt:r501PublicQueueLastAt},stateDir:R501_EVIDENCE_DIR,diskBytes:r501DirBytes(R501_EVIDENCE_DIR),rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,dir:R501_RAW_ARCHIVE_DIR,zipMaxMB:R501_RAW_ZIP_MAX_MB,requiredFiles:R501_RAW_FILES},config:{sampleMs:R501_EVIDENCE_SAMPLE_MS,bookMs:R501_EVIDENCE_BOOK_MS,oiMs:R501_EVIDENCE_OI_MS,maxTicks:R501_EVIDENCE_MAX_TICKS,maxSamples:R501_EVIDENCE_MAX_SAMPLES,retentionDays:R501_EVIDENCE_RETENTION_DAYS,minClosedForReview:R501_EVIDENCE_MIN_CLOSED_REVIEW},counts:{indexed:trades.length,open:trades.filter(x=>x.status==='OPEN'||x.status==='FINALIZING').length,closed:closed.length,activeRecorders:r501ActiveEvidence.size,funnel:r501FunnelStats.total},averageCompleteness:r501Num(avg,2),funnelStats:r501FunnelStats,historicalReference:{status:'V45_725_PORTFOLIO_REPLAY_REFERENCE_NOT_EXCHANGE_PARITY',trades:725,pf:2.419668,winRatePct:66.6207,maxDrawdownPct:14.8052,netUSDT:3299.3164,missingHistorically:['raw aggTrade/tick history','CVD history','full OI history','order-book history','source freshness']},researchReadiness:{status:'PASSIVE_COLLECTION',note:'Bu sayaç stratejiye kapı değildir. Kayıtlar sonraki insan incelemesi ve araştırma için toplanır.',liveEnablement:false},dualLane:{authority:{mode:'GRAPH_VALIDATED_CLOSED_OHLCV_TESTNET',sourceSha256:V592_POLICY_SOURCE_SHA256,closedCandlesOnly:true,fibonacciPassive:true,postR495SoftVetoShadowOnly:V592_POST_R495_SOFT_VETO_SHADOW_ONLY,liveMicrostructureExitImpact:false},wrChallenger:{...v592WrChallengerStats,ruleId:V592_WR_CHALLENGER_RULE_ID,status:'RESEARCH_CHALLENGER_NOT_AUTHORITY'},eomChallenger:{...v592EomStats,balancedRuleId:V592_EOM_BALANCED_RULE_ID,highPrecisionRuleId:V592_EOM_HIGH_PRECISION_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_EOM_BACKTEST_REFERENCE},atcChallenger:{...v592AtcStats,ruleId:V592_ATC_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},combinedChannelChallenger:{...v592CombinedStats,ruleId:V592_COMBINED_RULE_ID,status:'FORWARD_TESTNET_SHADOW_NOT_AUTHORITY',backtestReference:V592_COMBINED_BACKTEST_REFERENCE},v45ActiveSelector:{...v592V45Stats,ruleId:V592_V45_RULE_ID,active:V592_V45_TESTNET_ACTIVE,thresholds:{scoreMin:V592_V45_MS_SCORE_MIN,requireTopGainer:V592_V45_REQUIRE_TOP_GAINER,firstObstacleRRMin:V592_V45_FIRST_OBSTACLE_RR_MIN},backtestReference:V592_V45_BACKTEST_REFERENCE},research:{decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false,executionRejectionsPath:R501_EXECUTION_REJECTIONS_PATH}},recordingCoverage:['pre-entry raw aggTrade','live raw aggTrade/CVD','depth top levels and imbalance','OI current/history','funding/premium','long-short/taker ratios','symbol 6TF closed candles','BTC 6TF closed candles','source freshness','liquidation stream','manager/SL/TP timeline','decision funnel','entry and close bundles','per-trade manifest/checksums','downloadable JSONL raw files','authority decision hashes','entry/close research state','tick continuity audit','actual fill latency/slippage','exchange rejection classification','independent Fibonacci levels','EOM body-Fibonacci continuity','EOM RSI/MACD velocity','EOM MTF opening alignment','EOM entry/close snapshots','ATC BOS/zone/FVG/session/ORB shadows','combined EOM+ATC entry/close snapshots','V4.5 SMB/Dale/VCP closed-OHLCV selector and snapshots'],activeRecorders:[...r501ActiveEvidence.values()].map(r=>({id:r.id,symbol:r.symbol,status:r.status,openedAt:r.openedAt,samples:r.samples.length,ticks:r.rawTicks.length,rawCounts:r501RawCounts(r),rawBytes:r501RawStat(r.id).bytes,completeness:r501Completeness(r).score,lastFreshness:r.samples.at(-1)?.freshness||null})),serverTime:Date.now()};
 }
+// V6.1.9 durum gercegi: eski kanit semasini bozmadan yeni karar otoritesini
+// ustten bildir. Historical replay R619 hizli-firsat koprusunu icermedigi icin
+// backtestAligned bilerek false kalir; normal adaylarda exact R495 korunur.
+const r501LegacyStatus=r501Status;
+r501Status=function r501StatusV619(){
+  const s=r501LegacyStatus();
+  return {...s,
+    mode:V592_MEASUREMENT_MODE,
+    backtestAligned:false,
+    microAssistDecisionImpact:V619_GRAPH_OPPORTUNITY_ACTIVE?'WEIGHTED_CONFIRMATION_30PCT':'OFF',
+    strategyDecisionImpact:!!(V592_V45_TESTNET_ACTIVE||V619_GRAPH_OPPORTUNITY_ACTIVE),
+    orderBlocking:!!V592_V45_TESTNET_ACTIVE,
+    sizingImpact:false,exitImpact:false,microstructureDecisionImpact:!!V619_GRAPH_OPPORTUNITY_ACTIVE,
+    policyContract:{...(s.policyContract||{}),exactV592Behavior:false,exactClosed1mR495:false,
+      normalCandidatesExactClosed1mR495:true,r619GraphFastActive:V619_GRAPH_OPPORTUNITY_ACTIVE,
+      backtestAligned:false,decisionImpact:!!V619_GRAPH_OPPORTUNITY_ACTIVE,
+      orderBlocking:false,sizingImpact:false,exitImpact:false},
+    researchReadiness:{status:'LIVE_WEIGHTED_CONFIRMATION',
+      note:'Grafik %70 ana otorite; rate-safe flow/OI/order-book/funding %30 yardimci teyit. Eksik veri NOTR, tek veri emir/veto degildir.',
+      liveEnablement:!!V619_GRAPH_OPPORTUNITY_ACTIVE},
+    r619:{active:V619_GRAPH_OPPORTUNITY_ACTIVE,backtestAligned:false,dailyQuota:null,
+      universe:['TOP10','TOP24','PATLAMA_WORKER'],weights:{chart:.70,data:.30,flow:.15,openInterest:.07,orderBook:.05,funding:.03},
+      thresholds:{top10:V619_TOP10_SCORE_MIN,top24:V619_TOP24_SCORE_MIN,explosion:V619_EXPLOSION_SCORE_MIN,
+        top10Fast:V619_TOP10_FAST_SCORE_MIN,top24Fast:V619_TOP24_FAST_SCORE_MIN,explosionFast:V619_EXPLOSION_FAST_SCORE_MIN},
+      stats:{...v619OpportunityStats}},
+    dualLane:{...(s.dualLane||{}),authority:{...(s.dualLane?.authority||{}),mode:'R619_GRAPH70_WEIGHTED_DATA30',
+      liveMicrostructureDecisionImpact:!!V619_GRAPH_OPPORTUNITY_ACTIVE,liveMicrostructureExitImpact:false},
+      research:{...(s.dualLane?.research||{}),decisionImpact:!!V619_GRAPH_OPPORTUNITY_ACTIVE,
+        orderBlocking:false,sizingImpact:false,exitImpact:false}}
+  };
+};
 function r501LoadFunnel(limit=200){
   const n=Math.max(1,Math.min(2000,Number(limit)||200));try{const raw=fs.readFileSync(R501_EVIDENCE_FUNNEL_PATH,'utf8');return raw.trim().split('\n').slice(-n).reverse().map(x=>{try{return JSON.parse(x)}catch(_){return null}}).filter(Boolean);}catch(_){return r501FunnelRecent.slice(0,n);}
 }
@@ -11768,6 +11892,28 @@ app.get('/api/evidence/passive.json',(_req,res)=>{
     zarar:rows.filter(r=>r.sonuc==='ZARAR').length,rows});
 });
 app.get('/api/evidence/dataset.csv',(_req,res)=>{const rows=r501DatasetRows(),cols=rows.length?Object.keys(rows[0]):['id','symbol','side','decisionTime','fillTime','pnlUSDT','roiPct','completeness'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>r501CsvCell(r[c])).join(','))].join('\n');res.set('Cache-Control','no-store');res.set('Content-Type','text/csv; charset=utf-8');res.set('Content-Disposition','attachment; filename="lazarus_v592_testnet_research_dataset_v3.csv"');res.send('\ufeff'+csv);});
+// V6.1.9 gercek durum ucu. Asagidaki uzun legacy route kanit semasi icin
+// dosyada tutulur; Express ilk eslesen bu route ile dogru aktif politikayi doner.
+app.get('/api/backtest-parity/status',(_req,res)=>{
+  res.set('Cache-Control','no-store');
+  res.json({ok:true,build:LAZARUS_BUILD,mode:V592_MEASUREMENT_MODE,
+    executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,
+    hardLockedTestnet:BINANCE_EXECUTION_ENV==='TESTNET',backtestAligned:false,
+    historicalReference:{authority:'V592_CLOSED_OHLCV',preserved:true,
+      note:'R619 weighted live confirmation and fast-entry bridge were not present in the historical replay.'},
+    activeDecision:{authority:'R619_GRAPH70_WEIGHTED_DATA30',dailyQuota:null,
+      universe:['TOP10','TOP24','PATLAMA_WORKER'],normalCandidatesExactClosed1mR495:true,
+      obviousOpportunityMaySkipR495Wait:V619_GRAPH_OPPORTUNITY_ACTIVE,
+      weights:{chart:.70,data:.30,flow:.15,openInterest:.07,orderBook:.05,funding:.03},
+      missingLiveData:'NEUTRAL_NO_WAIT',singleLiveFieldCanOpen:false,singleLiveFieldCanVeto:false,
+      thresholds:{top10:V619_TOP10_SCORE_MIN,top24:V619_TOP24_SCORE_MIN,explosion:V619_EXPLOSION_SCORE_MIN,
+        top10Fast:V619_TOP10_FAST_SCORE_MIN,top24Fast:V619_TOP24_FAST_SCORE_MIN,explosionFast:V619_EXPLOSION_FAST_SCORE_MIN}},
+    safety:{r493FirstObstacle:true,trapWaitAuthority:true,maxPositions:R486_MAX_POSITIONS,
+      absoluteMarginFloor:R486_ABSOLUTE_MIN_MARGIN,
+      marginCap:V601_HARD_MARGIN_CAP_USDT,positionTruth:true,idempotency:V592_ORDER_IDEMPOTENCY,realProtection:true},
+    requestSafety:{microRestBudget1m:V614_MICRO_REST_BUDGET_1M,maxGovernorLoad:V614_MICRO_MAX_GOV_LOAD,
+      scanNeverWaitsForMicro:true},stats:{...v619OpportunityStats}});
+});
 app.get('/api/backtest-parity/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'V617_EXACT_CLOSED1M_R495_WITH_RATE_SAFE_MICRO_RANK_TIEBREAK',microAssistDecisionImpact:'RANK_TIEBREAK_ONLY',sourceServerSha256:V592_POLICY_SOURCE_SHA256,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,researchFieldsPassive:V592_RESEARCH_FIELDS,strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,exactBacktestAuthority:V592_EXACT_BACKTEST_AUTHORITY,r300DecisionImpact:false,r486SecondStoryDecisionImpact:false,r493EntryGateDecisionImpact:true,parityV4741:{r493EntryGateActive:R493_ENTRY_SAFETY_ACTIVE,r493MinFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,storyAuthorityShadowOnly:false,leverageLock:V592_LEVERAGE_LOCK,orderIdempotency:V592_ORDER_IDEMPOTENCY,deterministicClientOrderId:true,r493FinalLockCodeFixed:true,backtestComparableDataset:true,funnelCarriesDecisionFeatures:true,postFillPositionProof:true,evidenceOrderDedup:true,positionFreshness:{orderMs:POS_FRESH_ORDER_MS,managerMs:POS_FRESH_MANAGER_MS,inflightWaitMs:POS_RISK_INFLIGHT_WAIT_MS},backtestEntryContract:{rule:'ENTRY_AT_THIRD_CLOSED_1M',candidateBoundary:'5m_CLOSE',candidateToEntryMs:180000,measuredFrom:'725/725 backtest islemi, sapma yok',candleParityActive:V592_ENTRY_CANDLE_PARITY,maxCandleDrift:V592_ENTRY_CANDLE_MAX_DRIFT},backtestExitContract:{minHoldMs:V592_MIN_HOLD_MS,maxRequestToSendMs:V592_MAX_REQUEST_TO_SEND_MS,keepExistingProtection:V592_PROTECT_KEEP_EXISTING,exitAtCandleClose:V592_EXIT_CANDLE_PARITY,exitWindowMs:V592_EXIT_CANDLE_WINDOW_MS,measured:{exitTsMod60000:59999,sample:'725/725',minHoldSec:{DYNAMIC_STOP:60,TARGET:120,INITIAL_SL:300,MAX_TIME_NO_PROGRESS:14400},counts:{DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12}},allowedExits:['INITIAL_SL','TARGET','DYNAMIC_STOP','MAX_TIME_NO_PROGRESS','MAX_24H']},pitTopGainer:{maxRank:R497_PIT_MAX_RANK,minHits:R497_PIT_MIN_HITS,backtestAligned:(R497_PIT_MAX_RANK>=99&&R497_PIT_MIN_HITS<=0),minChange24hPct:R497_MIN_CHANGE_24H},strictForceFreshPositionTruth:true,orderTruthMaxAgeMs:ORDER_TRUTH_MAX_AGE_MS,leverageProofHardGate:true,persistentUnresolvedLocks:true,lockFile:V592_LOCK_PATH,marketClockGuardMs:V592_MARKET_CLOCK_GUARD_MS,stats:{...v592ParityStats,execBackoffActive:isExecBackoffActive(),execBackoffMs:getExecBackoffMs(),publicBackoffActive:isBinanceBackoffActive(),publicBackoffMs:getBinanceBackoffMs(),testnetUniverseKnown:!!(v592TestnetUniverse.set&&v592TestnetUniverse.set.size),testnetUniverseAgeMs:v592TestnetUniverse.ts?Date.now()-v592TestnetUniverse.ts:null,testnetUniverseError:v592TestnetUniverse.lastError,protectFirstActive:true,protectFirstLastMs:v592ParityStats.protectFirstMs,lifecyclePerAttempt:true,entryCandleParity:V592_ENTRY_CANDLE_PARITY,entryCandleMaxDrift:V592_ENTRY_CANDLE_MAX_DRIFT,backtestCandidateToEntryMs:180000,exitCandleParity:V592_EXIT_CANDLE_PARITY,exitCandleWindowMs:V592_EXIT_CANDLE_WINDOW_MS,protectFirstSkipsCancel:true,protectWritesParallel:true,ledgerCloseDedupActive:true,managerExitGuardActive:true,minHoldGuardCallSites:2,nonBacktestExitsShadowed:V592_EXACT_BACKTEST_AUTHORITY,shadowedExitRules:['R14_HARD_LOSS','R42_ABSOLUTE_DAMAGE','R41_EARLY_DAMAGE','CVD_FLIP','ADVERSE_CASCADE'],exitTypeWhitelistActive:V592_EXIT_TYPE_WHITELIST,allowedExitTypes:V592_BACKTEST_EXIT_TYPES,backtestExitCounts:{DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12},unprotectedExitException:true,adoptedPositionsNotParity:true,falseFlatProtection:'R344_FORCE_FRESH_FAIL_OPEN',closeRequiresPositiveProof:true,ledgerEvidenceOnly:V592_LEDGER_EVIDENCE_ONLY,aggTradeStream:'FAPI_WS_MARKET',passiveParamsCsv:'/api/evidence/passive.csv',orphanNeverCancelsProtection:true,closeProofAllReasons:true,possibleOrphanSymbols:[...v592PossibleOrphans],passiveVpinActive:true,vpinAuthorityUntouched:true,oiCacheFallback:true,singleCloseFunnel:true,orphanLedgerSweep:true,closeCallSitesCovered:5,closePnlClassified:true,dedupScopesSeparated:true,sweepMaxAttempts:V592_SWEEP_MAX_ATTEMPTS,exitReasonFieldFixed:true,probeActive:V592_PROBE_ACTIVE,probeStrategyImpact:false,probeLedgerIsolated:true,phantomLedgerGuard:true,probeManagerExitIsolated:true,virtualEquityPhantomFilter:true,exitGuardPrecedenceFixed:true,rawProfile:R501_RAW_PROFILE,rawSuspended:r501RawSuspended,diskUsedMB:r501DiskState.lastMB,diskLimitMB:R501_DISK_LIMIT_MB,analysisBundle:'/api/evidence/analysis-bundle.zip',probeOpenNow:v592ProbeSlotOffset(),probeStats:v592ProbeStats,passiveFamilies:['cvd','tick','vpin','orderflow','orderbook','volume_rvol','atr_body','oi','funding','taker_longshort','liquidations','iceberg','fibonacci','timeframe_structure','freshness']},lockedSymbols:[...v592SymbolOrderLocks.keys()],marketTimeOffsetMs:marketTimeOffset,marketTimeSyncedAt},dualLane:{authority:'V45_CLOSED_OHLCV_PIT_PLUS_R495_TESTNET',wrChallenger:'SHADOW_ONLY',eomChallenger:'SHADOW_ONLY',atcChallenger:'SHADOW_ONLY',combinedChannelChallenger:'SHADOW_ONLY',v45ActiveSelector:V592_V45_TESTNET_ACTIVE?'TESTNET_ACTIVE_PRE_R495':'OFF',microstructure:'V592_PASSIVE_PLUS_V614_RANK_TIEBREAK',postR495SoftVetoShadowOnly:true},rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,files:R501_RAW_FILES,zipEndpoint:'/api/evidence/raw/:id/bundle.zip',rejections:'/api/evidence/execution-rejections.ndjson',wrChallenger:'/api/evidence/wr-challenger.ndjson',eomShadow:'/api/evidence/eom-shadow.ndjson',atcShadow:'/api/evidence/atc-shadow.ndjson',combinedChannelShadow:'/api/evidence/combined-channel-shadow.ndjson',v45MultiSource:'/api/evidence/v45-multi-source.ndjson'},stageSnapshots:['decision','orderRequest','orderSend','orderAck','fillObserved','fillReconciled','protectionVerified','+30s','+1m','+3m','+5m','+15m','+30m','close'],activePolicy:['v5.9.2 closed-OHLCV/chart candidate logic','R495 exact first-three post-5m-close Binance 1m acceptance','R497 PIT soft-scale','Fixed41/buffer/max2/risk4','R496 shadow','EOM OHLCV challenger shadow','ATC price-action pool shadow','EOM+ATC combined challenger shadow','V4.5 closed-OHLCV multi-source Testnet selector: MS≥35 + TOP_GAINER + FO≥0.35'],authorityIsolation:{closedCandlesOnly:true,liveOpenCandlesPassive:true,fibonacciPassive:true,orderBookPassive:true,openInterestPassive:true,fundingPassive:true,liquidationsPassive:true,tickCvdPassive:true,eomShadowOnly:true,atcShadowOnly:true,combinedChannelShadowOnly:true,v45ClosedOhlcvSelectorOnly:true,liveMicrostructureNeverUsedByV45:true,liveMicrostructureCandidateRankTieBreak:true,postR495SoftVetoShadowOnly:true,liveMicrostructureExitImpact:false},executionSafety:['Testnet credentials/base','positionRisk strict truth + single-flight','max positions','margin and precision','exchange order acceptance','real SL/TP verification','reduce-only close'],limitations:['Full candidate-feature generator used to create candidates_radar_features.csv is not included; exact historical signal regeneration is not independently reproducible.','June-selected EOM balanced rule did not improve July WR; it remains shadow.','EOM+TOP_GAINER high-precision rule improved July WR/PF/DD but retained only 38.1% of baseline trades; it remains forward-Testnet shadow.','ATC-only did not generalize on July; the balanced combined rule reduced July DD but did not improve PF, so both remain shadow.','Combined+TOP_GAINER improved July WR to 59.18% but was weaker than the existing EOM+TOP_GAINER shadow; it is not authority.','Historical order-book/OI/funding/liquidation/tick-perfect data do not exist in the backtest; V6.1.7 uses only fresh V614 evidence as an equal-score candidate-rank tie-break, never as order veto, sizing or exit authority.','V4.5 is a new Testnet-only strategy candidate; it is not exact v5.9.2 behavior parity.']});});
 
 app.get('/api/evidence/report',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
@@ -20275,7 +20421,8 @@ app.post('/api/order', async (req, res) => {
      const _life=r501OrderLifeSnapshot(sym)||{};
      const _r495=r495LastAcceptedBySymbol&&typeof r495LastAcceptedBySymbol.get==='function'
        ? r495LastAcceptedBySymbol.get(sym) : null;
-     // Backtestin giris ani: R495'in kabul ettigi 3. kapali 1m mumun kapanisi.
+     // Normal yol: R495'in 3. kapali 1m kabul ani. R619 bariz-grafik yolu:
+     // agirlikli karar ani. Her ikisi de ayni mum-drift ve idempotency muhafizindan gecer.
      const _entryTs=Number(_r495?.entryTs||0)||Number(_life.decisionTime||0)||Number(_life.requestReceivedTime||0);
      const _entryCandle=v592CandleIndex(_entryTs);
      const _nowCandle=v592CandleIndex(_now);
@@ -20284,7 +20431,7 @@ app.post('/api/order', async (req, res) => {
      const _lag=_reqAt?_now-_reqAt:0;
      try{r501OrderLifeMark(sym,'ENTRY_CANDLE_PARITY',{entryTs:_entryTs||null,entryCandle:_entryCandle,
        nowCandle:_nowCandle,candleDrift:_drift,requestToSendMs:_lag,
-       source:_r495?.entryTs?'R495_ENTRY_TS':'LIFECYCLE'});}catch(_){}
+       source:_r495?.entryTs?(_r495?.source==='R619_GRAPH_FAST'?'R619_ENTRY_TS':'R495_ENTRY_TS'):'LIFECYCLE'});}catch(_){}
      if(V592_EXACT_BACKTEST_AUTHORITY&&V592_ENTRY_CANDLE_PARITY&&Number.isFinite(_drift)){
        if(_drift>V592_ENTRY_CANDLE_MAX_DRIFT){
          // V5.0.6: drift blogu artik funnel'a da yazilir. Backtest girisi
@@ -24210,8 +24357,9 @@ app.get('/api/micro-assist/status', (_req,res)=>{
       return {symbol,assist,oiAgeSec:row.oiHistTs?Math.round((now-row.oiHistTs)/1000):null,
         fundingAgeSec:row.premiumTs?Math.round((now-row.premiumTs)/1000):null,lastError:row.lastError||null};
     });
-    res.json({ok:true,build:LAZARUS_BUILD,mode:'NON_BLOCKING_RANK_TIEBREAK_ONLY',active:V614_MICRO_ASSIST_ACTIVE,
-      contract:{scanAwaitsResearch:false,orderBlocking:false,sizingImpact:false,exitImpact:false,staleMeansNeutral:true},
+    res.json({ok:true,build:LAZARUS_BUILD,mode:'NON_BLOCKING_WEIGHTED_CONFIRMATION',active:V614_MICRO_ASSIST_ACTIVE,
+      contract:{scanAwaitsResearch:false,standaloneOrderAuthority:false,orderBlocking:false,sizingImpact:false,exitImpact:false,staleMeansNeutral:true,
+        graphWeightPct:70,dataWeightPct:30,dataWeightsPct:{flow:15,openInterest:7,orderBook:5,funding:3}},
       limits:{microRestBudget1m:V614_MICRO_REST_BUDGET_1M,microSpent1m:r614MicroState.spent,
         maxGovernorLoad:V614_MICRO_MAX_GOV_LOAD,topN:V614_MICRO_TOP_N,binanceUsedWeight:Number(binanceGov.usedWeight||0),
         publicCeiling:BINANCE_PUBLIC_RESEARCH_CEILING,executionReserve:V612_EMIR_REZERV},
@@ -24225,7 +24373,7 @@ app.get('/api/r481-status', (req,res)=>{
   try{
     const scanSnap=r48632ScanSnapshot();
     const tick={}; for(const sym of scanSnap.list.slice(0,24)){ const t=getTickAnalysis(sym); if(t) tick[sym]={whaleBias:t.whaleBias,whaleValid:t.whaleValid,whaleStatus:t.whaleStatus,whaleThreshold:t.whaleThreshold,whaleTrades:t.whaleTrades,whaleAgeMs:t.whaleAgeMs,bigBuy:t.bigBuy,bigSell:t.bigSell}; }
-    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:`R497: point-in-time SOFT risk-scale + R495 exact üç kapalı 1m kabul; mutlak marj ${V601_HARD_MARGIN_FLOOR_USDT}$–${V601_HARD_MARGIN_CAP_USDT}$ · ${R497_FIXED_UNTIL_EQUITY_USDT}$ üstü ${R497_ABOVE_CAP_MODE}; R496 shadow`,scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
+    res.json({ok:true,build:LAZARUS_BUILD,priorityEnabled:R481_STRATEJI_ONCELIK_AKTIF,sortAll:R481_TUM_ADAY_SIRALA,icBarPolicy:'REMOVED_FROM_LIVE_CANDIDATE_GENERATION',r495:{active:R495_LIVE_ACTIVE,mode:'NORMAL_CANDIDATES_EXACT_CLOSED_1M',acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,armedNow:r495ArmedCandidates.size,stats:r495LiveStats},r619:{active:V619_GRAPH_OPPORTUNITY_ACTIVE,mode:'GRAPH70_WEIGHTED_DATA30_NO_DAILY_QUOTA',thresholds:{top10:V619_TOP10_SCORE_MIN,top24:V619_TOP24_SCORE_MIN,explosion:V619_EXPLOSION_SCORE_MIN,top10Fast:V619_TOP10_FAST_SCORE_MIN,top24Fast:V619_TOP24_FAST_SCORE_MIN,explosionFast:V619_EXPLOSION_FAST_SCORE_MIN},stats:v619OpportunityStats},sourcePriorityEnabled:R482_KAYNAK_ONCELIGI_AKTIF,fullMechanicalWhenAiOff:!AI_BRAIN_ENABLED,chartStoryEnabled:R483_CHART_STORY_ENABLED,storyActive:R483_STORY_ACTIVE,deepCandles:String(process.env.R483_DEEP_CANDLES??'1')!=='0',storyPolicy:`R619 grafik %70 + yardımcı veri %30; TOP10/TOP24/patlama worker; bariz fırsat R495 3dk beklemesini atlar; R493/TRAP/plan yönü, mutlak marj ${V601_HARD_MARGIN_FLOOR_USDT}$–${V601_HARD_MARGIN_CAP_USDT}$ ve tüm emir güvenlikleri korunur`,scanMode:autoConfig?.scanMode||null,workers:{r370:`${R486_R370_INTERVAL_SEC}sn full-market 15m canlı+taze yapı`,r385:`${R486_R385_INTERVAL_SEC}sn 1h/4h kırılım + HTF hayalet`,r328:`${R486_R328_INTERVAL_SEC}sn 1m/3m/5m intrabar ignition`,r366:`${R486_R366_INTERVAL_SEC}sn canlı hareket/akış nedeni`},workerUniverse:{totalFutures:r4863WorkerUniverseState.totalFutures,eligible:r4863WorkerUniverseState.eligible,excludedCount:r4863WorkerUniverseState.excludedCount||0,excludedExamples:r4863WorkerUniverseState.excludedExamples||[],hot:r4863WorkerUniverseState.hot,ghostHot:r4863WorkerUniverseState.ghostHot||[],lastBatch:r4863WorkerUniverseState.lastBatch,telemetry:r4863WorkerUniverseState.workers},coreScan:{mode:autoConfig?.scanMode||null,limit:autoScanState?.coreScanLimit||autoConfig?.scanLimit||null,list:scanSnap.core,lastFullScanEnd:autoScanState?.lastFullScanEnd||null,lastFullCoreCount:autoScanState?.lastFullCoreCount??scanSnap.core.length},effectiveScan:{count:scanSnap.count,list:scanSnap.list,workerInjected:scanSnap.workerInjected},targetedWake:{list:autoScanState?.targetedWakeList||[],symbol:autoScanState?.targetedWakeSymbol||null,at:autoScanState?.targetedWakeAt||null},minLeverage:R486_MIN_LEVERAGE,harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta,topBrake:{active:R491_TEPE_FREN_ACTIVE,modelId:R491_MODEL_ID,scoreMax:R491_SCORE_MAX,rsi4hMin:R491_RSI4H_MIN,k24Min:R491_K24_MIN,marginFactor:R491_MARGIN_FACTOR,triggerCount:r491BrakeTriggerCount,last:r491LastBrake}},entryTruth:{active:R486_ENTRY_TRUTH_ACTIVE,firstObstacleMinRR:R486_FIRST_OBSTACLE_MIN_RR,minStopAtr:R486_MIN_STOP_ATR,earlyInvalidation:R486_EARLY_INVALIDATION_ACTIVE,earlyMinRoi:R486_EARLY_INVALIDATION_MIN_ROI,earlyPressure:R486_EARLY_INVALIDATION_PRESSURE,earlyExitScore:R486_EARLY_INVALIDATION_EXIT_SCORE,singleAuthority:R486_SINGLE_AUTHORITY_ACTIVE,marketMinQuality:R486_STORY_MARKET_MIN_QUALITY,tacticalMinQuality:R486_STORY_TACTICAL_MIN_QUALITY,tacticalMinFirstRR:R486_STORY_TACTICAL_MIN_FIRST_RR,nearRetestAtr:R486_STORY_NEAR_RETEST_ATR,waitStoryMarketBridge:R486_WAIT_STORY_MARKET_BRIDGE,directionLock:R486_STORY_DIRECTION_LOCK,micro3m:R486_MICRO_3M_ACTIVE,microConsensus:R486_MICRO_CONSENSUS_ACTIVE,earlyIgnition:R486_EARLY_IGNITION_ACTIVE,verticalImpulseProofRequired:R486_VERTICAL_IMPULSE_PROOF_REQUIRED,microMarketMinVotes:R486_MICRO_MARKET_MIN_VOTES,priorityPusuPollSec:R486_PRIORITY_PUSU_POLL_SEC,r447AuthorityBridge:R486_R447_STORY_AUTHORITY_BRIDGE,squeezeIgnitionTactical:R486_SQUEEZE_IGNITION_TACTICAL,mtfGhost:R486_MTF_GHOST_ACTIVE,ghostScoreMin:R486_GHOST_SCORE_MIN,ghostTacticalMin:R486_GHOST_TACTICAL_MIN,retestProofRequired:R486_RETEST_PROOF_REQUIRED,flowConflictTactical:R486_FLOW_CONFLICT_TACTICAL,htfCountertrendTactical:R486_HTF_COUNTERTREND_TACTICAL,firstObstacleResolve:R486_FIRST_OBSTACLE_RESOLVE,lateBreakoutAtr:R486_LATE_BREAKOUT_ATR,mechFastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,intrabarMtf:R486_INTRABAR_MTF_ACTIVE,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},whaleScoreEnabled:String(process.env.R481_BALINA_SKOR||'0')==='1',priority:autoScanState?.r481Oncelik||[],scores:R481_STRATEJI_SKOR,tick});
   }catch(e){res.status(500).json({ok:false,error:String(e?.message||e)});}
 });
 
@@ -26737,21 +26885,29 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               const rrTxt = (ai.tp && ai.sl && ai.entry) ? ` R:R≈${(Math.abs(ai.tp-ai.entry)/Math.abs(ai.entry-ai.sl)||0).toFixed(2)}` : '';
               logAuto(`${ai.mekanik?'⚙️':'🤖'} ${coin.symbol} ${ai.mekanik?'MEKANİK KARAR MOTORU':'AI PRO TRADER'}: ${ai.side} güven:${ai.confidence}% · giriş:${ai.entry} TP:${ai.tp} SL:${ai.sl}${rrTxt} — ${ai.reasoning}${ai.plan?' · PLAN: '+ai.plan:''}`);
               decisionChain.aiBrain = ai;
-              // V4.5 TESTNET: closed-OHLCV multi-source selector is applied BEFORE R495.
-              // Live microstructure remains passive and is never read here.
+              // V6.1.9: kapali-OHLCV/V4.5 grafik tabani korunur. TOP10, TOP24 ve
+              // patlama workerinda grafik barizse canli mikro veri agirlikli yardimci
+              // kanit olur; veri eksikligi bekleme sebebi, tek alan da veto degildir.
               try {
                 if(String(ai.side||'').toUpperCase()==='LONG'){
                   const _v45Story=ai?.story||decisionChain?.r483Story||null,_v45=v592V45FromLiveContext(coin,analysis,decisionChain,_v45Story||{});
                   _v45.baselineWouldTrade=true;ai.v45MultiSource=_v45;decisionChain.v45MultiSource=_v45;
-                  if(V592_V45_TESTNET_ACTIVE&&!_v45.eligible){
+                  const _r619=r619GraphOpportunityArbiter(coin,analysis,decisionChain,ai,_v45);
+                  ai.r619Opportunity=_r619;decisionChain.r619Opportunity=_r619;
+                  if(V592_V45_TESTNET_ACTIVE&&!_v45.eligible&&!_r619.allowed){
                     ai.plannedSide='LONG';ai.side='WAIT';ai.karKosma='NORMAL';
                     ai.v592WaitSource='V45_SELECTOR';v592ParityStats.waitV45Selector++;
-                    ai.reasoning=`${String(ai.reasoning||'')} · V4.5 PRE_R495 FILTER: ${_v45.reasons.join(', ')||'NOT_ELIGIBLE'} · MS ${Number(_v45.features?.score||0).toFixed(1)}`;
-                    ai.plan='V4.5 Testnet seçici kapattı; baseline karar ve tüm canlı araştırma alanları kanıta yazılır.';
+                    ai.reasoning=`${String(ai.reasoning||'')} · V4.5/R619 BEKLE: ${_v45.reasons.join(', ')||'NOT_ELIGIBLE'} · ${_r619.reason}`;
+                    ai.plan='Grafik ve ağırlıklı yardımcı veri toplamı henüz eşiği geçmedi; günlük işlem kotası yok, aday yeniden değerlendirilir.';
+                  }else if(V592_V45_TESTNET_ACTIVE&&!_v45.eligible&&_r619.allowed){
+                    ai.reasoning=`${String(ai.reasoning||'')} · V4.5 tekil filtresi R619 grafik-birleşik kanıtıyla aşıldı: ${_r619.reason}`;
+                    ai.plan=_r619.fastEntry?'R619 bariz fırsat: güvenliklerden sonra gecikmeden MARKET.':'R619 fırsat geçerli; normal R495 kabulüne gider.';
                   }
                 }
               }catch(_v45e){ai.side='WAIT';ai.plannedSide='LONG';ai.v592WaitSource='V45_FAIL_CLOSED';v592ParityStats.waitV45FailClosed++;ai.reasoning=`${String(ai.reasoning||'')} · V4.5_FAIL_CLOSED: ${String(_v45e?.message||_v45e).slice(0,100)}`;}
-              // R495 LIVE: eligible LONG decisions are held for the same 3-minute acceptance.
+              // R495 LIVE normal adaylarda korunur. Yalniz R619'un bariz grafik
+              // sinifina giren aday zorunlu 3dk bekletilmez; ayni idempotency, marj,
+              // pozisyon-gercegi, SL/TP ve max-pozisyon guvenliklerinden yine gecer.
               try {
                 if (R495_LIVE_ACTIVE && String(ai.side||'').toUpperCase()==='LONG') {
                   const _r495Data = r481MekanikVeri(coin,analysis,decisionChain);
@@ -26759,7 +26915,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                   const _r495BaseAuthority = ai?.authority || decisionChain?.r48633Authority || {active:true,action:'MARKET',riskScale:1,reason:'R495 giriş tabanı'};
                   const _r495Setup = r495SetupName(ai,decisionChain);
                   const _r495Candidate = r495Exact.candidateMetaFromCompact5m(_r495Data?.candles?.['5m'],_r495Data?.candles?._times?.['5m']);
-                  const _r495 = await r495LiveAcceptanceArbiter(coin.fullSymbol||coin.symbol,_r495Story,_r495BaseAuthority,{setup:_r495Setup,score:Number(score||0),candidate:_r495Candidate,entryTruth:_r495Story?.entryTruth||null,entry:Number(ai.entry||0),sl:Number(ai.sl||0),tp:Number(ai.tp||0)});
+                  const _r619Fast=V619_GRAPH_OPPORTUNITY_ACTIVE&&ai?.r619Opportunity?.fastEntry===true;
+                  const _r495 = _r619Fast
+                    ? r619FastAcceptanceAuthority(coin.fullSymbol||coin.symbol,coin,ai,ai.r619Opportunity,_r495Candidate)
+                    : await r495LiveAcceptanceArbiter(coin.fullSymbol||coin.symbol,_r495Story,_r495BaseAuthority,{setup:_r495Setup,score:Number(score||0),candidate:_r495Candidate,entryTruth:_r495Story?.entryTruth||null,entry:Number(ai.entry||0),sl:Number(ai.sl||0),tp:Number(ai.tp||0)});
                   decisionChain.r495Live=_r495; ai.r495Live=_r495; ai.authority=_r495;
                   if(_r495Story){ai.story=_r495Story;decisionChain.r483Story=_r495Story;}
                   if(['PUSU','REJECT'].includes(String(_r495.action||''))){
@@ -26783,7 +26942,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                       reason:'emir SL/TP kaynagi: r495Exact buildAcceptedPlan'}); }catch(_){}
                     }
                     if(String(_r495.action)==='TACTICAL') ai.karKosma='TACTICAL';
-                    ai.reasoning=`${String(ai.reasoning||'')} · ${_r495.reason} · kapalı1m oy ${_r495.votes??'—'}/3 · drift ${_r495.driftAtr??'—'} ATR · risk×${Number(_r495.riskScale||0).toFixed(2)}`;
+                    ai.reasoning=String(_r495.code||'').startsWith('R619_')
+                      ? `${String(ai.reasoning||'')} · ${_r495.reason} · grafik %70 / yardımcı veri %30 · risk×${Number(_r495.riskScale||0).toFixed(2)}`
+                      : `${String(ai.reasoning||'')} · ${_r495.reason} · kapalı1m oy ${_r495.votes??'—'}/3 · drift ${_r495.driftAtr??'—'} ATR · risk×${Number(_r495.riskScale||0).toFixed(2)}`;
                   }
                 }
               } catch(_r495e) {
