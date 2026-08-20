@@ -457,7 +457,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_1_3_CANLI_R491_TRAP_POSRISK_CLOSE_TRUTH'
+const LAZARUS_BUILD = 'V6_1_4_CANLI_SL_REWRITE_STOP_NOW'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -20023,6 +20023,15 @@ app.post('/api/order', async (req, res) => {
   if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!usdtAmount)
     return res.status(400).json({error:'Eksik parametre'});
   const sym=symbol.toUpperCase().includes('USDT')?symbol.toUpperCase():symbol.toUpperCase()+'USDT';
+  // V6.1.4: Durdur'a basılmadan önce başlayan bir tarama, uzun analiz/API
+  // bekleyişinden dönüp emir gönderemez. Manuel panel emirlerinde autoOrder yoktur.
+  if (req.body?.autoOrder === true) {
+    const requestGeneration = Number(req.body?.autoStopGeneration);
+    if (!autoConfig?.enabled || !Number.isFinite(requestGeneration) || requestGeneration !== autoStopGeneration) {
+      try{r501OrderLifeMark(sym,'ORDER_REJECTED',{reason:'AUTO_STOP_GENERATION_STALE',requestGeneration,currentGeneration:autoStopGeneration});}catch(_){ }
+      return res.status(409).json({ok:false,error:'AUTO_STOPPED_BEFORE_ORDER_SEND',requestGeneration,currentGeneration:autoStopGeneration});
+    }
+  }
   const orderAttemptId=`${sym}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;r501OrderLifeMark(sym,'ORDER_REQUEST_RECEIVED',{attemptId:orderAttemptId,side:String(side||'').toUpperCase(),requestedLeverage:Number(leverage),requestedMarginUSDT:Number(usdtAmount),targetPrice:Number(targetPrice),stopPrice:Number(stopPrice)});
   const isLong=side.toUpperCase()==='LONG';
   const oSide=isLong?'BUY':'SELL', cSide=isLong?'SELL':'BUY';
@@ -21109,9 +21118,26 @@ async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) 
   let r277Tick = 0;
   try { const f = await getSymbolFilters(sym); r277Tick = Number(f?.tickSize) || 0; } catch (_) {}
   const r277MinGap = Math.max((r277Tick > 0 ? r277Tick * 3 : 0), mark * 0.0004);
-  const safeSL = isLong
-    ? Math.min(parseFloat(newSL), mark - r277MinGap)
-    : Math.max(parseFloat(newSL), mark + r277MinGap);
+  const requestedSL = Number(newSL);
+  const requestedTooClose = !Number.isFinite(requestedSL) || requestedSL <= 0 ||
+    (isLong ? requestedSL >= mark - r277MinGap : requestedSL <= mark + r277MinGap);
+  const rewriteMeta = {
+    reason:String(reason||'UNKNOWN'), side:pos.side, entry, mark,
+    requestedSL:Number.isFinite(requestedSL)?requestedSL:null,
+    currentSL:Number(state.currentSL||0)||null,
+    currentSLAlgoId:state.currentSLAlgoId||null,
+    minGap:r277MinGap, tickSize:r277Tick||null,
+    openAgeMs:Number(state.openedAt||state.openTs||0)>0 ? Date.now()-Number(state.openedAt||state.openTs) : null
+  };
+  try{r501OrderLifeMark(sym,'PROTECTION_REWRITE_REQUEST',rewriteMeta);}catch(_){ }
+  // SKYAI dersi: kazanılmamış BE/kâr-kilidi isteğini markın 3 tick altına
+  // yapıştırmak hair-trigger SL üretir. Mevcut doğru bracket korunur.
+  if (requestedTooClose) {
+    try{r501OrderLifeMark(sym,'PROTECTION_REWRITE_DEFERRED',{...rewriteMeta,code:'REQUESTED_SL_NOT_EARNED'});}catch(_){ }
+    logAuto(`🛡️ ${sym} ${reason} SL değişimi ertelendi: istek ${Number.isFinite(requestedSL)?requestedSL:'geçersiz'}, mark ${mark}; mevcut SL ${state.currentSL||'-'} korunuyor`);
+    return {ok:false,deferred:true,keptExisting:true,reason:'REQUESTED_SL_NOT_EARNED',requestedSL,mark,minGap:r277MinGap};
+  }
+  const safeSL = requestedSL;
   let tpPrice = await currentBracketTP(apiKey, apiSecret, sym, isLong, entry, cfg.tpPct, state);
   // TP mark'a yanlış tarafta kalmışsa emri anında tetikletmemek için panel TP'sinden yeniden hesapla.
   if (isLong && tpPrice <= mark) tpPrice = calcFallbackTP(entry, true, cfg.tpPct);
@@ -21141,6 +21167,7 @@ async function updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, reason) 
   state.sltpVerified = true;
   state.lastSltpUpdate = Date.now();
   trailingState.set(sym, state);
+  try{r501OrderLifeMark(sym,'PROTECTION_REWRITE_ACK',{...rewriteMeta,safeSL:state.currentSL,tpPrice:state.targetTP,newSLAlgoId:state.currentSLAlgoId||null,newTPAlgoId:state.tpAlgoId||null});}catch(_){ }
   logAuto(`✅ ${sym} ${reason}: SL ${state.currentSL} + TP ${state.targetTP} Binance doğrulandı (tick:${proof.tickSize || '-'})`);
   return { ok:true, proof, safeSL: state.currentSL, tpPrice: state.targetTP };
 }
@@ -21151,18 +21178,27 @@ async function updateBracketWithProofJS(apiKey, apiSecret, pos, newSL, newTP, re
   const isLong = pos.side === 'LONG';
   const closeSide = isLong ? 'SELL' : 'BUY';
   const mark = parseFloat(pos.markPrice || pos.entryPrice || 0);
+  const state = trailingState.get(sym) || {};
   // R277: tick-tabanlı min mesafe (mikro-fiyat -2021 fix), updateStopLossWithProofJS ile aynı mantık.
   let r277Tick2 = 0;
   try { const f2 = await getSymbolFilters(sym); r277Tick2 = Number(f2?.tickSize) || 0; } catch (_) {}
   const r277Gap2 = Math.max((r277Tick2 > 0 ? r277Tick2 * 3 : 0), mark * 0.0004);
-  const safeSL = isLong ? Math.min(parseFloat(newSL), mark - r277Gap2) : Math.max(parseFloat(newSL), mark + r277Gap2);
+  const requestedSL = Number(newSL);
+  const requestedTooClose = !Number.isFinite(requestedSL) || requestedSL <= 0 ||
+    (isLong ? requestedSL >= mark - r277Gap2 : requestedSL <= mark + r277Gap2);
+  if (requestedTooClose) {
+    const meta={reason:String(reason||'EXTEND_TP'),side:pos.side,mark,requestedSL:Number.isFinite(requestedSL)?requestedSL:null,requestedTP:Number(newTP)||null,currentSL:Number(state.currentSL||0)||null,minGap:r277Gap2};
+    try{r501OrderLifeMark(sym,'PROTECTION_REWRITE_DEFERRED',{...meta,code:'REQUESTED_SL_NOT_EARNED'});}catch(_){ }
+    logAuto(`🛡️ ${sym} ${reason} bracket değişimi ertelendi: SL ${Number.isFinite(requestedSL)?requestedSL:'geçersiz'} mark ${mark} için henüz güvenli değil; mevcut bracket korunuyor`);
+    return {ok:false,deferred:true,keptExisting:true,reason:'REQUESTED_SL_NOT_EARNED',requestedSL,mark,minGap:r277Gap2};
+  }
+  const safeSL = requestedSL;
   const proof = await installSLTPWithProof(apiKey, apiSecret, sym, closeSide, safeSL, newTP, sym);
   if (!proof.ok) {
     logAuto(`❌ ${sym} ${reason} bracket proof başarısız; failsafe kontrol`);
     const failsafe = await emergencyCloseIfBracketMissing(apiKey, apiSecret, pos, `${reason}_BRACKET_PROOF_FAIL`);
     return { ok:false, proof, failsafe, safeSL, newTP };
   }
-  const state = trailingState.get(sym) || {};
   state.currentSL = proof.slPrice || safeSL;
   state.targetTP = proof.tpPrice || newTP;
   state.sltpVerified = true;
@@ -22394,9 +22430,26 @@ async function managePosition(apiKey, apiSecret, pos) {
       || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK' || action.type === 'R165_KAR_KILIDI' || action.type === 'R486_HARVEST_LOCK') {
     const newSL = action.newSL;
     if (!newSL) return null;
+    const profitRewriteTypes = new Set(['BREAK_EVEN','TRAIL_SL','KAR_TASIMA','R97_KAR_KILIDI','R149_ROI_VAULT_LOCK','R165_KAR_KILIDI','R486_HARVEST_LOCK']);
+    if (!_v607KarKilidi && profitRewriteTypes.has(action.type)) {
+      try{r501OrderLifeMark(sym,'PROFIT_LOCK_DISABLED_V607',{actionType:action.type,requestedSL:Number(newSL),currentSL:Number(state.currentSL||0)||null});}catch(_){ }
+      stampManager('İZLEME', `${action.type} uygulanmadı: V607 kâr kilidi kapalı`, 'LOW');
+      return null;
+    }
+    // İlk SL/TP kurulumu bu kapının dışındadır. Yalnız manager'ın sonradan
+    // bracket iptal edip yeniden yazması ilk kapalı 1m dolmadan engellenir.
+    const rewriteOpenedAt = Number(state.openedAt||state.openTs||0);
+    const rewriteAgeMs = rewriteOpenedAt > 0 ? Date.now()-rewriteOpenedAt : null;
+    if (V592_MIN_HOLD_MS > 0 && rewriteAgeMs !== null && rewriteAgeMs < V592_MIN_HOLD_MS) {
+      try{r501OrderLifeMark(sym,'PROTECTION_REWRITE_MIN_HOLD_BLOCKED',{actionType:action.type,requestedSL:Number(newSL),ageMs:rewriteAgeMs,minHoldMs:V592_MIN_HOLD_MS,currentSL:Number(state.currentSL||0)||null});}catch(_){ }
+      logAuto(`🛡️ ${sym} ${action.type} SL değişimi ertelendi — ilk ${Math.ceil(V592_MIN_HOLD_MS/1000)}sn mevcut SL/TP korunur (${Math.floor(rewriteAgeMs/1000)}sn)`);
+      stampManager('BEKLET', `${action.type} ertelendi: ilk koruma ${Math.ceil(V592_MIN_HOLD_MS/1000)}sn yeniden yazılmaz`, 'LOW');
+      return null;
+    }
     const upd = await updateStopLossWithProofJS(apiKey, apiSecret, pos, newSL, action.type);
     if (upd.ok) {
       Object.assign(state, action.stateUpdates || {});
+      if (action.type === 'BREAK_EVEN') state.breakEvenInstalled = true;
       state.currentSL = upd.safeSL;
       state.targetTP = upd.tpPrice;
       state.sltpVerified = true;
@@ -22404,13 +22457,20 @@ async function managePosition(apiKey, apiSecret, pos) {
       logAuto(`✅ ${sym} ${action.type} uygulandı: SL ${upd.safeSL} / TP ${upd.tpPrice}`);
     } else {
       // Çalışan python çekirdeği gibi: doğrulanmadıysa yerel state'i başarılı sayma.
-      state.sltpVerified = false;
+      if (!upd.keptExisting) state.sltpVerified = false;
       trailingState.set(sym, state);
       return null;
     }
   }
 
   if (action.type === 'EXTEND_TP') {
+    const rewriteOpenedAt = Number(state.openedAt||state.openTs||0);
+    const rewriteAgeMs = rewriteOpenedAt > 0 ? Date.now()-rewriteOpenedAt : null;
+    if (V592_MIN_HOLD_MS > 0 && rewriteAgeMs !== null && rewriteAgeMs < V592_MIN_HOLD_MS) {
+      try{r501OrderLifeMark(sym,'PROTECTION_REWRITE_MIN_HOLD_BLOCKED',{actionType:action.type,requestedSL:Number(action.newSL),requestedTP:Number(action.newTP),ageMs:rewriteAgeMs,minHoldMs:V592_MIN_HOLD_MS});}catch(_){ }
+      stampManager('BEKLET', `EXTEND_TP ertelendi: ilk koruma ${Math.ceil(V592_MIN_HOLD_MS/1000)}sn yeniden yazılmaz`, 'LOW');
+      return null;
+    }
     const upd = await updateBracketWithProofJS(apiKey, apiSecret, pos, action.newSL, action.newTP, action.type);
     if (upd.ok) {
       Object.assign(state, action.stateUpdates || {});
@@ -22523,6 +22583,7 @@ function r486391BinanceCreds() {
 }
 let autoRunning = false;
 let autoTimer = null;
+let autoStopGeneration = 0;
 const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // legacy/fallback; R486.3.9 AI kapalıyken adaptif tarama kullanır.
 function r48638AdaptiveScanIntervalMs(){
   if(!R486_ADAPTIVE_SCAN_ACTIVE||AI_BRAIN_ENABLED)return AUTO_SCAN_INTERVAL_MS;
@@ -23725,6 +23786,14 @@ app.post('/api/auto/config', (req, res) => {
   }
 });
 
+// Panelin dolaysız durdurma yolu. Önce status GET'i veya büyük config gövdesini
+// beklemez; nesil sayacı devam eden eski taramanın emir yolunu da keser.
+app.post('/api/auto/stop', (_req, res) => {
+  autoConfig = { ...(autoConfig||{}), enabled:false };
+  stopAutoTrader();
+  res.json({ok:true,enabled:false,message:'Otomatik işlem anında durduruldu',stopGeneration:autoStopGeneration,serverTime:Date.now()});
+});
+
 // ═══ R374 DÖNÜŞÜM RAPORU — tarayıcıdan tek tıkla: /api/r374 (JSON) veya /api/r374?format=text (okunur metin) ═══
 
 // 🧬 FABLE5 MİRASI — gelecek modellerin ilk okuması gereken belge (R380)
@@ -24026,6 +24095,8 @@ function logAuto(msg) {
 }
 
 function stopAutoTrader(silent=false) {
+  autoStopGeneration += 1;
+  if (autoConfig) autoConfig.enabled = false;
   if (autoTimer) { clearTimeout(autoTimer); autoTimer=null; }
   if (r125FastWakeTimer) { clearInterval(r125FastWakeTimer); r125FastWakeTimer=null; }
   if (positionSyncTimer) { clearInterval(positionSyncTimer); positionSyncTimer=null; }
@@ -24092,6 +24163,8 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
   }
   if (!autoConfig?.enabled) return { skipped:'disabled' };
+  const scanStopGeneration = autoStopGeneration;
+  const scanStillActive = () => !!autoConfig?.enabled && scanStopGeneration === autoStopGeneration;
   // R150: priority wake 3-5sn içinde ardışık scan tetikleyip kline/depth/OI 429 üretmesin.
   // Pozisyon yönetimi fastManageOpenPositions ile ayrı çalışır; bu fren sadece yeni tarama/emir adayını geciktirir.
   const r150Now = Date.now();
@@ -24688,6 +24761,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
 
     for (const [scanIdx, coin] of scanList.entries()) {
+      if (!scanStillActive()) return {skipped:'stopped'};
       coin.gainerRank = Number(coin.r481OriginalRank || scanIdx + 1); // R481: sıralama değişse de piyasa gainer sırası korunur
       if ((await getNewPosCount()) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
       autoScanState.currentSymbol = String(coin.symbol||coin.fullSymbol||'').replace('USDT','');
@@ -27273,6 +27347,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           markAutoSkip(coin.symbol, 'Pozisyon gerçeği yok — emir kapalı', {rec:recommendation, score});
           continue;
         }
+        if (!scanStillActive()) {
+          try{r501OrderLifeMark(coin.fullSymbol,'ORDER_REJECTED',{reason:'AUTO_STOP_GENERATION_STALE',scanStopGeneration,currentGeneration:autoStopGeneration});}catch(_){ }
+          return {skipped:'stopped'};
+        }
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} (Binance yedek · canlı kesiş ~-%2) kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
           // V5.1.1: emir cagrisi da timeout'suzdu; takilirsa tarama dongusu
@@ -27287,7 +27365,8 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             side: recommendation,
             leverage: executeLeverage, marginType,
             targetPrice, stopPrice,
-            usdtAmount, maxPositions
+            usdtAmount, maxPositions,
+            autoOrder:true, autoStopGeneration:scanStopGeneration
           })
         }).then(r=>r.json());
 
@@ -27781,7 +27860,7 @@ async function classifyClosedPosition(apiKey, apiSecret, symbol, state) {
   } else if (nearSL) {
     if (state?.step3Set || state?.step2Set || state?.step1Set) {
       code = 'KAR_TASIMA_SL'; label = 'Kâr taşıma SL ile kapandı'; emoji = '📈';
-    } else if (state?.breakEvenSet) {
+    } else if (state?.breakEvenInstalled === true) {
       code = 'BREAK_EVEN_SL'; label = 'BE / güvenli SL ile kapandı'; emoji = '🟦';
     } else {
       code = 'STOP_LOSS'; label = 'SL ile kapandı'; emoji = '🛑';
