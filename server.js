@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_1_9_GRAPH_FIRST_WEIGHTED_OPPORTUNITY'
+const LAZARUS_BUILD = 'V6_2_0_SCAN_LIVENESS_AND_LANE_TRUTH'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7650,7 +7650,11 @@ function r619GraphOpportunityArbiter(coin={},analysis={},decision={},ai={},v45={
   const clamp=(n,lo=0,hi=100)=>Math.max(lo,Math.min(hi,Number(n)||0));
   const story=ai?.story||decision?.r483Story||{},truth=story?.entryTruth||{};
   const pit=v592PitSelectionMeta(coin,decision),rank=Number(pit?.rank||coin?.r481OriginalRank||coin?.gainerRank||99);
-  const worker=!!(r493IsWorkerCandidate(coin)||Number(story?.source?.lane)<3||story?.workerPulse);
+  // V6.2.0: story.source.lane bir worker bayragi degildir. Core TOP10 kayitlarinda
+  // bu alan 1/2 olabildigi icin eski "lane<3" kontrolu TOP10/TOP24 adaylarinin
+  // neredeyse tamamini PATLAMA_WORKER diye yanlis siniflandiriyordu. Worker yalniz
+  // acik worker metadatasi/pulse ile belirlenir; core sira PIT rank ile belirlenir.
+  const worker=!!(r493IsWorkerCandidate(coin)||story?.workerPulse);
   const top10=!worker&&rank<=10,top24=!worker&&rank>10&&rank<=24;
   const lane=worker?'PATLAMA_WORKER':top10?'TOP10':top24?'TOP24':'DISARI';
   const micro=coin?.__r614Micro||r614MicroAssist(coin?.fullSymbol||coin?.symbol);
@@ -15143,7 +15147,48 @@ async function r309Add12hChange(coins) {
   return coins;
 }
 
+const R620_CANDIDATE_DEADLINE_MS = Math.max(15000, Math.min(120000, Number(process.env.R620_CANDIDATE_DEADLINE_MS||45000)));
+const r620CandidateSnapshots = new Map();
+let r620CandidateWarnAt = 0;
+function r620CandidateFallback(mode='TOP24', limit=24) {
+  const scanMode=normalizeR54ScanMode(mode||limit),lim=r54ScanLimitForMode(scanMode,limit);
+  const snap=r620CandidateSnapshots.get(scanMode);
+  if(Array.isArray(snap?.rows)&&snap.rows.length){
+    return snap.rows.slice(0,lim).map(c=>({...c,r620Fallback:true,r620FallbackAt:Number(snap.at||0),source:`${c.source||'scan'}+R620_LAST_GOOD`}));
+  }
+  const staleTickers=cache.get('futures_tickers')?.val;
+  const raw=Array.isArray(staleTickers)&&staleTickers.length?staleTickers:(volatilityStore.coins||[]);
+  return raw.map(normalizeTickerToCoin)
+    .filter(c=>c?.fullSymbol&&Number(c.price)>0&&Number(c.volume)>1_000_000&&r427KriptoMu(c.fullSymbol))
+    .sort((a,b)=>(Number(b.change24h||0)-Number(a.change24h||0))||(Number(b.volume||0)-Number(a.volume||0)))
+    .slice(0,lim)
+    .map((c,i)=>({...c,topGainerRank:i+1,gainerRank:i+1,r481OriginalRank:i+1,
+      r54Bucket:'R620_STALE_TICKER_FAILSOFT',r4863Lane:'CORE',workerSource:null,r4863Worker:null,
+      r620Fallback:true,r620FallbackAt:Number(cache.get('futures_tickers')?.ts||0),source:'R620_STALE_TICKER_FAILSOFT'}));
+}
 async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
+  const scanMode=normalizeR54ScanMode(mode||limit),lim=r54ScanLimitForMode(scanMode,limit);
+  let timer=null;
+  try{
+    const rows=await Promise.race([
+      getUnifiedScanCandidatesLive(lim,scanMode),
+      new Promise((_,reject)=>{timer=setTimeout(()=>{const e=new Error(`CANDIDATE_POOL_TIMEOUT_${R620_CANDIDATE_DEADLINE_MS}MS`);e.code='CANDIDATE_POOL_TIMEOUT';reject(e);},R620_CANDIDATE_DEADLINE_MS);timer.unref?.();})
+    ]);
+    if(Array.isArray(rows)&&rows.length)r620CandidateSnapshots.set(scanMode,{at:Date.now(),rows:rows.map(c=>({...c}))});
+    return rows;
+  }catch(e){
+    const fallback=r620CandidateFallback(scanMode,lim);
+    const now=Date.now();
+    if(now-r620CandidateWarnAt>60_000){
+      r620CandidateWarnAt=now;
+      try{pushCritical('CANDIDATE_POOL_FAILSOFT',e,{mode:scanMode,deadlineMs:R620_CANDIDATE_DEADLINE_MS,fallbackCount:fallback.length},'WARNING');}catch(_){}
+      try{logAuto(`🧯 Aday havuzu ${Math.round(R620_CANDIDATE_DEADLINE_MS/1000)}sn içinde tamamlanmadı — ${fallback.length} son-geçerli CORE adayla tarama sürüyor`);}catch(_){}
+    }
+    return fallback;
+  }finally{if(timer)clearTimeout(timer);}
+}
+
+async function getUnifiedScanCandidatesLive(limit=24, mode='TOP24') {
   // R54: Pro scalper tarama modu. FAST6 = Top Gainers ilk 10 içinden en volatil 3 + top10'a girmeye aday 3.
   // TOP10 = Binance Futures Top Gainers ilk 10. TOP24 = eski geniş havuz.
   const scanMode = normalizeR54ScanMode(mode || limit);
@@ -15234,6 +15279,9 @@ async function getUnifiedScanCandidates(limit=24, mode='TOP24') {
     ordered.push(c);
     if (ordered.length >= lim) break;
   }
+  // 12h zenginlestirme/worker enjeksiyonu gecikirse dahi ayni turda kullanilacak
+  // en az bir guncel core tabani hazir olsun.
+  if(ordered.length)r620CandidateSnapshots.set(scanMode,{at:Date.now(),rows:ordered.map(c=>({...c,r4863Lane:c.r4863Lane||'CORE'}))});
 
   // ═══ R309Q: 12h YÜKSELİŞE GÖRE SIRALA ═══
   // Sadece nihai listedeki ≤24 coin için 12h çek (429 korumalı). Sonra grup-içi sırala:
@@ -22880,6 +22928,8 @@ function r486391BinanceCreds() {
 let autoRunning = false;
 let autoTimer = null;
 let autoStopGeneration = 0;
+let autoScanRunId = 0;
+let autoWatchdogTimer = null;
 const AUTO_SCAN_INTERVAL_MS = 450 * 1000; // legacy/fallback; R486.3.9 AI kapalıyken adaptif tarama kullanır.
 function r48638AdaptiveScanIntervalMs(){
   if(!R486_ADAPTIVE_SCAN_ACTIVE||AI_BRAIN_ENABLED)return AUTO_SCAN_INTERVAL_MS;
@@ -22892,6 +22942,17 @@ function r48638AdaptiveScanIntervalMs(){
 function r48638WakeCooldowns(){
   const load=r48638GovLoadRatio(),mult=load<.45?1:load<.72?1.6:2.5;
   return {globalMs:R486_MECH_FAST_WAKE_GLOBAL_SEC*1000*mult,symbolMs:R486_MECH_FAST_WAKE_SYMBOL_SEC*1000*mult,load:+load.toFixed(2)};
+}
+
+function publicAutoConfig(cfg=autoConfig) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  const {apiKey, apiSecret, ...safe} = cfg;
+  const creds = r486391BinanceCreds();
+  return {
+    ...safe,
+    credentialsConfigured:!!(apiKey && apiSecret),
+    credentialSource:creds.source
+  };
 }
 
 // ═══ R328: PATLAMA TESPİT WORKER ═══
@@ -24075,7 +24136,7 @@ app.post('/api/auto/config', (req, res) => {
   logAuto(`⚙️ R282 auto ayar: tarama modu ${autoConfig.scanMode}/${autoConfig.scanLimit}, max poz:${autoConfig.maxPositions}, min skor:${autoConfig.minScore}`);
   if (autoConfig.enabled) {
     startAutoTrader();
-    res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:autoConfig, saverMode:AI_SAVER_MODE });
+    res.json({ ok:true, message:'Otomatik işlem başlatıldı', config:publicAutoConfig(), saverMode:AI_SAVER_MODE });
   } else {
     stopAutoTrader();
     res.json({ ok:true, message:'Otomatik işlem durduruldu', saverMode:AI_SAVER_MODE });
@@ -24380,7 +24441,7 @@ app.get('/api/r481-status', (req,res)=>{
 app.get('/api/auto/status', (req, res) => {
   const scanSnap=r48632ScanSnapshot();
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning, build:LAZARUS_BUILD,
-    config:autoConfig, scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
+    config:publicAutoConfig(), scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(), saverMode: AI_SAVER_MODE,
     r486:{
       longOnly:true, allowShort:false, minLeverage:R486_MIN_LEVERAGE,
@@ -24412,8 +24473,10 @@ function logAuto(msg) {
 
 function stopAutoTrader(silent=false) {
   autoStopGeneration += 1;
+  autoScanRunId += 1;
   if (autoConfig) autoConfig.enabled = false;
   if (autoTimer) { clearTimeout(autoTimer); autoTimer=null; }
+  if (autoWatchdogTimer) { clearInterval(autoWatchdogTimer); autoWatchdogTimer=null; }
   if (r125FastWakeTimer) { clearInterval(r125FastWakeTimer); r125FastWakeTimer=null; }
   if (positionSyncTimer) { clearInterval(positionSyncTimer); positionSyncTimer=null; }
   if (fastManagerTimer) { clearInterval(fastManagerTimer); fastManagerTimer=null; }
@@ -24479,8 +24542,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
   }
   if (!autoConfig?.enabled) return { skipped:'disabled' };
+  const scanRunId = ++autoScanRunId;
   const scanStopGeneration = autoStopGeneration;
-  const scanStillActive = () => !!autoConfig?.enabled && scanStopGeneration === autoStopGeneration;
+  const scanOwnsState = () => scanRunId === autoScanRunId;
+  const scanStillActive = () => !!autoConfig?.enabled && scanStopGeneration === autoStopGeneration && scanOwnsState();
   // R150: priority wake 3-5sn içinde ardışık scan tetikleyip kline/depth/OI 429 üretmesin.
   // Pozisyon yönetimi fastManageOpenPositions ile ayrı çalışır; bu fren sadece yeni tarama/emir adayını geciktirir.
   const r150Now = Date.now();
@@ -24519,6 +24584,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[],
       vurKacEnabled=false, vurKacAutoLev=false, vurKacMaxLev=125 } = cfg;
 
+    autoScanState.phase = 'BAKİYE_MARJ_KONTROL';
     // ═══ R372-E OTOMATİK BİLEŞİK MARJİN ═══
     // Panel marjını (sabit) yerine güncel bakiyeye göre marjin kullan (kâr eklendikçe pozisyon büyür).
     // Bakiye alınamazsa panel değerine düşer (güvenli fallback). Bileşik büyüme kullanıcı talebi.
@@ -24540,7 +24606,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:(vurKacAutoLev?125:Math.max(R486_MIN_LEVERAGE,Number(vurKacMaxLev||125)))};
     autoScanState.scanMode = r54ScanMode;
     autoScanState.maxPositions = Number(maxPositions||0);
-    autoScanState.phase = 'POZİSYON_KONTROL';
+    autoScanState.phase = 'POZİSYON_GERÇEĞİ';
 
     // R95: Binance 418/429 merkezi freni aktifken yeni REST yükü bindirme, taramayı güvenli beklet.
     // V4.7.4.11-L7: tarama YALNIZ mainnet (PUBLIC) freni aktifken durur.
@@ -24682,10 +24748,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
 
     // 3. R22 ortak liste — Long/Short ekranı ve Auto aynı havuzdan tarar.
     // 20 coinlik ayrı auto listesi RENDER/ZEC/ALGO gibi A-Tier coinleri dışarıda bırakıyordu.
+    autoScanState.phase = 'ADAY_HAVUZU_HAZIRLANIYOR';
     const effectiveScanLimit = r54ScanLimit; // R54: panelden FAST6 / TOP10 / TOP24 seçilir
     let scanList = (priorityOnly&&prioritySymbol)
       ? [{symbol:normalizeSymbol(prioritySymbol).replace('USDT',''),fullSymbol:normalizeSymbol(prioritySymbol),r54Bucket:'R48637_TARGETED_WAKE',r4863Lane:'WORKER',workerSource:'R48637_FAST_WAKE',workerSignal:r48637TargetedWakeMeta.get(normalizeSymbol(prioritySymbol))||null}]
       : await getUnifiedScanCandidates(effectiveScanLimit, r54ScanMode);
+    autoScanState.phase = 'ADAY_HAVUZU_HAZIR';
     // R493 v5.4: filtre/enjeksiyon öncesi gerçek CORE tabanını sakla. Eski sembol
     // whitelist'i veya worker enjeksiyonu ana havuzu sıfırlarsa bu taban geri konur.
     const r493GeneratedCore = priorityOnly ? [] : (scanList||[]).filter(c=>!r493IsWorkerCandidate(c));
@@ -27974,6 +28042,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
       logAuto(`Tarama hatası: ${e.message?.substring(0,120)}`);
     }
   } finally {
+    // Watchdog eski taramayi nesil/run-id ile iptal ettiyse, gec tamamlanan eski
+    // promise yeni taramanin running/faz/telemetri state'ini ezemez.
+    if (!scanOwnsState()) return;
     autoRunning = false;
     autoScanState.running = false;
     autoScanState.currentSymbol = null;
@@ -28028,6 +28099,7 @@ async function getNewPosCount() {
 
 function startAutoTrader() {
   logAuto('Otomatik işlem başlatıldı');
+  const schedulerGeneration = autoStopGeneration;
   // R486.3.9: AI maliyeti yokken tam tarama 15m kapanışına kilitlenmez.
   // Kapanmış HTF bağlamı korunur; workers/targeted wake arada tek sembolü derin tarar.
   // Tam tarama periyodu gerçek Binance used-weight başlıklarına göre 90-240sn adaptiftir.
@@ -28043,34 +28115,53 @@ function startAutoTrader() {
     autoScanState.nextScanDue=Date.now()+waitMs;
     if(autoTimer)clearTimeout(autoTimer);
     autoTimer=setTimeout(async()=>{
-      // Hedefli wake tam tarama saatine taşmışsa 120sn daha erteleme; 10sn sonra yeniden dene.
-      if(autoRunning){
-        // V5.1.1 BEKCI: autoRunning sonsuza dek true kalabiliyordu ve
-        // zamanlayici her 10 saniyede sessizce erteliyordu. Olculdu:
-        // tek tarama 8+ dakika, 0 sembol, hic log. Artik takilirsa
-        // zorla sifirlanir ve KRITIK olarak kaydedilir.
-        const _sure = Date.now() - Number(autoScanState?.lastScanStart||0);
-        if (Number(autoScanState?.lastScanStart||0) > 0 && _sure > V511_SCAN_WATCHDOG_MS) {
-          try{ v592ParityStats.scanWatchdogResets=(v592ParityStats.scanWatchdogResets||0)+1; }catch(_){}
-          try{ pushCritical('SCAN_WATCHDOG_RESET',
-            `tarama ${Math.round(_sure/1000)}sn takildi (faz ${autoScanState?.phase||'?'}) — zorla sifirlandi`,
-            {phase:autoScanState?.phase||null, ms:_sure}, 'CRITICAL'); }catch(_){}
-          try{ if(typeof r501EvidenceFunnel==='function') r501EvidenceFunnel({
-            type:'SCAN_WATCHDOG_RESET',action:'FORCE_RESET',authority:'AUTO_SCAN',symbol:null,
-            decisionImpact:false,phase:autoScanState?.phase||null,stuckMs:_sure,
-            reason:'tarama dongusu takildi, bekci sifirladi'}); }catch(_){}
-          logAuto(`🚨 Tarama ${Math.round(_sure/60000)} dakikadır takılı (faz ${autoScanState?.phase||'?'}) — zorla sıfırlandı`);
-          autoRunning=false;
-          autoScanState.running=false;
-          autoScanState.lastScanEnd=Date.now();
-        } else { scheduleNextScan(10_000); return; }
-      }
+      if (!autoConfig?.enabled || schedulerGeneration !== autoStopGeneration) return;
+      // Devam eden taramaya dokunma. Takilma tespiti promise'ten bagimsiz
+      // autoWatchdogTimer tarafindan nesil iptaliyle yapilir.
+      if(autoRunning){scheduleNextScan(10_000);return;}
       let result=null;
       try{result=await runAutoScan();}catch(_){}
+      if (!autoConfig?.enabled || schedulerGeneration !== autoStopGeneration) return;
       scheduleNextScan(result?.skipped==='busy'?10_000:undefined);
     },waitMs);
   }
   scheduleNextScan();
+  // V6.2.0: Bekci tarama promise'inin DISINDA calisir. Eski bekci yalniz bir
+  // sonraki timer callback'inde kontrol ediyordu; callback runAutoScan'i await
+  // ederken tarama takilirsa bekciye bir daha sira gelmiyordu.
+  if (!autoWatchdogTimer) {
+    autoWatchdogTimer = setInterval(() => {
+      try {
+        if (!autoConfig?.enabled || !autoRunning) return;
+        const age = Date.now() - Number(autoScanState?.lastScanStart||0);
+        if (!(Number(autoScanState?.lastScanStart||0)>0 && age>V511_SCAN_WATCHDOG_MS)) return;
+        const stuckPhase=autoScanState?.phase||'BİLİNMİYOR';
+        try{v592ParityStats.scanWatchdogResets=(v592ParityStats.scanWatchdogResets||0)+1;}catch(_){}
+        try{pushCritical('SCAN_WATCHDOG_RESET',
+          `tarama ${Math.round(age/1000)}sn takildi (faz ${stuckPhase}) — eski emir nesli iptal edilip tarama yeniden baslatildi`,
+          {phase:stuckPhase,ms:age},'CRITICAL');}catch(_){}
+        try{if(typeof r501EvidenceFunnel==='function')r501EvidenceFunnel({
+          type:'SCAN_WATCHDOG_RESET',action:'INVALIDATE_AND_RESTART',authority:'AUTO_SCAN',symbol:null,
+          decisionImpact:false,orderBlocking:true,phase:stuckPhase,stuckMs:age,
+          reason:'takilan tarama nesli iptal edildi; eski promise emir gonderemez'});}catch(_){}
+        logAuto(`🚨 Tarama ${Math.round(age/60000)} dakikadır takılı (faz ${stuckPhase}) — eski tarama iptal edildi, yenisi başlatılıyor`);
+        autoStopGeneration += 1;
+        autoScanRunId += 1;
+        r150LastScanBeginTs=0;
+        autoRunning=false;
+        autoScanState.running=false;
+        autoScanState.currentSymbol=null;
+        autoScanState.lastScanEnd=Date.now();
+        autoScanState.phase='WATCHDOG_YENİDEN_BAŞLATIYOR';
+        if(autoTimer){clearTimeout(autoTimer);autoTimer=null;}
+        setTimeout(()=>{
+          if(autoConfig?.enabled&&!autoRunning)startAutoTrader();
+        },1000);
+      } catch(e) {
+        try{pushCritical('SCAN_WATCHDOG_ERROR',e,{phase:autoScanState?.phase||null},'CRITICAL');}catch(_){}
+      }
+    },15_000);
+  }
   if (!r125FastWakeTimer) {
     r125FastWakeTimer = setInterval(() => {
       try {
