@@ -1097,7 +1097,25 @@ async function binanceThrottle(scope='REST', weight=1, orderWeight=0) {
   const job = async () => {
     _resetGovWindowIfNeeded();
     const started=Date.now(),now=Date.now();
-    if (binanceGov.backoffUntil > now && !s.includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
+    // ═══ V620 ═══ PUBLIC FRENI ARTIK EMIR YOLUNU KILITLEMIYOR.
+    // backoffUntil PUBLIC kovasidir (satir ~1005 kendi yorumu). Eski satir onu
+    // imzali/emir cagrilarina da uyguluyordu; V508_BACKOFF_MAX_SEC=3600 oldugu icin
+    // tek public 418, /fapi/v2/account cagrisini BIR SAAT uyutuyordu.
+    // Olculdu: positionRisk 3827sn asili · BIO/HYPE/ARB/EDGE emirleri gonderilemedi.
+    if (String(process.env.V620_FREN_AYRIMI ?? '1') !== '0') {
+      const _v620Kova = executionCritical ? Number(binanceGov.execBackoffUntil||0) : Number(binanceGov.backoffUntil||0);
+      if (_v620Kova > now && !s.includes('EMERGENCY')) {
+        const _v620Bek = _v620Kova - now + 50;
+        if (_v620Bek > V620_FREN_TAVAN_MS) {
+          const _e = new Error(`V620_FREN_TAVANI:${Math.round(_v620Bek/1000)}sn kova=${executionCritical?'EXEC':'PUBLIC'} kapsam=${s.slice(0,50)}`);
+          _e.code = 'V620_BACKOFF_DEADLINE';
+          throw _e;   // paylasilan kuyrugu tikamak yerine hizli hata
+        }
+        await sleep(_v620Bek);
+      }
+    } else {
+      if (binanceGov.backoffUntil > now && !s.includes('EMERGENCY')) await sleep(binanceGov.backoffUntil - now + 50);
+    }
     _resetGovWindowIfNeeded();
     const weightLimit = executionCritical ? BINANCE_SIGNED_PRIORITY_CEILING : BINANCE_PUBLIC_RESEARCH_CEILING;
     if (binanceGov.usedWeight + weight > weightLimit || binanceGov.usedOrders + orderWeight > 70) {
@@ -2445,6 +2463,8 @@ const POS_RISK_TTL_NORMAL = 600000;  // boş hesapta 10dk; emir öncesi forceFre
 const POS_RISK_TTL_ACTIVE = 12000;   // RAW-V4: açık pozisyonda 10sn manager için 12sn cache; stale-while-revalidate
 const POS_RISK_RATELIMIT_MS = 90000; // R154: 60sn→90sn. 418 sonrası positionRisk özel cooldown.
 const POS_RISK_INFLIGHT_TIMEOUT_MS = 12000; // V4.7: priority lane; 12sn üstü anormal
+// ═══ V620 ═══ paylasilan kuyrukta izin verilen azami tek uyku
+const V620_FREN_TAVAN_MS = Math.max(2000, Math.min(45000, Number(process.env.V620_FREN_TAVAN_MS || 12000)));
 
 function keyFingerprint(apiKey, apiSecret='') {
   const k=cleanBinanceCredential(apiKey), sec=cleanBinanceCredential(apiSecret);
@@ -7694,7 +7714,20 @@ function r619GraphOpportunityArbiter(coin={},analysis={},decision={},ai={},v45={
   if(!(entry>0&&sl>0&&tp>0&&sl<entry&&tp>entry))hardReasons.push('PLAN_DIRECTION');
   if(proofs.length<proofMin)hardReasons.push(`GRAFIK_KANITI_${proofs.length}/${proofMin}`);
   const adverseGraph=!!(m.postImpulseReject||f.failedBreak||story?.targetRejection||(edge.lateTrapRisk&&!edge.squeeze));
-  const allowed=hardReasons.length===0&&decisionScore>=minScore;
+  // ═══ V620 ═══ MIKRO VERI ARTIK KAPI DEGIL.
+  // OLCUM (enriched_1067.csv · 1060 sinyal · 108 gun · dort ay ayri ayri dogrulandi):
+  //   kapi yok                n=1060  PF 3.27  toplamR +513.8
+  //   KAPI post3Accept        n= 368  PF 6.18  toplamR +262.4
+  //   KAPI post3Accept + akis n=  75  PF 7.36  toplamR  +78.8   <- toplam kar %85 azaldi
+  //   BOYUT 0.50/1.00/1.25    n=1060  PF 3.88  toplamR +407.8
+  // Kapi islem basi kaliteyi yukseltir ama TOPLAM kari keser. Kapi yalniz SERMAYE
+  // dar oldugunda dogrudur; burada dar olan FIRSAT (canli %1,1 uygunluk, backtest %7,9;
+  // 2 slot x ~1,5sa = gunde 24-44 kapasite bos duruyor).
+  // hardReasons (firstObstacleRR / giris sozlesmesi WAIT-TRAP / plan yonu / grafik kaniti)
+  // SERT KAPI olarak AYNEN duruyor. Degisen yalniz mikro-veri puaninin veto yetkisi.
+  // Geri acmak icin: V620_MIKRO_KAPI=1
+  const _v620MikroKapi = String(process.env.V620_MIKRO_KAPI ?? '0') === '1';
+  const allowed=hardReasons.length===0 && (_v620MikroKapi ? decisionScore>=minScore : true);
   const fastEntry=allowed&&!adverseGraph&&decisionScore>=fastMin;
   const out={active:V619_GRAPH_OPPORTUNITY_ACTIVE,lane,rank,worker,top10,top24,allowed,fastEntry,
     graphScore:+graphScore.toFixed(2),dataScore:+dataScore.toFixed(2),decisionScore:+decisionScore.toFixed(2),
