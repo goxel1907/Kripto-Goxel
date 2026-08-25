@@ -1,6 +1,6 @@
 {
-  "name": "lazarus-v622-canli",
-  "version": "6.2.2",
+  "name": "lazarus-v624-canli",
+  "version": "6.2.4",
   "private": true,
   "main": "server.js",
   "scripts": {
