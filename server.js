@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_2_0_SCAN_LIVENESS_AND_LANE_TRUTH'
+const LAZARUS_BUILD = 'V6_2_2_CANLI_DYNAMIC_STOP'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7413,7 +7413,7 @@ function r486EntryTruthGuard(story={},opts={}){
   const firstObstacleHard=legacyFirstObstacleHard||['FIRST_OBSTACLE_RR_UNKNOWN','LOW_FIRST_OBSTACLE_RR'].includes(String(r493EntrySafety?.code||''));
   const rawFlowState=String(story.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase(),liveFlowAgainst=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(rawFlowState);
   const planIncoherent=retestBelowStop||!(recommendedSl>0&&recommendedSl<entry)||!(recommendedTp>entry),directionAgainst=story.bias==='SHORT'||(!V592_POLICY_PARITY_MODE&&liveFlowAgainst);
-  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked);
+  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical&&!R486_WAIT_STORY_MARKET_BRIDGE/* V621: kopru acikken retest kanit kapilarina devreder */,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked);
   const reasons=[];
   if(storyWait)reasons.push(`hikâye:${mode}`);
   if(planIncoherent)reasons.push(retestBelowStop?'retest seviyesi SL altında':'TP/SL yön planı tutarsız');
@@ -7710,7 +7710,11 @@ function r619GraphOpportunityArbiter(coin={},analysis={},decision={},ai={},v45={
   if(!V619_GRAPH_OPPORTUNITY_ACTIVE)hardReasons.push('OFF');
   if(lane==='DISARI')hardReasons.push('TOP24_VEYA_WORKER_DISI');
   if(!(Number.isFinite(firstRR)&&firstRR>=R493_MIN_FIRST_OBSTACLE_RR))hardReasons.push('FIRST_OBSTACLE_RR');
-  if(truth?.marketAllowed===false||['TRAP','WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','AVOID_LONG'].includes(timing))hardReasons.push('GIRIS_SOZLESMESI_WAIT_TRAP');
+  // ═══ V621 ═══ WAIT hikayesi artik pesinen sert red DEGIL — kopru acikken
+  // asagidaki kanit kapilari (confirmedPullback/confirmedContinuation + trigger +
+  // rrTactical + !flowAgainst + topRisk<7.5) karar verir. Kopru kapaliyken
+  // davranis birebir eskisi gibidir.
+  if(truth?.marketAllowed===false||(!R486_WAIT_STORY_MARKET_BRIDGE&&['TRAP','WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','AVOID_LONG'].includes(timing)))hardReasons.push('GIRIS_SOZLESMESI_WAIT_TRAP');
   if(!(entry>0&&sl>0&&tp>0&&sl<entry&&tp>entry))hardReasons.push('PLAN_DIRECTION');
   if(proofs.length<proofMin)hardReasons.push(`GRAFIK_KANITI_${proofs.length}/${proofMin}`);
   const adverseGraph=!!(m.postImpulseReject||f.failedBreak||story?.targetRejection||(edge.lateTrapRisk&&!edge.squeeze));
@@ -21813,6 +21817,11 @@ async function managePosition(apiKey, apiSecret, pos) {
   // parseFloat + fallback — NaN koruması
   const safe = (v, def) => { const n=parseFloat(v); return isNaN(n)?def:n; };
   let   trailPct      = safe(cfg.trailingPct,  2); // R390: aşağıda ATR ile ölçeklenir
+  // ═══ V622 ═══ SIFIR-MESAFE TRAIL TUZAGI. safe() sifiri gecerli sayar; V607=0 modu
+  // autoConfig.trailingPct/trailStep'i 0 yazar. V607 sonradan 1 yapilir da config
+  // sifir kalirsa trailPctEff=0 olur ve SL zirveye yapisir -> ilk asagi tikte stop.
+  const _v622KarTasima = String(process.env.V622_KAR_TASIMA ?? '1') !== '0';
+  if (_v622KarTasima && !(trailPct > 0)) trailPct = 2;
   const trailStep     = safe(cfg.trailStep,    0.25);
   // R310H: KÂR TAŞIMA PANELDEN BAĞIMSIZ — kullanıcı isteği: panel değerlerini EZ, kod karar versin.
   // Panel "1/2/3.5" gibi erken kilit yazsa bile YOK SAYILIR. Kâr koşsun diye geç kademe sabit.
@@ -22372,7 +22381,10 @@ async function managePosition(apiKey, apiSecret, pos) {
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 kâr nefesi: erken ilk kâr kilidi bekletildi [${state.r136FirstLockBreath}/4] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
     } else if (pnlPct >= 9 * r349LockScale && realProfitPct >= 0.45 * r349LockScale && !state.r91FirstLock) {
-      const lockPct = Math.max(0.22, Math.min(0.55, realProfitPct * 0.45));
+      // ═══ V622 ═══ tavan (%0,55) kaldirildi: kilit anlik karin orani, sabit kirinti degil.
+      const lockPct = (String(process.env.V622_KAR_TASIMA ?? '1') !== '0')
+        ? Math.max(0.22, realProfitPct * 0.45)
+        : Math.max(0.22, Math.min(0.55, realProfitPct * 0.45));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
       if (better) action = {
@@ -22390,7 +22402,11 @@ async function managePosition(apiKey, apiSecret, pos) {
       trailingState.set(sym, state);
       logAuto(`⏳ ${sym} R136 ikinci kâr kilidi nefesi [${state.r136SecondLockBreath}/3] · kâr %${realProfitPct.toFixed(2)} · çıkış puanı ${r91Brain.exitScore}/10`);
     } else if (!action && pnlPct >= 14 * r349LockScale && realProfitPct >= 0.70 * r349LockScale && !state.r91SecondLock) {
-      const lockPct = Math.max(0.35, Math.min(0.85, realProfitPct * 0.55));
+      // ═══ V622 ═══ tavan (%0,85) kaldirildi. Olculen zirve medyani %4,64; %0,85'lik
+      // sabit kilit trailing'in devralmasini geciktiriyordu.
+      const lockPct = (String(process.env.V622_KAR_TASIMA ?? '1') !== '0')
+        ? Math.max(0.35, realProfitPct * 0.55)
+        : Math.max(0.35, Math.min(0.85, realProfitPct * 0.55));
       const lockSL = r91LockPriceFromPct(lockPct);
       const better = isLong ? (!state.currentSL || lockSL > state.currentSL) : (!state.currentSL || lockSL < state.currentSL);
       if (better) action = {
