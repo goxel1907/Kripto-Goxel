@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_2_2_CANLI_DYNAMIC_STOP'
+const LAZARUS_BUILD = 'V6_2_4_MARJ30_SABIT_SL_BUTCEYE_UYAR'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6411,6 +6411,29 @@ const R497_WEAK_RISK_SCALE = Math.max(.10, Math.min(.60, Number(process.env.R497
 // V6.1.5 kullanici marj sozlesmesi: env'de eski 15/30/HOLD_FIXED degerleri kalsa
 // bile gercek emir 30$ altina inemez ve bilesik slot 100$ ustune cikamaz.
 const V601_HARD_MARGIN_FLOOR_USDT = 30;
+// ═══ V623 ═══ BAKIYE UYUMLU MARJ TABANI.
+// 30$ taban + 7x + genis SL kucuk bakiyede %4 risk butcesini asiyor ve islem
+// fail-closed atlaniyordu (canli: 30$·7x·SL%5 -> risk %9.10 > %4, bakiye 115$).
+// Taban artik bakiyenin tasiyabilecegi deger; butce ASILMAZ, islem ATLANMAZ.
+// Bakiye buyudukce taban kendiliginden 30$'a geri tirmanir.
+// V6.2.4: kullanici sozlesmesi "marj 30$ SABIT" -> V623 VARSAYILAN KAPALI.
+// Acmak icin acikca V623_BAKIYE_UYUMLU_MARJ=1 gerekir.
+const V623_BAKIYE_UYUMLU_MARJ = String(process.env.V623_BAKIYE_UYUMLU_MARJ ?? '0') === '1';
+// ═══ V624 ═══ 30$ marj sabitken butceye uyan TEK degisken SL genisligidir.
+const V624_BUTCE_UYUMLU_SL = String(process.env.V624_BUTCE_UYUMLU_SL ?? '1') !== '0';
+const V624_SL_TABAN = Math.max(0.5, Math.min(3, Number(process.env.V624_SL_TABAN || 1.0)));
+function v623EtkinMarjTabani(equityUsd, levX, slPct){
+  const taban = V601_HARD_MARGIN_FLOOR_USDT;
+  if (!V623_BAKIYE_UYUMLU_MARJ) return taban;
+  const eq = Number(equityUsd), lev = Number(levX), sl = Number(slPct);
+  if (!(eq > 0) || !(lev > 0) || !(sl > 0)) return taban;
+  const tasinabilir = (eq * (R495_FINAL_RISK_PCT/100)) / ((sl/100) * lev);
+  if (!Number.isFinite(tasinabilir) || tasinabilir >= taban) return taban;
+  // ASAGI yuvarla + %0.5 pay: toFixed YUKARI yuvarlayip butceyi 1e-4 asiyordu ve
+  // _riskFloorConflict495 yine tetikleniyordu (115.47$/7x/%5 -> %4.0011 > %4).
+  const guvenli = Math.floor(tasinabilir * 0.995 * 100) / 100;
+  return Math.max(R495_MIN_SAFE_MARGIN_USDT, guvenli);
+}
 const V601_HARD_MARGIN_CAP_USDT = 100;
 const R497_FIXED_SLOT_ACTIVE = String(process.env.R497_FIXED_SLOT_ACTIVE ?? '1') !== '0';
 const R497_SLOT_MARGIN_USDT = V601_HARD_MARGIN_FLOOR_USDT;
@@ -27699,6 +27722,21 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             }
             const _eq495 = Number(r372BilesikMeta?.equity)>0 ? Number(r372BilesikMeta.equity) : (Number(r389PanelMarj)>0 ? Number(r389PanelMarj)/Math.max(.01,R486_MARGIN_PER_POSITION_PCT) : 0);
             const _lev495 = Math.max(R486_MIN_LEVERAGE,Number(executeLeverage||R486_MIN_LEVERAGE));
+            // ═══ V624 ═══ marj 30$ SABIT; butceye uyan tek degisken SL.
+            //   30$ × lev × sl%  ≤  %4 × bakiye     ->  sl% ≤ %4×bakiye/(30×lev)
+            // Butun SL turetmeleri (R372 %5 tabani dahil) bitti; son soz burada.
+            if (V624_BUTCE_UYUMLU_SL && _eq495 > 0) {
+              const _marj624 = Math.min(V601_HARD_MARGIN_CAP_USDT, Math.max(V601_HARD_MARGIN_FLOOR_USDT, Number(usdtAmount)||V601_HARD_MARGIN_FLOOR_USDT));
+              const _slTavan624 = (_eq495*(R495_FINAL_RISK_PCT/100))/(_marj624*_lev495)*100*0.995;
+              const _eski624 = Number(userSLPct)||0;
+              if (Number.isFinite(_slTavan624) && _slTavan624 >= V624_SL_TABAN && _eski624 > _slTavan624) {
+                userSLPct = +Math.max(V624_SL_TABAN, _slTavan624).toFixed(2);
+                stopPrice = isLong ? +(entryRef*(1-userSLPct/100)).toFixed(8) : +(entryRef*(1+userSLPct/100)).toFixed(8);
+                logAuto(`📐 ${coin.symbol} V624 bütçe uyumlu SL: %${_eski624.toFixed(2)} → %${Number(userSLPct).toFixed(2)} · marj ${_marj624}$ SABİT · ${_lev495}x · bakiye ${_eq495.toFixed(2)}$ · bütçe %${R495_FINAL_RISK_PCT}`);
+              } else if (Number.isFinite(_slTavan624) && _slTavan624 < V624_SL_TABAN) {
+                logAuto(`⚠️ ${coin.symbol} V624: bütçenin izin verdiği SL %${_slTavan624.toFixed(2)} < taban %${V624_SL_TABAN} — SL'e dokunulmadı, risk kapısı karar verecek`);
+              }
+            }
             const _sl495 = Math.max(.05,Number(userSLPct||0));
             const _riskUsd495 = _eq495>0 ? _eq495*(R495_FINAL_RISK_PCT/100) : 0;
             const _riskCap495 = _riskUsd495>0 ? _riskUsd495/((_sl495/100)*_lev495) : Number(usdtAmount);
@@ -27713,7 +27751,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             // R491/R493/R495/R497 risk olcekleri firsati siniflandirabilir; fakat gercek emir
             // aciliyorsa 30$ altina indiremez. Fiziksel tampon 30$'i karsilamiyorsa kucuk emir
             // gondermek yerine fail-closed atlanir. Bilesik buyumenin sert tavani 100$'dir.
-            const _v601Taban = V601_HARD_MARGIN_FLOOR_USDT;
+            // ═══ V623 ═══ taban sabit degil, bakiyenin tasiyabilecegi deger.
+            const _v601Taban = v623EtkinMarjTabani(_eq495, _lev495, _sl495);
+            if (_v601Taban + 1e-9 < V601_HARD_MARGIN_FLOOR_USDT) {
+              logAuto(`📉 ${coin.symbol} V623 bakiye uyumlu taban: ${V601_HARD_MARGIN_FLOOR_USDT}$ → ${_v601Taban.toFixed(2)}$ (bakiye ${_eq495.toFixed(2)}$ · ${_lev495}x · SL %${_sl495.toFixed(2)} · bütçe %${R495_FINAL_RISK_PCT})`);
+            }
             const _v601Tavan = V601_HARD_MARGIN_CAP_USDT;
             if (_v601Taban > 0) {
               // ═══ V603 ═══ Taban MUTLAK. Fiziksel sinir R490 dusus-freni degil, TAMPON.
@@ -27820,7 +27862,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           markAutoSkip(coin.symbol,_v615Why,{rec:recommendation,score,aiBrain:decisionChain?.aiBrain});
           continue;
         }
-        usdtAmount=+Math.max(V601_HARD_MARGIN_FLOOR_USDT,Math.min(_v615MarginBeforeOrder,V601_HARD_MARGIN_CAP_USDT)).toFixed(4);
+        // ═══ V623 ═══ son savunma da bakiye uyumlu tabani kullanir; yoksa R495'te
+        // kucultulen marj burada tekrar 30$'a cikarilir ve risk butcesi asilir.
+        const _v623Eq=Number(r372BilesikMeta?.equity)||0;
+        const _v623Taban=v623EtkinMarjTabani(_v623Eq,Number(executeLeverage||R486_MIN_LEVERAGE),Number(userSLPct||0));
+        usdtAmount=+Math.max(_v623Taban,Math.min(_v615MarginBeforeOrder,V601_HARD_MARGIN_CAP_USDT)).toFixed(4);
         if(Math.abs(usdtAmount-_v615MarginBeforeOrder)>1e-9) logAuto(`🛡️ ${coin.symbol} V615 mutlak marj sozlesmesi: ${_v615MarginBeforeOrder.toFixed(2)}$ → ${usdtAmount.toFixed(2)}$`);
         logAuto(`🎯 Sinyal: ${coin.symbol} ${trSideLabel(recommendation)} skor:${score} — marj:${usdtAmount} USDT ${leverageNote}  zarar-kes:%${userSLPct} (Binance yedek · canlı kesiş ~-%2) kâr-al:%${userTPPct} oran:${userRR.toFixed(2)}${r125TpNote}${r192ExitPlanNote||''} · R283:${r283Recipe.mode}/${r282TradePlan.mode} — emir açılıyor`);
         const orderResp = await fetch(`http://localhost:${PORT}/api/order`, {
