@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_2_7_KOK_SEBEP'
+const LAZARUS_BUILD = 'V6_2_8_ATESLEME_KOPRUSU'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3754,6 +3754,13 @@ function v626SiniflaSatir(row={}){
 // Denetim: sunucuda "rootCause/postmortem" HIC yoktu — giris fotograflaniyor,
 // sonuc kaydediliyor, ama ikisi hic karsilastirilmiyordu.
 const V627_KOK_SEBEP = String(process.env.V627_KOK_SEBEP ?? '1') !== '0';
+// ═══ V628 ═══ ATESLEME KOPRUSU. `retestBelowStop` hem gec kovalamayi hem taze
+// ates lemeyi ayni anda kesiyordu (coin ne kadar hizli kosarsa ret o kadar kesin).
+// Olcum: KURU_SONRASI_SPIKE n=104 PF 7,27 (ATR p50 1,57) · PATLAMA n=125 PF 1,62 (ATR p50 4,20)
+//        ates leme adaylari ATR<=3,0 -> PF 6,03 ; tavan yok -> PF 3,40
+const V628_ATESLEME_KOPRUSU = String(process.env.V628_ATESLEME_KOPRUSU ?? '1') !== '0';
+const V628_TOP2_GAINER      = String(process.env.V628_TOP2_GAINER ?? '1') !== '0';
+const V628_ATR_TAVAN        = Math.max(1.0, Math.min(8.0, Number(process.env.V628_ATR_TAVAN || 3.0)));
 function v627KokSebep(row={}){
   const s=(v)=>{const n=Number(v);return Number.isFinite(n)?n:null;};
   const pnl=s(row.pnlUSDT)??s(row.pnl)??0;
@@ -3836,8 +3843,9 @@ function v626Karne(){
     o.pf = o.gl>0 ? +(o.gp/o.gl).toFixed(2) : (o.gp>0?99:0);
     o.wr = o.n ? +(o.w/o.n*100).toFixed(1) : 0;
     o.ortZirve = ort(o.zir); o.ortDip = ort(o.dip);
-    o.karar = (o.n>=V626_MIN_ORNEK && o.pf<V626_PF_ESIK) ? 'FREN'
-            : (o.n>=V626_MIN_ORNEK && o.pf>=V626_PF_IYI) ? 'TESVIK' : 'YETERSIZ_ORNEK';
+    o.karar = (o.n < V626_MIN_ORNEK) ? 'YETERSIZ_ORNEK'
+            : (o.pf < V626_PF_ESIK)     ? 'FREN'
+            : (o.pf >= V626_PF_IYI)     ? 'TESVIK' : 'NOTR';
     delete o.zir; delete o.dip;
   }
   _v626Karne = {at:now, map:g};
@@ -7558,11 +7566,21 @@ function r486EntryTruthGuard(story={},opts={}){
   const r493EntrySafety=r493EntrySafetyGate(story,{firstObstacleRR:firstRRAdjusted,firstObstacleRole:story.firstObstacleRole,plannedEntry},{side});
   const firstObstacleHard=legacyFirstObstacleHard||['FIRST_OBSTACLE_RR_UNKNOWN','LOW_FIRST_OBSTACLE_RR'].includes(String(r493EntrySafety?.code||''));
   const rawFlowState=String(story.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase(),liveFlowAgainst=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(rawFlowState);
-  const planIncoherent=retestBelowStop||!(recommendedSl>0&&recommendedSl<entry)||!(recommendedTp>entry),directionAgainst=story.bias==='SHORT'||(!V592_POLICY_PARITY_MODE&&liveFlowAgainst);
+  // ═══ V628 ═══ ATESLEME KOPRUSU: taze kirilim + henuz uzamamis + dusuk ATR ise
+  // `retestBelowStop` tek basina REJECT etmez; karar asagidaki kanit kapilarina kalir.
+  // Uc sarttan biri tutmazsa davranis birebir eskisi gibidir.
+  const _v628TazeKirilim = !!(story?.trendBreaks?.bull || story?.structuredContinuation
+                           || story?.microConsensus?.confirmedContinuation || story?.validatedTrendRetest);
+  const _v628Uzamamis    = !story?.parabolicChase && !story?.targetRejection;
+  const _v628AtrUygun    = Number.isFinite(Number(atrPct)) && Number(atrPct) > 0 && Number(atrPct) <= V628_ATR_TAVAN;
+  const _v628Kopru       = V628_ATESLEME_KOPRUSU && retestBelowStop && _v628TazeKirilim && _v628Uzamamis && _v628AtrUygun;
+  const retestBelowStopEtkin = retestBelowStop && !_v628Kopru;
+  const planIncoherent=retestBelowStopEtkin||!(recommendedSl>0&&recommendedSl<entry)||!(recommendedTp>entry),directionAgainst=story.bias==='SHORT'||(!V592_POLICY_PARITY_MODE&&liveFlowAgainst);
   const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical&&!R486_WAIT_STORY_MARKET_BRIDGE/* V621: kopru acikken retest kanit kapilarina devreder */,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked);
   const reasons=[];
   if(storyWait)reasons.push(`hikâye:${mode}`);
-  if(planIncoherent)reasons.push(retestBelowStop?'retest seviyesi SL altında':'TP/SL yön planı tutarsız');
+  if(_v628Kopru)reasons.push(`V628 ateşleme köprüsü: retest SL altında ama taze kırılım + ATR %${Number(atrPct).toFixed(2)} ≤ ${V628_ATR_TAVAN} — kanıt kapılarına devredildi`);
+  if(planIncoherent)reasons.push(retestBelowStopEtkin?'retest seviyesi SL altında':'TP/SL yön planı tutarsız');
   if(firstRaw>0&&!firstObstacleDirectionValid)reasons.push(`ilk engel LONG yönünde değil (${firstRaw}); ${first>entry?'en yakın gerçek üst engel '+first+' ile çözüldü':'geçerli üst engel bulunamadı'}`);
   if(targetRaw>0&&!targetDirectionValid)reasons.push(`hedef likidite LONG yönünde değil; karar hesabından çıkarıldı (${targetRaw})`);
   if(firstObstacleSoft)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} ince (uyarı)`);
@@ -7573,7 +7591,7 @@ function r486EntryTruthGuard(story={},opts={}){
   const liveResearchRisk=!!(story.orderFlow?.conflict||story.oi?.reliable===false);
   const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||(!V592_POLICY_PARITY_MODE&&liveResearchRisk)||firstObstacleSoft||tightStop||retestBelowStop||r493EntrySafety.blocked);
   const researchShadow={flowState:rawFlowState,flowAgainst:liveFlowAgainst,orderFlowConflict:story.orderFlow?.conflict===true,oiReliable:story.oi?.reliable??null,wouldRaiseEarlyRisk:liveResearchRisk,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false};
-  return {active:true,marketAllowed,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
+  return {active:true,marketAllowed,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
 }
 
 // R493 v5.5: R482 operasyonel güvenlik ayrımı.
@@ -25188,6 +25206,16 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     const r310IsTop2 = (idx) => {
       if (typeof idx !== 'number') return false;
       if (idx <= 1) return true; // TOP1 + TOP2
+      // ═══ V628 ═══ TOP2 yalniz TARAMA INDEKSI degil, GAINER SIRASI da olmali.
+      // Canli kanit: BTR +%165 ile 1 numarali gainer ama taramada 7. sirada —
+      // ATR tavani %30 yerine %12,78, F&G ve cascade muafiyetleri de yok sayiliyordu.
+      if (V628_TOP2_GAINER) {
+        try {
+          const _c = scanList?.[idx];
+          const _r = Number(_c?.r497Rank ?? _c?.gainerRank ?? _c?.r481OriginalRank ?? NaN);
+          if (Number.isFinite(_r) && _r <= 2) return true;
+        } catch(_) {}
+      }
       // R337: patlama bayraklı ADAY coin de TOP2 gibi muamele görür (kullanıcı: TOP2'ye aday en ideal coin
       // worker'la takip edilir, bayrak alınca ham+koşulsuz AI'a gider, tüm muafiyetlerden yararlanır).
       try {
