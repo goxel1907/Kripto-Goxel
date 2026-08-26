@@ -459,7 +459,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_3_5_TEK_POZ_KAR_TAKIBI'
+const LAZARUS_BUILD = 'V6_3_6_BACKOFF_KILIDI_ACILDI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -20735,14 +20735,23 @@ app.post('/api/order', async (req, res) => {
       // 1. pozisyonun tukettigi marj onbellege yansimamis oluyor; kontrol geciyor,
       // Binance "Margin is insufficient (-2019)" ile reddediyordu.
       // OLCULDU 26.08: SEND 12 / ACK 6 / ROUTE_ERROR 6.
-      const snap=await getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh:true,allowStale:false,purpose:'PRE_ORDER_BALANCE'});
+      // ═══ V636 ═══ allowStale:false HATAYDI. Backoff aktifken bu cagri ATIYOR ve
+      // emir fail-closed olarak GITMIYOR. Eski kod sicak onbellekle backoff kapisini
+      // hic gormuyordu; forceFresh:true onu her emirde o kapiya sokuyor.
+      // Artik backoff aninda bayat bakiyeye duser (emir kesilmez), tampon buyutulur.
+      const snap=await getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh:true,allowStale:true,purpose:'PRE_ORDER_BALANCE'});
       const acc=snap.account||{},assets=Array.isArray(acc.assets)?acc.assets:[],usdtRow=assets.find(x=>String(x.asset||'').toUpperCase()==='USDT')||{};
       const av=Number(acc.availableBalance??usdtRow.availableBalance??usdtRow.maxWithdrawAmount??0);
       // ═══ V633 ═══ tampon artik sihirli sayi degil: %2 kayma payi + GERCEK taker
       // komisyonu (notional x %0,05). 30$ x 7x -> 0,60$ pay + 0,105$ komisyon.
       const _v633Notional=Number(usdtAmount||0)*Math.max(1,Number(leverage)||1);
       const _v633Fee=_v633Notional*0.0005;
-      const need=Number(usdtAmount||0)*1.02+_v633Fee;
+      // ═══ V636 ═══ bakiye bayatsa (backoff penceresi) pay %2 degil %15.
+      // Bayat bakiye gercekte harcanmis marji gostermeyebilir; -2019 riski orada yuksek.
+      const _v636Bayat=snap?.stale===true;
+      const _v636Pay=_v636Bayat?1.15:1.02;
+      const need=Number(usdtAmount||0)*_v636Pay+_v633Fee;
+      if(_v636Bayat){try{logAuto(`⚠️ ${sym} V636: bakiye BAYAT (backoff) — pay %2 yerine %15 · kullanilabilir ${av.toFixed(2)}$ · gerekli ${need.toFixed(2)}$`);}catch(_){}}
       if(Number.isFinite(av)&&av>0&&av<need)throw new Error(`Yetersiz kullanılabilir USDT: ${av.toFixed(2)} < panel marj ${Number(usdtAmount||0).toFixed(2)}. Marjı düşür veya bakiye ekle.`);
     }catch(e){
       if(String(e.message||'').includes('Yetersiz kullanılabilir USDT'))throw e;
