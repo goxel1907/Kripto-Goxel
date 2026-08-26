@@ -313,10 +313,11 @@ app.get(['/', '/index.html'], (_req,res)=>{
   S('R497_SLOT_MARGIN_USDT','30');
   S('R497_MIN_BUFFER_USDT','20');
   S('R497_ABOVE_CAP_MODE','PCT_COMPOUND');
-  S('R486_MAX_POSITIONS','2');
+  S('R486_MAX_POSITIONS','1');   // V634: tek poz + genis stop
   S('R486_COMPOUND_MARGIN_ACTIVE','1');
   S('R486_ABSOLUTE_MIN_MARGIN','30');
-  S('R495_FINAL_RISK_PCT','4');
+  // V634: R495_FINAL_RISK_PCT artik turetiliyor; buradaki deger yalnizca geriye donuk uyum icin.
+  S('V634_TOPLAM_RISK_PCT','8');
   S('R495_MIN_SAFE_MARGIN_USDT','6');
 
   // ── KALDIRAC 7x-10x ────────────────────────────────────────────────
@@ -458,7 +459,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_3_3_MARJ_YETERSIZ_ONARIMI'
+const LAZARUS_BUILD = 'V6_3_5_TEK_POZ_KAR_TAKIBI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3768,7 +3769,11 @@ const V629_TEPE_OLCUMU = String(process.env.V629_TEPE_OLCUMU ?? '1') !== '0';
 // ═══ V630 ═══ FIRSAT YOGUNLASMASI. Kaldirac ve parite sabitleri KORUNUR;
 // yalnizca SLOT BUTCESI birlestirilir: 2 slot x %4 yerine 1 slot x %8.
 // Toplam portfoy riski AYNI kalir, tek isleme daha buyuk marj dusar.
-const V630_YOGUNLASMA = String(process.env.V630_YOGUNLASMA ?? '1') !== '0';
+// ═══ V634 ═══ V630 "2 slotu tek poza koy" demekti. Tek poz sozlesmesinde
+// karsiligi yok: risk butcesini 2x'e cikarip R495 risk kapisinin islemi
+// ATLAMASINA yol acardi. Tek pozda otomatik kapanir; %8 butce zaten yogunlasmadir.
+const V630_YOGUNLASMA = (String(process.env.V630_YOGUNLASMA ?? '1') !== '0')
+                     && Math.max(1, Math.min(2, Math.floor(Number(process.env.R486_MAX_POSITIONS || 1)))) > 1;
 const V630_MIN_KANIT  = Math.max(2, Math.min(5, Number(process.env.V630_MIN_KANIT || 3)));
 const V630_MAX_SLOT   = Math.max(1, Math.min(2, Number(process.env.V630_MAX_SLOT || 2)));
 const V630_ATR_ESIK   = Math.max(1.0, Math.min(4.0, Number(process.env.V630_ATR_ESIK || 2.20)));
@@ -6515,7 +6520,8 @@ let r48637LastMechWakeTs=0; const r48637MechWakeBySymbol=new Map(),r48637Targete
 const R486_COMPOUND_MARGIN_ACTIVE = String(process.env.R486_COMPOUND_MARGIN_ACTIVE ?? '1') !== '0';
 const R486_MARGIN_PER_POSITION_PCT = Math.max(0.01, Math.min(0.80, Number(process.env.R486_MARGIN_PER_POSITION_PCT || 40.1960784314) / 100));
 const R486_EQUITY_BUFFER_PCT = Math.max(0, Math.min(0.80, Number(process.env.R486_EQUITY_BUFFER_PCT || 19.6078431373) / 100));
-const R486_MAX_POSITIONS = Math.max(1, Math.min(4, Math.floor(Number(process.env.R486_MAX_POSITIONS || 2))));
+// ═══ V634 ═══ varsayilan 2 -> 1. Tek poz + genis stop sozlesmesi.
+const R486_MAX_POSITIONS = Math.max(1, Math.min(2, Math.floor(Number(process.env.R486_MAX_POSITIONS || 1))));
 const R486_RISK_BUDGET_SIZING = String(process.env.R486_RISK_BUDGET_SIZING || '0') === '1';
 
 // ═══ R495 LIVE — 3 DAKİKA MİKRO KABUL + FINAL %4 RİSK OTORİTESİ ═════════════
@@ -6527,7 +6533,31 @@ const R495_EXACT_CLOSED_1M = String(process.env.R495_EXACT_CLOSED_1M ?? '1') !==
 const R495_ACCEPT_DELAY_SEC = Math.max(60, Math.min(600, Number(process.env.R495_ACCEPT_DELAY_SEC || 180)));
 const R495_TACTICAL_RISK_SCALE = Math.max(.20, Math.min(.85, Number(process.env.R495_TACTICAL_RISK_SCALE || .60)));
 const R495_MARKET_RISK_SCALE = Math.max(.50, Math.min(1.00, Number(process.env.R495_MARKET_RISK_SCALE || 1.00)));
-const R495_FINAL_RISK_PCT = Math.max(1, Math.min(6, Number(process.env.R495_FINAL_RISK_PCT || 4)));
+// ═══ V634 ═══ SOZLESME: sabit olan pozisyon sayisi DEGIL, ayni anda riskteki para.
+// Toplam %8; pozisyon sayisina bolunur. 2 poz -> %4 · 1 poz -> %8. Toplam hep ayni.
+const V634_TOPLAM_RISK_PCT = Math.max(2, Math.min(12, Number(process.env.V634_TOPLAM_RISK_PCT || 8)));
+// Risk yuzdesi ELLE girilmez; pozisyon sayisindan turetilir ki sozlesme yarim
+// uygulanip parite kapisini kilitlemesin.
+const R495_FINAL_RISK_PCT = +(V634_TOPLAM_RISK_PCT / Math.max(1, R486_MAX_POSITIONS)).toFixed(4);
+// Sozlesme her acilista TEK SATIRDA yazilir; panele bakmadan ne oldugu gorunur.
+// NOT: burada YALNIZCA bu satirdan ONCE tanimlanmis sabitler kullanilabilir.
+// V601_HARD_MARGIN_FLOOR_USDT (satir ~6646) buraya YAZILAMAZ — TDZ ile bot acilista coker.
+console.log(`[V634] RISK SOZLESMESI: ${R486_MAX_POSITIONS} pozisyon x islem basi %${R495_FINAL_RISK_PCT}`
+  + ` = ayni anda riskte %${V634_TOPLAM_RISK_PCT} · kaldirac ${R486_MIN_LEVERAGE}x`
+  + ` · V630 yogunlasma ${V630_YOGUNLASMA ? 'ACIK' : 'KAPALI (tek poz)'}`);
+// Kelepce sessizce degistirdiyse duyur: kullanici 3 yazip 2 calistigini bilmeli.
+{
+  const _v634Istenen = Number(process.env.R486_MAX_POSITIONS);
+  if (Number.isFinite(_v634Istenen) && Math.floor(_v634Istenen) !== R486_MAX_POSITIONS) {
+    console.log(`[V634] UYARI: R486_MAX_POSITIONS=${process.env.R486_MAX_POSITIONS} istendi,`
+      + ` sozlesme 1-2 arasina kelepceli — ${R486_MAX_POSITIONS} uygulandi.`);
+  }
+}
+if (process.env.R495_FINAL_RISK_PCT !== undefined && process.env.R495_FINAL_RISK_PCT !== ''
+    && Math.abs(Number(process.env.R495_FINAL_RISK_PCT) - R495_FINAL_RISK_PCT) > 1e-6) {
+  console.log(`[V634] R495_FINAL_RISK_PCT env degeri (${process.env.R495_FINAL_RISK_PCT}) YOK SAYILDI; `
+    + `${R486_MAX_POSITIONS} pozisyon x %${R495_FINAL_RISK_PCT} = toplam %${V634_TOPLAM_RISK_PCT} kullaniliyor.`);
+}
 const R495_MAX_ENTRY_DRIFT_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R495_MAX_ENTRY_DRIFT_ATR || .85)));
 const R495_MIN_ENTRY_DRIFT_ATR = Math.max(-1.50, Math.min(-.05, Number(process.env.R495_MIN_ENTRY_DRIFT_ATR || -.35)));
 const R495_MAX_ADVERSE_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R495_MAX_ADVERSE_ATR || .85)));
@@ -23160,6 +23190,32 @@ async function managePosition(apiKey, apiSecret, pos) {
     }
   }
 
+  // ═══ V635 ═══ KAR TAKIBI RONTGENI (yalnizca gozlem — hicbir davranisi degistirmez)
+  // Olculdu 26.08: backtestin karinin %97'si DYNAMIC_STOP'tan (trailing) geliyor
+  // (+498,3R / +513,8R). Canlida ise tek bir PROTECTION_REWRITE kaydi YOK.
+  // "Hic atesnlenmedi" ile "henuz firsat olmadi" ayrimini tahminle degil KAYITLA yapalim:
+  // her pozisyon icin zincirin nerede durdugu 60sn'de bir, degisince hemen yazilir.
+  try {
+    const _v635St = trailingState.get(sym) || {};
+    const _v635Kar = Number(realProfitPct);
+    const _v635Yas = Number(_v635St.openedAt || _v635St.openTs || 0) > 0
+      ? Date.now() - Number(_v635St.openedAt || _v635St.openTs) : null;
+    const _v635Nerede =
+      action ? `AKSIYON:${action.type}`
+      : !V625_KAR_TASIMA ? "KAPALI: V625_KAR_TASIMA=0"
+      : (_v635Yas !== null && _v635Yas < V592_MIN_HOLD_MS) ? `MIN_HOLD: ${Math.floor(_v635Yas/1000)}sn/${Math.floor(V592_MIN_HOLD_MS/1000)}sn`
+      : !_v635St.breakEvenSet ? `BE_BEKLIYOR: kar %${_v635Kar.toFixed(2)} / esik %${Number(breakEvenAt||0).toFixed(2)}`
+      : 'TRAIL_AKTIF: adim/trend sarti bekleniyor';
+    const _v635Onceki = _v635St._v635Son || '';
+    const _v635Gecen = Date.now() - Number(_v635St._v635SonTs || 0);
+    if (_v635Nerede !== _v635Onceki || _v635Gecen > 60000) {
+      _v635St._v635Son = _v635Nerede; _v635St._v635SonTs = Date.now();
+      trailingState.set(sym, _v635St);
+      logAuto(`🔍 ${sym} KAR TAKIBI: ${_v635Nerede} · kar %${_v635Kar.toFixed(2)} · HW ${Number(_v635St.highWater||0)>0?Number(_v635St.highWater).toFixed(6):'—'} · SL ${Number(_v635St.currentSL||0)>0?Number(_v635St.currentSL).toFixed(6):'kurulmadi'}`);
+      try{r501OrderLifeMark(sym,'V635_KAR_TAKIBI',{asama:_v635Nerede,karPct:+_v635Kar.toFixed(3),breakEvenSet:!!_v635St.breakEvenSet,highWater:Number(_v635St.highWater)||null,currentSL:Number(_v635St.currentSL)||null});}catch(_){}
+    }
+  } catch(_v635e) {}
+
   return action;
 }
 
@@ -29570,8 +29626,17 @@ function v592BootParityGate(){
   if(!eq(V601_HARD_MARGIN_CAP_USDT,100)) hata.push(`MARJ_TAVANI_100_DEGIL:${V601_HARD_MARGIN_CAP_USDT}`);
   if(!eq(R497_MIN_BUFFER_USDT,20)) hata.push(`BUFFER_20_DEGIL:${R497_MIN_BUFFER_USDT}`);
   if(String(R497_ABOVE_CAP_MODE)!=='PCT_COMPOUND') hata.push(`ABOVE_CAP_PCT_COMPOUND_DEGIL:${R497_ABOVE_CAP_MODE}`);
-  if(Number(R486_MAX_POSITIONS)!==2) hata.push(`MAX_POS_2_DEGIL:${R486_MAX_POSITIONS}`);
-  if(!eq(R495_FINAL_RISK_PCT,4)) hata.push(`RISK_4_DEGIL:${R495_FINAL_RISK_PCT}`);
+  // ═══ V634 ═══ Kilit artik "2 poz ve %4" degil, DEGISMEZ olan toplam risk.
+  // 2x%4 ve 1x%8 gecer; 2x%8 (=%16) GECMEZ. Boylece pozisyon sayisi degistiginde
+  // risk kendini ayarlar ama ayni anda riskteki para asla %8'i asamaz.
+  {
+    const _v634Toplam = Number(R486_MAX_POSITIONS) * Number(R495_FINAL_RISK_PCT);
+    if(Math.abs(_v634Toplam - V634_TOPLAM_RISK_PCT) > 1e-6)
+      hata.push(`TOPLAM_RISK_UYUSMAZ:${_v634Toplam.toFixed(2)}!=${V634_TOPLAM_RISK_PCT}`);
+    if(!eq(V634_TOPLAM_RISK_PCT,8)) hata.push(`TOPLAM_RISK_8_DEGIL:${V634_TOPLAM_RISK_PCT}`);
+    if(!(Number(R486_MAX_POSITIONS)===1||Number(R486_MAX_POSITIONS)===2))
+      hata.push(`MAX_POS_1_VEYA_2_OLMALI:${R486_MAX_POSITIONS}`);
+  }
   // V504: R495'in DORT limiti de backtest verisinden turetilmis olmali.
   // Elle konmus "makul gorunen" sayi kabul edilmez.
   // V505: backtestin oyunda taker sarti yoktu; acikken parite bozulur.
