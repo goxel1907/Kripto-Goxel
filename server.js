@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_3_2_SQUEEZE_ONARIMI'
+const LAZARUS_BUILD = 'V6_3_3_MARJ_YETERSIZ_ONARIMI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -20700,10 +20700,19 @@ app.post('/api/order', async (req, res) => {
     // R150: küçük bakiye / panel marj uyuşmazlığı emir hatasına dönüşmesin.
     // Sadece emirden hemen önce tek kez bakiye kontrolü yapılır; tarama sayısını azaltmaz.
     try {
-      const snap=await getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh:false,allowStale:false,purpose:'PRE_ORDER_BALANCE'});
+      // ═══ V633 ═══ -2019 KOK SEBEBI: bu kontrol 60sn'lik ONBELLEKTEN okuyordu
+      // (SIGNED_ACCOUNT_TTL_MS=60000). Ayni tarama dongusunde 2. pozisyon acilirken
+      // 1. pozisyonun tukettigi marj onbellege yansimamis oluyor; kontrol geciyor,
+      // Binance "Margin is insufficient (-2019)" ile reddediyordu.
+      // OLCULDU 26.08: SEND 12 / ACK 6 / ROUTE_ERROR 6.
+      const snap=await getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh:true,allowStale:false,purpose:'PRE_ORDER_BALANCE'});
       const acc=snap.account||{},assets=Array.isArray(acc.assets)?acc.assets:[],usdtRow=assets.find(x=>String(x.asset||'').toUpperCase()==='USDT')||{};
       const av=Number(acc.availableBalance??usdtRow.availableBalance??usdtRow.maxWithdrawAmount??0);
-      const need=Number(usdtAmount||0)*1.02;
+      // ═══ V633 ═══ tampon artik sihirli sayi degil: %2 kayma payi + GERCEK taker
+      // komisyonu (notional x %0,05). 30$ x 7x -> 0,60$ pay + 0,105$ komisyon.
+      const _v633Notional=Number(usdtAmount||0)*Math.max(1,Number(leverage)||1);
+      const _v633Fee=_v633Notional*0.0005;
+      const need=Number(usdtAmount||0)*1.02+_v633Fee;
       if(Number.isFinite(av)&&av>0&&av<need)throw new Error(`Yetersiz kullanılabilir USDT: ${av.toFixed(2)} < panel marj ${Number(usdtAmount||0).toFixed(2)}. Marjı düşür veya bakiye ekle.`);
     }catch(e){
       if(String(e.message||'').includes('Yetersiz kullanılabilir USDT'))throw e;
@@ -20749,7 +20758,15 @@ app.post('/api/order', async (req, res) => {
     }
     const qp=stepSize<1?-Math.floor(Math.log10(stepSize)):0;
     const pp=tickSize<1?-Math.floor(Math.log10(tickSize)):0;
-    const qty=parseFloat(((parseFloat(usdtAmount)*safeLeverage)/curPrice).toFixed(qp));
+    // ═══ V633 ═══ toFixed() YUKARI yuvarlayabiliyordu: gerceklesen notional
+    // usdtAmount x kaldirac'i asiyor, yani 30$ marj sozlesmesi ve %4 risk butcesi
+    // sessizce deliniyordu. Ayrica qp yalnizca 10'un kuvveti olan stepSize icin
+    // dogruydu (stepSize=5 veya 0,5 -> LOT_SIZE reddi). Artik adim tabanina ASAGI.
+    const _v633Step=Number(stepSize)>0?Number(stepSize):Math.pow(10,-qp);
+    const _v633Ham=(parseFloat(usdtAmount)*safeLeverage)/curPrice;
+    // toPrecision(12): ikili kayan nokta gurultusunu temizler ve ondalik sayisini
+    // stepSize metninden turetmek zorunda birakmaz (1e-8 gibi adimda o turetme kirilirdi).
+    const qty=Number((Math.floor(_v633Ham/_v633Step+1e-9)*_v633Step).toPrecision(12));
     const rnd=p=>parseFloat(parseFloat(p).toFixed(pp));
     if(qty*curPrice<minNot)throw new Error(`Min işlem $${minNot}. Miktarı artır.`);
     // V4.7.4.9-J3: 05.08 1000RATS'ta requestToSend=42120ms oldu ve slippage 63.99 bps
