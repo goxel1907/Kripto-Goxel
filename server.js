@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_2_8_ATESLEME_KOPRUSU'
+const LAZARUS_BUILD = 'V6_3_2_SQUEEZE_ONARIMI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3761,6 +3761,80 @@ const V627_KOK_SEBEP = String(process.env.V627_KOK_SEBEP ?? '1') !== '0';
 const V628_ATESLEME_KOPRUSU = String(process.env.V628_ATESLEME_KOPRUSU ?? '1') !== '0';
 const V628_TOP2_GAINER      = String(process.env.V628_TOP2_GAINER ?? '1') !== '0';
 const V628_ATR_TAVAN        = Math.max(1.0, Math.min(8.0, Number(process.env.V628_ATR_TAVAN || 3.0)));
+// ═══ V629 ═══ TEPE OLCUMU. Eski rPos zinciri OLU idi: `r276Pos` hic tanimlanmamis,
+// `r281ProTraderMap` rangePos DONDURMUYOR -> rPos her zaman 0.5 -> tepe vetosu
+// (rPos>=0.85) hicbir zaman tetiklenemiyordu. Artik grafik hikayesinden okunur.
+const V629_TEPE_OLCUMU = String(process.env.V629_TEPE_OLCUMU ?? '1') !== '0';
+// ═══ V630 ═══ FIRSAT YOGUNLASMASI. Kaldirac ve parite sabitleri KORUNUR;
+// yalnizca SLOT BUTCESI birlestirilir: 2 slot x %4 yerine 1 slot x %8.
+// Toplam portfoy riski AYNI kalir, tek isleme daha buyuk marj dusar.
+const V630_YOGUNLASMA = String(process.env.V630_YOGUNLASMA ?? '1') !== '0';
+const V630_MIN_KANIT  = Math.max(2, Math.min(5, Number(process.env.V630_MIN_KANIT || 3)));
+const V630_MAX_SLOT   = Math.max(1, Math.min(2, Number(process.env.V630_MAX_SLOT || 2)));
+const V630_ATR_ESIK   = Math.max(1.0, Math.min(4.0, Number(process.env.V630_ATR_ESIK || 2.20)));
+// ═══ V631 ═══ SUREKLI BILESIK BUYUME + SUREKLI YOGUNLASMA
+const V631_SUREKLI_BILESIK    = String(process.env.V631_SUREKLI_BILESIK ?? '1') !== '0';
+const V631_SUREKLI_YOGUNLASMA = String(process.env.V631_SUREKLI_YOGUNLASMA ?? '1') !== '0';
+// 0..1 arasi surekli kalite skoru. Olculemeyen ozellik ortalamaya GIRMEZ.
+function v631Skor(ctx={}){
+  const lin=(v,sifir,bir)=>{const x=Number(v); if(!Number.isFinite(x)||x<=0)return null;
+    return Math.max(0,Math.min(1,(x-sifir)/(bir-sifir)));};
+  const p=[
+    lin(ctx.atrPct, 2.60, 1.20),    // ATR dusuk iyi
+    lin(ctx.rsi4h,  72,   45),      // rsi4h dusuk iyi
+    lin(ctx.drift,  0.15, 0.60),    // drift yuksek iyi
+    lin(ctx.quality,60,   85)       // kalite yuksek iyi
+  ].filter(v=>v!==null);
+  if(!p.length) return 0;
+  return Math.max(0,Math.min(1, p.reduce((a,b)=>a+b,0)/p.length));
+}
+const V630_RSI4H_ESIK = Math.max(50, Math.min(85, Number(process.env.V630_RSI4H_ESIK || 70)));
+const V630_DRIFT_ESIK = Math.max(0.10, Math.min(1.0, Number(process.env.V630_DRIFT_ESIK || 0.31)));
+// Yogunlasma kaniti — YALNIZ olculen ozellikler. Eksik ozellik puan VERMEZ (fail-closed).
+function v630Kanit(ctx={}){
+  const k=[];
+  const atr=Number(ctx.atrPct);
+  if (Number.isFinite(atr) && atr>0 && atr < V630_ATR_ESIK) k.push(`ATR ${atr.toFixed(2)}<${V630_ATR_ESIK}`);
+  const rsi=Number(ctx.rsi4h);
+  if (Number.isFinite(rsi) && rsi>0 && rsi < V630_RSI4H_ESIK) k.push(`rsi4h ${rsi.toFixed(0)}<${V630_RSI4H_ESIK}`);
+  const drift=Number(ctx.drift);
+  if (Number.isFinite(drift) && drift >= V630_DRIFT_ESIK) k.push(`drift ${drift.toFixed(2)}>=${V630_DRIFT_ESIK}`);
+  const market = String(ctx.r495Action||'').toUpperCase()==='MARKET';
+  if (market) k.push('R495 MARKET');
+  const q=Number(ctx.quality);
+  if (Number.isFinite(q) && q >= 70) k.push(`kalite ${q.toFixed(0)}>=70`);
+  // R495 MARKET ZORUNLU: TACTICAL = yarim guvenli kabul (riskScale 0,60).
+  // Yarim guvenli sinyalde iki slot butcesi vermek kendi icinde celiskidir.
+  return {skor:k.length, uygun:market && k.length >= V630_MIN_KANIT, kanit:k,
+          marketSart:market};
+}
+// Acik pozisyonlardan biri yogunlasmis mi (marjdan tespit — ayri state yok)
+function v630AcikYogunVar(openPos){
+  try {
+    return (Array.isArray(openPos)?openPos:[]).some(p=>{
+      const amt=Math.abs(parseFloat(p?.positionAmt||0)), ep=Number(p?.entryPrice||0), lev=Math.max(1,Number(p?.leverage||1));
+      const marj = (amt>0 && ep>0) ? (amt*ep)/lev : Number(p?.isolatedMargin||p?.initialMargin||0);
+      return marj > V601_HARD_MARGIN_FLOOR_USDT * 1.15;
+    });
+  } catch(_) { return false; }
+}
+function v629RangePos(story){
+  if (!V629_TEPE_OLCUMU) return null;
+  const tf = story?.tf || {};
+  for (const k of ['15m','1h','5m']) {
+    const v = Number(tf?.[k]?.rangePos);
+    if (Number.isFinite(v) && v >= 0 && v <= 1) return {deger:v, kaynak:k};
+  }
+  return null;
+}
+// Taze ates leme mi? (V628 ile ayni tanim — kirilim range'in tepesindedir, veto onu oldurmemeli)
+function v629AteslemeMi(story, atrPct){
+  const taze = !!(story?.trendBreaks?.bull || story?.structuredContinuation
+              || story?.microConsensus?.confirmedContinuation || story?.validatedTrendRetest);
+  const uzamamis = !story?.parabolicChase && !story?.targetRejection;
+  const a = Number(atrPct);
+  return taze && uzamamis && Number.isFinite(a) && a > 0 && a <= V628_ATR_TAVAN;
+}
 function v627KokSebep(row={}){
   const s=(v)=>{const n=Number(v);return Number.isFinite(n)?n:null;};
   const pnl=s(row.pnlUSDT)??s(row.pnl)??0;
@@ -6825,7 +6899,12 @@ function r48636CompoundMarginFromEquity(equity, maxPositions=R486_MAX_POSITIONS)
     // 200$ equity'ye kadar 30$ sabit slot; sonrasinda yuzdesel bilesik buyume,
     // fakat her kosulda 30$ taban / 100$ tavan sozlesmesi korunur.
     let rawSlot=R497_SLOT_MARGIN_USDT;
-    if (eq>R497_FIXED_UNTIL_EQUITY_USDT && R497_ABOVE_CAP_MODE==='PCT_COMPOUND') rawSlot=eq*R486_MARGIN_PER_POSITION_PCT;
+    // ═══ V631 ═══ SUREKLI bilesik buyume. Eski kod 200$'a kadar 30$ SABIT tutuyor,
+    // 201$'da bir anda 60$'a sicriyordu (basamak fonksiyonu, bilesik degil).
+    // Artik 30$'dan itibaren surekli; risk kapisi (%4) zaten ustunde durdugu icin
+    // buyume otomatik risk-dogru kalir.
+    if (V631_SUREKLI_BILESIK) rawSlot=eq*R486_MARGIN_PER_POSITION_PCT;
+    else if (eq>R497_FIXED_UNTIL_EQUITY_USDT && R497_ABOVE_CAP_MODE==='PCT_COMPOUND') rawSlot=eq*R486_MARGIN_PER_POSITION_PCT;
     rawSlot=Math.max(V601_HARD_MARGIN_FLOOR_USDT,Math.min(V601_HARD_MARGIN_CAP_USDT,rawSlot));
     const maxPerByBuffer=Math.max(0,(eq-R497_MIN_BUFFER_USDT)/mp);
     const slot=Math.max(0,Math.min(rawSlot,maxPerByBuffer));
@@ -23915,7 +23994,16 @@ function r308RememberAiContext(symbol, coin, analysis, decisionChain, recommenda
       flow: decisionChain?.r125OrderflowSummary || '',
       funding: analysis?.funding?.current,
       oiChange: decisionChain?.r140Summary || '',
-      squeeze: (decisionChain?.r111Sonuc?.shortSqueeze ? 'shortSqueeze' : decisionChain?.r111Sonuc?.longSqueeze ? 'longSqueeze' : 'yok'),
+      // ═══ V632 ═══ `decisionChain.r111Sonuc` HIC YAZILMIYOR (5 okuma, 0 yazma) —
+      // bu alan her zaman 'yok' donuyordu. Calisan kaynaklara baglandi:
+      // story.oi.state (SHORT_SQUEEZE/LONG_BUILD) ve r190Edge.squeeze.
+      squeeze: (() => {
+        const _oi = String(decisionChain?.r483Story?.oi?.state || '').toUpperCase();
+        if (decisionChain?.r111Sonuc?.shortSqueeze || _oi === 'SHORT_SQUEEZE') return 'shortSqueeze';
+        if (decisionChain?.r111Sonuc?.longSqueeze) return 'longSqueeze';
+        if (decisionChain?.r190Edge?.squeeze) return 'edgeSqueeze';
+        return 'yok';
+      })(),
       atrPct: analysis?.leverage?.atrPct || decisionChain?.coinAtrPct,
       rangePos,
       candleSummary: decisionChain?.mumOzet || decisionChain?.r118CandleOzet || '',
@@ -24985,7 +25073,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     // THE hacim 9.8x ile skor 100 bayrak düşürdü ama MAX_POZİSYON_DOLU yüzünden AI'a hiç sorulamadı.
     // AI'ın maxPositions'ı artırma yetkisi (R342) var ama danışılmayınca kullanamıyordu (kısır döngü).
     // Bayraklı coin AI'a gider; AI isterse ayar.maxPositions ile yer açar (bakiye yetiyorsa emir geçer).
-    if (openPos.length >= maxPositions) {
+    // ═══ V630 ═══ yogunlasmis pozisyon aciksa bot KENDINI tek poza kisitlar.
+    const _v630AcikYogun = V630_YOGUNLASMA && v630AcikYogunVar(openPos);
+    const _v630MaxEtkin = _v630AcikYogun ? 1 : maxPositions;
+    if (_v630AcikYogun && openPos.length >= 1) logAuto(`🎯 V630: yoğunlaşmış pozisyon açık — max pozisyon ${maxPositions} → 1 (bot kendini kısıtladı)`);
+    if (openPos.length >= _v630MaxEtkin) {
       let r347TazeBayrak = false;
       try { r347TazeBayrak = Object.values(__r328PatlamaFlags||{}).some(f => f && f.detected && Date.now()-f.ts < 5*60*1000); } catch(_) {}
       if (!r347TazeBayrak) {
@@ -26709,7 +26801,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             // ── R305 GÜVENLİK KORUMALARI (eski kapılardan taşındı) ──
             spreadBlock: !!(decisionChain?.r190Edge?.spreadBlock || decisionChain?.spreadBlock),
             lateTrapRisk: !!(decisionChain?.r190Edge?.lateTrapRisk || decisionChain?.lateTrapRisk),
-            squeeze: !!(decisionChain?.r190Edge?.squeeze || decisionChain?.r111Sonuc?.shortSqueeze || decisionChain?.r111Sonuc?.longSqueeze),
+            // ═══ V632 ═══ r111Sonuc olu (hic yazilmiyor); story.oi.state eklendi.
+            squeeze: !!(decisionChain?.r190Edge?.squeeze || decisionChain?.r111Sonuc?.shortSqueeze || decisionChain?.r111Sonuc?.longSqueeze
+                     || String(decisionChain?.r483Story?.oi?.state||'').toUpperCase()==='SHORT_SQUEEZE'),
             chartHardNo: !!(decisionChain?.r281Map?.hardNo || decisionChain?.r281ProMap?.hardNo),
             runner: !!(decisionChain?.r281Map?.runner || decisionChain?.r283Recipe?.mode === 'RUNNER'),
             atrExtreme: !!(decisionChain?.atrExtreme || (Number(decisionChain?.coinAtrPct||0) > 12)),
@@ -27416,8 +27510,14 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                   const sweepVar = sweepKesin && !reclaimRed;
                   if (!sweepVar) {
                     // sadece SWEEP YOKSA bu engeller devreye girer (sweep varsa hepsi serbest = boğma yok)
-                    const rPos = Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
-                      : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5);
+                    // ═══ V629 ═══ once GERCEK olcum (grafik hikayesi), sonra eski zincir.
+                    const _v629Olcum = v629RangePos(ai?.story || decisionChain?.r483Story);
+                    const rPos = _v629Olcum ? _v629Olcum.deger
+                      : (Number.isFinite(decisionChain?._r276RangePos) ? decisionChain._r276RangePos
+                      : (decisionChain?.r281ProMap && Number.isFinite(decisionChain.r281ProMap.rangePos) ? decisionChain.r281ProMap.rangePos : 0.5));
+                    const _v629AtrPct = Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct ?? NaN);
+                    const _v629Ates = v629AteslemeMi(ai?.story || decisionChain?.r483Story, _v629AtrPct);
+                    if (_v629Olcum) logAuto(`📐 ${coin.symbol} V629 tepe ölçümü: rPos ${rPos.toFixed(2)} (${_v629Olcum.kaynak})${_v629Ates?' · TAZE ATEŞLEME — veto muaf':''}`);
                     const dlt = Number(decisionChain?.r125LiveDeltaPct || 0);     // + alıcı, - satıcı
                     const obI = Number(analysis?.orderBook?.imbalance ?? decisionChain?.orderBookImbalance ?? NaN); // + alıcı, - satıcı
                     // ENGEL 1: P/D İHLALİ — dipte(<%30) SHORT veya tepede(>%70) LONG (sweep yok)
@@ -27435,7 +27535,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                     // veto disi birakiyordu — V592 altinda botun kullandigi TEK yol o.
                     // Yani "range tepesinden alma" korumasi tam da gerekli oldugu yolda kapaliydi.
                     // Karne kaniti: kayip siniflarinin ort. dibi -%40,2 ve -%54 ROI (gec giris).
-                    if (ai.side === 'LONG' && rPos >= 0.85 && !(!V625_TEPE_VETO && ai.mekanik && ['MARKET','TACTICAL'].includes(String(ai?.authority?.action||'')))) {
+                    // ═══ V629 ═══ taze ates leme MUAF — kirilim tanimi geregi range tepesindedir.
+                    // Gec kovalama kapali kalir; ates leme serbest. (Olcum: ates leme PF 6,03 · gec kovalama PF 1,10)
+                    if (ai.side === 'LONG' && rPos >= 0.85 && !_v629Ates && !(!V625_TEPE_VETO && ai.mekanik && ['MARKET','TACTICAL'].includes(String(ai?.authority?.action||'')))) {
                       logAuto(`⛔ ${coin.symbol} R429 SERT VETO: range tepesinde (%${(rPos*100).toFixed(0)}) sweep'siz LONG — tepe kovalama, emir AÇILMADI. Sweep+reclaim teyidi gelirse serbest.`);
                       markAutoSkip(coin.symbol, `R429: tepede (%${(rPos*100).toFixed(0)}) sweep'siz LONG sert veto`, {rec:ai.side, score, aiBrain:ai});
                       continue;
@@ -27933,7 +28035,30 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               }
             }
             const _sl495 = Math.max(.05,Number(userSLPct||0));
-            const _riskUsd495 = _eq495>0 ? _eq495*(R495_FINAL_RISK_PCT/100) : 0;
+            // ═══ V630 ═══ FIRSAT YOGUNLASMASI — slot butcesi birlestirme.
+            // 2 slot x %4 yerine 1 slot x %8: TOPLAM portfoy riski ayni, tek isleme
+            // daha buyuk marj duser. Parite sabitleri (risk %4, tavan 100$, max poz 2,
+            // kaldirac kilidi) HIC DEGISMEZ. Yalniz acik pozisyon YOKKEN calisir.
+            const _v630Ctx = {
+              atrPct: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct),
+              rsi4h:  Number(analysis?.rsi4h ?? analysis?.rsi?.['4h'] ?? decisionChain?.rsi4h ?? ai?.story?.rsi4h),
+              drift:  Number(ai?.story?.distanceFromBreakoutAtr ?? ai?.story?.entryDriftAtr ?? _v45?.features?.entryDriftAtr),
+              r495Action: _r495Action,
+              quality: Number(ai?.story?.quality ?? decisionChain?.r483Story?.quality)
+            };
+            const _v630 = V630_YOGUNLASMA ? v630Kanit(_v630Ctx) : {skor:0,uygun:false,kanit:[]};
+            const _v630Bos = (Array.isArray(openPos) ? openPos.length : 1) === 0;
+            const _v630Aktif = _v630.uygun && _v630Bos;
+            // ═══ V631 ═══ SUREKLI carpan. Ikili (1x/2x) degil; firsatin kalitesine gore
+            // 30 · 34 · 39 · 45 · 52 · 60 ... seklinde kademesiz buyur.
+            const _v631Skor = V631_SUREKLI_YOGUNLASMA ? v631Skor(_v630Ctx) : 1;
+            const _v630Slot = _v630Aktif
+              ? (V631_SUREKLI_YOGUNLASMA ? 1 + _v631Skor*(V630_MAX_SLOT-1) : V630_MAX_SLOT)
+              : 1;
+            if (_v630Aktif && V631_SUREKLI_YOGUNLASMA) logAuto(`📈 ${coin.symbol} V631 sürekli çarpan: kalite ${(_v631Skor*100).toFixed(0)}/100 → slot ${_v630Slot.toFixed(2)}x`);
+            if (_v630Aktif) logAuto(`🎯 ${coin.symbol} V630 YOĞUNLAŞMA: ${_v630.skor}/5 kanıt [${_v630.kanit.join(' · ')}] — tek pozisyon, ${_v630Slot} slot bütçesi`);
+            else if (_v630.skor > 0) logAuto(`· ${coin.symbol} V630: ${_v630.skor}/${V630_MIN_KANIT} kanıt${_v630Bos?'':' · pozisyon açık'} — normal boyut`);
+            const _riskUsd495 = _eq495>0 ? _eq495*(R495_FINAL_RISK_PCT/100)*_v630Slot : 0;
             const _riskCap495 = _riskUsd495>0 ? _riskUsd495/((_sl495/100)*_lev495) : Number(usdtAmount);
             const _scale495 = Math.max(0,Math.min(1,Number(_r495Auth.riskScale ?? (_r495Action==='TACTICAL'?R495_TACTICAL_RISK_SCALE:R495_MARKET_RISK_SCALE))));
             const _scaleCap495 = Number(r389PanelMarj)*_scale495;
