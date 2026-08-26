@@ -458,7 +458,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_2_4_MARJ30_SABIT_SL_BUTCEYE_UYAR'
+const LAZARUS_BUILD = 'V6_2_7_KOK_SEBEP'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3730,6 +3730,129 @@ function r125FlowForSide(ctx, side='LONG') {
 // daha erken ve daha canlı bağlar: absorpsiyon, mum kapanış tahmini, delta imprint,
 // aggression trend ve playbook win-rate kalibrasyonu.
 const R126_PLAYBOOK_STATS_PATH = path.join(process.cwd(), 'lazarus_playbook_stats.json');
+// ═══ V625/V626 ═══ KAR TASIMA ve KAR KILIDI AYRI ANAHTARLAR + OGRENEN FREN
+const V625_KAR_TASIMA  = String(process.env.V625_KAR_TASIMA  ?? '1') !== '0';
+const V625_TEPE_VETO   = String(process.env.V625_TEPE_VETO   ?? '1') !== '0';
+const V626_OGRENEN_FREN= String(process.env.V626_OGRENEN_FREN?? '1') !== '0';
+const V626_MIN_ORNEK   = Math.max(5, Math.min(60, Number(process.env.V626_MIN_ORNEK || 15)));
+const V626_PF_ESIK     = Math.max(0.3, Math.min(1.2, Number(process.env.V626_PF_ESIK || 0.75)));
+const V626_PF_IYI      = Math.max(1.1, Math.min(3.0, Number(process.env.V626_PF_IYI  || 1.50)));
+// Giris sinifi etiketi — r393SinifKarnesi ile AYNI kurallar, tek kaynak.
+function v626Metin(v){ return typeof v==='string' ? v : (v && typeof v==='object' ? String(v.reason||v.text||v.summary||'') : ''); }
+function v626Sinifla(t){
+  const s = String(t||'');
+  if (/dikeyFaz/i.test(s)) return 'DIKEY_FAZ';
+  if (/htfYapisal|kırılım|kirilim|baz tepesi/i.test(s)) return 'HTF_KIRILIM';
+  if (/sweep|reclaim/i.test(s)) return 'SWEEP_RECLAIM';
+  if (/pullback|OTE|fib/i.test(s)) return 'PULLBACK_DEVAM';
+  return 'DIGER';
+}
+function v626SiniflaSatir(row={}){
+  return v626Sinifla([row.entryReason,row.openReason,row.reason,row.aiReason,row.plan].map(v626Metin).filter(Boolean).join(' '));
+}
+// ═══ V627 ═══ KOK SEBEP: giris fotografi ile sonucu karsilastirip HUKUM yazar.
+// Denetim: sunucuda "rootCause/postmortem" HIC yoktu — giris fotograflaniyor,
+// sonuc kaydediliyor, ama ikisi hic karsilastirilmiyordu.
+const V627_KOK_SEBEP = String(process.env.V627_KOK_SEBEP ?? '1') !== '0';
+function v627KokSebep(row={}){
+  const s=(v)=>{const n=Number(v);return Number.isFinite(n)?n:null;};
+  const pnl=s(row.pnlUSDT)??s(row.pnl)??0;
+  const roi=s(row.roiPct)??s(row.roi)??0;
+  const zir=s(row.zirveRoi)??0;          // gorulen en iyi ROI
+  const dip=s(row.dipRoi)??0;            // gorulen en kotu ROI
+  const dk=(s(row.closedAt)&&s(row.openedAt))?(row.closedAt-row.openedAt)/60000:null;
+  const ak=(row.girisFoto&&row.girisFoto.akis)||{};
+  const delta=s(ak.delta), defter=s(ak.defter);
+  const akisKarsi=(delta!==null&&delta<=-10)||(defter!==null&&defter<=-10);
+  const yuzde=(a,b)=>b>0?Math.round(a/b*100):null;
+  if(pnl>0){
+    if(zir>0&&roi<zir*0.45)
+      return {kod:'KAR_ERKEN_KESILDI',taraf:'CIKIS',
+        aciklama:`kar alindi ama zirvenin yalniz %${yuzde(roi,zir)}'i cebe girdi (zirve %${zir.toFixed(1)} ROI -> cikis %${roi.toFixed(1)})`};
+    return {kod:'TEMIZ_KAZANC',taraf:'—',
+      aciklama:`zirvenin %${yuzde(roi,zir)||100}'i korundu (zirve %${zir.toFixed(1)} ROI)`};
+  }
+  if(zir>=8)
+    return {kod:'ZIRVE_GERI_VERILDI',taraf:'CIKIS',
+      aciklama:`%${zir.toFixed(1)} ROI kara gecti, zararla kapandi (%${roi.toFixed(1)}) — giris dogruydu, cikis tutmadi`};
+  if(zir<2&&dip<=-12)
+    return {kod:'GEC_GIRIS',taraf:'GIRIS',
+      aciklama:`hic kara gecmedi (zirve %${zir.toFixed(1)}), girer girmez %${dip.toFixed(1)} ROI dibe gitti — tepeden/gec alinmis`};
+  if(akisKarsi)
+    return {kod:'TERS_AKISTA_GIRIS',taraf:'GIRIS',
+      aciklama:`giriste akis karsiydi (delta ${delta??'—'} · defter ${defter??'—'}) — teyit beklenmeliydi`};
+  if(dk!==null&&dk<=3)
+    return {kod:'ANI_SPIKE_STOP',taraf:'STOP',
+      aciklama:`${dk.toFixed(1)} dakikada stop yendi (dip %${dip.toFixed(1)}) — stop gurultunun icinde kalmis`};
+  if(Math.abs(roi)<4)
+    return {kod:'YATAY_SURUNDU',taraf:'PLAN',
+      aciklama:`${dk!==null?dk.toFixed(0)+'dk ':''}yatay surundu, kucuk zararla cikildi (%${roi.toFixed(1)}) — hedef hic calismadi`};
+  return {kod:'YAPI_BOZULDU',taraf:'GIRIS',
+    aciklama:`zirve %${zir.toFixed(1)} / dip %${dip.toFixed(1)} — yapi giristen sonra bozuldu`};
+}
+function v627Rapor(){
+  const kod={}, taraf={};
+  let n=0;
+  for(const r of (Array.isArray(tradeLedger)?tradeLedger:[])){
+    if(!r||!r.closedAt)continue;
+    const k=r.kokSebep&&r.kokSebep.kod?r.kokSebep:v627KokSebep(r);
+    const pnl=Number(r.pnlUSDT??r.pnl??0); if(!Number.isFinite(pnl))continue;
+    n++;
+    const a=(kod[k.kod]||={n:0,net:0,taraf:k.taraf}); a.n++; a.net=+(a.net+pnl).toFixed(2);
+    const b=(taraf[k.taraf]||={n:0,net:0});           b.n++; b.net=+(b.net+pnl).toFixed(2);
+  }
+  const sirala=o=>Object.entries(o).sort((x,y)=>y[1].n-x[1].n);
+  let hukum='yeterli ornek yok';
+  const zararTaraf=sirala(taraf).filter(([t])=>t!=='—');
+  if(n>=10&&zararTaraf.length){
+    const enKotu=zararTaraf.slice().sort((x,y)=>x[1].net-y[1].net)[0];
+    hukum=enKotu[0]==='CIKIS'
+      ? `Zararin agirligi CIKIS tarafinda (${enKotu[1].n} islem · ${enKotu[1].net}$). Giris motoru calisiyor; duzeltilecek yer kar tasima/stop yonetimi.`
+      : enKotu[0]==='GIRIS'
+      ? `Zararin agirligi GIRIS tarafinda (${enKotu[1].n} islem · ${enKotu[1].net}$). Zamanlama/grafik kapisi duzeltilmeli.`
+      : `Zararin agirligi ${enKotu[0]} tarafinda (${enKotu[1].n} islem · ${enKotu[1].net}$).`;
+  }
+  return {islem:n, hukum,
+    taraf:sirala(taraf).map(([t,o])=>({taraf:t,islem:o.n,net:o.net})),
+    sebepler:sirala(kod).map(([k,o])=>({kod:k,taraf:o.taraf,islem:o.n,net:o.net}))};
+}
+let _v626Karne = {at:0, map:{}};
+function v626Karne(){
+  const now = Date.now();
+  if (_v626Karne.at && now - _v626Karne.at < 60_000) return _v626Karne.map;
+  const g = {};
+  for (const row of (Array.isArray(tradeLedger)?tradeLedger:[])) {
+    if (!row || !row.closedAt) continue;
+    const k = v626SiniflaSatir(row);
+    const pnl = Number(row.pnlUSDT ?? row.pnl ?? 0);
+    if (!Number.isFinite(pnl)) continue;
+    const o = (g[k] ||= {n:0,w:0,l:0,net:0,gp:0,gl:0,zir:[],dip:[]});
+    o.n++; if (pnl>0){o.w++;o.gp+=pnl;} else {o.l++;o.gl+=-pnl;} o.net+=pnl;
+    if (Number.isFinite(Number(row.zirveRoi))) o.zir.push(Number(row.zirveRoi));
+    if (Number.isFinite(Number(row.dipRoi)))   o.dip.push(Number(row.dipRoi));
+  }
+  const ort = a => a.length ? +(a.reduce((x,y)=>x+y,0)/a.length).toFixed(1) : null;
+  for (const [k,o] of Object.entries(g)) {
+    o.pf = o.gl>0 ? +(o.gp/o.gl).toFixed(2) : (o.gp>0?99:0);
+    o.wr = o.n ? +(o.w/o.n*100).toFixed(1) : 0;
+    o.ortZirve = ort(o.zir); o.ortDip = ort(o.dip);
+    o.karar = (o.n>=V626_MIN_ORNEK && o.pf<V626_PF_ESIK) ? 'FREN'
+            : (o.n>=V626_MIN_ORNEK && o.pf>=V626_PF_IYI) ? 'TESVIK' : 'YETERSIZ_ORNEK';
+    delete o.zir; delete o.dip;
+  }
+  _v626Karne = {at:now, map:g};
+  return g;
+}
+// Aday icin sinif hukmu: +1 = daha fazla kanit iste, -1 = esigi gevset, 0 = dokunma
+function v626SinifHukmu(metin){
+  if (!V626_OGRENEN_FREN) return {sinif:null, delta:0, sebep:'kapali'};
+  const sinif = v626Sinifla(metin);
+  const o = v626Karne()[sinif];
+  if (!o || o.n < V626_MIN_ORNEK) return {sinif, delta:0, sebep:`ornek ${o?o.n:0}/${V626_MIN_ORNEK}`};
+  if (o.pf < V626_PF_ESIK)  return {sinif, delta:+1, sebep:`${o.n} islem PF ${o.pf} < ${V626_PF_ESIK} — ek kanit isteniyor`};
+  if (o.pf >= V626_PF_IYI)  return {sinif, delta:-1, sebep:`${o.n} islem PF ${o.pf} >= ${V626_PF_IYI} — esik gevsetildi`};
+  return {sinif, delta:0, sebep:`${o.n} islem PF ${o.pf} notr`};
+}
 let r126PlaybookStats = {};
 try {
   const raw = fs.readFileSync(R126_PLAYBOOK_STATS_PATH, 'utf8');
@@ -7725,7 +7848,11 @@ function r619GraphOpportunityArbiter(coin={},analysis={},decision={},ai={},v45={
   const decisionScore=clamp(graphScore*.70+dataScore*.30);
   const minScore=worker?V619_EXPLOSION_SCORE_MIN:top10?V619_TOP10_SCORE_MIN:V619_TOP24_SCORE_MIN;
   const fastMin=worker?V619_EXPLOSION_FAST_SCORE_MIN:top10?V619_TOP10_FAST_SCORE_MIN:V619_TOP24_FAST_SCORE_MIN;
-  const proofMin=top10?1:2;
+  // ═══ V626 ═══ OGRENEN FREN: gecmiste PF'i dusuk cikan giris sinifi daha fazla
+  // grafik kaniti ister; PF'i yuksek sinif esigi gevsetir. Kapi degil, kanit esigi.
+  const _v626Metin=[ai?.reasoning, decision?.brainMode, decision?.r289Playbook?.setup, story?.timing].filter(Boolean).join(' ');
+  const _v626=v626SinifHukmu(_v626Metin);
+  const proofMin=Math.max(1, Math.min(3, (top10?1:2) + Number(_v626.delta||0)));
   const firstRR=Number(truth?.firstObstacleRR??f.firstObstacleRR);
   const entry=Number(ai?.entry||0),sl=Number(ai?.sl||0),tp=Number(ai?.tp||0);
   const timing=String(story?.timing||'').toUpperCase();
@@ -12492,6 +12619,13 @@ function recordTradeClose(symbol, state={}, cls={}) {
     zirveRoi: Number.isFinite(Number(state?.peakPnl)) || Number.isFinite(Number(finalRoi)) ? safeNum(Math.max(Number(state?.peakPnl||0),Number(finalRoi||0)),1) : null,
     dipRoi: Number.isFinite(Number(state?.dipPnl)) || Number.isFinite(Number(finalRoi)) ? safeNum(Math.min(Number(state?.dipPnl??0),Number(finalRoi||0)),1) : null,
   });
+  // ═══ V627 ═══ giris fotografi + sonuc -> HUKUM. Ledger'a islenir, log'a dusulur.
+  if (V627_KOK_SEBEP) {
+    try {
+      row.kokSebep = v627KokSebep(row);
+      logAuto(`🔬 ${sym} KÖK SEBEP [${row.kokSebep.taraf}] ${row.kokSebep.kod}: ${row.kokSebep.aciklama}`);
+    } catch(_v627e) {}
+  }
   tradeLedger = [row,...tradeLedger.filter(x=>x!==row&&x.id!==row.id)].slice(0,250);
   // R345 ÖZ-SEZİ HAFIZASI: her kapanış tek satır derse damıtılır; AI sonraki HER kararda son 8'i görür.
   // İnsan sezgisinin oturum-içi hâli: "az önce aynı tip giriş yendi/kazandı" bilgisi karara girer.
@@ -21764,7 +21898,10 @@ async function managePosition(apiKey, apiSecret, pos) {
   // Borsadaki ILK SL/TP emirlerine DOKUNULMAZ; yalnizca SL'i ilerletme kapatilir.
   // Geri acmak icin: V607_KAR_KILIDI=1
   const _v607KarKilidi = String(process.env.V607_KAR_KILIDI || '0') === '1';
-  if (!_v607KarKilidi) {
+  // ═══ V625 ═══ V607 artik YALNIZ KILITLERI kapatir. Kar TASIMA ayri anahtarda.
+  // Eskiden bu blok trailingPct/trailStep/breakEvenPct'i sifirliyordu; V625 acikken
+  // sifirlamak trail mesafesini 0 yapar ve SL zirveye yapisir (ilk asagi tikte stop).
+  if (!_v607KarKilidi && !V625_KAR_TASIMA) {
     try {
       if (autoConfig) {
         autoConfig.trailingPct = 0;
@@ -22715,7 +22852,10 @@ async function managePosition(apiKey, apiSecret, pos) {
   const r430CanExtend = r430IsRunner ? (r430ExtCount < 10) : !state.tpExtended;
   const r430NearTarget = r430IsRunner
     ? (realProfitPct > r430CurTargetPct * 0.70)   // hedefin %70'ine gelindi → hedefi ileri taşımayı düşün
-    : (realProfitPct > tpRealTarget * 0.5);
+    // ═══ V625 ═══ esik PANEL tpPct'sine gore degil GERCEK emir TP'sine gore.
+    // Panel %10 iken esik %5 fiyat = %35 ROI olur; olculen ort. zirve %11 ROI —
+    // yani "TP'ye yaklasinca" hic tetiklenmiyordu. Gercek TP ~%5 -> esik ~%17 ROI.
+    : (realProfitPct > (V625_KAR_TASIMA ? r430CurTargetPct : tpRealTarget) * 0.5);
   if (!action && r430CanExtend && r430NearTarget) {
     const cvd = getCVD(sym);
     const momentumStrong = isLong
@@ -22846,8 +22986,16 @@ async function managePosition(apiKey, apiSecret, pos) {
       || action.type === 'KAR_TASIMA' || action.type === 'R97_KAR_KILIDI' || action.type === 'R149_ROI_VAULT_LOCK' || action.type === 'R165_KAR_KILIDI' || action.type === 'R486_HARVEST_LOCK') {
     const newSL = action.newSL;
     if (!newSL) return null;
-    const profitRewriteTypes = new Set(['BREAK_EVEN','TRAIL_SL','KAR_TASIMA','R97_KAR_KILIDI','R149_ROI_VAULT_LOCK','R165_KAR_KILIDI','R486_HARVEST_LOCK']);
-    if (!_v607KarKilidi && profitRewriteTypes.has(action.type)) {
+    // ═══ V625 ═══ KILIT ve TASIMA AYRI ANAHTARLAR.
+    //   V607_KAR_KILIDI -> merdiven KILITLERI (sabit kademeli SL sicramalari)
+    //   V625_KAR_TASIMA -> BE + trailing + kar tasima (zirveyi takip eden SL)
+    const _v625Kilitler = new Set(['R97_KAR_KILIDI','R149_ROI_VAULT_LOCK','R165_KAR_KILIDI','R486_HARVEST_LOCK']);
+    const _v625Tasimalar = new Set(['BREAK_EVEN','TRAIL_SL','KAR_TASIMA']);
+    const profitRewriteTypes = new Set([..._v625Tasimalar, ..._v625Kilitler]);
+    const _v625Engelli = _v625Kilitler.has(action.type) ? !_v607KarKilidi
+                       : _v625Tasimalar.has(action.type) ? !V625_KAR_TASIMA
+                       : false;
+    if (_v625Engelli && profitRewriteTypes.has(action.type)) {
       try{r501OrderLifeMark(sym,'PROFIT_LOCK_DISABLED_V607',{actionType:action.type,requestedSL:Number(newSL),currentSL:Number(state.currentSL||0)||null});}catch(_){ }
       stampManager('İZLEME', `${action.type} uygulanmadı: V607 kâr kilidi kapalı`, 'LOW');
       return null;
@@ -24384,6 +24532,21 @@ app.get('/api/rapor.md',(req,res)=>{ try{
   res.send(md);
 }catch(e){ res.status(500).send('rapor hatası: '+String(e?.message||e)); }});
 app.get('/rapor',(_req,res)=>{ res.set('Content-Type','text/html; charset=utf-8'); res.send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lazarus Rapor Arşivi</title><style>body{background:#0d1220;color:#dce3f0;font-family:system-ui;margin:0;padding:20px}h1{font-size:17px;color:#5eb3f5}a.b{display:inline-block;background:#2d6a9f;color:#fff;padding:9px 14px;border-radius:9px;text-decoration:none;font-weight:800;font-size:12px;margin:0 8px 8px 0}pre{background:#131a2c;border:1px solid #26304a;border-radius:10px;padding:14px;white-space:pre-wrap;font-size:12px;line-height:1.55}</style></head><body><h1>📚 Lazarus Rapor Arşivi — ${LAZARUS_BUILD}</h1><p><a class="b" href="/api/rapor.md?donem=gun&indir=1">⬇️ Günlük MD</a><a class="b" href="/api/rapor.md?donem=hafta&indir=1">⬇️ Haftalık MD</a><a class="b" href="/api/rapor.md?donem=ay&indir=1">⬇️ Aylık MD</a></p><pre id="p">yükleniyor…</pre><script>fetch('/api/rapor.md?donem=gun').then(r=>r.text()).then(t=>{document.getElementById('p').textContent=t}).catch(e=>{document.getElementById('p').textContent='hata: '+e});</script></body></html>`); });
+app.get('/api/ogrenme', (_req, res) => {
+  res.set('Cache-Control','no-store');
+  const karne = v626Karne();
+  const siralı = Object.entries(karne).sort((a,b)=>b[1].n-a[1].n)
+    .map(([sinif,o])=>({sinif,islem:o.n,wr:o.wr,pf:o.pf,net:+o.net.toFixed(2),
+      ortZirveRoi:o.ortZirve,ortDipRoi:o.ortDip,karar:o.karar,
+      etki:o.karar==='FREN'?'+1 grafik kaniti isteniyor':o.karar==='TESVIK'?'-1 esik gevsetildi':'etki yok'}));
+  res.json({ok:true,build:LAZARUS_BUILD,
+    aktif:V626_OGRENEN_FREN, minOrnek:V626_MIN_ORNEK, pfFrenEsigi:V626_PF_ESIK, pfIyiEsigi:V626_PF_IYI,
+    aciklama:'Kapanan her islem giris sinifina gore toplanir. PF esigin altina dusen sinif daha fazla grafik kaniti ister; ustune cikan sinif gevser. Kapi degil, kanit esigi.',
+    karne:siralı,
+    kokSebep:(V627_KOK_SEBEP?v627Rapor():{aktif:false}),
+    kar:{kilit:String(process.env.V607_KAR_KILIDI||'0')==='1',tasima:V625_KAR_TASIMA,tepeVeto:V625_TEPE_VETO},
+    toplamKapanan:(Array.isArray(tradeLedger)?tradeLedger:[]).filter(r=>r&&r.closedAt).length});
+});
 app.get('/api/r393', (req, res) => { res.set('Content-Type','text/plain; charset=utf-8'); res.send(r393SinifKarnesi()); });
 
 app.get('/api/fable5', (req, res) => {
@@ -27240,7 +27403,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                     // R429 SERT VETO: range'in en tepesinde (%85+) sweep'siz LONG = tepe kovalama.
                     // Kullanıcı şikayeti + G-42/DODOX/FHE dersleri: bot tepeden alıp -%2 koruma ile kesiliyor.
                     // Uyarı sayacı yetmiyor (BEL'de 3 uyarıyla açıldı, kaybetti) — bu ekstrem durum koda iner.
-                    if (ai.side === 'LONG' && rPos >= 0.85 && !(ai.mekanik&&['MARKET','TACTICAL'].includes(String(ai?.authority?.action||'')))) {
+                    // ═══ V625 ═══ MUAFIYET KALDIRILDI. Eski kosul mekanik+MARKET/TACTICAL'i
+                    // veto disi birakiyordu — V592 altinda botun kullandigi TEK yol o.
+                    // Yani "range tepesinden alma" korumasi tam da gerekli oldugu yolda kapaliydi.
+                    // Karne kaniti: kayip siniflarinin ort. dibi -%40,2 ve -%54 ROI (gec giris).
+                    if (ai.side === 'LONG' && rPos >= 0.85 && !(!V625_TEPE_VETO && ai.mekanik && ['MARKET','TACTICAL'].includes(String(ai?.authority?.action||'')))) {
                       logAuto(`⛔ ${coin.symbol} R429 SERT VETO: range tepesinde (%${(rPos*100).toFixed(0)}) sweep'siz LONG — tepe kovalama, emir AÇILMADI. Sweep+reclaim teyidi gelirse serbest.`);
                       markAutoSkip(coin.symbol, `R429: tepede (%${(rPos*100).toFixed(0)}) sweep'siz LONG sert veto`, {rec:ai.side, score, aiBrain:ai});
                       continue;
