@@ -459,7 +459,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_0_KADEMELI_TOP24_PATLAMA_ONCELIK'
+const LAZARUS_BUILD = 'V6_4_1_R495_KAYIP_WAKE_ONARIMI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6734,11 +6734,20 @@ const R495_WINDOW_MAX_MS = Math.max(180000, Math.min(240000, Number(process.env.
 const R495_ACCEPTED_COOLDOWN_MIN = Math.max(5, Math.min(60, Number(process.env.R495_ACCEPTED_COOLDOWN_MIN || 20)));
 const R495_MIN_SAFE_MARGIN_USDT = Math.max(1, Math.min(20, Number(process.env.R495_MIN_SAFE_MARGIN_USDT || 6)));
 const R495_ARM_TTL_MIN = Math.max(10, Math.min(180, Number(process.env.R495_ARM_TTL_MIN || 45)));
+// V6.4.1: R495'in ucuncu kapali 1m mumu icin kurdugu hedefli wake, o anda
+// tam/worker taramasi calisiyorsa `busy` donup tek seferde kayboluyordu. Canlida
+// checks=1 kalan ve 10-20 dakika yaslanan adaylar bunun dogrudan kanitiydi.
+// Retry penceresi yeni bir karar kapisi degildir; ayni kapanmis mum sozlesmesini
+// zamaninda tekrar okutmak icindir. REST yukunu sinirlamak icin tek timer/key ve
+// en az 2.5sn aralik kullanilir.
+const R495_EXACT_WAKE_RETRY_MS = Math.max(1500, Math.min(10000, Number(process.env.R495_EXACT_WAKE_RETRY_MS || 2500)));
+const R495_EXACT_WAKE_SETTLE_MS = Math.max(500, Math.min(5000, Number(process.env.R495_EXACT_WAKE_SETTLE_MS || 1200)));
 const r495ArmedCandidates = new Map();
 const r495LastAcceptedBySymbol = new Map();
 const r495ExactWakeTimers = new Map();
 const r495RecentDecisions = [];
-const r495LiveStats = {armed:0,market:0,tactical:0,pusu:0,reject:0,expired:0,dataError:0,last:null};
+const r495LiveStats = {armed:0,market:0,tactical:0,pusu:0,reject:0,expired:0,dataError:0,
+  wakeScheduled:0,wakeAttempts:0,wakeBusyRetries:0,wakeGapRetries:0,wakeNonFinalRetries:0,wakeCompleted:0,wakeWindowMissed:0,lastWake:null,last:null};
 
 // ═══ R497 POINT-IN-TIME TOP-GAINER + SABİT SLOT + R496 SHADOW ═══════════════
 // Canlı işlem evreni gün-sonu kazanan bilgisine dayanmaz. Her taramada o anki
@@ -7697,7 +7706,10 @@ function r49356CaptureDecision({coin={},analysis={},decisionChain={},ai={},story
   if(!R49356_DIAG_ACTIVE)return null;
   try{
     const decisionTime=Date.now(),symbol=r49356Sym(coin?.fullSymbol||coin?.symbol||analysis?.symbol),data=r481MekanikVeri(coin,analysis,decisionChain),st=story||ai?.story||decisionChain?.r483Story||r483ChartStory(symbol,data),entry=Number(ai?.entry||analysis?.price||coin?.lastPrice||data?.fiyat||0),sl=Number(ai?.sl||0)||null,tp=Number(ai?.tp||0)||null,auth=ai?.authority||st?.authority||decisionChain?.r48633Authority||{};
-    const inferredAction=forcedDecision?.action||auth?.action||(String(ai?.side||'').toUpperCase()==='WAIT'?'PUSU':String(ai?.side||'').toUpperCase()==='LONG'?'MARKET':'REJECT'),reason=forcedDecision?.reason||auth?.reason||String(ai?.reasoning||decisionChain?.reason||'').slice(0,400),authority=forcedDecision?.authority||r49356AuthorityName(auth,reason);
+    // V6.4.1: auth, R495/R619 oncesindeki ara MARKET otoritesini tasiyabilir.
+    // Nihai ai.side WAIT ise funnel bunu MARKET diye yazamaz; gercek emir niyeti PUSU'dur.
+    const finalSide=String(ai?.side||'').toUpperCase(),finalWait=finalSide==='WAIT';
+    const inferredAction=forcedDecision?.action||(finalWait?'PUSU':auth?.action)||(finalSide==='LONG'?'MARKET':'REJECT'),reason=forcedDecision?.reason||(finalWait?String(ai?.reasoning||auth?.reason||decisionChain?.reason||'').slice(0,400):(auth?.reason||String(ai?.reasoning||decisionChain?.reason||'').slice(0,400))),authority=forcedDecision?.authority||(finalWait&&ai?.v592WaitSource?String(ai.v592WaitSource):r49356AuthorityName(auth,reason));
     const timeframes={};for(const tf of R49356_TFS)timeframes[tf]=r49356PerTf(data,tf,decisionTime,entry,st,ai);
     const consensus=r49356Consensus(timeframes,'LONG',{r480Shadow:ai?.r480Shadow||decisionChain?.r480Shadow||analysis?.r480Shadow||null,liveAction:inferredAction,karKosma:ai?.karKosma,decisionTime});const liveDecision={action:inferredAction,authority,reason,entry:r49356Round(entry,10),stop:r49356Round(sl,10),target:r49356Round(tp,10)};const hardRisk=r49356HardRisk(st,timeframes,liveDecision),chartError=r49356ChartError(st,timeframes),shadowAssessment=r49356ShadowClean(st,timeframes,hardRisk),diagnosis=r49356Provisional({candidateProduced,chartError,liveDecision,story:st,timeframes,consensus,hardRisk,shadowAssessment});const decisionId=r49356DecisionId(symbol,decisionTime);
     const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_LIVE_5TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(decisionTime).toISOString(),decisionTimeMs:decisionTime,noLookahead:true,liveDecision,timeframes,consensus,diagnosis:{diagnosisClass:diagnosis,hardRisk,shadowAssessment,chartComponentError:chartError},decisionTrace:[],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:diagnosis.status==='FINALIZED'?diagnosis:null,candidateProduced,source:{lane:data.sourceLane,label:data.sourceLabel},workerSignal:data.workerPulse||null};
@@ -7921,17 +7933,76 @@ function r495PushDecision(row){
 function r495ClearExactWake(key){
   const t=r495ExactWakeTimers.get(key);
   if(t){try{clearTimeout(t);}catch(_){}r495ExactWakeTimers.delete(key);}
+  const arm=r495ArmedCandidates.get(key);
+  if(arm){arm.wakePending=false;arm.nextWakeAt=null;}
 }
-function r495ScheduleExactWake(fullSymbol,key,candidateTs){
+function r495ScheduleExactWake(fullSymbol,key,candidateTs,retryDelayMs=null){
   if(r495ExactWakeTimers.has(key))return;
-  const due=Math.max(Date.now()+1000,Number(candidateTs||0)+181000);
-  const timer=setTimeout(()=>{
+  const retry=Number.isFinite(Number(retryDelayMs))&&Number(retryDelayMs)>0;
+  const due=retry
+    ? Date.now()+Math.max(1000,Number(retryDelayMs))
+    : Math.max(Date.now()+1000,Number(candidateTs||0)+181000);
+  const arm=r495ArmedCandidates.get(key);
+  if(arm){arm.wakePending=true;arm.nextWakeAt=due;arm.wakeScheduledAt=Date.now();}
+  r495LiveStats.wakeScheduled++;
+  const timer=setTimeout(async()=>{
     r495ExactWakeTimers.delete(key);
     try{
-      if(typeof runAutoScan==='function'){
-        runAutoScan(normalizeSymbol(fullSymbol),true).catch(e=>logAuto(`⚠️ ${normalizeSymbol(fullSymbol)} R495 exact wake hata: ${safeErrMsg(e)}`));
+      const liveArm=r495ArmedCandidates.get(key);
+      if(!liveArm||liveArm.finalized){if(liveArm){liveArm.wakePending=false;liveArm.nextWakeAt=null;}return;}
+      const now=marketNow(),deadline=Number(candidateTs||0)+R495_WINDOW_MAX_MS;
+      liveArm.wakeAttempts=Number(liveArm.wakeAttempts||0)+1;
+      liveArm.lastWakeAt=Date.now();
+      r495LiveStats.wakeAttempts++;
+      if(!autoConfig?.enabled){liveArm.wakePending=false;liveArm.nextWakeAt=null;return;}
+      if(now>deadline){
+        liveArm.wakePending=false;liveArm.nextWakeAt=null;liveArm.wakeLastResult='WINDOW_MISSED';
+        r495LiveStats.wakeWindowMissed++;r495LiveStats.lastWake={key,symbol:liveArm.symbol,result:'WINDOW_MISSED',at:Date.now(),candidateTs,deadline};
+        try{logAuto(`⚠️ ${liveArm.symbol} R495 exact wake penceresi kacirildi — gec emir gonderilmedi`);}catch(_){}
+        return;
       }
-    }catch(e){try{logAuto(`⚠️ R495 exact wake başlatılamadı: ${safeErrMsg(e)}`);}catch(_){}}
+      if(autoRunning){
+        liveArm.wakeLastResult='BUSY_RETRY';r495LiveStats.wakeBusyRetries++;
+        r495LiveStats.lastWake={key,symbol:liveArm.symbol,result:'BUSY_RETRY',at:Date.now(),candidateTs,deadline};
+        r495ScheduleExactWake(fullSymbol,key,candidateTs,Math.min(R495_EXACT_WAKE_RETRY_MS,Math.max(1000,deadline-now)));
+        return;
+      }
+      const gapLeft=R150_MIN_SCAN_GAP_MS-(Date.now()-Number(r150LastScanBeginTs||0));
+      if(gapLeft>0){
+        liveArm.wakeLastResult='SCAN_GAP_RETRY';r495LiveStats.wakeGapRetries++;
+        r495LiveStats.lastWake={key,symbol:liveArm.symbol,result:'SCAN_GAP_RETRY',at:Date.now(),candidateTs,deadline,gapLeft};
+        r495ScheduleExactWake(fullSymbol,key,candidateTs,Math.min(Math.max(1000,gapLeft+150),Math.max(1000,deadline-now)));
+        return;
+      }
+      if(typeof runAutoScan!=='function')throw new Error('R495_WAKE_RUN_AUTO_SCAN_UNAVAILABLE');
+      const checksBefore=Number(liveArm.checks||0);
+      const result=await runAutoScan(normalizeSymbol(fullSymbol),true);
+      if(R495_EXACT_WAKE_SETTLE_MS>0)await new Promise(resolve=>setTimeout(resolve,R495_EXACT_WAKE_SETTLE_MS));
+      const after=r495ArmedCandidates.get(key);
+      if(!after||after.finalized){
+        if(after){after.wakePending=false;after.nextWakeAt=null;after.wakeLastResult='COMPLETED';}
+        r495LiveStats.wakeCompleted++;r495LiveStats.lastWake={key,symbol:liveArm.symbol,result:'COMPLETED',at:Date.now(),candidateTs,checksBefore,checksAfter:Number(after?.checks||checksBefore)};
+        return;
+      }
+      const nowAfter=marketNow();
+      const busy=result?.skipped==='busy';
+      after.wakeLastResult=busy?'BUSY_RETRY':'NON_FINAL_RETRY';
+      if(busy)r495LiveStats.wakeBusyRetries++;else r495LiveStats.wakeNonFinalRetries++;
+      r495LiveStats.lastWake={key,symbol:after.symbol,result:after.wakeLastResult,at:Date.now(),candidateTs,checksBefore,checksAfter:Number(after.checks||0),deadline};
+      if(nowAfter<=deadline){
+        r495ScheduleExactWake(fullSymbol,key,candidateTs,Math.min(R495_EXACT_WAKE_RETRY_MS,Math.max(1000,deadline-nowAfter)));
+      }else{
+        after.wakePending=false;after.nextWakeAt=null;r495LiveStats.wakeWindowMissed++;
+      }
+    }catch(e){
+      try{logAuto(`⚠️ R495 exact wake başlatılamadı: ${safeErrMsg(e)}`);}catch(_){}
+      const failedArm=r495ArmedCandidates.get(key);
+      const now=marketNow(),deadline=Number(candidateTs||0)+R495_WINDOW_MAX_MS;
+      if(failedArm&&!failedArm.finalized&&autoConfig?.enabled&&now<=deadline){
+        failedArm.wakeLastResult='ERROR_RETRY';
+        r495ScheduleExactWake(fullSymbol,key,candidateTs,Math.min(R495_EXACT_WAKE_RETRY_MS,Math.max(1000,deadline-now)));
+      }
+    }
   },Math.max(1000,due-Date.now()));
   timer.unref?.();
   r495ExactWakeTimers.set(key,timer);
@@ -7964,7 +8035,7 @@ async function r495LiveAcceptanceArbiter(symbol,story={},baseAuthority={},ctx={}
   }
   let arm=r495ArmedCandidates.get(key);
   if(!arm){
-    arm={key,symbol:sym,fullSymbol,setup,score:Number(ctx.score||0),candidate:candidate?{...candidate}:null,armedAt:now,lastSeen:now,lastAction:'ARMED',checks:0,finalized:false};
+    arm={key,symbol:sym,fullSymbol,setup,score:Number(ctx.score||0),candidate:candidate?{...candidate}:null,armedAt:now,lastSeen:now,lastAction:'ARMED',checks:0,finalized:false,wakePending:false,nextWakeAt:null,wakeAttempts:0,wakeLastResult:null};
     r495ArmedCandidates.set(key,arm);r495LiveStats.armed++;
   }
   arm.lastSeen=now;arm.checks++;
@@ -8156,7 +8227,7 @@ function r619FastAcceptanceAuthority(symbol,coin={},ai={},opportunity={},candida
 }
 function r495StatusPayload(limit=30){
   const now=Date.now(),armed=[...r495ArmedCandidates.values()];
-  return {ok:true,build:LAZARUS_BUILD,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',active:R495_LIVE_ACTIVE,exactClosed1m:R495_EXACT_CLOSED_1M,acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,maxEntryDriftAtr:R495_MAX_ENTRY_DRIFT_ATR,minEntryDriftAtr:R495_MIN_ENTRY_DRIFT_ATR,maxAdverseAtr:R495_MAX_ADVERSE_ATR,takerRatioMin:R495_TAKER_RATIO_MIN,tacticalFloorAtr:R495_TACTICAL_FLOOR_ATR,acceptedCooldownMin:R495_ACCEPTED_COOLDOWN_MIN,minSafeMargin:R495_MIN_SAFE_MARGIN_USDT,stats:{...r495LiveStats,armedNow:armed.filter(x=>!x.finalized).length},armed:armed.filter(x=>!x.finalized).map(x=>({...x,ageSec:+((now-x.armedAt)/1000).toFixed(1)})).sort((a,b)=>b.armedAt-a.armedAt).slice(0,limit),recent:r495RecentDecisions.slice(0,limit)};
+  return {ok:true,build:LAZARUS_BUILD,mode:'EXACT_CLOSED_1M_BACKTEST_ACCEPTANCE_AND_FINAL_RISK',active:R495_LIVE_ACTIVE,exactClosed1m:R495_EXACT_CLOSED_1M,acceptDelaySec:R495_ACCEPT_DELAY_SEC,finalRiskPct:R495_FINAL_RISK_PCT,tacticalRiskScale:R495_TACTICAL_RISK_SCALE,marketRiskScale:R495_MARKET_RISK_SCALE,maxEntryDriftAtr:R495_MAX_ENTRY_DRIFT_ATR,minEntryDriftAtr:R495_MIN_ENTRY_DRIFT_ATR,maxAdverseAtr:R495_MAX_ADVERSE_ATR,takerRatioMin:R495_TAKER_RATIO_MIN,tacticalFloorAtr:R495_TACTICAL_FLOOR_ATR,acceptedCooldownMin:R495_ACCEPTED_COOLDOWN_MIN,minSafeMargin:R495_MIN_SAFE_MARGIN_USDT,wakeContract:{retryMs:R495_EXACT_WAKE_RETRY_MS,settleMs:R495_EXACT_WAKE_SETTLE_MS,oneTimerPerSignal:true,busyRetry:true,scanGapRetry:true,lateOrderFailClosed:true},stats:{...r495LiveStats,armedNow:armed.filter(x=>!x.finalized).length,pendingWakeNow:r495ExactWakeTimers.size},armed:armed.filter(x=>!x.finalized).map(x=>({...x,ageSec:+((now-x.armedAt)/1000).toFixed(1)})).sort((a,b)=>b.armedAt-a.armedAt).slice(0,limit),recent:r495RecentDecisions.slice(0,limit)};
 }
 
 function r447MekanikKarar(symbol, data = {}) {
