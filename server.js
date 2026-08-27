@@ -459,7 +459,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_3_7_PUSU_R495E_DEVREDILDI'
+const LAZARUS_BUILD = 'V6_3_8_R495_SIZING_SCOPE_ONARIMI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -28139,10 +28139,19 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             // 2 slot x %4 yerine 1 slot x %8: TOPLAM portfoy riski ayni, tek isleme
             // daha buyuk marj duser. Parite sabitleri (risk %4, tavan 100$, max poz 2,
             // kaldirac kilidi) HIC DEGISMEZ. Yalniz acik pozisyon YOKKEN calisir.
+            // V638: `_v45` yalniz yukaridaki V4.5/R619 try blogunda tanimliydi.
+            // R495 MARKET/TACTICAL kabulunden sonra bu satira gelindiginde kapsam disi
+            // ReferenceError olusuyor, alttaki fail-closed catch de kabul edilen her
+            // adayi "R495 final sizing hata" diye sessizce atliyordu. Kalici snapshot
+            // zaten karar zincirine yaziliyor; sizing bu tasinan kaydi okumali.
+            const _v45Sizing = decisionChain?.v45MultiSource
+                            || decisionChain?.aiBrain?.v45MultiSource
+                            || ai?.v45MultiSource
+                            || null;
             const _v630Ctx = {
               atrPct: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct),
               rsi4h:  Number(analysis?.rsi4h ?? analysis?.rsi?.['4h'] ?? decisionChain?.rsi4h ?? ai?.story?.rsi4h),
-              drift:  Number(ai?.story?.distanceFromBreakoutAtr ?? ai?.story?.entryDriftAtr ?? _v45?.features?.entryDriftAtr),
+              drift:  Number(ai?.story?.distanceFromBreakoutAtr ?? ai?.story?.entryDriftAtr ?? _v45Sizing?.features?.entryDriftAtr),
               r495Action: _r495Action,
               quality: Number(ai?.story?.quality ?? decisionChain?.r483Story?.quality)
             };
@@ -28227,8 +28236,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             logAuto(`🧱 ${coin.symbol} R495/R497 FINAL: ${_r495Action} closed1m×${_scale495.toFixed(2)} · radar ${String(coin?.r497Tier||'UNRANKED')}×${_radarScale497.toFixed(2)} · marj ${_before495.toFixed(2)}$→${_final495.toFixed(2)}$ · başlangıç risk ${_initialRisk495.toFixed(2)}$ (%${_riskPct495===null?'—':_riskPct495.toFixed(2)} equity) · bundan sonra büyütülemez`);
           }
         } catch(_r495SizeE) {
-          logAuto(`⛔ ${coin.symbol} R495 FINAL sizing hata → fail-closed: ${String(_r495SizeE?.message||_r495SizeE).slice(0,100)}`);
-          markAutoSkip(coin.symbol,`R495 final sizing hata`,{rec:recommendation,score,aiBrain:decisionChain?.aiBrain});
+          const _r495SizeErr = String(_r495SizeE?.stack || _r495SizeE?.message || _r495SizeE).split('\n')[0].slice(0,180);
+          logAuto(`⛔ ${coin.symbol} R495 FINAL sizing hata → fail-closed: ${_r495SizeErr}`);
+          markAutoSkip(coin.symbol,`R495 final sizing hata: ${_r495SizeErr}`,{rec:recommendation,score,aiBrain:decisionChain?.aiBrain,sizingError:_r495SizeErr});
           continue;
         }
 
