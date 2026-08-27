@@ -459,7 +459,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_3_8_R495_SIZING_SCOPE_ONARIMI'
+const LAZARUS_BUILD = 'V6_3_9_CANLI_SOZLESME_KILIT_TARAMA_ONARIMI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -533,7 +533,7 @@ const V592_MEASUREMENT_MODE='V619_GRAPH_FIRST_WEIGHTED_OPPORTUNITY';
 // kapatilabilir; kapatildiginda davranis birebir V4.7.3'tur.
 // V4.7.4.1-F01: V592_STORY_AUTHORITY_SHADOW_ONLY KALDIRILDI. R493 giris kapisi ve
 // TP/SL yon kapisi hicbir modda devre disi birakilmaz.
-const V592_LEVERAGE_LOCK=Math.max(0,Math.min(125,Number(process.env.V592_LEVERAGE_LOCK||10)));
+const V592_LEVERAGE_LOCK=Math.max(0,Math.min(125,Number(process.env.V592_LEVERAGE_LOCK||7)));
 const V592_ORDER_IDEMPOTENCY=String(process.env.V592_ORDER_IDEMPOTENCY??'1')!=='0';
 const V592_MARKET_CLOCK_GUARD_MS=Math.max(0,Math.min(30000,Number(process.env.V592_MARKET_CLOCK_GUARD_MS||2000)));
 // V4.7.4.9-J: BACKTEST CIKIS SOZLESMESI
@@ -654,6 +654,14 @@ function v592IsTestnetTradable(symbol){
 const v592SymbolOrderLocks=new Map();
 // V4.7.4.2-C5: kilitler artik /data uzerinde KALICI. Railway restart'i kilidi silmez.
 const V592_LOCK_PATH=path.join(String(process.env.TESTNET_STATE_DIR||'/data').trim()||'/data','unresolved_orders.json');
+// V6.3.9: Belirsiz emir kilidi duplicate emri onler; fakat negatif borsa kaniti
+// sonrasinda omur boyu sembol yasagi olamaz. Iki ayri uzlastirma turunda taze hesap
+// gercegi + clientOrderId/emir gecmisi + acik giris emri yoklugu birlikte aranir.
+const V639_LOCK_NEGATIVE_CONFIRMATIONS=Math.max(2,Math.min(4,Number(process.env.V639_LOCK_NEGATIVE_CONFIRMATIONS||2)));
+const V639_LOCK_MIN_AGE_MS=Math.max(30_000,Math.min(30*60_000,Number(process.env.V639_LOCK_MIN_AGE_MS||60_000)));
+const V639_LOCK_QUICK_RETRY_MS=Math.max(15_000,Math.min(5*60_000,Number(process.env.V639_LOCK_QUICK_RETRY_MS||45_000)));
+let v639LockReconcileRunning=false;
+let v639LockQuickRetryTimer=null;
 try{
   // ═══ V605 ═══ Yalniz TESTNET. LIVE'da V503_TESTNET_UNIVERSE_PREFILTER zaten
   // kapali oldugu icin bu cagri hicbir ise yaramiyordu; sadece Binance agirligi
@@ -675,12 +683,17 @@ function v592PersistLocks(){
 function v592LoadLocks(){
   try{
     const raw=JSON.parse(fs.readFileSync(V592_LOCK_PATH,'utf8'));
-    for(const l of (raw?.locks||[]))if(l&&l.symbol)v592SymbolOrderLocks.set(String(l.symbol).toUpperCase(),{at:Number(l.at)||Date.now(),reason:String(l.reason||'RESTORED'),clientOrderId:l.clientOrderId||null,restored:true});
+    for(const l of (raw?.locks||[]))if(l&&l.symbol)v592SymbolOrderLocks.set(String(l.symbol).toUpperCase(),{
+      at:Number(l.at)||Date.now(),reason:String(l.reason||'RESTORED'),clientOrderId:l.clientOrderId||null,restored:true,
+      negativeProofs:Math.max(0,Number(l.negativeProofs||0)),lastCheckedAt:Number(l.lastCheckedAt||0),
+      lastCheckResult:l.lastCheckResult||null,lastError:l.lastError||null
+    });
     if(v592SymbolOrderLocks.size)console.log(`[V4742] ${v592SymbolOrderLocks.size} cozulmemis emir kilidi diskten yuklendi: ${[...v592SymbolOrderLocks.keys()].join(', ')}`);
   }catch(_){}
 }
 function v592LockSymbol(sym,reason,clientOrderId){
-  v592SymbolOrderLocks.set(String(sym).toUpperCase(),{at:Date.now(),reason:String(reason||'UNKNOWN'),clientOrderId:clientOrderId||null});
+  v592SymbolOrderLocks.set(String(sym).toUpperCase(),{at:Date.now(),reason:String(reason||'UNKNOWN'),clientOrderId:clientOrderId||null,
+    negativeProofs:0,lastCheckedAt:0,lastCheckResult:'NEW_LOCK',lastError:null});
   v592ParityStats.symbolLocks++;v592PersistLocks();
 }
 function v592UnlockSymbol(sym,why){
@@ -690,34 +703,108 @@ function v592UnlockSymbol(sym,why){
   return false;
 }
 function v592SymbolLocked(sym){return v592SymbolOrderLocks.get(String(sym).toUpperCase())||null;}
-// Boot reconciliation: kilitli her sembolu borsa gercekligiyle karsilastir.
+function v639OrderTerminal(status){return ['FILLED','CANCELED','CANCELLED','REJECTED','EXPIRED','EXPIRED_IN_MATCH'].includes(String(status||'').toUpperCase());}
+function v639OpenEntryOrders(rows=[]){return (Array.isArray(rows)?rows:[]).filter(o=>{
+  const status=String(o?.status||'NEW').toUpperCase();
+  if(v639OrderTerminal(status))return false;
+  return !(o?.reduceOnly===true||String(o?.reduceOnly||'').toLowerCase()==='true'||o?.closePosition===true||String(o?.closePosition||'').toLowerCase()==='true');
+});}
+function v639ScheduleLockQuickRetry(){
+  if(v639LockQuickRetryTimer||!v592SymbolOrderLocks.size)return;
+  v639LockQuickRetryTimer=setTimeout(()=>{
+    v639LockQuickRetryTimer=null;
+    v592BootReconcileLocks().catch(e=>console.log('[V639] hizli kilit reconcile:',String(e?.message||e).slice(0,120)));
+  },V639_LOCK_QUICK_RETRY_MS);
+  v639LockQuickRetryTimer.unref?.();
+}
+// Boot/periyodik reconciliation: taze hesap gercegi tur basina BIR KEZ okunur.
+// Bu hem 25 sembolluk eski kilitlerde signed REST agirligini dusurur hem de her
+// sembolun ayni zamanli pozisyon fotografiyla degerlendirilmesini saglar.
 async function v592BootReconcileLocks(){
-  if(!v592SymbolOrderLocks.size)return;
+  if(!v592SymbolOrderLocks.size||v639LockReconcileRunning)return;
+  v639LockReconcileRunning=true;
   let apiKey,apiSecret;
-  try{({apiKey,apiSecret}=r486391BinanceCreds());}catch(_){return;}
-  if(!apiKey||!apiSecret)return;
-  for(const [sym,lock] of [...v592SymbolOrderLocks.entries()]){
-    try{
-      if(lock.clientOrderId){
-        const o=await v592LookupOrderByClientId(apiKey,apiSecret,sym,lock.clientOrderId);
-        if(o){try{r501OrderLifeMark(sym,'BOOT_RECONCILE_ORDER_FOUND',{clientOrderId:lock.clientOrderId,mainOrderId:o.orderId,exchangeStatus:o.status});}catch(_){}
-          v592UnlockSymbol(sym,`boot reconcile: emir bulundu (${o.status})`);continue;}
+  try{
+    try{({apiKey,apiSecret}=r486391BinanceCreds());}catch(_){return;}
+    if(!apiKey||!apiSecret)return;
+    v592ParityStats.lockReconcileRuns=(v592ParityStats.lockReconcileRuns||0)+1;
+    let positionRows;
+    try{positionRows=await fetchPositionRiskRaw(apiKey,apiSecret);}
+    catch(e){
+      v592ParityStats.lockReconcileErrors=(v592ParityStats.lockReconcileErrors||0)+1;
+      console.log(`[V639] kilit reconcile taze hesap gercegi alinamadi; hicbir kilit degismedi: ${String(e?.message||e).slice(0,120)}`);
+      return;
+    }
+    const openPositionBySymbol=new Map((Array.isArray(positionRows)?positionRows:[])
+      .filter(x=>Math.abs(Number(x?.positionAmt||0))>0).map(x=>[String(x.symbol||'').toUpperCase(),x]));
+    let needsQuickRetry=false;
+    for(const [sym,lock] of [...v592SymbolOrderLocks.entries()]){
+      try{
+        const p=openPositionBySymbol.get(sym);
+        if(p){
+          try{v592ParityStats.adoptedPositions++;r501OrderLifeMark(sym,'ADOPTED_POSITION_NOT_PARITY',
+            {note:'onceki oturumdan devralindi; kanit kaydi yok, parite olcumune girmez',positionAmt:p.positionAmt,entryPrice:p.entryPrice});}catch(_){}
+          try{r501OrderLifeMark(sym,'BOOT_RECONCILE_POSITION_FOUND',{positionAmt:p.positionAmt,entryPrice:p.entryPrice,leverage:p.leverage});}catch(_){}
+          v592UnlockSymbol(sym,'reconcile: acik pozisyon bulundu; pozisyon yoneticisi devraldi');continue;
+        }
+
+        let directOrder=null;
+        if(lock.clientOrderId)directOrder=await v592LookupOrderByClientId(apiKey,apiSecret,sym,lock.clientOrderId);
+        if(directOrder){
+          const status=String(directOrder.status||'UNKNOWN').toUpperCase();
+          try{r501OrderLifeMark(sym,'BOOT_RECONCILE_ORDER_FOUND',{clientOrderId:lock.clientOrderId,mainOrderId:directOrder.orderId,exchangeStatus:status});}catch(_){}
+          if(v639OrderTerminal(status)){
+            v592UnlockSymbol(sym,`reconcile: emir kesin ${status}, hesapta acik pozisyon yok`);continue;
+          }
+          Object.assign(lock,{negativeProofs:0,lastCheckedAt:Date.now(),lastCheckResult:`ORDER_ACTIVE_${status}`,lastError:null});
+          v592ParityStats.lockStillUnresolved=(v592ParityStats.lockStillUnresolved||0)+1;
+          v592PersistLocks();continue;
+        }
+
+        const openOrders=await bReq(apiKey,apiSecret,'GET','/fapi/v1/openOrders',{symbol:sym},8000);
+        const openEntries=v639OpenEntryOrders(openOrders);
+        if(openEntries.length){
+          Object.assign(lock,{negativeProofs:0,lastCheckedAt:Date.now(),lastCheckResult:'OPEN_ENTRY_ORDER_PRESENT',lastError:null});
+          v592ParityStats.lockStillUnresolved=(v592ParityStats.lockStillUnresolved||0)+1;
+          v592PersistLocks();continue;
+        }
+
+        let historyMatch=null;
+        if(lock.clientOrderId){
+          const hist=await bReq(apiKey,apiSecret,'GET','/fapi/v1/allOrders',{symbol:sym,limit:20},8000);
+          historyMatch=Array.isArray(hist)?hist.find(x=>String(x.clientOrderId||'')===lock.clientOrderId):null;
+        }
+        if(historyMatch){
+          const status=String(historyMatch.status||'UNKNOWN').toUpperCase();
+          try{r501OrderLifeMark(sym,'BOOT_RECONCILE_HISTORY_FOUND',{clientOrderId:lock.clientOrderId,exchangeStatus:status});}catch(_){}
+          if(v639OrderTerminal(status)){
+            v592UnlockSymbol(sym,`reconcile: emir gecmisi kesin ${status}, hesapta acik pozisyon yok`);continue;
+          }
+          Object.assign(lock,{negativeProofs:0,lastCheckedAt:Date.now(),lastCheckResult:`HISTORY_ACTIVE_${status}`,lastError:null});
+          v592PersistLocks();continue;
+        }
+
+        const negativeProofs=Math.max(0,Number(lock.negativeProofs||0))+1;
+        const ageMs=Math.max(0,Date.now()-Number(lock.at||Date.now()));
+        Object.assign(lock,{negativeProofs,lastCheckedAt:Date.now(),lastCheckResult:'FLAT_NO_OPEN_ENTRY_NO_ORDER_PROOF',lastError:null});
+        v592PersistLocks();
+        try{r501OrderLifeMark(sym,'BOOT_RECONCILE_NEGATIVE_PROOF',{reason:lock.reason,clientOrderId:lock.clientOrderId||null,negativeProofs,required:V639_LOCK_NEGATIVE_CONFIRMATIONS,ageMs});}catch(_){}
+        if(ageMs>=V639_LOCK_MIN_AGE_MS&&negativeProofs>=V639_LOCK_NEGATIVE_CONFIRMATIONS){
+          v592ParityStats.lockAutoReleased=(v592ParityStats.lockAutoReleased||0)+1;
+          v592UnlockSymbol(sym,`reconcile: ${negativeProofs} tur taze FLAT + acik giris emri yok + emir kaniti yok`);continue;
+        }
+        needsQuickRetry=true;
+        v592ParityStats.lockStillUnresolved=(v592ParityStats.lockStillUnresolved||0)+1;
+        console.log(`[V639] ${sym} kilidi kanit bekliyor ${negativeProofs}/${V639_LOCK_NEGATIVE_CONFIRMATIONS}; yas ${Math.round(ageMs/1000)}sn`);
+      }catch(e){
+        lock.lastCheckedAt=Date.now();lock.lastCheckResult='CHECK_ERROR';lock.lastError=String(e?.message||e).slice(0,180);
+        lock.negativeProofs=0;v592PersistLocks();
+        v592ParityStats.lockReconcileErrors=(v592ParityStats.lockReconcileErrors||0)+1;
+        console.log(`[V639] ${sym} reconcile hatasi; kilit korundu: ${lock.lastError}`);
       }
-      const rows=await fetchPositionRiskRaw(apiKey,apiSecret);
-      const p=Array.isArray(rows)?rows.find(x=>String(x.symbol||'').toUpperCase()===sym&&Math.abs(Number(x.positionAmt||0))>0):null;
-      if(p){try{v592ParityStats.adoptedPositions++;r501OrderLifeMark(sym,'ADOPTED_POSITION_NOT_PARITY',
-          {note:'onceki oturumdan devralindi; kanit kaydi yok, parite olcumune girmez',
-           positionAmt:p.positionAmt,entryPrice:p.entryPrice});}catch(_){}
-        try{r501OrderLifeMark(sym,'BOOT_RECONCILE_POSITION_FOUND',{positionAmt:p.positionAmt,entryPrice:p.entryPrice,leverage:p.leverage});}catch(_){}
-        v592UnlockSymbol(sym,'boot reconcile: acik pozisyon bulundu');continue;}
-      const hist=await bReq(apiKey,apiSecret,'GET','/fapi/v1/allOrders',{symbol:sym,limit:20},8000);
-      const h=Array.isArray(hist)&&lock.clientOrderId?hist.find(x=>String(x.clientOrderId||'')===lock.clientOrderId):null;
-      if(h){try{r501OrderLifeMark(sym,'BOOT_RECONCILE_HISTORY_FOUND',{clientOrderId:lock.clientOrderId,exchangeStatus:h.status});}catch(_){}
-        v592UnlockSymbol(sym,`boot reconcile: emir gecmisi (${h.status})`);continue;}
-      console.log(`[V4742] ${sym} kilidi COZULEMEDI; sembol kapali kaliyor. Sebep: ${lock.reason}`);
-      try{r501OrderLifeMark(sym,'BOOT_RECONCILE_UNRESOLVED',{reason:lock.reason,clientOrderId:lock.clientOrderId||null});}catch(_){}
-    }catch(e){console.log(`[V4742] ${sym} boot reconcile hatasi: ${String(e?.message||e).slice(0,120)}`);}
-  }
+    }
+    if(needsQuickRetry)v639ScheduleLockQuickRetry();
+  }finally{v639LockReconcileRunning=false;}
 }
 v592LoadLocks();
 const V592_POST_R495_SOFT_VETO_SHADOW_ONLY=String(process.env.V592_POST_R495_SOFT_VETO_SHADOW_ONLY??'1')!=='0';
@@ -922,7 +1009,7 @@ function v592ClassifyExchangeRejection(err){
 // sembol 10x izin vermiyorsa işlem açılmaz. Geniş SL'de leverage düşürmek yerine marjin
 // risk-normalize edilir. Kâr-hasat motoru varsayılan SHADOW'dur; R486_HARVEST_ACTIVE=1
 // verilmedikçe market kapatma yapmaz, yalnız karar/SL önerisini telemetriye yazar.
-const R486_MIN_LEVERAGE = Math.max(3, Math.min(20, Number(process.env.R486_MIN_LEVERAGE || 10)));  // V601: sabit 10 -> env (7x-10x araligi icin)
+const R486_MIN_LEVERAGE = Math.max(3, Math.min(20, Number(process.env.R486_MIN_LEVERAGE || 7)));
 const R486_HARVEST_ACTIVE = !V592_POLICY_PARITY_MODE && String(process.env.R486_HARVEST_ACTIVE || '0') === '1';
 const R486_HARVEST_SHADOW = !R486_HARVEST_ACTIVE;
 const R486_RISK_BUDGET_PCT = Math.max(4, Math.min(25, Number(process.env.R486_RISK_BUDGET_PCT || 12)));
@@ -2673,7 +2760,11 @@ async function v592LookupOrderByClientId(apiKey,apiSecret,sym,cid){
 // Ucu de negatifse bile 'gitmedi' denmez; sembol kilitlenir ve YENI POST atilmaz.
 async function v592OrderExistenceProof(apiKey,apiSecret,sym,cid,qtyHint){
   for(let i=0;i<3;i++){
-    try{const f=await v592LookupOrderByClientId(apiKey,apiSecret,sym,cid);if(f)return {found:true,order:f,via:'CLIENT_ORDER_ID'};}catch(_){}
+    try{const f=await v592LookupOrderByClientId(apiKey,apiSecret,sym,cid);if(f){
+      const status=String(f.status||'UNKNOWN').toUpperCase();
+      if(['CANCELED','CANCELLED','REJECTED','EXPIRED','EXPIRED_IN_MATCH'].includes(status))return {found:false,resolvedNoFill:true,order:f,via:'CLIENT_ORDER_ID',status};
+      return {found:true,order:f,via:'CLIENT_ORDER_ID'};
+    }}catch(_){}
     await new Promise(r=>setTimeout(r,900*(i+1)));
   }
   try{
@@ -2684,7 +2775,11 @@ async function v592OrderExistenceProof(apiKey,apiSecret,sym,cid,qtyHint){
   try{
     const hist=await bReq(apiKey,apiSecret,'GET','/fapi/v1/allOrders',{symbol:sym,limit:20},8000);
     const h=Array.isArray(hist)?hist.find(x=>String(x.clientOrderId||'')===cid):null;
-    if(h)return {found:true,order:h,via:'ORDER_HISTORY'};
+    if(h){
+      const status=String(h.status||'UNKNOWN').toUpperCase();
+      if(['CANCELED','CANCELLED','REJECTED','EXPIRED','EXPIRED_IN_MATCH'].includes(status))return {found:false,resolvedNoFill:true,order:h,via:'ORDER_HISTORY',status};
+      return {found:true,order:h,via:'ORDER_HISTORY'};
+    }
   }catch(_){}
   return {found:false,order:null,via:'NONE'};
 }
@@ -2719,6 +2814,17 @@ async function v592SendMainOrderIdempotent(apiKey,apiSecret,sym,oSide,qty,decisi
     if(pre){
       v592ParityStats.orderPreSendDuplicateFound++;
       try{r501OrderLifeMark(sym,'MAIN_ORDER_DUPLICATE_PREVENTED_PRESEND',{clientOrderId:cid,decisionKey:key,mainOrderId:pre.orderId,exchangeStatus:pre.status});}catch(_){}
+      // V6.3.9: Ayni karar anahtarinin eski terminal emrini yeni dolum gibi dondurme.
+      // FILLED ancak borsada pozisyon halen aciksa mevcut giris olarak devralinabilir.
+      const preStatus=String(pre.status||'UNKNOWN').toUpperCase();
+      if(v639OrderTerminal(preStatus)){
+        let preOpenPosition=false;
+        if(preStatus==='FILLED'){
+          const rows=await fetchPositionRiskRaw(apiKey,apiSecret);
+          preOpenPosition=Array.isArray(rows)&&rows.some(x=>String(x?.symbol||'').toUpperCase()===sym&&Math.abs(Number(x?.positionAmt||0))>0);
+        }
+        if(!preOpenPosition)throw new Error(`DUPLICATE_SIGNAL_ALREADY_RESOLVED: ${sym} ${cid} ${preStatus}; yeni POST gonderilmedi`);
+      }
       return {...pre,_lazarusClientOrderId:cid,_lazarusDecisionKey:key,_lazarusReconciled:true,_lazarusPreSendDuplicate:true};
     }
   }catch(preErr){
@@ -2731,6 +2837,10 @@ async function v592SendMainOrderIdempotent(apiKey,apiSecret,sym,oSide,qty,decisi
     try{r501OrderLifeMark(sym,'MAIN_ORDER_SEND_UNCERTAIN',{clientOrderId:cid,decisionKey:key,reason:safeErrMsg(sendErr)});}catch(_){}
     await new Promise(r=>setTimeout(r,1200));
     const proof=await v592OrderExistenceProof(apiKey,apiSecret,sym,cid,qty);
+    if(proof.resolvedNoFill){
+      try{r501OrderLifeMark(sym,'MAIN_ORDER_CONFIRMED_NOT_FILLED',{clientOrderId:cid,decisionKey:key,via:proof.via,exchangeStatus:proof.status||proof.order?.status||null});}catch(_){}
+      throw new Error(`Emir kesin olarak dolmadi (${proof.status||proof.order?.status||'TERMINAL'}); duplicate POST gonderilmedi. clientOrderId=${cid}`);
+    }
     if(proof.found){
       v592ParityStats.orderReconciled++;
       try{r501OrderLifeMark(sym,'MAIN_ORDER_RECONCILED_AFTER_SEND_ERROR',{clientOrderId:cid,decisionKey:key,via:proof.via,mainOrderId:proof.order?.orderId||null,exchangeStatus:proof.order?.status||null});}catch(_){}
@@ -3733,7 +3843,10 @@ function r125FlowForSide(ctx, side='LONG') {
 const R126_PLAYBOOK_STATS_PATH = path.join(process.cwd(), 'lazarus_playbook_stats.json');
 // ═══ V625/V626 ═══ KAR TASIMA ve KAR KILIDI AYRI ANAHTARLAR + OGRENEN FREN
 const V625_KAR_TASIMA  = String(process.env.V625_KAR_TASIMA  ?? '1') !== '0';
-const V625_TEPE_VETO   = String(process.env.V625_TEPE_VETO   ?? '1') !== '0';
+// V6.3.9: arsiv.txt'deki son canli sozlesme. R495 MARKET/TACTICAL kabulunu
+// sonradan R429'da olduren tepe vetosu varsayilan olarak kapali kalir.
+// Kâr tasima ayri anahtardir ve acik kalmaya devam eder.
+const V625_TEPE_VETO   = String(process.env.V625_TEPE_VETO   ?? '0') !== '0';
 const V626_OGRENEN_FREN= String(process.env.V626_OGRENEN_FREN?? '1') !== '0';
 const V626_MIN_ORNEK   = Math.max(5, Math.min(60, Number(process.env.V626_MIN_ORNEK || 15)));
 const V626_PF_ESIK     = Math.max(0.3, Math.min(1.2, Number(process.env.V626_PF_ESIK || 0.75)));
@@ -3761,7 +3874,7 @@ const V627_KOK_SEBEP = String(process.env.V627_KOK_SEBEP ?? '1') !== '0';
 //        ates leme adaylari ATR<=3,0 -> PF 6,03 ; tavan yok -> PF 3,40
 const V628_ATESLEME_KOPRUSU = String(process.env.V628_ATESLEME_KOPRUSU ?? '1') !== '0';
 const V628_TOP2_GAINER      = String(process.env.V628_TOP2_GAINER ?? '1') !== '0';
-const V628_ATR_TAVAN        = Math.max(1.0, Math.min(8.0, Number(process.env.V628_ATR_TAVAN || 3.0)));
+const V628_ATR_TAVAN        = Math.max(1.0, Math.min(8.0, Number(process.env.V628_ATR_TAVAN || 8.0)));
 // ═══ V629 ═══ TEPE OLCUMU. Eski rPos zinciri OLU idi: `r276Pos` hic tanimlanmamis,
 // `r281ProTraderMap` rangePos DONDURMUYOR -> rPos her zaman 0.5 -> tepe vetosu
 // (rPos>=0.85) hicbir zaman tetiklenemiyordu. Artik grafik hikayesinden okunur.
@@ -6816,7 +6929,7 @@ const R491_K24_MIN = r491EnvNumber('R491_K24_MIN', 85, 40, 99.9);
 const R491_MARGIN_FACTOR = r491EnvNumber('R491_MARGIN_FACTOR', 0.50, 0.10, 1.00);
 const R491_MODEL_ID = 'R491_NARROW_TOP_MARGIN_BRAKE_V1';
 // ═══ R493 KALİTE-SIZING (walk-forward doğrulandı: Haziran↔Temmuz, üst çeyrek ROI +18.5 vs alt +4.6) ═══
-// R480 skoruna göre MARJ tilt: yüksek skor ağır bas, düşük skor ele. KALDIRAÇA DOKUNMAZ (min 10x korunur). Buffer-cap'li.
+// R480 skoruna göre MARJ tilt: yüksek skor ağır bas, düşük skor ele. KALDIRAÇA DOKUNMAZ (7x kilidi korunur). Buffer-cap'li.
 const R493_KALITE_SIZING_ACTIVE = String(process.env.R493_KALITE_SIZING_ACTIVE ?? '1') !== '0';
 const R493_HIGH_FACTOR = r491EnvNumber('R493_HIGH_FACTOR', 1.00, 1.00, 1.40); // V501: recovered_portfolio_sim HIGH=1.00
 const R493_MID_FACTOR  = r491EnvNumber('R493_MID_FACTOR', 0.90, 0.50, 1.20);
@@ -8541,10 +8654,12 @@ async function r308AiProTraderBrain(symbol, data = {}, _r400Tekrar = false) {
           return `DİKKAT — TOPARLANMA SIÇRAMASI REJİMİ: coin 24h %${c24.toFixed(1)} DÜŞÜŞTE, 12h ${c12!=null?((c12>0?'+':'')+c12.toFixed(1)+'%'):'?'} tepki sıçramasında. Üstte düşüş boyunca birikmiş AĞIR ARZ var; MM sıçramayı DAĞITIM için kullanabilir. Bu rejimde: RUNNER'ı ancak düşüş bacağının fib 0.5+ seviyesi 15m kapanışla RECLAIM edildiyse seç; aksi halde NORMAL vur-kaç, TP yakın dirençte, tepki tepesini kovalama.`;
         return null;
       } catch(_) { return null; } })(),
-      // R347: pozisyon doluyken patlama değerlendirmesi — AI durumu bilsin.
+      // V639: sermaye sozlesmesi tek pozisyon ve 7x'tir. Pozisyon doluyken
+      // aday karar motoruna gelse bile AI yeni slot acamaz; worker yalniz gozlem
+      // ve sonraki tur icin bayrak uretir.
       pozisyonDurumu: (()=>{ try {
         const mp = Number(autoConfig?.maxPositions)||1; const lp = Number(autoScanState?.livePositions)||0;
-        if (lp >= mp) return `DİKKAT: ${lp}/${mp} pozisyon DOLU. Bu coin sana patlama bayrağıyla geldi. LONG istiyorsan karara "ayar":{"maxPositions":${Math.min(3,mp+1)}} ekle — bakiye yeterse ikinci pozisyon açılır; bakiye yetmezse emir açılmaz (bunu sen göremezsin, güvenli). Mevcut pozisyonu bozacak bir yetkin YOK. Setup ikinci pozisyonu hak etmiyorsa WAIT de.`;
+        if (lp >= mp) return `DİKKAT: ${lp}/${mp} pozisyon DOLU. Tek pozisyon sözleşmesi değiştirilemez; yeni emir verme. Bu aday yalnız sonraki tur için izleniyor.`;
         return null;
       } catch(_) { return null; } })(),
       // R345: ÖZ-SEZİ — botun (senin) son kapanan işlemleri. Aynı hatayı üst üste yapma, işleyen kalıbı sürdür.
@@ -8569,7 +8684,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 3. GİRİŞ YERİ — üç soruya SAYIYLA cevap ver: (a) Yapı nerede? (kırılım/reclaim/taban — fiyat ona yaslanmış mı) (b) Yakıt var mı? (OI + delta + hacim aynı yöne mi) (c) -%2'lik doğal çalkantı beni söker mi? Üçü de olumlu → GİR ve sayıları gerekçene yaz. Biri olumsuz → hangisi, hangi sayıyla — yaz ve WAIT de.
 
-4. CANLI KORUMA GERÇEĞİ: Gerçek nefes alanın coin hareketi ~-%2'dir (Binance'teki geniş SL sadece ani çöküş yedeğidir). Girişini bu -%2'nin seni VURMAYACAĞI yerden al: teyitli dip/reclaim/retest SONRASI, yapının hemen üstü. Bacak tepesi, dikey mumun içi ve teyitsiz ilk dip giriş yeri DEĞİLDİR. ATR %4+ coinde teyitsiz giriş yok. İSTİSNA: PATLAMA GİRİŞİNDE bu test sabit SL ile sağlanır — yapısal dip çok uzaksa SL ~%8 sabit konur, -%2 çalkantı hesabı aranmaz (kaldıraç valfi zaten 5x'e indirir).
+4. CANLI KORUMA GERÇEĞİ: Gerçek nefes alanın coin hareketi ~-%2'dir (Binance'teki geniş SL sadece ani çöküş yedeğidir). Girişini bu -%2'nin seni VURMAYACAĞI yerden al: teyitli dip/reclaim/retest SONRASI, yapının hemen üstü. Bacak tepesi, dikey mumun içi ve teyitsiz ilk dip giriş yeri DEĞİLDİR. ATR %4+ coinde teyitsiz giriş yok. İSTİSNA: PATLAMA GİRİŞİNDE bu test sabit SL ile sağlanır — yapısal dip çok uzaksa SL ~%8 sabit konur, -%2 çalkantı hesabı aranmaz; 7x sabit kaldıraç ve %8 toplam risk kapısı değişmez.
 
 5. FREKANS VE MOD: Günde birden çok kaliteli fırsat NORMALDİR — kanıt eşiğini geçen HER fırsatı al, küçüğü de: küçük/hızlı fırsat → "karKosma":"NORMAL" (vur-kaç scalp: TP yakın likidite/bant tepesi, kârı al çık); gerçek trend devamı (impuls + HTF hizalı + yakıt) → "RUNNER" (TP uzak yapısal hedef, fib 1.618-2.618 — bot TP'yi trend sürdükçe OTOMATİK ileri taşır ve kârı kademeli kilitler; erken kesilme korkusuyla RUNNER fırsatına NORMAL yazma). R444 KURALI: rejim İLK-İMPULS ya da PATLAMA ise VARSAYILAN karKosma RUNNER'dır — taze impulsun devamı en büyük kâr kaynağıdır (BLUAI dersi 20.07: NORMAL seçildi, +%0.5'te vur-kaç çıkıldı, coin hemen ardından +%5 koştu). NORMAL'i yalnız RANGE içi salınımda ya da hedefe mesafe kısayken seç ve gerekçende NEDEN runner olmadığını yaz. Eşiği geçmeyene girmek DE, geçeni kaçırmak DA hatadır; ikisi de gerekçe ister. İşlem sıklığı hedef değildir, pozitif beklenti hedeftir. MEGA-KOŞU: dev koşan coinde (TOP1/TOP2) kârlı çıkış sonrası yapı yenilenirse (yeni pullback+tutunma ya da devam impulsu) YENİDEN GİR — dev koşuda tek işlemle yetinmek en pahalı hatadır; bot kârlı runner kapanışında coini öncelikli izlemede tutar, runner trailing'i de sabit yüzde değil 15m yapı dibidir (yapı kırılmadıkça pozisyon yaşar). PATLAMA GİRİŞİ: tek 15m mumda +%12+ ve hacim patlaması (rvol 2.5+) gördüğünde swing dibi çok uzak diye fırsatı ATLAMA — SL'i sabit ~%8'e koy, küçük kaldıraçla runner bin; patlamanın devamı en büyük kâr kaynağıdır (AKE +%257 dersi: yapısal SL beklerken tüm koşu kaçmıştı).
 
@@ -8579,7 +8694,7 @@ ON İLKE (hiyerarşik — çelişki olursa küçük numaralı ilke kazanır):
 
 8. AKIŞ MÜHRÜ (öncelik sırası net): canliDelta GEÇERLİYSE ESAS ODUR — canliDelta <= -15 iken LONG verme; canliDelta belirgin POZİTİFKEN (>= +10) tek başına yedekSatisKaniti SATIS seni DURDURMAZ (yedek mum renklerinden türer, koşan coinde her pullback mumu SATIS üretir — AAOI dersi 20.07: delta +14.8 ve defter +99.8 alıcıyken yedek yüzünden fırsat kaçtı). Yedek kanıt YALNIZCA canliDelta VERI_YOK iken devreye girer: VERI_YOK + yedek SATIS -> LONG verme; VERI_YOK + yedek NOTR -> akışı nötr say, diğer kanıtlarla karar ver.
 
-9. GÜVEN = BOYUT: confidence alanın doğrudan kaldıraca çevrilir (band 10x-BinanceMax: güven 90+ ve sakin ATR → 50x'e kadar; 70 altı → 5x). Güvenin, kanıt sayına orantılı olsun: teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+. Harita NET: 74→10x, 80→15x, 84→25x, 88→35x, 90→50x (ATR sakinliği şart). Kanıtın güçlüyken güveni ihtiyatla düşük yazmak fırsatı KÜÇÜLTMEKTİR — sayın, kararının büyüklüğüdür. Hak etmeyen karara yüksek güven yazmak doğrudan para kaybettirir.
+9. GÜVEN = KANIT KALİTESİ: confidence yalnız karar kanıtının gücünü anlatır; kaldıraç ve pozisyon sayısını değiştirmez. Canlı sözleşme 7x ve tek pozisyondur. Teyitsiz/erken tetik 64-69, teyitli giriş 70-79, kusursuz tablo 80+ yaz; hak etmeyen karara yüksek güven verme.
 
 10. İÇ TUTARLILIK: Gerekçen kararının KANITI olmalı, karşı-kanıtı değil. Bir zayıflık not ettiysen, onu YENEN somut kanıtı da göster; gösteremiyorsan o cümlenin dürüst sonucu WAIT'tir. Kendi R/R hesabın minimumun altındaysa TP/SL'i orana uydurmak için kaydırma — ya gerçek seviyelerle geçerli R/R kur ya da geç. sonIslemlerim'den ders al ama TEK kayıptan kural çıkarma; "ne değişti?" sorusunu sor.
 
@@ -8590,7 +8705,7 @@ PUSU MODU (R442 — planın çöpe gitmez): WAIT verdiğinde bile "entry" alanı
 ÇIKTI — MUTLAK KURAL: Cevabının İLK karakteri "{" olmalı; TEK SATIR SAF JSON; markdown, açıklama, önsöz YOK. Tüm analizini "reasoning" içine 240 karaktere sığdır (hangi ilke/sayı seni geçirdi ya da durdurdu).
 {"side":"LONG|WAIT","entry":sayı,"tp":sayı,"sl":sayı,"confidence":0-100,"karKosma":"NORMAL|RUNNER","reasoning":"max 240 karakter","plan":"max 120 karakter","ayar":{OPSİYONEL}}
 
-AYAR YETKİN: panelAyarlar'ı gerçek gerekçeyle değiştirebilirsin (küçük adımlar, her taramada değil): leverage(5-50 — yürütücü güven+ATR'ye göre uygular; SL×lev<=%40 ve likidasyon>=ATR×2.2 valileri her zaman üstündür), maxPositions(1-3), minScore(40-90), scanMode("FAST6"|"TOP10"|"TOP24"), trailingPct(0.8-8), trailStep(0.2-3), breakEvenPct(0.3-4), slPct(0.8-9), tpPct(1.5-15), minRR(0.8-2.5), aiBE(0.3-4), aiKT1/2/3. MARJ (usdtAmount) yetkinde DEĞİL. Değişiklik gerekmiyorsa "ayar" alanını hiç yazma.`;
+AYAR YETKİN: sermaye ve evren sözleşmesine dokunamazsın: leverage=7, maxPositions=1, scanMode=TOP24 ve marj 30-100 USDT kilitlidir. Yalnız giriş/çıkış planını ve gerekçeni üret; "ayar" alanını kullanma.`;
 
     // R311T: 529 (overloaded) / 429 (rate limit) / 5xx geçici hatalarında RETRY.
     // Anthropic API anlık aşırı yüklenince 529 döner — saniyeler içinde toparlar. Retry olmadan işlem kaçar.
@@ -12236,8 +12351,12 @@ app.get('/api/backtest-parity/status',(_req,res)=>{
     requestSafety:{microRestBudget1m:V614_MICRO_REST_BUDGET_1M,maxGovernorLoad:V614_MICRO_MAX_GOV_LOAD,
       scanNeverWaitsForMicro:true},stats:{...v619OpportunityStats}});
 });
+// V639: alttaki buyuk route eski TESTNET/max2/risk4 metinlerini tasiyan
+// tarihsel ayrintidir. Ayni URL'yi ikinci kez kaydetmesin.
+if (false) {
 app.get('/api/backtest-parity/status',(_req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,mode:'V617_EXACT_CLOSED1M_R495_WITH_RATE_SAFE_MICRO_RANK_TIEBREAK',microAssistDecisionImpact:'RANK_TIEBREAK_ONLY',sourceServerSha256:V592_POLICY_SOURCE_SHA256,executionEnvironment:BINANCE_EXECUTION_ENV,marketDataEnvironment:BINANCE_MARKET_DATA_ENV,hardLockedTestnet:true,researchFieldsPassive:V592_RESEARCH_FIELDS,strategyDecisionImpact:V592_V45_TESTNET_ACTIVE,orderBlocking:V592_V45_TESTNET_ACTIVE,sizingImpact:false,exitImpact:false,microstructureDecisionImpact:false,exactBacktestAuthority:V592_EXACT_BACKTEST_AUTHORITY,r300DecisionImpact:false,r486SecondStoryDecisionImpact:false,r493EntryGateDecisionImpact:true,parityV4741:{r493EntryGateActive:R493_ENTRY_SAFETY_ACTIVE,r493MinFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,storyAuthorityShadowOnly:false,leverageLock:V592_LEVERAGE_LOCK,orderIdempotency:V592_ORDER_IDEMPOTENCY,deterministicClientOrderId:true,r493FinalLockCodeFixed:true,backtestComparableDataset:true,funnelCarriesDecisionFeatures:true,postFillPositionProof:true,evidenceOrderDedup:true,positionFreshness:{orderMs:POS_FRESH_ORDER_MS,managerMs:POS_FRESH_MANAGER_MS,inflightWaitMs:POS_RISK_INFLIGHT_WAIT_MS},backtestEntryContract:{rule:'ENTRY_AT_THIRD_CLOSED_1M',candidateBoundary:'5m_CLOSE',candidateToEntryMs:180000,measuredFrom:'725/725 backtest islemi, sapma yok',candleParityActive:V592_ENTRY_CANDLE_PARITY,maxCandleDrift:V592_ENTRY_CANDLE_MAX_DRIFT},backtestExitContract:{minHoldMs:V592_MIN_HOLD_MS,maxRequestToSendMs:V592_MAX_REQUEST_TO_SEND_MS,keepExistingProtection:V592_PROTECT_KEEP_EXISTING,exitAtCandleClose:V592_EXIT_CANDLE_PARITY,exitWindowMs:V592_EXIT_CANDLE_WINDOW_MS,measured:{exitTsMod60000:59999,sample:'725/725',minHoldSec:{DYNAMIC_STOP:60,TARGET:120,INITIAL_SL:300,MAX_TIME_NO_PROGRESS:14400},counts:{DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12}},allowedExits:['INITIAL_SL','TARGET','DYNAMIC_STOP','MAX_TIME_NO_PROGRESS','MAX_24H']},pitTopGainer:{maxRank:R497_PIT_MAX_RANK,minHits:R497_PIT_MIN_HITS,backtestAligned:(R497_PIT_MAX_RANK>=99&&R497_PIT_MIN_HITS<=0),minChange24hPct:R497_MIN_CHANGE_24H},strictForceFreshPositionTruth:true,orderTruthMaxAgeMs:ORDER_TRUTH_MAX_AGE_MS,leverageProofHardGate:true,persistentUnresolvedLocks:true,lockFile:V592_LOCK_PATH,marketClockGuardMs:V592_MARKET_CLOCK_GUARD_MS,stats:{...v592ParityStats,execBackoffActive:isExecBackoffActive(),execBackoffMs:getExecBackoffMs(),publicBackoffActive:isBinanceBackoffActive(),publicBackoffMs:getBinanceBackoffMs(),testnetUniverseKnown:!!(v592TestnetUniverse.set&&v592TestnetUniverse.set.size),testnetUniverseAgeMs:v592TestnetUniverse.ts?Date.now()-v592TestnetUniverse.ts:null,testnetUniverseError:v592TestnetUniverse.lastError,protectFirstActive:true,protectFirstLastMs:v592ParityStats.protectFirstMs,lifecyclePerAttempt:true,entryCandleParity:V592_ENTRY_CANDLE_PARITY,entryCandleMaxDrift:V592_ENTRY_CANDLE_MAX_DRIFT,backtestCandidateToEntryMs:180000,exitCandleParity:V592_EXIT_CANDLE_PARITY,exitCandleWindowMs:V592_EXIT_CANDLE_WINDOW_MS,protectFirstSkipsCancel:true,protectWritesParallel:true,ledgerCloseDedupActive:true,managerExitGuardActive:true,minHoldGuardCallSites:2,nonBacktestExitsShadowed:V592_EXACT_BACKTEST_AUTHORITY,shadowedExitRules:['R14_HARD_LOSS','R42_ABSOLUTE_DAMAGE','R41_EARLY_DAMAGE','CVD_FLIP','ADVERSE_CASCADE'],exitTypeWhitelistActive:V592_EXIT_TYPE_WHITELIST,allowedExitTypes:V592_BACKTEST_EXIT_TYPES,backtestExitCounts:{DYNAMIC_STOP:338,INITIAL_SL:210,TARGET:165,MAX_TIME_NO_PROGRESS:12},unprotectedExitException:true,adoptedPositionsNotParity:true,falseFlatProtection:'R344_FORCE_FRESH_FAIL_OPEN',closeRequiresPositiveProof:true,ledgerEvidenceOnly:V592_LEDGER_EVIDENCE_ONLY,aggTradeStream:'FAPI_WS_MARKET',passiveParamsCsv:'/api/evidence/passive.csv',orphanNeverCancelsProtection:true,closeProofAllReasons:true,possibleOrphanSymbols:[...v592PossibleOrphans],passiveVpinActive:true,vpinAuthorityUntouched:true,oiCacheFallback:true,singleCloseFunnel:true,orphanLedgerSweep:true,closeCallSitesCovered:5,closePnlClassified:true,dedupScopesSeparated:true,sweepMaxAttempts:V592_SWEEP_MAX_ATTEMPTS,exitReasonFieldFixed:true,probeActive:V592_PROBE_ACTIVE,probeStrategyImpact:false,probeLedgerIsolated:true,phantomLedgerGuard:true,probeManagerExitIsolated:true,virtualEquityPhantomFilter:true,exitGuardPrecedenceFixed:true,rawProfile:R501_RAW_PROFILE,rawSuspended:r501RawSuspended,diskUsedMB:r501DiskState.lastMB,diskLimitMB:R501_DISK_LIMIT_MB,analysisBundle:'/api/evidence/analysis-bundle.zip',probeOpenNow:v592ProbeSlotOffset(),probeStats:v592ProbeStats,passiveFamilies:['cvd','tick','vpin','orderflow','orderbook','volume_rvol','atr_body','oi','funding','taker_longshort','liquidations','iceberg','fibonacci','timeframe_structure','freshness']},lockedSymbols:[...v592SymbolOrderLocks.keys()],marketTimeOffsetMs:marketTimeOffset,marketTimeSyncedAt},dualLane:{authority:'V45_CLOSED_OHLCV_PIT_PLUS_R495_TESTNET',wrChallenger:'SHADOW_ONLY',eomChallenger:'SHADOW_ONLY',atcChallenger:'SHADOW_ONLY',combinedChannelChallenger:'SHADOW_ONLY',v45ActiveSelector:V592_V45_TESTNET_ACTIVE?'TESTNET_ACTIVE_PRE_R495':'OFF',microstructure:'V592_PASSIVE_PLUS_V614_RANK_TIEBREAK',postR495SoftVetoShadowOnly:true},rawArchive:{enabled:R501_RAW_ARCHIVE_ACTIVE,files:R501_RAW_FILES,zipEndpoint:'/api/evidence/raw/:id/bundle.zip',rejections:'/api/evidence/execution-rejections.ndjson',wrChallenger:'/api/evidence/wr-challenger.ndjson',eomShadow:'/api/evidence/eom-shadow.ndjson',atcShadow:'/api/evidence/atc-shadow.ndjson',combinedChannelShadow:'/api/evidence/combined-channel-shadow.ndjson',v45MultiSource:'/api/evidence/v45-multi-source.ndjson'},stageSnapshots:['decision','orderRequest','orderSend','orderAck','fillObserved','fillReconciled','protectionVerified','+30s','+1m','+3m','+5m','+15m','+30m','close'],activePolicy:['v5.9.2 closed-OHLCV/chart candidate logic','R495 exact first-three post-5m-close Binance 1m acceptance','R497 PIT soft-scale','Fixed41/buffer/max2/risk4','R496 shadow','EOM OHLCV challenger shadow','ATC price-action pool shadow','EOM+ATC combined challenger shadow','V4.5 closed-OHLCV multi-source Testnet selector: MS≥35 + TOP_GAINER + FO≥0.35'],authorityIsolation:{closedCandlesOnly:true,liveOpenCandlesPassive:true,fibonacciPassive:true,orderBookPassive:true,openInterestPassive:true,fundingPassive:true,liquidationsPassive:true,tickCvdPassive:true,eomShadowOnly:true,atcShadowOnly:true,combinedChannelShadowOnly:true,v45ClosedOhlcvSelectorOnly:true,liveMicrostructureNeverUsedByV45:true,liveMicrostructureCandidateRankTieBreak:true,postR495SoftVetoShadowOnly:true,liveMicrostructureExitImpact:false},executionSafety:['Testnet credentials/base','positionRisk strict truth + single-flight','max positions','margin and precision','exchange order acceptance','real SL/TP verification','reduce-only close'],limitations:['Full candidate-feature generator used to create candidates_radar_features.csv is not included; exact historical signal regeneration is not independently reproducible.','June-selected EOM balanced rule did not improve July WR; it remains shadow.','EOM+TOP_GAINER high-precision rule improved July WR/PF/DD but retained only 38.1% of baseline trades; it remains forward-Testnet shadow.','ATC-only did not generalize on July; the balanced combined rule reduced July DD but did not improve PF, so both remain shadow.','Combined+TOP_GAINER improved July WR to 59.18% but was weaker than the existing EOM+TOP_GAINER shadow; it is not authority.','Historical order-book/OI/funding/liquidation/tick-perfect data do not exist in the backtest; V6.1.7 uses only fresh V614 evidence as an equal-score candidate-rank tie-break, never as order veto, sizing or exit authority.','V4.5 is a new Testnet-only strategy candidate; it is not exact v5.9.2 behavior parity.']});});
 
+}
 app.get('/api/evidence/report',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
 app.get('/rapor/kanit',(_req,res)=>{res.set('Cache-Control','no-store');res.type('html').send(r501ReportHtml());});
 
@@ -20687,6 +20806,10 @@ app.post('/api/order', async (req, res) => {
   const _v615RequestedMargin=Number(requestedUsdtAmount);
   if(!apiKey||!apiSecret||!symbol||!side||!leverage||!targetPrice||!stopPrice||!Number.isFinite(_v615RequestedMargin)||_v615RequestedMargin<=0)
     return res.status(400).json({error:'Eksik parametre'});
+  // V639: LONG-only panel tercihi degil, sunucu emir sozlesmesidir. Eski panel,
+  // dogrudan HTTP veya ileride acilabilecek AI yolu SHORT pozisyon acamaz.
+  if(String(side||'').toUpperCase()!=='LONG')
+    return res.status(409).json({ok:false,error:'LONG_ONLY_CONTRACT_SHORT_BLOCKED',build:LAZARUS_BUILD});
   // V6.1.5 tek ve ortak emir sozlesmesi: otomatik, AI ve panel dahil tum giris
   // yollarinda gercek marj 30 USDT'den az, 100 USDT'den fazla olamaz.
   const usdtAmount=+Math.max(V601_HARD_MARGIN_FLOOR_USDT,Math.min(V601_HARD_MARGIN_CAP_USDT,_v615RequestedMargin)).toFixed(4);
@@ -24531,18 +24654,20 @@ app.post('/api/auto/config', (req, res) => {
   const _tnCreds=r486391BinanceCreds();
   autoConfig = { ...(req.body||{}), apiKey:_tnCreds.apiKey, apiSecret:_tnCreds.apiSecret };
   if(req.body?.enabled && (!_tnCreds.apiKey||!_tnCreds.apiSecret)) return res.status(400).json({ok:false,error:`${BINANCE_EXECUTION_ENV}_API_ENV_MISSING`,credentialSource:_tnCreds.source,requiredEnv:_tnCreds.envVars});
-  autoConfig.maxPositions = R486_MAX_POSITIONS; // R486.3.9: sermaye sözleşmesi max 2
+  autoConfig.maxPositions = R486_MAX_POSITIONS; // V634/V639: sermaye sözleşmesi tek pozisyon
   // R323: MALİYET-TASARRUF MODU dashboard toggle — sweep yoksa AI'a gönderme (frekans korunur, maliyet düşer).
   if (typeof req.body?.saverMode !== 'undefined') {
     AI_SAVER_MODE = (req.body.saverMode === true || req.body.saverMode === 1 || req.body.saverMode === '1');
     logAuto(`💰 AI tasarruf modu: ${AI_SAVER_MODE ? 'AÇIK (sweep şart, maliyet↓)' : 'KAPALI (tüm adaylar AI\'a)'}`);
   }
-  // R282: Panelde seçilen tarama modu server tarafında da amir olsun.
-  // Eski/local kayıt TOP24 taşıyorsa veya scanLimit=24 gelmişse normalize edip görünür log basar.
-  autoConfig.scanMode = normalizeR54ScanMode(autoConfig.scanMode || autoConfig.scanLimit || 'TOP24'); // R486.3: bu yalnız ANA havuz genişliğidir; full-market worker evreni ayrı çalışır.
-  autoConfig.scanLimit = r54ScanLimitForMode(autoConfig.scanMode, autoConfig.scanLimit);
+  // V6.3.9: TOP24 ilk TOP10'u icerir; 11-24 ve full-market worker adaylari eklenir.
+  // Eski tarayici localStorage'indaki TOP10 degeri canli evreni sessizce daraltamaz.
+  const _v639IstenenTarama=normalizeR54ScanMode(autoConfig.scanMode||autoConfig.scanLimit||'TOP24');
+  autoConfig.scanMode = 'TOP24';
+  autoConfig.scanLimit = 24;
+  if(_v639IstenenTarama!=='TOP24')logAuto(`🧭 V639 tarama sözleşmesi: panel ${_v639IstenenTarama} istedi; TOP10 çekirdek + 11-24 + worker için TOP24/24 uygulandı`);
   autoConfig.allowShort = false;
-  autoConfig.leverage = Math.max(R486_MIN_LEVERAGE, Number(autoConfig.leverage||R486_MIN_LEVERAGE));
+  autoConfig.leverage = R486_MIN_LEVERAGE; // canli sozlesme: panel/localStorage 7x kilidini degistiremez
   if (autoConfig.vurKacAutoLev) autoConfig.vurKacMaxLev = 125;
   else autoConfig.vurKacMaxLev = Math.max(R486_MIN_LEVERAGE, Math.min(125, Number(autoConfig.vurKacMaxLev||125)));
   logAuto(`⚙️ R282 auto ayar: tarama modu ${autoConfig.scanMode}/${autoConfig.scanLimit}, max poz:${autoConfig.maxPositions}, min skor:${autoConfig.minScore}`);
@@ -24737,6 +24862,17 @@ app.get('/api/ogrenme', (_req, res) => {
     karne:siralı,
     kokSebep:(V627_KOK_SEBEP?v627Rapor():{aktif:false}),
     kar:{kilit:String(process.env.V607_KAR_KILIDI||'0')==='1',tasima:V625_KAR_TASIMA,tepeVeto:V625_TEPE_VETO},
+    canliSozlesme:{
+      scanMode:'TOP24',scanDefinition:'TOP10_CEKIRDEK_PLUS_11_24_PLUS_FULL_MARKET_WORKERS',
+      maxPositions:R486_MAX_POSITIONS,leverage:V592_LEVERAGE_LOCK,
+      marginFloorUSDT:V601_HARD_MARGIN_FLOOR_USDT,marginCapUSDT:V601_HARD_MARGIN_CAP_USDT,
+      totalRiskPct:V634_TOPLAM_RISK_PCT,profitCarry:V625_KAR_TASIMA,
+      peakVeto:V625_TEPE_VETO,ignitionAtrCap:V628_ATR_TAVAN,
+      analyzeTimeoutMs:V604_ANALYZE_TIMEOUT_MS,scanWatchdogMs:V511_SCAN_WATCHDOG_MS},
+    unresolvedOrderLocks:{count:v592SymbolOrderLocks.size,symbols:[...v592SymbolOrderLocks.keys()],
+      reconcile:{running:v639LockReconcileRunning,requiredNegativeProofs:V639_LOCK_NEGATIVE_CONFIRMATIONS,
+        minAgeMs:V639_LOCK_MIN_AGE_MS,runs:Number(v592ParityStats.lockReconcileRuns||0),
+        autoReleased:Number(v592ParityStats.lockAutoReleased||0),errors:Number(v592ParityStats.lockReconcileErrors||0)}},
     toplamKapanan:(Array.isArray(tradeLedger)?tradeLedger:[]).filter(r=>r&&r.closedAt).length});
 });
 app.get('/api/r393', (req, res) => { res.set('Content-Type','text/plain; charset=utf-8'); res.send(r393SinifKarnesi()); });
@@ -24872,7 +25008,7 @@ app.get('/api/auto/status', (req, res) => {
     cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(), saverMode: AI_SAVER_MODE,
     r486:{
       longOnly:true, allowShort:false, minLeverage:R486_MIN_LEVERAGE,
-      leveragePolicy:'Fırsat önemine göre Binance leverageBracket sınırına kadar; 10x altına izin yok',
+      leveragePolicy:`Canlı sözleşme ${V592_LEVERAGE_LOCK}x sabit; panel/localStorage değiştiremez`,
       harvest:{active:R486_HARVEST_ACTIVE,shadow:R486_HARVEST_SHADOW,riskBudgetPct:R486_RISK_BUDGET_PCT,pressure:R486_HARVEST_PRESSURE,matureRoi:R486_HARVEST_MATURE_ROI,runnerRoiCapExit:R486_RUNNER_ROI_CAP_EXIT},
       sizing:{compoundActive:R486_COMPOUND_MARGIN_ACTIVE,fixedSlotActive:R497_FIXED_SLOT_ACTIVE,fixedSlotUSDT:R497_SLOT_MARGIN_USDT,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,aboveCapMode:R497_ABOVE_CAP_MODE,minBufferUSDT:R497_MIN_BUFFER_USDT,r497Policy:'SOFT_RISK_SCALE',r497MediumScale:R497_MEDIUM_RISK_SCALE,r497WeakScale:R497_WEAK_RISK_SCALE,marginPerPositionPct:R486_MARGIN_PER_POSITION_PCT*100,equityBufferPct:R486_EQUITY_BUFFER_PCT*100,maxPositions:R486_MAX_POSITIONS,riskBudgetSizing:R486_RISK_BUDGET_SIZING,absoluteMinMargin:R486_ABSOLUTE_MIN_MARGIN,finalSlLevRiskRoi:R486_FINAL_SL_LEV_RISK_ROI,last:r372BilesikMeta},
       reaction:{intrabarMtf:R486_INTRABAR_MTF_ACTIVE,closeGate:false,intrabarMinScore:R486_INTRABAR_MIN_SCORE,intrabarMinProgress:R486_INTRABAR_MIN_PROGRESS,adaptiveScan:R486_ADAPTIVE_SCAN_ACTIVE,adaptiveScanSec:Math.round(r48638AdaptiveScanIntervalMs()/1000),restLoad:+r48638GovLoadRatio().toFixed(2),fastWake:R486_MECH_FAST_WAKE_ACTIVE,fastWakeMinScore:R486_MECH_FAST_WAKE_MIN_SCORE,fastWakeGlobalSec:R486_MECH_FAST_WAKE_GLOBAL_SEC,fastWakeSymbolSec:R486_MECH_FAST_WAKE_SYMBOL_SEC,workerIntervals:{r328:R486_R328_INTERVAL_SEC,r370:R486_R370_INTERVAL_SEC,r385:R486_R385_INTERVAL_SEC,r366:R486_R366_INTERVAL_SEC}},
@@ -24948,25 +25084,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
   // R95: Scan promise eski Binance 418 uykusunda takılı kalırsa yeni scan'i sonsuza kadar engellemesin.
   if (autoRunning) {
     const age = Date.now() - Number(autoScanState.lastScanStart || 0);
-    if (age > 75_000) {
-      // V5.0.6: watchdog olayi funnel'a da yazilir — tarama gecikmesi ile
-      // giris mumu drift'i arasindaki iliski ancak boyle olculebilir.
-      try{ r501EvidenceFunnel({type:'AUTO_SCAN_WATCHDOG',action:'SCAN_STUCK',
-        authority:'AUTO_PIPELINE',symbol:autoScanState.currentSymbol||null,decisionImpact:false,
-        ageMs:age,phase:autoScanState.phase,checked:autoScanState.checked||0,
-        reason:`tarama ${Math.round(age/1000)}sn takildi`}); }catch(_){}
-      pushCritical('AUTO_SCAN_WATCHDOG', `Tarama ${Math.round(age/1000)}sn takıldı; kilit temizlendi`, {ageMs:age, phase:autoScanState.phase}, 'WARNING');
-      autoRunning = false;
-      autoScanState.running = false;
-      autoScanState.currentSymbol = null;
-      autoScanState.lastScanEnd = Date.now();
-      autoScanState.phase = isBinanceBackoffActive() ? 'BINANCE_İSTEK_FRENİ' : 'TARAMA_RESETLENDI';
-      autoScanState.lastAction = isBinanceBackoffActive()
-        ? `Binance geçici istek freni ${Math.ceil(getBinanceBackoffMs()/1000)}sn — yeni işlem yok`
-        : 'Takılan tarama temizlendi; yeni tarama sıraya alınacak';
-    } else {
-      return { skipped:'busy', priorityOnly:!!priorityOnly };
-    }
+    // V6.3.9: Eski 75sn yan kapisi, gorunen 360sn watchdog sozlesmesini delip
+    // saglikli TOP24 taramasini ortasinda ikinci taramayla ust uste bindiriyordu.
+    // Nesil iptali yalniz startAutoTrader icindeki bagimsiz watchdog tarafindan,
+    // V511_SCAN_WATCHDOG_MS dolunca yapilir. Burasi her zaman BUSY doner.
+    if(age>V511_SCAN_WATCHDOG_MS)autoScanState.lastAction=`Tarama watchdog bekliyor: ${Math.round(age/1000)}sn / ${Math.round(V511_SCAN_WATCHDOG_MS/1000)}sn`;
+    return { skipped:'busy', priorityOnly:!!priorityOnly, watchdogPending:age>V511_SCAN_WATCHDOG_MS };
   }
   if (!autoConfig?.enabled) return { skipped:'disabled' };
   const scanRunId = ++autoScanRunId;
@@ -25005,11 +25128,15 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
 
   try {
     const cfg = autoConfig;
-    const { apiKey, apiSecret, usdtAmount:panelUsdtAmount, leverage, marginType,
-      maxPositions:rawMaxPositions=R486_MAX_POSITIONS, minScore=70, allowLong=true, allowShort=true,
-      sweepOnly=false, scanMode='TOP10', scanLimit=null,
+    const { apiKey, apiSecret, usdtAmount:panelUsdtAmount, leverage:_panelLeverage, marginType,
+      maxPositions:rawMaxPositions=R486_MAX_POSITIONS, minScore=70, allowLong=true, allowShort:_panelAllowShort,
+      sweepOnly=false, scanMode='TOP24', scanLimit=24,
       trailingPct=2, trailStep=0.5, breakEvenPct=1, symbols=[],
       vurKacEnabled=false, vurKacAutoLev=false, vurKacMaxLev=125 } = cfg;
+    // V639: localStorage/panel/AI eski degerleri calisma aninda da sermaye ve
+    // yon sozlesmesini degistiremez. Emir endpoint'indeki kilit ikinci savunmadir.
+    const leverage = R486_MIN_LEVERAGE;
+    const allowShort = false;
 
     autoScanState.phase = 'BAKİYE_MARJ_KONTROL';
     // ═══ R372-E OTOMATİK BİLEŞİK MARJİN ═══
@@ -25028,8 +25155,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
 
     const r389PanelMarj = usdtAmount; // R389: her coin için taban marj (per-coin küçülme sızıntısı olmasın)
     const maxPositions = R486_MAX_POSITIONS + v592ProbeSlotOffset(); // R486.3.9 (+ sonda ofseti)
-    const r54ScanMode = normalizeR54ScanMode(scanMode || scanLimit || 'TOP10');
-    const r54ScanLimit = r54ScanLimitForMode(r54ScanMode, scanLimit || (r54ScanMode === 'TOP10' ? 10 : 6));
+    // V6.3.9 canli evren sozlesmesi: TOP24 modu ilk TOP10'u sabit cekirdek olarak
+    // zaten icerir; 11-24 ve full-market workerlar bunun ustune eklenir. Panelde
+    // kalmis eski TOP10 localStorage degeri botu sessizce daraltamaz.
+    const r54ScanMode = 'TOP24';
+    const r54ScanLimit = 24;
     autoScanState.settings = {usdtAmount, leverage, marginType, maxPositions, minScore, allowLong, allowShort, sweepOnly, scanMode:r54ScanMode, scanLimit:r54ScanLimit, trailingPct, trailStep, breakEvenPct, slPct:cfg.slPct, tpPct:cfg.tpPct, minRR:cfg.minRR, vurKacEnabled:!!vurKacEnabled, vurKacAutoLev:!!vurKacAutoLev, vurKacMaxLev:(vurKacAutoLev?125:Math.max(R486_MIN_LEVERAGE,Number(vurKacMaxLev||125)))};
     autoScanState.scanMode = r54ScanMode;
     autoScanState.maxPositions = Number(maxPositions||0);
@@ -29532,6 +29662,14 @@ function r613ExecutionStatusPayload(){
     hardLockedTestnet:!isLive,liveTrading:isLive,armed,credentialsReady:!!(c.apiKey&&c.apiSecret),
     credentialSource:c.source,requiredEnv:c.envVars,session:isLive?null:testnetSessionStatus(),virtualEquity:v,stateDir:TESTNET_STATE_DIR,
     sizing:{fixedSlotUSDT:R497_SLOT_MARGIN_USDT,hardFloorUSDT:V601_HARD_MARGIN_FLOOR_USDT,hardCapUSDT:V601_HARD_MARGIN_CAP_USDT,compoundMode:R497_ABOVE_CAP_MODE,fixedUntilEquityUSDT:R497_FIXED_UNTIL_EQUITY_USDT,minLeverage:R486_MIN_LEVERAGE,maxPositions:R486_MAX_POSITIONS,minBufferUSDT:R497_MIN_BUFFER_USDT},
+    decisionContract:{scanMode:'TOP24',scanDefinition:'TOP10_CEKIRDEK_PLUS_11_24_PLUS_FULL_MARKET_WORKERS',
+      longOnly:true,allowShort:false,maxPositions:R486_MAX_POSITIONS,leverage:V592_LEVERAGE_LOCK,
+      marginFloorUSDT:V601_HARD_MARGIN_FLOOR_USDT,marginCapUSDT:V601_HARD_MARGIN_CAP_USDT,totalRiskPct:V634_TOPLAM_RISK_PCT,
+      r495ExactClosed1m:R495_LIVE_ACTIVE&&R495_EXACT_CLOSED_1M,peakVeto:V625_TEPE_VETO,
+      ignitionBridge:V628_ATESLEME_KOPRUSU,ignitionAtrCap:V628_ATR_TAVAN,profitCarry:V625_KAR_TASIMA,
+      firstObstacleMinRR:R493_MIN_FIRST_OBSTACLE_RR,analyzeTimeoutMs:V604_ANALYZE_TIMEOUT_MS,scanWatchdogMs:V511_SCAN_WATCHDOG_MS},
+    unresolvedOrderLocks:{count:v592SymbolOrderLocks.size,items:[...v592SymbolOrderLocks.entries()].map(([symbol,v])=>({symbol,reason:v.reason,ageMs:Math.max(0,Date.now()-Number(v.at||Date.now())),clientOrderId:v.clientOrderId||null,negativeProofs:Number(v.negativeProofs||0),lastCheckResult:v.lastCheckResult||null,lastCheckedAt:Number(v.lastCheckedAt||0),lastError:v.lastError||null})),
+      reconcile:{running:v639LockReconcileRunning,requiredNegativeProofs:V639_LOCK_NEGATIVE_CONFIRMATIONS,minAgeMs:V639_LOCK_MIN_AGE_MS,quickRetryMs:V639_LOCK_QUICK_RETRY_MS,runs:Number(v592ParityStats.lockReconcileRuns||0),autoReleased:Number(v592ParityStats.lockAutoReleased||0),stillUnresolved:Number(v592ParityStats.lockStillUnresolved||0),errors:Number(v592ParityStats.lockReconcileErrors||0)}},
     parityGate:{ok:!V592_TRADING_HARD_BLOCK,hardBlock:V592_TRADING_HARD_BLOCK},
     parityPolicy:{sourceServerSha256:V592_POLICY_SOURCE_SHA256,policyParity:true,fullCandidateRegenerationIndependentlyReproducible:false,r501Gate:false,r502Gate:false,liveResearchDecisionImpact:false,liveResearchSizingImpact:false,liveResearchOrderBlocking:false,evidenceMode:'PASSIVE_DUAL_LANE_EOM_ATC_RECORDER_V4_4'}};
 }
@@ -29641,6 +29779,7 @@ function v592BootParityGate(){
     const _v602BekLev = _v602Sert ? 10 : Math.max(1, Number(R486_MIN_LEVERAGE)||7);
     if(Number(V592_LEVERAGE_LOCK)!==_v602BekLev)
       hata.push(`KALDIRAC_KILIDI_UYUSMAZ:${V592_LEVERAGE_LOCK}!=${_v602BekLev}`);
+    if(Number(V592_LEVERAGE_LOCK)!==7) hata.push(`CANLI_KALDIRAC_7X_DEGIL:${V592_LEVERAGE_LOCK}`);
   }
   if(Number(V592_MIN_HOLD_MS)<=0)     hata.push('MIN_HOLD_KAPALI');
   if(V592_PROBE_ACTIVE!==false)       hata.push('SONDA_CANLIDA_AKTIF');
@@ -29671,9 +29810,14 @@ function v592BootParityGate(){
     if(Math.abs(_v634Toplam - V634_TOPLAM_RISK_PCT) > 1e-6)
       hata.push(`TOPLAM_RISK_UYUSMAZ:${_v634Toplam.toFixed(2)}!=${V634_TOPLAM_RISK_PCT}`);
     if(!eq(V634_TOPLAM_RISK_PCT,8)) hata.push(`TOPLAM_RISK_8_DEGIL:${V634_TOPLAM_RISK_PCT}`);
-    if(!(Number(R486_MAX_POSITIONS)===1||Number(R486_MAX_POSITIONS)===2))
-      hata.push(`MAX_POS_1_VEYA_2_OLMALI:${R486_MAX_POSITIONS}`);
+    if(Number(R486_MAX_POSITIONS)!==1) hata.push(`CANLI_MAX_POZ_1_DEGIL:${R486_MAX_POSITIONS}`);
   }
+  // V6.3.9: arsiv.txt son kararlarini sessiz ENV sapmasina karsi acilista dogrula.
+  if(V625_TEPE_VETO!==false) hata.push('CANLI_TEPE_VETO_KAPALI_DEGIL:V625_TEPE_VETO=0_GEREKLI');
+  if(!eq(V628_ATR_TAVAN,8.0)) hata.push(`CANLI_ATR_TAVAN_8_DEGIL:${V628_ATR_TAVAN}`);
+  if(V625_KAR_TASIMA!==true) hata.push('CANLI_KAR_TASIMA_KAPALI');
+  if(V623_BAKIYE_UYUMLU_MARJ!==false) hata.push('CANLI_MUTLAK_30_TABANI_BOZUK:V623_BAKIYE_UYUMLU_MARJ=0_GEREKLI');
+  if(V624_BUTCE_UYUMLU_SL!==true) hata.push('CANLI_RISK8_SL_UYUMU_KAPALI:V624_BUTCE_UYUMLU_SL=1_GEREKLI');
   // V504: R495'in DORT limiti de backtest verisinden turetilmis olmali.
   // Elle konmus "makul gorunen" sayi kabul edilmez.
   // V505: backtestin oyunda taker sarti yoktu; acikken parite bozulur.
@@ -29763,5 +29907,8 @@ app.get('/api/canli/parity-gate',(_req,res)=>{res.set('Cache-Control','no-store'
     armed,credentialsReady:!!(c.apiKey&&c.apiSecret),credentialSource:c.source,requiredEnv:c.envVars,
     contract:{exactBacktestAuthority:V592_EXACT_BACKTEST_AUTHORITY,v45Selector:V592_V45_TESTNET_ACTIVE,
       entryCandleParity:V592_ENTRY_CANDLE_PARITY,exitCandleParity:V592_EXIT_CANDLE_PARITY,
-      exitTypeWhitelist:V592_EXIT_TYPE_WHITELIST,leverageLock:V592_LEVERAGE_LOCK,minHoldMs:V592_MIN_HOLD_MS},
+      exitTypeWhitelist:V592_EXIT_TYPE_WHITELIST,leverageLock:V592_LEVERAGE_LOCK,minHoldMs:V592_MIN_HOLD_MS,
+      maxPositions:R486_MAX_POSITIONS,totalRiskPct:V634_TOPLAM_RISK_PCT,marginFloorUSDT:V601_HARD_MARGIN_FLOOR_USDT,
+      marginCapUSDT:V601_HARD_MARGIN_CAP_USDT,scanMode:'TOP24',peakVeto:V625_TEPE_VETO,
+      ignitionAtrCap:V628_ATR_TAVAN,profitCarry:V625_KAR_TASIMA},
     serverTime:Date.now()});});
