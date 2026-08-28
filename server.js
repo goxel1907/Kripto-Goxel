@@ -459,7 +459,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_1_R495_KAYIP_WAKE_ONARIMI'
+const LAZARUS_BUILD = 'V6_4_2_R495_FINAL_SCOPE_ONARIMI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -28403,16 +28403,20 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             // ReferenceError olusuyor, alttaki fail-closed catch de kabul edilen her
             // adayi "R495 final sizing hata" diye sessizce atliyordu. Kalici snapshot
             // zaten karar zincirine yaziliyor; sizing bu tasinan kaydi okumali.
+            // V6.4.2: `ai` yalniz karar blogunun yerel degiskeniydi; final sizing
+            // blogu o kapsamin disinda calisir. Canlida R495 MARKET/TACTICAL kabulunden
+            // sonra ReferenceError uretip her emri fail-closed atliyordu. Karar nesnesi
+            // zaten decisionChain.aiBrain'e kalici yaziliyor; sizing yalniz onu okur.
+            const _r495Ai = decisionChain?.aiBrain || {};
             const _v45Sizing = decisionChain?.v45MultiSource
-                            || decisionChain?.aiBrain?.v45MultiSource
-                            || ai?.v45MultiSource
+                            || _r495Ai?.v45MultiSource
                             || null;
             const _v630Ctx = {
               atrPct: Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct),
-              rsi4h:  Number(analysis?.rsi4h ?? analysis?.rsi?.['4h'] ?? decisionChain?.rsi4h ?? ai?.story?.rsi4h),
-              drift:  Number(ai?.story?.distanceFromBreakoutAtr ?? ai?.story?.entryDriftAtr ?? _v45Sizing?.features?.entryDriftAtr),
+              rsi4h:  Number(analysis?.rsi4h ?? analysis?.rsi?.['4h'] ?? decisionChain?.rsi4h ?? _r495Ai?.story?.rsi4h),
+              drift:  Number(_r495Ai?.story?.distanceFromBreakoutAtr ?? _r495Ai?.story?.entryDriftAtr ?? _v45Sizing?.features?.entryDriftAtr),
               r495Action: _r495Action,
-              quality: Number(ai?.story?.quality ?? decisionChain?.r483Story?.quality)
+              quality: Number(_r495Ai?.story?.quality ?? decisionChain?.r483Story?.quality)
             };
             const _v630 = V630_YOGUNLASMA ? v630Kanit(_v630Ctx) : {skor:0,uygun:false,kanit:[]};
             const _v630Bos = (Array.isArray(openPos) ? openPos.length : 1) === 0;
