@@ -306,16 +306,18 @@ app.get(['/', '/index.html'], (_req,res)=>{
   S('V601_PARITE_SERT','0');        // parite engelleri bloklamasin
   S('V601_SL_MOD','golge');         // ÖNCE GÖLGE — dogrulayinca 'aktif' yap
 
-  // ── MARJ SOZLESMESI (30$ mutlak taban, 100$ bilesik tavan) ─────────
-  S('V601_MARJ_TABAN','30');
+  // ── MARJ SOZLESMESI (50$ mutlak taban, 100$ bilesik tavan) ─────────
+  S('V601_MARJ_TABAN','50');
   S('V601_MARJ_TAVAN','100');
   S('R497_FIXED_SLOT_ACTIVE','1');
-  S('R497_SLOT_MARGIN_USDT','30');
+  S('R497_SLOT_MARGIN_USDT','50');
   S('R497_MIN_BUFFER_USDT','20');
   S('R497_ABOVE_CAP_MODE','PCT_COMPOUND');
   S('R486_MAX_POSITIONS','1');   // V634: tek poz + genis stop
+  S('V644_POSITION_FOCUS_ACTIVE','1');
+  S('V644_15M_MEMORY_ACTIVE','1');
   S('R486_COMPOUND_MARGIN_ACTIVE','1');
-  S('R486_ABSOLUTE_MIN_MARGIN','30');
+  S('R486_ABSOLUTE_MIN_MARGIN','50');
   // V634: R495_FINAL_RISK_PCT artik turetiliyor; buradaki deger yalnizca geriye donuk uyum icin.
   S('V634_TOPLAM_RISK_PCT','8');
   S('R495_MIN_SAFE_MARGIN_USDT','6');
@@ -459,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_2_R495_FINAL_SCOPE_ONARIMI'
+const LAZARUS_BUILD = 'V6_4_4_POSITION_FOCUS_15M_MEMORY_50USDT'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -647,7 +649,10 @@ async function v592RefreshTestnetUniverse(force=false){
 function v592IsTestnetTradable(symbol){
   const u=v592TestnetUniverse.set;
   if(!u||u.size===0)return {ok:true,known:false};
-  const s=String(symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  // Binance artık Latin-dışı karakter taşıyan semboller de listeliyor. Burada
+  // ASCII dışını silmek "我踏马来了USDT" gibi gerçek bir pariteyi yalnız "USDT"
+  // yapıyor ve borsa evreni doğrulamasını yanlış sonuçlandırıyordu.
+  const s=normalizeSymbol(symbol);
   return {ok:u.has(s),known:true};
 }
 // V4.7.4.1-F05: belirsiz emirden sonra sembol kilidi. Kilitli sembole yeni emir gonderilmez.
@@ -1411,6 +1416,24 @@ async function cancelAlgoOrders(apiKey, apiSecret, symbol, emergency=false) {
 //        + triggerPrice (stopPrice DEĞİL) + closePosition=true
 //        quantity ve reduceOnly GÖNDERİLMEZ — Lazarus V8.10.72 notunda açıkça belirtilmiş
 // YANLIŞ olan: orderType=STOP, stopPrice, quantity, reduceOnly (bizim eski kod)
+// V6.4.3: Binance algo client kimliği yalnız ASCII ve en fazla 36 karakter kabul
+// eder. Parite adını kimliğe doğrudan yazmak Latin-dışı sembollerde SL/TP'yi
+// reddettiriyor; korumasız kalan pozisyon da failsafe tarafından hemen kapanıyordu.
+// Sembol yalnız hash girdisidir: borsaya her zaman yasal, kısa ve çakışmaya dayanıklı
+// bir kimlik gider. buildAlgoCloseParams içindeki son normalizasyon çağıran bütün
+// yolları (ilk koruma, yeniden yazım ve manuel SL güncelleme) birlikte korur.
+function v643AlgoClientId(prefix, symbol, seed=Date.now()) {
+  const p=String(prefix||'SL').toUpperCase()==='TP'?'TP':'SL';
+  const raw=`${TESTNET_SESSION_RESET_ID}|${String(symbol||'').toUpperCase()}|${p}|${String(seed)}`;
+  const h=crypto.createHash('sha256').update(raw,'utf8').digest('hex').slice(0,28);
+  return `${p}_${h}`; // 31 ASCII karakter; Binance sınırı <=36
+}
+function v643NormalizeAlgoClientId(clientAlgoId, symbol, orderType) {
+  const raw=String(clientAlgoId||'');
+  if(/^[.A-Z:/a-z0-9_-]{1,36}$/.test(raw)) return raw;
+  const prefix=String(orderType||'').toUpperCase().includes('TAKE_PROFIT')?'TP':'SL';
+  return v643AlgoClientId(prefix,symbol,raw||Date.now());
+}
 async function buildAlgoCloseParams(symbol, closeSide, orderType, triggerPrice, clientAlgoId) {
   return {
     algoType: 'CONDITIONAL',
@@ -1421,17 +1444,17 @@ async function buildAlgoCloseParams(symbol, closeSide, orderType, triggerPrice, 
     closePosition: 'true',     // quantity/reduceOnly YOK — tüm pozisyonu kapatır
     workingType: 'MARK_PRICE',
     priceProtect: 'false',
-    clientAlgoId: clientAlgoId || `SL_${symbol}_${Date.now()}`,
+    clientAlgoId: v643NormalizeAlgoClientId(clientAlgoId, symbol, orderType),
   };
 }
 
 async function placeAlgoSL(apiKey, apiSecret, symbol, closeSide, triggerPrice, _unused) {
-  const params = await buildAlgoCloseParams(symbol, closeSide, 'STOP_MARKET', triggerPrice, `SL_${symbol}_${Date.now()}`);
+  const params = await buildAlgoCloseParams(symbol, closeSide, 'STOP_MARKET', triggerPrice, v643AlgoClientId('SL',symbol));
   return bAlgo(apiKey, apiSecret, params);
 }
 
 async function placeAlgoTP(apiKey, apiSecret, symbol, closeSide, triggerPrice, _unused) {
-  const params = await buildAlgoCloseParams(symbol, closeSide, 'TAKE_PROFIT_MARKET', triggerPrice, `TP_${symbol}_${Date.now()}`);
+  const params = await buildAlgoCloseParams(symbol, closeSide, 'TAKE_PROFIT_MARKET', triggerPrice, v643AlgoClientId('TP',symbol));
   return bAlgo(apiKey, apiSecret, params);
 }
 
@@ -4536,11 +4559,12 @@ async function r614RefreshSymbol(symbol){
   row.updatedAt=Date.now();r614MicroState.cache.set(full,row);
 }
 async function r614RefreshUniverse(){
-  if(r614MicroState.running||!V614_MICRO_ASSIST_ACTIVE||autoRunning)return;
+  if(r614MicroState.running||!V614_MICRO_ASSIST_ACTIVE||autoRunning||v644PositionFocusActive())return;
   r614MicroState.running=true;r614MicroState.lastRunAt=Date.now();
   try{
     for(const full of r614MicroState.universe.slice(0,V614_MICRO_TOP_N)){
-      if(autoRunning)break;
+      if(v644PositionFocusActive())break;
+      if(autoRunning||v644PositionFocusActive())break;
       if(!r614CanSpend(1))break;
       await r614RefreshSymbol(full);
       // Kuyruga bir kerede yuklenme; ana tarama istekleri araya girebilsin.
@@ -4550,7 +4574,7 @@ async function r614RefreshUniverse(){
   }finally{r614MicroState.running=false;}
 }
 function r614ScheduleUniverse(symbols=[]){
-  if(!V614_MICRO_ASSIST_ACTIVE)return;
+  if(!V614_MICRO_ASSIST_ACTIVE||v644PositionFocusActive())return;
   r614MicroState.universe=[...new Set(symbols.map(normalizeSymbol).filter(Boolean))].slice(0,V614_MICRO_TOP_N);
   // Aktif tarama varken yalniz evreni guncelle; REST isi tarama tamamen bittikten sonra baslar.
   if(autoRunning||r614MicroState.scheduled||r614MicroState.running)return;
@@ -6632,8 +6656,7 @@ const R486_MECH_FAST_WAKE_MIN_SCORE = Math.max(65, Math.min(98, Number(process.e
 const R486_MECH_FAST_WAKE_GLOBAL_SEC = Math.max(8, Math.min(180, Number(process.env.R486_MECH_FAST_WAKE_GLOBAL_SEC || 12)));
 const R486_MECH_FAST_WAKE_SYMBOL_SEC = Math.max(20, Math.min(600, Number(process.env.R486_MECH_FAST_WAKE_SYMBOL_SEC || 45)));
 let r48637LastMechWakeTs=0; const r48637MechWakeBySymbol=new Map(),r48637TargetedWakeMeta=new Map();
-// R497 sermaye sözleşmesi: canlı bakiye, slot başına varsayılan 30$, max 2 pozisyon, en az 20$ tampon.
-// 200$ üstünde de HOLD_FIXED uygulanır; kullanıcı daha sonra ENV ile slot değerini veya üst-eşik modunu değiştirebilir.
+// V6.4.4 sermaye sözleşmesi: tek pozisyon, 50$ mutlak taban, 100$ bileşik tavan ve 20$ tampon.
 const R486_COMPOUND_MARGIN_ACTIVE = String(process.env.R486_COMPOUND_MARGIN_ACTIVE ?? '1') !== '0';
 const R486_MARGIN_PER_POSITION_PCT = Math.max(0.01, Math.min(0.80, Number(process.env.R486_MARGIN_PER_POSITION_PCT || 40.1960784314) / 100));
 const R486_EQUITY_BUFFER_PCT = Math.max(0, Math.min(0.80, Number(process.env.R486_EQUITY_BUFFER_PCT || 19.6078431373) / 100));
@@ -6769,9 +6792,9 @@ const R497_MIN_QUOTE_VOLUME = Math.max(1_000_000, Number(process.env.R497_MIN_QU
 const R497_LIQUID_CONTROL_SHADOW_ACTIVE = String(process.env.R497_LIQUID_CONTROL_SHADOW_ACTIVE ?? '1') !== '0';
 const R497_MEDIUM_RISK_SCALE = Math.max(.20, Math.min(.90, Number(process.env.R497_MEDIUM_RISK_SCALE || .55)));
 const R497_WEAK_RISK_SCALE = Math.max(.10, Math.min(.60, Number(process.env.R497_WEAK_RISK_SCALE || .25)));
-// V6.1.5 kullanici marj sozlesmesi: env'de eski 15/30/HOLD_FIXED degerleri kalsa
-// bile gercek emir 30$ altina inemez ve bilesik slot 100$ ustune cikamaz.
-const V601_HARD_MARGIN_FLOOR_USDT = 30;
+// V6.4.4 kullanici marj sozlesmesi: env'de eski 15/30/HOLD_FIXED degerleri kalsa
+// bile gercek emir 50$ altina inemez ve bilesik slot 100$ ustune cikamaz.
+const V601_HARD_MARGIN_FLOOR_USDT = 50;
 // ═══ V623 ═══ BAKIYE UYUMLU MARJ TABANI.
 // 30$ taban + 7x + genis SL kucuk bakiyede %4 risk butcesini asiyor ve islem
 // fail-closed atlaniyordu (canli: 30$·7x·SL%5 -> risk %9.10 > %4, bakiye 115$).
@@ -7532,6 +7555,8 @@ function r483ChartStory(symbol,data={}){
 // Spec: R493_V5_6_TESHIS_TAKSONOMI_SPEC.md
 // ═══════════════════════════════════════════════════════════════════════════════
 const R49356_DIAG_ACTIVE = String(process.env.R49356_DIAG_ACTIVE ?? '1') !== '0';
+const V644_15M_MEMORY_ACTIVE = String(process.env.V644_15M_MEMORY_ACTIVE ?? '1') !== '0';
+const V644_15M_MEMORY_HOURS = Math.max(2,Math.min(72,Number(process.env.V644_15M_MEMORY_HOURS||12)));
 const R49356_OUTCOME_WINDOW_MIN = Math.max(10, Math.min(180, Number(process.env.R49356_OUTCOME_WINDOW_MIN || 30)));
 const R49356_MFE_THRESHOLD_PCT = Math.max(1, Math.min(25, Number(process.env.R49356_MFE_THRESHOLD_PCT || 6)));
 const R49356_MAE_HARD_PCT = Math.max(1, Math.min(20, Number(process.env.R49356_MAE_HARD_PCT || 4)));
@@ -7551,7 +7576,10 @@ let r49356PersistError = null;
 
 function r49356Num(v, fallback=null){ if(v===null||v===undefined||v==='')return fallback; const n=Number(v); return Number.isFinite(n)?n:fallback; }
 function r49356Clamp(v,a,b){ return Math.max(a,Math.min(b,Number(v)||0)); }
-function r49356Sym(v){ const s=String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,''); return s.endsWith('USDT')?s:`${s}USDT`; }
+// Teşhis anahtarı borsadaki gerçek sembolü korur. Dosya/ad kimliği gerektiğinde
+// r501SafeId ayrıca güvenli hale getirir; burada karakter silmek farklı pariteleri
+// aynı "USDT" kaydında birleştiriyordu.
+function r49356Sym(v){ return normalizeSymbol(v); }
 function r49356Round(v,d=6){ const n=Number(v); return Number.isFinite(n)?+n.toFixed(d):null; }
 function r49356Clone(v){ try{return JSON.parse(JSON.stringify(v));}catch(_){return null;} }
 function r49356SafeArray(v){ return Array.isArray(v)?v:[]; }
@@ -7581,6 +7609,44 @@ function r49356Persist(){
   }catch(e){r49356PersistError=String(e?.message||e).slice(0,180);return false;}
 }
 r49356Load();
+
+// V6.4.4: ekran görüntüsü yerine aynı anda hesaplanabilir, no-lookahead 15m
+// "aday yolculuğu" saklanır. Önceki giriş bölgesi/stop/ilk hedef bir sonraki
+// taramada yeniden okunur; yalnız geçmişte kapanmış mum ve geçmiş karar kullanılır.
+function v644CandidateMemoryContext(symbol,currentPrice=0,currentStory={}){
+  if(!V644_15M_MEMORY_ACTIVE)return {active:false,reason:'DISABLED'};
+  try{
+    const S=r49356Sym(symbol),now=Date.now(),cutoff=now-V644_15M_MEMORY_HOURS*3600_000;
+    const history=[...r49356Snapshots.values()]
+      .filter(x=>x?.symbol===S&&x?.candidateProduced!==false&&Number(x?.decisionTimeMs||0)>=cutoff&&x?.timeframes?.['15m']?.valid)
+      .sort((a,b)=>Number(b.decisionTimeMs||0)-Number(a.decisionTimeMs||0)).slice(0,12);
+    if(!history.length)return {active:true,available:false,symbol:S,noLookahead:true,backtestObservable:true};
+    const prior=history[0],tf15=prior.timeframes['15m']||{},priorEntry=Number(prior.liveDecision?.entry||0);
+    const zones=[];
+    const addZone=(z,type)=>{const lo=Number(z?.low),hi=Number(z?.high);if(lo>0&&hi>=lo)zones.push({low:lo,high:hi,type});};
+    addZone(tf15.orderBlocks?.demand,'15M_DEMAND_OB');
+    addZone(tf15.inefficiencies?.fvg?.bull,'15M_BULL_FVG');
+    addZone(tf15.fib?.ote,'15M_OTE');
+    zones.sort((a,b)=>Math.abs((a.high||0)-priorEntry)-Math.abs((b.high||0)-priorEntry));
+    const zone=zones.find(z=>!priorEntry||z.low<=priorEntry*1.01)||zones[0]||(priorEntry>0?{low:priorEntry*.998,high:priorEntry*1.002,type:'PRIOR_DECISION_ENTRY'}:null);
+    const stop=Number(prior.liveDecision?.stop||zone?.low||tf15.liquidity?.below||0)||null;
+    const target=Number(tf15.obstacle?.firstObstacle?.price||prior.liveDecision?.target||tf15.liquidity?.above||0)||null;
+    const price=Number(currentPrice||currentStory?.levelTruth?.price||0),reclaim=!!(currentStory?.validatedTrendRetest||currentStory?.microConsensus?.confirmedPullback||currentStory?.liquidity?.['15m']?.sweepBull||currentStory?.trendBreaks?.bull);
+    const stopBroken=!!(price>0&&stop>0&&price<=stop*.999),targetReached=!!(price>0&&target>0&&price>=target*.999);
+    const inEntryZone=!!(price>0&&zone&&price>=zone.low*.998&&price<=zone.high*1.002);
+    const lateEvidence=!!(currentStory?.parabolicChase||currentStory?.impulseChase||currentStory?.targetRejection||Number(currentStory?.distanceFromBreakoutAtr||0)>.35||String(currentStory?.timing||'')==='TRAP');
+    const state=stopBroken&&!reclaim?'WAIT_RECLAIM':targetReached&&lateEvidence?'NO_CHASE_AFTER_PRIOR_TARGET':inEntryZone?'ENTRY_ZONE_RETEST':'TRACK_PRIOR_15M_PLAN';
+    return {active:true,available:true,symbol:S,noLookahead:true,backtestObservable:true,horizonHours:V644_15M_MEMORY_HOURS,observations:history.length,
+      firstSeenAt:Number(history.at(-1)?.decisionTimeMs||0),lastSeenAt:Number(prior.decisionTimeMs||0),previousAction:prior.liveDecision?.action||null,
+      entryZone:zone?{low:r49356Round(zone.low,10),high:r49356Round(zone.high,10),type:zone.type}:null,stop:r49356Round(stop,10),target1:r49356Round(target,10),
+      currentPrice:r49356Round(price,10),inEntryZone,stopBroken,targetReached,reclaim,state,
+      summary:`15m hafıza ${state} · gözlem ${history.length} · giriş ${zone?`${r49356Round(zone.low,10)}-${r49356Round(zone.high,10)}`:'—'} · stop ${stop||'—'} · TP1 ${target||'—'}`};
+  }catch(e){return {active:true,available:false,error:String(e?.message||e).slice(0,100)};}
+}
+function v644CandidateMemoryRecent(limit=24){
+  const syms=[...new Set([...r49356Snapshots.values()].sort((a,b)=>Number(b.decisionTimeMs||0)-Number(a.decisionTimeMs||0)).map(x=>x?.symbol).filter(Boolean))].slice(0,Math.max(1,Math.min(100,Number(limit)||24)));
+  return syms.map(symbol=>v644CandidateMemoryContext(symbol)).filter(x=>x.available);
+}
 
 function r49356ClosedRows(data={},tf='15m',decisionTime=Date.now()){
   const base=data?.candles||{},shadow=data?.shadowCandles||{}; const raw={...base,...shadow,_times:{...(base?._times||{}),...(shadow?._times||{})}}; const times=raw?._times||{}; const ms=R49356_TF_MS[tf]||0;
@@ -7712,7 +7778,8 @@ function r49356CaptureDecision({coin={},analysis={},decisionChain={},ai={},story
     const inferredAction=forcedDecision?.action||(finalWait?'PUSU':auth?.action)||(finalSide==='LONG'?'MARKET':'REJECT'),reason=forcedDecision?.reason||(finalWait?String(ai?.reasoning||auth?.reason||decisionChain?.reason||'').slice(0,400):(auth?.reason||String(ai?.reasoning||decisionChain?.reason||'').slice(0,400))),authority=forcedDecision?.authority||(finalWait&&ai?.v592WaitSource?String(ai.v592WaitSource):r49356AuthorityName(auth,reason));
     const timeframes={};for(const tf of R49356_TFS)timeframes[tf]=r49356PerTf(data,tf,decisionTime,entry,st,ai);
     const consensus=r49356Consensus(timeframes,'LONG',{r480Shadow:ai?.r480Shadow||decisionChain?.r480Shadow||analysis?.r480Shadow||null,liveAction:inferredAction,karKosma:ai?.karKosma,decisionTime});const liveDecision={action:inferredAction,authority,reason,entry:r49356Round(entry,10),stop:r49356Round(sl,10),target:r49356Round(tp,10)};const hardRisk=r49356HardRisk(st,timeframes,liveDecision),chartError=r49356ChartError(st,timeframes),shadowAssessment=r49356ShadowClean(st,timeframes,hardRisk),diagnosis=r49356Provisional({candidateProduced,chartError,liveDecision,story:st,timeframes,consensus,hardRisk,shadowAssessment});const decisionId=r49356DecisionId(symbol,decisionTime);
-    const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_LIVE_5TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(decisionTime).toISOString(),decisionTimeMs:decisionTime,noLookahead:true,liveDecision,timeframes,consensus,diagnosis:{diagnosisClass:diagnosis,hardRisk,shadowAssessment,chartComponentError:chartError},decisionTrace:[],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:diagnosis.status==='FINALIZED'?diagnosis:null,candidateProduced,source:{lane:data.sourceLane,label:data.sourceLabel},workerSignal:data.workerPulse||null};
+    const candidateMemory=v644CandidateMemoryContext(symbol,entry,st);
+    const snap={build:LAZARUS_BUILD,featureBuild:'R493_V5_6_LIVE_5TF_DIAGNOSIS_SHADOW',mode:'SHADOW_READ_ONLY',decisionId,symbol,direction:'LONG',decisionTime:new Date(decisionTime).toISOString(),decisionTimeMs:decisionTime,noLookahead:true,liveDecision,timeframes,consensus,candidateMemory,diagnosis:{diagnosisClass:diagnosis,hardRisk,shadowAssessment,chartComponentError:chartError},decisionTrace:[],shadowOnly:true,decisionChange:false,outcome:null,finalizedClass:diagnosis.status==='FINALIZED'?diagnosis:null,candidateProduced,source:{lane:data.sourceLane,label:data.sourceLabel},workerSignal:data.workerPulse||null};
     snap.decisionTrace=r49356DecisionTrace({candidateProduced,story:st,liveDecision,timeframes,consensus,diagnosis});r49356Snapshots.set(decisionId,snap);r49356LastCapture={decisionId,symbol,action:liveDecision.action,diagnosis:diagnosis.code,ts:decisionTime};r49356Persist();try{r501EvidenceDecision(snap,{coin,analysis,decisionChain,ai});}catch(_r501e){}return snap;
   }catch(e){try{pushCritical('R49356_CAPTURE',e,{symbol:coin?.symbol},'WARNING');}catch(_){}return null;}
 }
@@ -7772,10 +7839,13 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
   const flowDivergence=flow.includes('FLOW_DIVERGENCE')||story?.orderFlow?.conflict===true,sellerPressure=['SELLERS_CONTROL','SELL_LEAN','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(flow)||(Number.isFinite(book)&&book<=-8)||bearVotes>bullVotes,oiTrap=oiState==='TRAP_BUILDUP'||oiState.startsWith('TRAP_BUILDUP_'),hardObstacle=role==='HARD_OBSTACLE';
   const researchWouldBlock=[];if(hardObstacle&&oiTrap)researchWouldBlock.push('HARD_OBSTACLE_OI_TRAP');if(flowDivergence&&sellerPressure)researchWouldBlock.push('FLOW_DIVERGENCE_SELLER_PRESSURE');if(coreFlowStale||sourceSpreadStale)researchWouldBlock.push('STALE_CORE_FLOW');
   const researchShadow={schema:'LAZARUS_V592_LIVE_MICRO_COUNTERFACTUAL_V1',wouldBlock:researchWouldBlock.length>0,codes:researchWouldBlock,flowState:flow,oiState,book:Number.isFinite(book)?book:null,bullVotes,bearVotes,flowAgeSec:Number.isFinite(flowAge)?+flowAge.toFixed(0):null,marketDataSpreadSec:Number.isFinite(sourceSpread)?+sourceSpread.toFixed(0):null,staleSources:[...new Set(staleTokens)],decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false};
-  const base={active:true,blocked:true,firstObstacleRR:firstKnown?+firstRR.toFixed(3):null,minFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,firstObstacleRole:role||null,decisionBasis:'BACKTEST_OBSERVABLE_ONLY',researchShadow};
+  const candidateMemory=v644CandidateMemoryContext(story?.symbol,Number(opts.currentPrice||story?.levelTruth?.price||entryTruth?.plannedEntry||0),story);
+  const base={active:true,blocked:true,firstObstacleRR:firstKnown?+firstRR.toFixed(3):null,minFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,firstObstacleRole:role||null,decisionBasis:'BACKTEST_OBSERVABLE_ONLY',candidateMemory,researchShadow};
+  if(candidateMemory?.state==='WAIT_RECLAIM')return {...base,action:'PUSU',code:'V644_PRIOR_STOP_WAIT_RECLAIM',reason:`önceki 15m plan stopu kırıldı; reclaim gelmeden LONG yok · ${candidateMemory.summary}`};
+  if(candidateMemory?.state==='NO_CHASE_AFTER_PRIOR_TARGET')return {...base,action:'PUSU',code:'V644_PRIOR_TARGET_NO_CHASE',reason:`önceki 15m ilk hedefi tüketildi ve geç giriş kanıtı var; retest bekle · ${candidateMemory.summary}`};
   if(R493_REQUIRE_FIRST_OBSTACLE&&!firstKnown)return {...base,action:'PUSU',code:'FIRST_OBSTACLE_RR_UNKNOWN',reason:'ilk engel R/R bilinmiyor: MARKET/TACTICAL yok'};
   if(firstKnown&&firstRR<R493_MIN_FIRST_OBSTACLE_RR)return {...base,action:'PUSU',code:'LOW_FIRST_OBSTACLE_RR',reason:`ilk engel R/R ${firstRR.toFixed(2)} < ${R493_MIN_FIRST_OBSTACLE_RR.toFixed(2)}: daha iyi fiyat/reclaim bekle`};
-  return {...base,blocked:false,action:'ALLOW',code:'PASS_BACKTEST_OBSERVABLE',reason:'backtestte gözlenebilir ilk-engel sözleşmesi uygun; canlı mikro-yapı yalnız kaydedildi'};
+  return {...base,blocked:false,action:'ALLOW',code:'PASS_BACKTEST_OBSERVABLE',reason:`backtestte gözlenebilir ilk-engel sözleşmesi uygun${candidateMemory?.available?` · ${candidateMemory.summary}`:''}; canlı mikro-yapı yalnız kaydedildi`};
 }
 
 function r486EntryTruthGuard(story={},opts={}){
@@ -11799,6 +11869,7 @@ async function v592FinalizeClose(sym, state, cls, reason='UNKNOWN'){
     if(v592CloseAlreadyRecorded(anahtar)){
       v592ParityStats.ledgerCloseDedup++;
       try{ trailingState.delete(S); }catch(_){}
+      try{ v644ReleasePositionFocus(S,`${reason}_DEDUP`); }catch(_){}
       return {ok:true,dedup:true};
     }
     let c = cls;
@@ -11822,6 +11893,7 @@ async function v592FinalizeClose(sym, state, cls, reason='UNKNOWN'){
     }
     try{ trailingState.delete(S); }catch(_){}
     try{ forgetKnownPosition(S); saveLastKnownPositions(); }catch(_){}
+    try{ v644ReleasePositionFocus(S,reason); }catch(_){}
     v592ParityStats.finalizeCloseOk++;
     try{r501EvidenceFunnel({type:'CLOSE_FINALIZED',symbol:S,action:'CLOSE_FINALIZED',
       authority:'TESTNET_EXECUTION',reason:String(reason||''),code:c?.code||null,
@@ -20910,11 +20982,11 @@ app.post('/api/account', async (_req, res) => {
 // Panel açık mumu gösterebilir, karar motoru ise kendi kapanmış-mum sözleşmesini korur.
 app.get('/api/chart/live/:symbol', async (req,res)=>{
   res.set('Cache-Control','no-store');
-  const symbol=String(req.params.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const symbol=normalizeSymbol(String(req.params.symbol||''));
   const interval=String(req.query.interval||'15m');
   const allowed=new Set(['1m','3m','5m','15m','30m','1h','4h','1d']);
   const limit=Math.max(20,Math.min(200,Number(req.query.limit||110)||110));
-  if(!/^[A-Z0-9]{5,24}$/.test(symbol)||!symbol.endsWith('USDT'))return res.status(400).json({ok:false,error:'INVALID_SYMBOL'});
+  if(!/^[\p{L}\p{N}]{1,40}USDT$/u.test(symbol)||!symbol.endsWith('USDT'))return res.status(400).json({ok:false,error:'INVALID_SYMBOL'});
   if(!allowed.has(interval))return res.status(400).json({ok:false,error:'INVALID_INTERVAL'});
   try{
     const raw=await bPub('/fapi/v1/klines',`symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`);
@@ -21340,6 +21412,7 @@ app.post('/api/order', async (req, res) => {
         code:'LEVERAGE_PARITY_FAILED',leverageParityOk:false,requestedLeverage:_expectedLeverage,exchangeLeverageProof:_appliedLeverageProof,unwind:_lvClose,symbolLocked:true,build:LAZARUS_BUILD,session:TESTNET_SESSION_RESET_ID});
     }
     const protectionVerifiedTime=Date.now();const orderLifecycle=r501OrderLifeMark(sym,'PROTECTION_VERIFIED',{protectionVerifiedTime,requestedLeverage:_expectedLeverage,appliedLeverage:Number.isFinite(_appliedLeverageProof)?_appliedLeverageProof:null,applicationComputedLeverage:safeLeverage,exchangeLeverageProof:_appliedLeverageProof,leverageParityOk:_leverageParityOk,clientOrderId:main?._lazarusClientOrderId||main?.clientOrderId||null,mainOrderId:main.orderId,slOrderId:slResult.slOrder?.algoId||slResult.slOrder?.clientAlgoId||null,tpOrderId:slResult.tpOrder?.algoId||slResult.tpOrder?.clientAlgoId||null,executedPrice:execPrice,quantity:qty,leverage:safeLeverage,marginUSDT:Number(usdtAmount),stop:finalSL,target:finalTP,sltpVerified:true});
+    try{v644SetPositionFocus([sym],'PROTECTION_VERIFIED');}catch(_){}
     const reconcileTimer=setTimeout(()=>r501ReconcileMainOrder(sym,main.orderId,apiKey,apiSecret).catch(()=>null),0);try{reconcileTimer.unref?.();}catch(_){}
     res.json({ok:true,
       message:`${sym} ${side} açıldı ✅ SL/TP Binance doğrulandı ✅`,
@@ -23529,6 +23602,7 @@ async function fastManageOpenPositions() {
     const rows = await getPositionRiskCached(autoConfig.apiKey, autoConfig.apiSecret);
     const mapped = mapRiskRowsToManagerPositions(rows);
     autoScanState.livePositions = mapped.length;
+    v644SetPositionFocus(mapped.map(x=>x.symbol),'FAST_POSITION_MANAGER');
     r395BosTikAtla = mapped.length === 0; // boşsa sıradaki tik atlanır; pozisyon açılınca tam kadans
     if (mapped.length > 0) {
       await checkTrailingSL(autoConfig.apiKey, autoConfig.apiSecret, mapped);
@@ -23778,7 +23852,7 @@ async function r385KoklamaIscisi() {
   // R395: 15m kapanış patlamasından kaçın — sınırın ±25sn'sinde koklama pas geçer (429 diyeti).
   { const s = Math.floor(Date.now()/1000) % 900; if (s < 25 || s > 875) return; }
   try {
-    if (!R385_ENABLED || !autoConfig?.enabled) return;
+    if (!R385_ENABLED || !autoConfig?.enabled || v644PauseCandidateWorker('R385')) return;
     if (typeof isBinanceBackoffActive === 'function' && isBinanceBackoffActive()) return;
     const all = await r4863GetWorkerUniverse();
     if (!Array.isArray(all)) return;
@@ -23790,6 +23864,7 @@ async function r385KoklamaIscisi() {
     const bulunan = [];
     let istek = 0;
     for (const t of evren) {
+      if(v644PositionFocusActive())break;
       const full = String(t.symbol);
       try {
         const k1h = await cached(`r385_k1h_${full}`, 5*60*1000, () => bPub('/fapi/v1/klines', `symbol=${full}&interval=1h&limit=200`));
@@ -23834,7 +23909,7 @@ setTimeout(r385KoklamaIscisi, 45*1000);    // açılıştan 45sn sonra ilk koku
 
 async function r370ErkenYukselisWorker() {
   try {
-    if (!autoConfig?.enabled) return;
+    if (!autoConfig?.enabled || v644PauseCandidateWorker('R370')) return;
     // R486.3: bütün uygun Futures evrenini puanla; kline incelemesini dönen partiyle yap.
     const all = await r4863GetWorkerUniverse();
     if (!Array.isArray(all)) return;
@@ -23847,6 +23922,7 @@ async function r370ErkenYukselisWorker() {
 
     const bulunan = [];
     for (const t of adaylar) {
+      if(v644PositionFocusActive())break;
       const full = String(t.symbol);
       try {
         const kl = await bPub('/fapi/v1/klines', `symbol=${full}&interval=15m&limit=20`);
@@ -23940,6 +24016,7 @@ async function r343RadarUniverse(worker='r328') {
   // R486.3: patlama/1m neden workerları TOP10'a kilitli değildir. Tüm uygun Futures
   // evreninin en sıcak bölümü + dönen kuyruğu taranır; aktif R370/R385 adayları da daima eklenir.
   try {
+    if(v644PauseCandidateWorker(String(worker||'RADAR').toUpperCase()))return [];
     const all=await r4863GetWorkerUniverse();
     const uygun=(Array.isArray(all)?all:[]).filter(t=>Number(t.priceChangePercent||0)>=-1&&Number(t.priceChangePercent||0)<=55);
     const batchSize=worker==='r366'?R4863_R366_BATCH:R4863_R328_BATCH;
@@ -23957,9 +24034,10 @@ async function r343RadarUniverse(worker='r328') {
 async function r328PatlamaWorker() {
   const __r328PotRows = [];
   try {
-    if (!autoConfig?.enabled) return;
+    if (!autoConfig?.enabled || v644PauseCandidateWorker('R328')) return;
     const coins = await r343RadarUniverse('r328');
     for (const base of coins) {
+      if(v644PositionFocusActive())break;
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
         // R486.3.9: aynı REST maliyetiyle 1m çek; 3m ve 5m UTC-hizalı yerelde türetilir.
@@ -24001,9 +24079,10 @@ setInterval(r328PatlamaWorker, R486_R328_INTERVAL_SEC*1000); // R486.3.9 1m+3m i
 let __r366VolSebep = {}; // { COIN: { ts, yon, sebepler[], hiz, ivme } }
 async function r366VolatiliteWorker() {
   try {
-    if (!autoConfig?.enabled) return;
+    if (!autoConfig?.enabled || v644PauseCandidateWorker('R366')) return;
     const coins = await r343RadarUniverse('r366');
     for (const base of coins) {
+      if(v644PositionFocusActive())break;
       const full = base.endsWith('USDT') ? base : base + 'USDT';
       try {
         // 1dk mum (son 20) + funding + OI + taker — hepsi bedava public
@@ -24094,6 +24173,65 @@ function resetAutoScanState(patch={}) {
   autoScanState.lastOpenedAt = autoPersistentStats.lastOpenedAt || prev.lastOpenedAt || 0;
   autoScanState.lastOpenedSymbol = autoPersistentStats.lastOpenedSymbol || prev.lastOpenedSymbol || null;
   autoScanState.lastOpenedSide = autoPersistentStats.lastOpenedSide || prev.lastOpenedSide || null;
+}
+
+// ═══ V6.4.4 — TEK ACIK POZISYON ODAĞI ═══════════════════════════════════════
+// Pozisyon varken yeni aday arayan bütün yollar susar. Imzali pozisyon yöneticisi,
+// SL/TP kurtarma ve kapanis senkronu çalışmaya devam eder. Böylece REST bütçesi ve
+// karar motoru açık pozisyona ayrılır; kapanış gerçeği gelince tarama yeniden uyanır.
+const V644_POSITION_FOCUS_ACTIVE = String(process.env.V644_POSITION_FOCUS_ACTIVE ?? '1') !== '0';
+const v644PositionFocusState = {
+  active:false, symbols:[], since:0, lastChangeAt:0, source:'BOOT',
+  pauseCount:0, resumeCount:0, workerSkips:{}, resumeScheduledAt:0
+};
+let v644ResumeTimer=null;
+function v644FocusSymbols(input=[]){
+  const rows=Array.isArray(input)?input:[input];
+  return [...new Set(rows.map(x=>normalizeSymbol(typeof x==='string'?x:(x?.symbol||''))).filter(Boolean))];
+}
+function v644PositionFocusActive(){ return !!(V644_POSITION_FOCUS_ACTIVE&&v644PositionFocusState.active); }
+function v644ScheduleResume(source='POSITION_CLOSED'){
+  if(v644ResumeTimer||!autoConfig?.enabled)return;
+  const gap=Math.max(0,R150_MIN_SCAN_GAP_MS-(Date.now()-Number(r150LastScanBeginTs||0)));
+  const waitMs=Math.max(1200,gap+500);
+  v644PositionFocusState.resumeScheduledAt=Date.now()+waitMs;
+  v644ResumeTimer=setTimeout(()=>{
+    v644ResumeTimer=null;v644PositionFocusState.resumeScheduledAt=0;
+    if(!autoConfig?.enabled||v644PositionFocusActive()||autoRunning)return;
+    autoScanState.phase='POZİSYON_KAPANDI_TARAMA_YENİDEN';
+    autoScanState.lastAction=`${source}: açık pozisyon kapandı, TOP24 + worker taraması yeniden başlıyor`;
+    runAutoScan().catch(e=>logAuto(`V644 tarama yeniden başlatma hata: ${String(e?.message||e).slice(0,100)}`));
+  },waitMs);
+  try{v644ResumeTimer.unref?.();}catch(_){}
+}
+function v644SetPositionFocus(input=[],source='POSITION_TRUTH'){
+  if(!V644_POSITION_FOCUS_ACTIVE)return false;
+  const symbols=v644FocusSymbols(input),active=symbols.length>0,was=v644PositionFocusState.active;
+  v644PositionFocusState.symbols=symbols;
+  v644PositionFocusState.active=active;
+  v644PositionFocusState.source=String(source||'POSITION_TRUTH');
+  if(active&&!was){
+    v644PositionFocusState.since=Date.now();v644PositionFocusState.lastChangeAt=Date.now();v644PositionFocusState.pauseCount++;
+    if(v644ResumeTimer){clearTimeout(v644ResumeTimer);v644ResumeTimer=null;v644PositionFocusState.resumeScheduledAt=0;}
+    autoScanState.phase='POZİSYON_ODAK';
+    autoScanState.lastAction=`🎯 ${symbols.map(x=>x.replace('USDT','')).join(', ')} açık — yeni aday taraması/workerlar durdu; yalnız pozisyon yönetiliyor`;
+    try{logAuto(autoScanState.lastAction);}catch(_){}
+  }else if(!active&&was){
+    v644PositionFocusState.since=0;v644PositionFocusState.lastChangeAt=Date.now();v644PositionFocusState.resumeCount++;
+    autoScanState.livePositions=0;autoScanState.positionCount=0;
+    v644ScheduleResume(source);
+  }
+  return active;
+}
+function v644ReleasePositionFocus(symbol,source='POSITION_CLOSED'){
+  const S=normalizeSymbol(symbol),left=v644PositionFocusState.symbols.filter(x=>x!==S);
+  return v644SetPositionFocus(left,source);
+}
+function v644PauseCandidateWorker(name='WORKER'){
+  if(!v644PositionFocusActive())return false;
+  const k=String(name||'WORKER').toUpperCase();
+  v644PositionFocusState.workerSkips[k]=Number(v644PositionFocusState.workerSkips[k]||0)+1;
+  return true;
 }
 function markAutoOpened(symbol, side) {
   autoPersistentStats.totalOpenedAllTime = Number(autoPersistentStats.totalOpenedAllTime || 0) + 1;
@@ -25101,6 +25239,14 @@ app.get('/api/r493/diagnosis/5tf/:symbol', (req,res)=>{
     res.json({ok:true,...row});
   } catch(e){res.status(500).json({ok:false,error:safeErrMsg(e)});}
 });
+app.get('/api/v644/candidate-memory', (req,res)=>{
+  try{res.set('Cache-Control','no-store');res.json({ok:true,build:LAZARUS_BUILD,contract:'CLOSED_15M_NO_LOOKAHEAD',active:V644_15M_MEMORY_ACTIVE,rows:v644CandidateMemoryRecent(req.query.limit||24)});}
+  catch(e){res.status(500).json({ok:false,error:safeErrMsg(e),build:LAZARUS_BUILD});}
+});
+app.get('/api/v644/candidate-memory/:symbol', (req,res)=>{
+  try{const row=v644CandidateMemoryContext(req.params.symbol,Number(req.query.price||0));if(!row.available)return res.status(404).json({ok:false,build:LAZARUS_BUILD,...row});res.json({ok:true,build:LAZARUS_BUILD,...row});}
+  catch(e){res.status(500).json({ok:false,error:safeErrMsg(e),build:LAZARUS_BUILD});}
+});
 
 app.get('/api/micro-assist/status', (_req,res)=>{
   try{
@@ -25135,6 +25281,8 @@ app.get('/api/auto/status', (req, res) => {
   res.json({ ok:true, enabled:!!autoConfig?.enabled, running:autoRunning, build:LAZARUS_BUILD,
     config:publicAutoConfig(), scanState:autoScanState, recentLogs:autoLog.slice(-40).map(toTurkishText),
     cooldowns: getCooldownList(), aiBrain: r308AiDashboardStatus(), saverMode: AI_SAVER_MODE,
+    positionFocus:{enabled:V644_POSITION_FOCUS_ACTIVE,...v644PositionFocusState},
+    candidateMemory:{enabled:V644_15M_MEMORY_ACTIVE,horizonHours:V644_15M_MEMORY_HOURS,tracked:v644CandidateMemoryRecent(100).length,noLookahead:true,backtestObservable:true},
     r486:{
       longOnly:true, allowShort:false, minLeverage:R486_MIN_LEVERAGE,
       leveragePolicy:`Canlı sözleşme ${V592_LEVERAGE_LOCK}x sabit; panel/localStorage değiştiremez`,
@@ -25221,6 +25369,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     return { skipped:'busy', priorityOnly:!!priorityOnly, watchdogPending:age>V511_SCAN_WATCHDOG_MS };
   }
   if (!autoConfig?.enabled) return { skipped:'disabled' };
+  if(v644PositionFocusActive()){
+    autoScanState.phase='POZİSYON_ODAK';
+    autoScanState.lastAction=`Açık pozisyon ${v644PositionFocusState.symbols.map(x=>x.replace('USDT','')).join(', ')} yönetiliyor; yeni aday taraması bekliyor`;
+    return {skipped:'position_focus',symbols:[...v644PositionFocusState.symbols]};
+  }
   const scanRunId = ++autoScanRunId;
   const scanStopGeneration = autoStopGeneration;
   const scanOwnsState = () => scanRunId === autoScanRunId;
@@ -25342,6 +25495,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     const openPos = Array.isArray(posData)
       ? posData.filter(p=>Math.abs(parseFloat(p.positionAmt))>0)
       : [];
+    if(Array.isArray(posData))v644SetPositionFocus(openPos.map(p=>p.symbol),'RUN_AUTO_SCAN_POSITION_TRUTH');
     autoScanState.posTruthUnavailable = posTruthUnavailable;
     autoScanState.posTruthError = posTruthError;
     autoScanState.livePositions = openPos.length;
@@ -25403,6 +25557,9 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         }
       }
       await checkTrailingSL(apiKey, apiSecret, mapped);
+      autoScanState.phase='POZİSYON_ODAK';
+      autoScanState.lastAction=`🎯 ${mapped.map(x=>x.symbol.replace('USDT','')).join(', ')} açık — tarama ve aday worker'ları durdu; yalnız SL/TP/trailing yönetiliyor`;
+      return {skipped:'position_focus',symbols:mapped.map(x=>x.symbol)};
     }
 
     const _tnSession=testnetSessionStatus();
@@ -25850,6 +26007,11 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
 
     for (const [scanIdx, coin] of scanList.entries()) {
+      if(v644PositionFocusActive()){
+        autoScanState.phase='POZİSYON_ODAK';
+        autoScanState.lastAction='Yeni pozisyon doğrulandı; kalan aday analizi iptal edildi';
+        break;
+      }
       if (!scanStillActive()) return {skipped:'stopped'};
       coin.gainerRank = Number(coin.r481OriginalRank || scanIdx + 1); // R481: sıralama değişse de piyasa gainer sırası korunur
       if ((await getNewPosCount()) >= maxPositions) { autoScanState.phase='MAX_POZİSYON_DOLU'; break; }
@@ -28872,7 +29034,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
     }
     // V6.1.7: yardimci REST tarama ve AI review tamamen bittikten sonra calisir.
     // Sonraki tarama baslarsa kendi dongusu aninda kesilir; ana taramayi kuyrukta bekletmez.
-    r614ScheduleUniverse(r614MicroState.universe);
+    if(!v644PositionFocusActive())r614ScheduleUniverse(r614MicroState.universe);
   }
 }
 
@@ -28904,6 +29066,7 @@ function startAutoTrader() {
     if(autoTimer)clearTimeout(autoTimer);
     autoTimer=setTimeout(async()=>{
       if (!autoConfig?.enabled || schedulerGeneration !== autoStopGeneration) return;
+      if(v644PositionFocusActive()){scheduleNextScan(10_000);return;}
       // Devam eden taramaya dokunma. Takilma tespiti promise'ten bagimsiz
       // autoWatchdogTimer tarafindan nesil iptaliyle yapilir.
       if(autoRunning){scheduleNextScan(10_000);return;}
@@ -28953,7 +29116,7 @@ function startAutoTrader() {
   if (!r125FastWakeTimer) {
     r125FastWakeTimer = setInterval(() => {
       try {
-        if (!autoConfig?.enabled || autoRunning || isBinanceBackoffActive() || isPositionRiskCooldownActive()) return;
+        if (!autoConfig?.enabled || autoRunning || v644PositionFocusActive() || isBinanceBackoffActive() || isPositionRiskCooldownActive()) return;
         try {
           const lastList = (autoScanState?.scanList||[]).map(x=>normalizeSymbol(x)).filter(Boolean);
           const rs130 = r130CombinedTickWS?.readyState;
@@ -29235,6 +29398,7 @@ async function syncPositions() {
     }
     autoScanState.livePositions = openMap.size;
     autoScanState.positionCount = openMap.size;
+    const v644ConfirmedOpen = new Set(openMap.keys());
 
     // R344: SAHTE-FLAT KORUMASI — CM-UM geçişinde positionRisk ara ara kesik/eksik dönebiliyor.
     // 03.07 MAGMA dersi: 03:25'te 'SL ile kapandı' sanıldı, pozisyon 09:24'e dek Binance'te AÇIK kaldı,
@@ -29275,6 +29439,7 @@ async function syncPositions() {
       if (v592IsProbeSymbol(sym)) continue;
       if (!openMap.has(sym)) {
         if (await r344StillOpen(sym)) {
+          v644ConfirmedOpen.add(sym);
           logAuto(`🛟 R344: ${sym} toplu pozisyon listesinde görünmedi ama tek-sembol sorguda AÇIK — sahte-flat engellendi, yönetim sürüyor`);
           invalidatePositionRiskCache('R344_FALSE_FLAT');
           continue;
@@ -29303,7 +29468,7 @@ async function syncPositions() {
     for (const sym of Object.keys(lastKnownPositions || {})) {
       if (v592IsProbeSymbol(sym)) continue;   // BG3: sonda sembolu atlanir
       if (openMap.has(sym) || closedHandled.has(sym)) continue;
-      if (await r344StillOpen(sym)) { logAuto(`🛟 R344: ${sym} (last-known) tek-sembol sorguda AÇIK — sahte kapanış engellendi`); continue; }
+      if (await r344StillOpen(sym)) { v644ConfirmedOpen.add(sym); logAuto(`🛟 R344: ${sym} (last-known) tek-sembol sorguda AÇIK — sahte kapanış engellendi`); continue; }
       const st = lastKnownPositions[sym] || {};
       const cls = await classifyClosedPosition(autoConfig.apiKey, autoConfig.apiSecret, sym, st).catch(()=>({
         code:'UNATTRIBUTED_EXCHANGE_CLOSE', label:'Kaynağı doğrulanamayan Binance/API kapanışı', emoji:'👁️', closePrice:null, realizedPnl:null
@@ -29318,6 +29483,7 @@ async function syncPositions() {
       invalidatePositionRiskCache('LAST_KNOWN_POSITION_CLOSED');
     }
     saveLastKnownPositions();
+    v644SetPositionFocus([...v644ConfirmedOpen],'POSITION_SYNC_CONFIRMED');
 
     // R161 FIX: Açık pozisyonlarda trailingState yoksa restore et (Railway restart sonrası kayıp)
     // Restart'ta in-memory Map sıfırlanıyor; açık pozisyon için BE/trailing mekanizması çalışmıyor
@@ -29929,7 +30095,7 @@ function v592BootParityGate(){
   if(!eq(R493_MIN_FIRST_OBSTACLE_RR,0.35)) hata.push(`R493_FO_035_DEGIL:${R493_MIN_FIRST_OBSTACLE_RR}`);
   if(!eq(R486_FIRST_OBSTACLE_MIN_RR,0.35)) hata.push(`R486_FO_035_DEGIL:${R486_FIRST_OBSTACLE_MIN_RR}`);
   if(R497_FIXED_SLOT_ACTIVE!==true) hata.push('FIXED_SLOT_KAPALI');
-  // V6.1.5: slot tabani 30$, bilesik buyume tavani 100$; iki kavram ayridir.
+  // V6.4.4: slot tabani 50$, bilesik buyume tavani 100$; iki kavram ayridir.
   if(!eq(R497_SLOT_MARGIN_USDT,V601_HARD_MARGIN_FLOOR_USDT))
     hata.push(`SLOT_MARJ_TABANI_UYUSMAZ:${R497_SLOT_MARGIN_USDT}!=${V601_HARD_MARGIN_FLOOR_USDT}`);
   if(!eq(V601_HARD_MARGIN_CAP_USDT,100)) hata.push(`MARJ_TAVANI_100_DEGIL:${V601_HARD_MARGIN_CAP_USDT}`);
@@ -29949,7 +30115,10 @@ function v592BootParityGate(){
   if(V625_TEPE_VETO!==false) hata.push('CANLI_TEPE_VETO_KAPALI_DEGIL:V625_TEPE_VETO=0_GEREKLI');
   if(!eq(V628_ATR_TAVAN,8.0)) hata.push(`CANLI_ATR_TAVAN_8_DEGIL:${V628_ATR_TAVAN}`);
   if(V625_KAR_TASIMA!==true) hata.push('CANLI_KAR_TASIMA_KAPALI');
-  if(V623_BAKIYE_UYUMLU_MARJ!==false) hata.push('CANLI_MUTLAK_30_TABANI_BOZUK:V623_BAKIYE_UYUMLU_MARJ=0_GEREKLI');
+  if(V623_BAKIYE_UYUMLU_MARJ!==false) hata.push('CANLI_MUTLAK_50_TABANI_BOZUK:V623_BAKIYE_UYUMLU_MARJ=0_GEREKLI');
+  if(!eq(V601_HARD_MARGIN_FLOOR_USDT,50)) hata.push(`CANLI_MUTLAK_50_TABANI_DEGIL:${V601_HARD_MARGIN_FLOOR_USDT}`);
+  if(V644_POSITION_FOCUS_ACTIVE!==true) hata.push('CANLI_POZISYON_ODAGI_KAPALI');
+  if(V644_15M_MEMORY_ACTIVE!==true) hata.push('CANLI_15M_ADAY_HAFIZASI_KAPALI');
   if(V624_BUTCE_UYUMLU_SL!==true) hata.push('CANLI_RISK8_SL_UYUMU_KAPALI:V624_BUTCE_UYUMLU_SL=1_GEREKLI');
   // V504: R495'in DORT limiti de backtest verisinden turetilmis olmali.
   // Elle konmus "makul gorunen" sayi kabul edilmez.

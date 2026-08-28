@@ -1,0 +1,7 @@
+node_modules/
+.railway/
+.v640_local_state/
+*.log
+.env
+.env.*
+!CANLI.env
