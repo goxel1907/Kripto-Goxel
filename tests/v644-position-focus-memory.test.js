@@ -9,8 +9,8 @@ const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const env = fs.readFileSync(path.join(root, 'CANLI.env'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
-test('V6.4.4 locks live sizing to one position with a 50 USDT floor and 100 USDT cap', () => {
-  assert.equal(pkg.version, '6.4.4');
+test('V6.4.5 locks live sizing to one position with a 50 USDT floor and 100 USDT cap', () => {
+  assert.equal(pkg.version, '6.4.5');
   assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);
   assert.match(server, /const V601_HARD_MARGIN_CAP_USDT = 100;/);
   assert.match(env, /^R486_MAX_POSITIONS="1"$/m);
@@ -22,6 +22,10 @@ test('an open position pauses every candidate-producing path but keeps position 
   for (const worker of ['R385', 'R370', 'R328', 'R366']) {
     assert.match(server, new RegExp(`v644PauseCandidateWorker\\('${worker}'\\)`));
   }
+  assert.match(server, /v644PauseCandidateWorker\('R442'\)/,
+    'R442 pusu kontrolü de açık pozisyonda tamamen susmalı');
+  assert.match(server, /function r442PusuKur[\s\S]{0,180}if\(v644PositionFocusActive\(\)\)return;/,
+    'pozisyon odağında yeni R442 planı kurulmamalı');
   assert.ok((server.match(/if\(v644PositionFocusActive\(\)\)break;/g)||[]).length >= 5,
     'worker ve yardımcı veri döngüleri pozisyon açılır açılmaz kesilmeli');
   assert.match(server, /v644PauseCandidateWorker\(String\(worker\|\|'RADAR'\)/);

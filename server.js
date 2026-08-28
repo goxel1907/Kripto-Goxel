@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_4_POSITION_FOCUS_15M_MEMORY_50USDT'
+const LAZARUS_BUILD = 'V6_4_5_FOCUS_R442_R428_LATE_ENTRY_GUARD'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7931,6 +7931,37 @@ function r493R482OperationalSafety(decision={}){
   return {blocked,code,spreadPct,liquidityHard,nonLiquidityHard,softPoor:decision?.poorLiquidity===true&&!liquidityHard};
 }
 
+// V6.4.5: exact-backtest otoritesi normal fırsatlarda korunur. Yalnız birbirini
+// doğrulayan geç-giriş kanıtları birlikteyse (dikey hareket sonrası ret, yüksek
+// tepe riski, reclaim yok ve 5m beyin WAIT/düşük edge) MARKET pusuya çevrilir.
+// Tek RSI, tek WAIT veya tek mikro uyarı bu kapıyı çalıştıramaz.
+function v645LateExhaustionGate(story={},decision={},ctx={}){
+  const side=String(ctx.side||decision?.side||'LONG').toUpperCase();
+  const micro=story?.microConsensus||{};
+  const stage=String(story?.stage||'').toUpperCase();
+  const scenario=String(story?.mmScenario||'').toUpperCase();
+  const topRisk=Number(story?.topRisk||0);
+  const structuralTopEvidence=Number(story?.structuralTopEvidence||0);
+  const rsi4h=Number(story?.sourceRsi4h);
+  const edgeRaw=[decision?.brainConfidence,decision?.r142CalibratedEdge,decision?.brainRawEdge,decision?.score]
+    .find(v=>v!==null&&v!==undefined&&v!=='');
+  const edge=Number(edgeRaw);
+  const tier=String(decision?.tier||'').toUpperCase();
+  const lateSignals=[
+    micro.postImpulseReject===true,
+    story?.targetRejection===true,
+    story?.parabolicChase===true,
+    stage==='EXHAUSTION',
+    /POST_IMPULSE_REJECTION|WAIT_RECLAIM/.test(scenario)
+  ].filter(Boolean).length;
+  const reclaimProof=!!(ctx.proof||ctx.retestProof||micro.confirmedPullback||micro.confirmedContinuation||story?.validatedTrendRetest);
+  const weakFiveMinuteBrain=tier==='WAIT'&&Number.isFinite(edge)&&edge<35;
+  const structuralRisk=topRisk>=6||structuralTopEvidence>=3||(Number.isFinite(rsi4h)&&rsi4h>=78&&topRisk>=5);
+  const active=side==='LONG'&&lateSignals>=2&&structuralRisk&&!reclaimProof&&weakFiveMinuteBrain;
+  return {active,code:active?'V645_LATE_EXHAUSTION_RECLAIM':'PASS',lateSignals,topRisk,structuralTopEvidence,
+    rsi4h:Number.isFinite(rsi4h)?rsi4h:null,tier:tier||null,edge:Number.isFinite(edge)?edge:null,reclaimProof};
+}
+
 function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   const side=String(opts.side||decision?.side||'LONG').toUpperCase(),quality=Number(story?.quality||0),topRisk=Number(story?.topRisk||0),timing=String(story?.timing||'MIXED').toUpperCase(),rawFlow=String(story?.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase(),flow=V592_POLICY_PARITY_MODE?'BALANCED_FLOW':rawFlow;
   const firstRRValue=entryTruth?.firstObstacleRR,firstRR=(firstRRValue===null||firstRRValue===undefined||firstRRValue==='')?NaN:Number(firstRRValue),plannedEntry=Number(entryTruth?.plannedEntry||opts.entry||0);
@@ -7948,6 +7979,13 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   if(r493EntrySafety.blocked)return {active:true,action:r493EntrySafety.action,riskScale:0,priority:r493EntrySafety.action==='PUSU',leverageBoost:false,r493EntrySafety,reason:`R493 giriş kapısı [${r493EntrySafety.code}]: ${r493EntrySafety.reason}`};
   if(V592_EXACT_BACKTEST_AUTHORITY){
     if(!planOk)return {active:false,action:'REJECT',riskScale:0,r493EntrySafety,reason:'execution plan direction invalid'};
+    const lateExhaustion=v645LateExhaustionGate(story,decision,{side,proof,retestProof});
+    if(lateExhaustion.active){
+      return {active:true,action:'PUSU',riskScale:0,priority:true,hardTimingVeto:true,leverageBoost:false,
+        code:lateExhaustion.code,lateExhaustion,r493EntrySafety,r300Shadow:decision?.r300Shadow||null,
+        r486Shadow:{quality,topRisk,timing,bias:story?.bias||null,decisionImpact:true,orderBlocking:true,sizingImpact:false,exitImpact:false},
+        reason:`V645 geç-giriş koruması: tepe/yorulma kanıtları ${lateExhaustion.lateSignals}, topRisk ${lateExhaustion.topRisk}, 5m ${lateExhaustion.tier} edge ${lateExhaustion.edge}; reclaim bekleniyor`};
+    }
     // R/R kapisinin gecmesi zamanlama sozlesmesini iptal edemez. TRAP/WAIT,
     // yon karsitligi veya tutarsiz SL/TP varsa MARKET yerine pusu/reddet.
     if(entryTruth?.marketAllowed===false){
@@ -10781,6 +10819,7 @@ const r442PusuPlanlar = new Map();  // BASE → {entry, sl, tp, conf, ts, expire
 const r442ForceAi = new Map();      // BASE → ts (tekrar freni tek seferlik atlanır)
 function r442PusuKur(symbolFull, ai, kaynak) {
   try {
+    if(v644PositionFocusActive())return;
     const base = String(symbolFull||'').replace('USDT','').toUpperCase();
     const entry = Number(ai?.entry || 0);
     if (!(entry > 0) || String(ai?.side||'').toUpperCase() === 'SHORT') return;
@@ -10794,12 +10833,17 @@ function r442PusuKur(symbolFull, ai, kaynak) {
 }
 async function r442PusuKontrol() {
   try {
+    if(v644PauseCandidateWorker('R442'))return;
     const now = Date.now();
     for (const [base, p] of r442PusuPlanlar) {
+      if(v644PositionFocusActive())return;
       if (now > p.expiresAt) { r442PusuPlanlar.delete(base); logAuto(`🪤 ${base} R442 pusu süresi doldu (75dk) — kaldırıldı`); continue; }
       const full = base + 'USDT';
       let mark = 0;
       try { const t = await bPub('/fapi/v1/ticker/price', `symbol=${full}`); mark = Number(t?.price || 0); } catch(_e) { continue; }
+      // Fiyat isteği beklerken pozisyon açılmış olabilir. Wake yazmadan hemen önce
+      // odağı yeniden doğrula; böylece yarış durumunda ikinci aday tetiklenmez.
+      if(v644PositionFocusActive())return;
       if (!(mark > 0)) continue;
       if (p.sl && mark <= p.sl) { r442PusuPlanlar.delete(base); logAuto(`🪤 ${base} R442 pusu İPTAL: fiyat ${mark} plan SL'inin (${p.sl}) altına indi — plan geçersizleşti, körlemesine işletilmez`); continue; }
       const sapma = Math.abs(mark - p.entry) / p.entry * 100;
@@ -27685,7 +27729,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               const r447Wait = ['PUSU','REJECT'].includes(String(r447Authority.action||''));
               // ═══ V637 ═══ yurutme karari: PUSU R495'e devreder, yalniz REJECT bekletir.
               const _v637R447Wait = V637_PUSU_R495E_DEVRET
-                ? String(r447Authority.action||'')==='REJECT'
+                ? (String(r447Authority.action||'')==='REJECT'||r447Authority.hardTimingVeto===true)
                 : r447Wait;
               if (V637_PUSU_R495E_DEVRET && r447Wait && !_v637R447Wait) {
                 try{logAuto(`🔁 ${coin.symbol} V637: otorite PUSU — aday oldurulmedi, R495 3 kapali-1m kabulune devredildi (${r447Authority.reason||''})`.slice(0,220));}catch(_){}
@@ -27773,7 +27817,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                 const storyWait = ['PUSU','REJECT'].includes(authority.action);
                 // ═══ V637 ═══ telemetri storyWait ile AYNEN kalir; yurutme _v637Wait'e bakar.
                 const _v637Wait = V637_PUSU_R495E_DEVRET
-                  ? String(authority.action||'')==='REJECT'
+                  ? (String(authority.action||'')==='REJECT'||authority.hardTimingVeto===true)
                   : storyWait;
                 if (V637_PUSU_R495E_DEVRET && storyWait && !_v637Wait) {
                   try{logAuto(`🔁 ${coin.symbol} V637: otorite PUSU — aday oldurulmedi, R495'e devredildi (${authority.reason||''})`.slice(0,220));}catch(_){}
@@ -28753,10 +28797,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           // Piksel screenshot yerine AI'ın O AN gördüğü SAYISAL kare donduruluyor: son 40×15m mum + seviye
           // haritası + akış + plan. Fable pikselden değil sayıdan analiz eder; headless-browser yükü/riski yok.
           // Restart'a dayanıklı: ledger'a (trade_ledger_live.json) gömülür, /api/rapor.md'de yazılır.
+          let r428GirisFoto=null;
           try {
             const _m15 = aiData?.mumlar?.['15m'] || aiData?.candles?.['15m'] || null;
-            positionState[full] = positionState[full] || {};
-            positionState[full].girisFoto = {
+            r428GirisFoto = {
               t: Date.now(), sym: String(coin.symbol), gainer: coin.gainerRank ?? null,
               plan: { giris: ai.entry ?? null, tp: ai.tp ?? null, sl: ai.sl ?? null, guven: ai.confidence ?? null,
                       rr: (Number(ai.tp)>0&&Number(ai.sl)>0&&Number(ai.entry)>Number(ai.sl)) ? Number(((Number(ai.tp)-Number(ai.entry))/(Number(ai.entry)-Number(ai.sl))).toFixed(2)) : null,
@@ -28833,6 +28877,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             openedAt: Date.now(),
             r480Shadow: decisionChain?.r480Shadow || ai?.r480Shadow || analysis?.r480Shadow || null,
             r491Brake: r491BrakeMeta,
+            girisFoto: r428GirisFoto,
                 openReason: (decisionChain?.aiBrain?.ok && decisionChain.aiBrain.reasoning)
                   ? `${decisionChain.aiBrain.mekanik?'MEKANİK':'AI'} ${decisionChain.aiBrain.side} güven ${decisionChain.aiBrain.confidence}%: ${decisionChain.aiBrain.reasoning}${decisionChain.aiBrain.plan?' | PLAN: '+decisionChain.aiBrain.plan:''}`
                   : (decisionChain?.reason || ''),
