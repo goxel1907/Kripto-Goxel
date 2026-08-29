@@ -1,6 +1,6 @@
 {
   "name": "lazarus-v645-canli",
-  "version": "6.4.7",
+  "version": "6.4.8",
   "private": true,
   "main": "server.js",
   "scripts": {

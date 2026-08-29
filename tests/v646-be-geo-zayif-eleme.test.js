@@ -16,9 +16,11 @@ test('V646: basa-bas esigi geo carpanini ve 0.65 tabanini icerir', () => {
   assert.match(server, /const breakEvenAt = V646_BE_GEO \? Math\.max\(_v646BeTaban, 0\.65\) \* _v646Geo : _v646BeTaban;/);
 });
 
-test('V646: stop genisligi state.slPct DEGIL, gercek entry/currentSL farkindan turetilir', () => {
-  // state.slPct bu kodda acilista HIC yazilmiyor; kullanilsaydi geo hep 1 olur, yama no-op olurdu.
-  assert.match(server, /_v646Sl = \(_e - _s\) \/ _e \* 100; _v646Kaynak = 'currentSL';/);
+test('V646/V648: stop genisligi gercek fiyatlardan turetilir, oncelik PLAN stopu', () => {
+  // V646: state.slPct'e guvenilmez (o yol geo'yu 1'de birakip yamayi no-op yapardi).
+  // V648: oncelik initialSL (plan stopu) — backtestte slpct islem boyunca SABIT.
+  assert.match(server, /_v646Sl = \(_e - _s\) \/ _e \* 100; _v646Kaynak = \(_s0 > 0 \? 'initialSL' : 'currentSL'\);/);
+  assert.match(server, /const _s = _s0 > 0 \? _s0 : \(Number\(state\?\.currentSL\) \|\| 0\);/);
   assert.match(server, /else if \(Number\(cfg\.slPct\) > 0\)/);
 });
 
@@ -71,7 +73,7 @@ test('V646: karli kurulumlar listede DEGIL', () => {
 
 // ── sozlesme korunuyor mu ───────────────────────────────────────────────────
 test('V646: risk sozlesmesi ve onceki surumlerin duzeltmeleri yerinde', () => {
-  assert.match(server, /V6_4_7_15M_HAFIZA_KARARA_GIRDI/);
+  assert.match(server, /const LAZARUS_BUILD = 'V6_4_8_EN_YAKIN_ENGEL_PIVOT'/);
   assert.match(server, /V637_PUSU_R495E_DEVRET/);   // PUSU -> R495 devri
   assert.match(server, /V634_TOPLAM_RISK_PCT/);      // 1 poz x %8 sozlesmesi
   assert.match(server, /V628_ATESLEME_KOPRUSU/);     // retestBelowStop koprusu

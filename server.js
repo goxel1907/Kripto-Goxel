@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_7_15M_HAFIZA_KARARA_GIRDI'
+const LAZARUS_BUILD = 'V6_4_8_EN_YAKIN_ENGEL_PIVOT'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3924,6 +3924,12 @@ const V647_HAFIZA_ENGEL = String(process.env.V647_HAFIZA_ENGEL ?? '1') !== '0';
 const V647_BOLGE_GIRISI = String(process.env.V647_BOLGE_GIRISI ?? '1') !== '0';
 // C: kaldirac tam esitlik yerine aralik. VARSAYILAN KAPALI — olcum 10x'i bu bakiyede desteklemiyor.
 const V647_KALDIRAC_ARALIK = String(process.env.V647_KALDIRAC_ARALIK ?? '0') !== '0';
+// ═══ V648 ═══ en YAKIN engel kazanir (hikaye vs 15m hafiza) — KOMAUSDT kaniti
+const V648_EN_YAKIN_ENGEL = String(process.env.V648_EN_YAKIN_ENGEL ?? '1') !== '0';
+// ═══ V648 ═══ swing-high pivotlar da engel adayidir (backtest boyle yapiyor)
+const V648_PIVOT_ENGEL = String(process.env.V648_PIVOT_ENGEL ?? '1') !== '0';
+// ═══ V648 ═══ V646 geo carpani plan stopundan (initialSL) turetilir, kayan stoptan degil
+const V648_GEO_DONDUR = String(process.env.V648_GEO_DONDUR ?? '1') !== '0';
 const V647_MAX_KALDIRAC = Math.max(3, Math.min(20, Math.floor(Number(process.env.R486_MAX_LEVERAGE || 10))));
 const V630_YOGUNLASMA = (String(process.env.V630_YOGUNLASMA ?? '1') !== '0')
                      && Math.max(1, Math.min(2, Math.floor(Number(process.env.R486_MAX_POSITIONS || 1)))) > 1;
@@ -7697,6 +7703,13 @@ function r49356Obstacle(tfRow={},price=0){
   add(tfRow.orderBlocks?.supply?.low,'SUPPLY_OB','HARD');
   add(tfRow.inefficiencies?.fvg?.bear?.low,'BEAR_FVG','WEAK');
   add(tfRow.profile?.vah,'VAH','WEAK');
+  // ═══ V648 ═══ BACKTEST 15m'de SWING-HIGH PIVOT kullaniyor; canli listede yoktu.
+  // KOMAUSDT: 0.015198 ve 0.015208'de iki ardisik 15m reddi -> ikisi de likidite/OB/FVG
+  // degildi, bu yuzden gorunmedi ve ilk engel %8,89'daki aralik tepesi sanildi.
+  // Pivotlar zaten tfRow.structure.pivots.high icinde hesaplanmis duruyordu.
+  if (V648_PIVOT_ENGEL) {
+    for (const _pv of (tfRow.structure?.pivots?.high || [])) add(Number(_pv?.price), 'SWING_HIGH_PIVOT', 'WEAK');
+  }
   for(const g of tfRow.profile?.ghostPoc||[])add(g.price,'GHOST_POC',g.strength>=.75?'HARD':'WEAK');
   c.sort((a,b)=>a.price-b.price);const first=c[0]||null;
   return {coverageComplete:true,state:first?(first.strength==='HARD'?'HARD_OBSTACLE':'WEAK_OBSTACLE'):'OPEN_TRACK',firstObstacle:first?{...first,price:r49356Round(first.price,10),distPct:r49356Round(first.distPct,3)}:null,firstObstacleRR:null,candidates:c.slice(0,10).map(x=>({...x,price:r49356Round(x.price,10),distPct:r49356Round(x.distPct,3)}))};
@@ -7856,24 +7869,32 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
   const base={active:true,blocked:true,firstObstacleRR:firstKnown?+firstRR.toFixed(3):null,minFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,firstObstacleRole:role||null,decisionBasis:'BACKTEST_OBSERVABLE_ONLY',candidateMemory,researchShadow};
   if(candidateMemory?.state==='WAIT_RECLAIM')return {...base,action:'PUSU',code:'V644_PRIOR_STOP_WAIT_RECLAIM',reason:`önceki 15m plan stopu kırıldı; reclaim gelmeden LONG yok · ${candidateMemory.summary}`};
   if(candidateMemory?.state==='NO_CHASE_AFTER_PRIOR_TARGET')return {...base,action:'PUSU',code:'V644_PRIOR_TARGET_NO_CHASE',reason:`önceki 15m ilk hedefi tüketildi ve geç giriş kanıtı var; retest bekle · ${candidateMemory.summary}`};
-  // ═══ V647-A ═══ Canli hikaye ustte engel bulamadiysa 15m HAFIZADAKI target1'i kullan.
-  // Kapi GEVSEMIYOR: ayni 0.35 esigi, sadece engel kaynagi hafizadan geliyor.
-  let _v647RR = firstRR, _v647Known = firstKnown, _v647Kaynak = null;
-  if (V647_HAFIZA_ENGEL && !_v647Known && candidateMemory?.available) {
+  // ═══ V648 ═══ EN YAKIN ENGEL KAZANIR.
+  // KOMAUSDT 0.015132: hikaye %8,89'daki aralik tepesini ilk engel saydi (R/R 2,40) ve
+  // gecti; hafiza ise TP1 0.015167'yi biliyordu (R/R 0,12). Yakin olan dogru olandir.
+  // Eski sart `!_v647Known` idi: hikaye bir engel buldugunda hafiza hic sorulmuyordu.
+  let _v647RR = firstRR, _v647Known = firstKnown, _v647Kaynak = firstKnown ? 'HIKAYE' : null;
+  if (V647_HAFIZA_ENGEL && candidateMemory?.available) {
     const _e = Number(entryTruth?.plannedEntry || entryTruth?.originalEntry || opts?.entry || 0);
     const _s = Number(entryTruth?.recommendedSl || entryTruth?.originalSl || opts?.sl || 0);
     const _t = Number(candidateMemory?.target1 || 0);
     if (_e > 0 && _s > 0 && _s < _e && _t > _e) {
       const _rr = (_t - _e) / (_e - _s);
-      if (Number.isFinite(_rr) && _rr > 0) { _v647RR = _rr; _v647Known = true; _v647Kaynak = '15M_HAFIZA_TARGET1'; }
+      // en yakin engel = en KUCUK R/R. V648 kapaliysa eski davranis (yalniz bosluk doldur).
+      if (Number.isFinite(_rr) && _rr > 0 && (!_v647Known || (V648_EN_YAKIN_ENGEL && _rr < _v647RR))) {
+        _v647RR = _rr; _v647Known = true; _v647Kaynak = '15M_HAFIZA_TARGET1';
+      }
+    } else if (!(_e > 0 && _s > 0)) {
+      // ═══ V648 ═══ SESSIZ NO-OP ALARMI: bu satir V647-A'da olsaydi olu kod ilk dakikada gorulurdu.
+      try { logAuto(`⚠️ ${story?.symbol||''} V648 hafiza engeli HESAPLANAMADI · giris ${_e} · stop ${_s} · TP1 ${_t} — dal calismiyor`); } catch(_) {}
     }
   }
   if(R493_REQUIRE_FIRST_OBSTACLE&&!_v647Known)return {...base,action:'PUSU',code:'FIRST_OBSTACLE_RR_UNKNOWN',reason:'ilk engel R/R bilinmiyor (15m hafizada da yok): MARKET/TACTICAL yok'};
-  if(_v647Known&&_v647RR<R493_MIN_FIRST_OBSTACLE_RR)return {...base,firstObstacleRR:+_v647RR.toFixed(3),firstObstacleSource:_v647Kaynak,action:'PUSU',code:'LOW_FIRST_OBSTACLE_RR',reason:`ilk engel R/R ${_v647RR.toFixed(2)} < ${R493_MIN_FIRST_OBSTACLE_RR.toFixed(2)}${_v647Kaynak?' (15m hafiza)':''}: daha iyi fiyat/reclaim bekle`};
-  if(_v647Kaynak){ try{ logAuto(`🧠 ${story?.symbol||''} V647 ilk engel 15m HAFIZADAN: target1 ${candidateMemory.target1} → R/R ${_v647RR.toFixed(2)} · ${candidateMemory.summary}`); }catch(_){} }
+  if(_v647Known&&_v647RR<R493_MIN_FIRST_OBSTACLE_RR)return {...base,firstObstacleRR:+_v647RR.toFixed(3),firstObstacleSource:_v647Kaynak,action:'PUSU',code:'LOW_FIRST_OBSTACLE_RR',reason:`ilk engel R/R ${_v647RR.toFixed(2)} < ${R493_MIN_FIRST_OBSTACLE_RR.toFixed(2)}${_v647Kaynak==='15M_HAFIZA_TARGET1'?' (15m hafiza)':''}: daha iyi fiyat/reclaim bekle`};
+  if(_v647Kaynak==='15M_HAFIZA_TARGET1'){ try{ logAuto(`🧠 ${story?.symbol||''} V647 ilk engel 15m HAFIZADAN: target1 ${candidateMemory.target1} → R/R ${_v647RR.toFixed(2)} · ${candidateMemory.summary}`); }catch(_){} }
   return {...base,blocked:false,action:'ALLOW',code:'PASS_BACKTEST_OBSERVABLE',
     firstObstacleRR:Number.isFinite(_v647RR)?+_v647RR.toFixed(3):base.firstObstacleRR,firstObstacleSource:_v647Kaynak,
-    reason:`backtestte gözlenebilir ilk-engel sözleşmesi uygun${_v647Kaynak?' (ilk engel 15m hafızadan)':''}${candidateMemory?.available?` · ${candidateMemory.summary}`:''}; canlı mikro-yapı yalnız kaydedildi`};
+    reason:`backtestte gözlenebilir ilk-engel sözleşmesi uygun${_v647Kaynak==='15M_HAFIZA_TARGET1'?' (ilk engel 15m hafızadan)':''}${candidateMemory?.available?` · ${candidateMemory.summary}`:''}; canlı mikro-yapı yalnız kaydedildi`};
 }
 
 function r486EntryTruthGuard(story={},opts={}){
@@ -7899,7 +7920,9 @@ function r486EntryTruthGuard(story={},opts={}){
   const fullRisk=entry>recommendedSl&&recommendedSl>0?entry-recommendedSl:risk,fullRR=recommendedTp>entry&&fullRisk>0?(recommendedTp-entry)/fullRisk:null,firstRRAdjusted=first>entry&&fullRisk>0?(first-entry)/fullRisk:firstObstacleRR;
   const firstObstacleSoft=firstRRAdjusted!==null&&firstRRAdjusted<R486_FIRST_OBSTACLE_MIN_RR&&!story.validatedTrendRetest&&!story.structuredContinuation;
   const legacyFirstObstacleHard=firstRRAdjusted!==null&&firstRRAdjusted<0.45&&String(story.firstObstacleRole||'')==='HARD_OBSTACLE'&&!story.validatedTrendRetest&&!story.structuredContinuation;
-  const r493EntrySafety=r493EntrySafetyGate(story,{firstObstacleRR:firstRRAdjusted,firstObstacleRole:story.firstObstacleRole,plannedEntry},{side});
+  // ═══ V648 ═══ V647-A OLU KODDU: gate'e recommendedSl/sl HIC gecilmiyordu, bu yuzden
+  // hafiza dalinin `_s > 0` sarti her zaman false kaldi ve dal bir kez bile calismadi.
+  const r493EntrySafety=r493EntrySafetyGate(story,{firstObstacleRR:firstRRAdjusted,firstObstacleRole:story.firstObstacleRole,plannedEntry,recommendedSl,originalSl:sl,originalEntry:entry},{side,entry:plannedEntry||entry,sl:recommendedSl});
   const firstObstacleHard=legacyFirstObstacleHard||['FIRST_OBSTACLE_RR_UNKNOWN','LOW_FIRST_OBSTACLE_RR'].includes(String(r493EntrySafety?.code||''));
   const rawFlowState=String(story.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase(),liveFlowAgainst=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(rawFlowState);
   // ═══ V628 ═══ ATESLEME KOPRUSU: taze kirilim + henuz uzamamis + dusuk ATR ise
@@ -22568,8 +22591,12 @@ async function managePosition(apiKey, apiSecret, pos) {
   let _v646Sl = 0, _v646Kaynak = 'YOK';
   {
     const _e = Number(state?.entryPrice) || Number(state?.config?.entryPrice) || 0;
-    const _s = Number(state?.currentSL) || 0;
-    if (_e > 0 && _s > 0 && _s < _e) { _v646Sl = (_e - _s) / _e * 100; _v646Kaynak = 'currentSL'; }
+    // ═══ V648 ═══ backtestte `slpct` islem boyunca SABIT (plan stopu). Canlida currentSL
+    // okunuyordu; stop BE'den once daralirsa geo kuculur ve BE ERKEN kurulur.
+    // KOMAUSDT: %2,391 -> %1,903 daraldi, geo 1,4065 yerine 1,1196, BE %20,4 erken.
+    const _s0 = V648_GEO_DONDUR ? (Number(state?.initialSL) || 0) : 0;
+    const _s = _s0 > 0 ? _s0 : (Number(state?.currentSL) || 0);
+    if (_e > 0 && _s > 0 && _s < _e) { _v646Sl = (_e - _s) / _e * 100; _v646Kaynak = (_s0 > 0 ? 'initialSL' : 'currentSL'); }
     else if (Number(cfg.slPct) > 0)  { _v646Sl = Number(cfg.slPct);    _v646Kaynak = 'cfg.slPct'; }
   }
   const _v646Geo = _v646Sl > 0 ? Math.max(1, Math.min(3, _v646Sl / 1.7)) : 1;

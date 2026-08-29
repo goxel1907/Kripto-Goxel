@@ -7,9 +7,16 @@ const root = path.join(__dirname, '..');
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const panel = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const env = fs.readFileSync(path.join(root, 'CANLI.env'), 'utf8');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+// Surum pini artik sabit metin degil: server.js ile package.json AYNI surumu
+// gostermek zorunda. Boylece unutulan bir surum bump'i da testte yakalanir.
+const BEKLENEN_BUILD_ONEK = 'V' + String(pkg.version).replace(/\./g, '_') + '_';
 
 test('latest archive contract is fail-closed and visible at runtime', () => {
-  assert.match(server, /V6_4_7_15M_HAFIZA_KARARA_GIRDI/);
+  const buildSatiri = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  assert.ok(buildSatiri, 'LAZARUS_BUILD tanimli olmali');
+  assert.ok(buildSatiri[1].startsWith(BEKLENEN_BUILD_ONEK),
+    `LAZARUS_BUILD (${buildSatiri[1]}) package.json surumuyle (${pkg.version}) uyusmuyor`);
   assert.match(server, /CANLI_KALDIRAC_7X_DEGIL/);
   assert.match(server, /CANLI_MAX_POZ_1_DEGIL/);
   assert.match(server, /CANLI_TEPE_VETO_KAPALI_DEGIL/);

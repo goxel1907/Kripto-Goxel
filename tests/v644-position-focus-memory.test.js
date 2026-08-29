@@ -10,7 +10,12 @@ const env = fs.readFileSync(path.join(root, 'CANLI.env'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 test('V6.4.5 locks live sizing to one position with a 50 USDT floor and 100 USDT cap', () => {
-  assert.equal(pkg.version, '6.4.7');
+  // Sabit surum yerine TUTARLILIK: package.json ile server.js ayni surumu gostermeli.
+  // Boylece her surumde bu satiri elle guncellemek gerekmez, unutulan bump ise yakalanir.
+  const _build = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  assert.ok(_build, 'LAZARUS_BUILD tanimli olmali');
+  assert.ok(_build[1].startsWith('V' + String(pkg.version).replace(/\./g, '_') + '_'),
+    `LAZARUS_BUILD (${_build[1]}) package.json surumuyle (${pkg.version}) uyusmuyor`);
   assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);
   assert.match(server, /const V601_HARD_MARGIN_CAP_USDT = 100;/);
   assert.match(env, /^R486_MAX_POSITIONS="1"$/m);

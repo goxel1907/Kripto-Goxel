@@ -52,7 +52,7 @@ test('V647-C: aralik KAPALIYKEN eski tam-esitlik davranisi korunur', () => {
 });
 
 test('V647: onceki surumlerin duzeltmeleri yerinde', () => {
-  assert.match(server, /V6_4_7_15M_HAFIZA_KARARA_GIRDI/);
+  assert.match(server, /const LAZARUS_BUILD = 'V6_4_8_EN_YAKIN_ENGEL_PIVOT'/);
   assert.match(server, /V646_BE_GEO/);
   assert.match(server, /V646_ZAYIF_KURULUMLAR/);
   assert.match(server, /V637_PUSU_R495E_DEVRET/);
