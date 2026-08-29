@@ -10,7 +10,7 @@ const env = fs.readFileSync(path.join(root, 'CANLI.env'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 test('V6.4.5 locks live sizing to one position with a 50 USDT floor and 100 USDT cap', () => {
-  assert.equal(pkg.version, '6.4.5');
+  assert.equal(pkg.version, '6.4.6');
   assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);
   assert.match(server, /const V601_HARD_MARGIN_CAP_USDT = 100;/);
   assert.match(env, /^R486_MAX_POSITIONS="1"$/m);

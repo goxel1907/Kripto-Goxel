@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_5_FOCUS_R442_R428_LATE_ENTRY_GUARD'
+const LAZARUS_BUILD = 'V6_4_6_BE_GEO_ZAYIF_ELEME'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3912,6 +3912,11 @@ const V629_TEPE_OLCUMU = String(process.env.V629_TEPE_OLCUMU ?? '1') !== '0';
 // kabulune devredilir (backtestin kazandigi akis). REJECT sert kalir.
 // Geri almak icin: V637_PUSU_R495E_DEVRET="0"
 const V637_PUSU_R495E_DEVRET = String(process.env.V637_PUSU_R495E_DEVRET ?? '1') !== '0';
+// ═══ V646 ═══ basa-bas esigi backtestin geo carpanini kullanir (olculdu: canli 3x erken kuruyordu)
+const V646_BE_GEO = String(process.env.V646_BE_GEO ?? '1') !== '0';
+// ═══ V646 ═══ backtestte DE zarar eden imzalar aday listesinden elenir
+const V646_ZAYIF_ELEME = String(process.env.V646_ZAYIF_ELEME ?? '1') !== '0';
+const V646_ZAYIF_KURULUMLAR = Object.freeze(['SWEEP_RECLAIM_HIGH_ATR','CEKIC_ALT_FITIL']);
 const V630_YOGUNLASMA = (String(process.env.V630_YOGUNLASMA ?? '1') !== '0')
                      && Math.max(1, Math.min(2, Math.floor(Number(process.env.R486_MAX_POSITIONS || 1)))) > 1;
 const V630_MIN_KANIT  = Math.max(2, Math.min(5, Number(process.env.V630_MIN_KANIT || 3)));
@@ -8457,6 +8462,15 @@ function r447MekanikKarar(symbol, data = {}) {
       'SWEEP_RECLAIM_HIGH_ATR', `dip ${minL} süpürüldü + geri alındı · ATR %${atr.toFixed(1)} (≥5 şartı)`, 75, false);
 
     let r481Uygun = r481Adaylar.filter(a => !(Number.isFinite(k24) && k24 >= 85 && a.tip !== 'PATLAMA'));
+    // ═══ V646 ═══ backtestte DE zarar eden imzalar (SWEEP_RECLAIM_HIGH_ATR -7,119$/islem n=16 ·
+    // CEKIC_ALT_FITIL -2,163$/islem n=25). SWEEP canlida da kaybediyor: PF 0,74 n=24.
+    if (V646_ZAYIF_ELEME) {
+      const _v646Once = r481Uygun.length;
+      r481Uygun = r481Uygun.filter(a => !V646_ZAYIF_KURULUMLAR.includes(a.tip));
+      if (_v646Once !== r481Uygun.length) {
+        try { logAuto(`🧹 ${symbol} V646 zayıf kurulum elendi (backtestte de zarar): ${_v646Once - r481Uygun.length} aday`); } catch(_) {}
+      }
+    }
     if (r481Uygun.length) {
       if (R481_STRATEJI_ONCELIK_AKTIF) {
         r481Uygun.sort((a,b)=> (r481StrategyScore(b.tip)-r481StrategyScore(a.tip)) || (R481_ESKI_IMZA_SIRASI.indexOf(a.tip)-R481_ESKI_IMZA_SIRASI.indexOf(b.tip)));
@@ -22520,7 +22534,23 @@ async function managePosition(apiKey, apiSecret, pos) {
   // yanlıştı; BE vardı ama düşük-ATR'de erişilmezdi. Anatomi satırı (🫀) bu deliği ifşa etti. ═══
   const r390Atr = Number(state.atrPct || 0);
   const r390K = r390Atr > 0 ? Math.min(1, Math.max(0.3, r390Atr / 3.0)) : 1;
-  const breakEvenAt   = (Number(cfg.aiBE)  > 0 ? Number(cfg.aiBE)  : 0.8) * r390K;
+  // ═══ V646 ═══ BACKTEST FORMULU: be_thr = max(.8*r390, .65) * geo,  geo = clamp(slPct/1.7, 1, 3)
+  // Canlida geo yoktu -> BE 3 kat erken kuruluyordu (MAGMA %1,28 · ROBO BREAK_EVEN_SL +0,71$).
+  // DIKKAT: state.slPct bu kodda HIC yazilmiyor; gercek stop mesafesi entry/currentSL'den turetilir.
+  const _v646BeTaban = (Number(cfg.aiBE) > 0 ? Number(cfg.aiBE) : 0.8) * r390K;
+  let _v646Sl = 0, _v646Kaynak = 'YOK';
+  {
+    const _e = Number(state?.entryPrice) || Number(state?.config?.entryPrice) || 0;
+    const _s = Number(state?.currentSL) || 0;
+    if (_e > 0 && _s > 0 && _s < _e) { _v646Sl = (_e - _s) / _e * 100; _v646Kaynak = 'currentSL'; }
+    else if (Number(cfg.slPct) > 0)  { _v646Sl = Number(cfg.slPct);    _v646Kaynak = 'cfg.slPct'; }
+  }
+  const _v646Geo = _v646Sl > 0 ? Math.max(1, Math.min(3, _v646Sl / 1.7)) : 1;
+  const breakEvenAt = V646_BE_GEO ? Math.max(_v646BeTaban, 0.65) * _v646Geo : _v646BeTaban;
+  // Sessiz no-op olmasin: geo=1 ve kaynak YOK ise yama fiilen calismiyordur, logda gorunur.
+  if (V646_BE_GEO && Number(state?._v646Log || 0) !== 1) {
+    try { state._v646Log = 1; logAuto(`📐 ${sym} V646 BE esigi: %${_v646BeTaban.toFixed(2)} → %${breakEvenAt.toFixed(2)} · SL %${_v646Sl.toFixed(2)} (${_v646Kaynak}) · geo ${_v646Geo.toFixed(2)}`); } catch(_) {}
+  }
   const karTasima1    = (Number(cfg.aiKT1) > 0 ? Number(cfg.aiKT1) : 1.5) * r390K;
   const karTasima2    = (Number(cfg.aiKT2) > 0 ? Number(cfg.aiKT2) : 3.0) * r390K;
   const karTasima3    = (Number(cfg.aiKT3) > 0 ? Number(cfg.aiKT3) : 5.5) * r390K;

@@ -5,3 +5,5 @@ node_modules/
 .env
 .env.*
 !CANLI.env
+apply_v646*.py
+*.yedek
