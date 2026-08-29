@@ -71,7 +71,7 @@ test('V646: karli kurulumlar listede DEGIL', () => {
 
 // ── sozlesme korunuyor mu ───────────────────────────────────────────────────
 test('V646: risk sozlesmesi ve onceki surumlerin duzeltmeleri yerinde', () => {
-  assert.match(server, /V6_4_6_BE_GEO_ZAYIF_ELEME/);
+  assert.match(server, /V6_4_7_15M_HAFIZA_KARARA_GIRDI/);
   assert.match(server, /V637_PUSU_R495E_DEVRET/);   // PUSU -> R495 devri
   assert.match(server, /V634_TOPLAM_RISK_PCT/);      // 1 poz x %8 sozlesmesi
   assert.match(server, /V628_ATESLEME_KOPRUSU/);     // retestBelowStop koprusu

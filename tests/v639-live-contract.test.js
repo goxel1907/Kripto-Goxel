@@ -9,7 +9,7 @@ const panel = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const env = fs.readFileSync(path.join(root, 'CANLI.env'), 'utf8');
 
 test('latest archive contract is fail-closed and visible at runtime', () => {
-  assert.match(server, /V6_4_6_BE_GEO_ZAYIF_ELEME/);
+  assert.match(server, /V6_4_7_15M_HAFIZA_KARARA_GIRDI/);
   assert.match(server, /CANLI_KALDIRAC_7X_DEGIL/);
   assert.match(server, /CANLI_MAX_POZ_1_DEGIL/);
   assert.match(server, /CANLI_TEPE_VETO_KAPALI_DEGIL/);

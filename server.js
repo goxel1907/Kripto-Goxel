@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_6_BE_GEO_ZAYIF_ELEME'
+const LAZARUS_BUILD = 'V6_4_7_15M_HAFIZA_KARARA_GIRDI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3917,6 +3917,14 @@ const V646_BE_GEO = String(process.env.V646_BE_GEO ?? '1') !== '0';
 // ═══ V646 ═══ backtestte DE zarar eden imzalar aday listesinden elenir
 const V646_ZAYIF_ELEME = String(process.env.V646_ZAYIF_ELEME ?? '1') !== '0';
 const V646_ZAYIF_KURULUMLAR = Object.freeze(['SWEEP_RECLAIM_HIGH_ATR','CEKIC_ALT_FITIL']);
+// ═══ V647 ═══ 15m hafizasi artik KARARA girer (once yalnizca veto uretiyordu)
+// A: hafizadaki target1 ilk engel olarak kullanilir (FIRST_OBSTACLE_RR_UNKNOWN blokajini cozer)
+const V647_HAFIZA_ENGEL = String(process.env.V647_HAFIZA_ENGEL ?? '1') !== '0';
+// B: ENTRY_ZONE_RETEST + reclaim artik POZITIF kanit (retestProof)
+const V647_BOLGE_GIRISI = String(process.env.V647_BOLGE_GIRISI ?? '1') !== '0';
+// C: kaldirac tam esitlik yerine aralik. VARSAYILAN KAPALI — olcum 10x'i bu bakiyede desteklemiyor.
+const V647_KALDIRAC_ARALIK = String(process.env.V647_KALDIRAC_ARALIK ?? '0') !== '0';
+const V647_MAX_KALDIRAC = Math.max(3, Math.min(20, Math.floor(Number(process.env.R486_MAX_LEVERAGE || 10))));
 const V630_YOGUNLASMA = (String(process.env.V630_YOGUNLASMA ?? '1') !== '0')
                      && Math.max(1, Math.min(2, Math.floor(Number(process.env.R486_MAX_POSITIONS || 1)))) > 1;
 const V630_MIN_KANIT  = Math.max(2, Math.min(5, Number(process.env.V630_MIN_KANIT || 3)));
@@ -7848,9 +7856,24 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
   const base={active:true,blocked:true,firstObstacleRR:firstKnown?+firstRR.toFixed(3):null,minFirstObstacleRR:R493_MIN_FIRST_OBSTACLE_RR,firstObstacleRole:role||null,decisionBasis:'BACKTEST_OBSERVABLE_ONLY',candidateMemory,researchShadow};
   if(candidateMemory?.state==='WAIT_RECLAIM')return {...base,action:'PUSU',code:'V644_PRIOR_STOP_WAIT_RECLAIM',reason:`önceki 15m plan stopu kırıldı; reclaim gelmeden LONG yok · ${candidateMemory.summary}`};
   if(candidateMemory?.state==='NO_CHASE_AFTER_PRIOR_TARGET')return {...base,action:'PUSU',code:'V644_PRIOR_TARGET_NO_CHASE',reason:`önceki 15m ilk hedefi tüketildi ve geç giriş kanıtı var; retest bekle · ${candidateMemory.summary}`};
-  if(R493_REQUIRE_FIRST_OBSTACLE&&!firstKnown)return {...base,action:'PUSU',code:'FIRST_OBSTACLE_RR_UNKNOWN',reason:'ilk engel R/R bilinmiyor: MARKET/TACTICAL yok'};
-  if(firstKnown&&firstRR<R493_MIN_FIRST_OBSTACLE_RR)return {...base,action:'PUSU',code:'LOW_FIRST_OBSTACLE_RR',reason:`ilk engel R/R ${firstRR.toFixed(2)} < ${R493_MIN_FIRST_OBSTACLE_RR.toFixed(2)}: daha iyi fiyat/reclaim bekle`};
-  return {...base,blocked:false,action:'ALLOW',code:'PASS_BACKTEST_OBSERVABLE',reason:`backtestte gözlenebilir ilk-engel sözleşmesi uygun${candidateMemory?.available?` · ${candidateMemory.summary}`:''}; canlı mikro-yapı yalnız kaydedildi`};
+  // ═══ V647-A ═══ Canli hikaye ustte engel bulamadiysa 15m HAFIZADAKI target1'i kullan.
+  // Kapi GEVSEMIYOR: ayni 0.35 esigi, sadece engel kaynagi hafizadan geliyor.
+  let _v647RR = firstRR, _v647Known = firstKnown, _v647Kaynak = null;
+  if (V647_HAFIZA_ENGEL && !_v647Known && candidateMemory?.available) {
+    const _e = Number(entryTruth?.plannedEntry || entryTruth?.originalEntry || opts?.entry || 0);
+    const _s = Number(entryTruth?.recommendedSl || entryTruth?.originalSl || opts?.sl || 0);
+    const _t = Number(candidateMemory?.target1 || 0);
+    if (_e > 0 && _s > 0 && _s < _e && _t > _e) {
+      const _rr = (_t - _e) / (_e - _s);
+      if (Number.isFinite(_rr) && _rr > 0) { _v647RR = _rr; _v647Known = true; _v647Kaynak = '15M_HAFIZA_TARGET1'; }
+    }
+  }
+  if(R493_REQUIRE_FIRST_OBSTACLE&&!_v647Known)return {...base,action:'PUSU',code:'FIRST_OBSTACLE_RR_UNKNOWN',reason:'ilk engel R/R bilinmiyor (15m hafizada da yok): MARKET/TACTICAL yok'};
+  if(_v647Known&&_v647RR<R493_MIN_FIRST_OBSTACLE_RR)return {...base,firstObstacleRR:+_v647RR.toFixed(3),firstObstacleSource:_v647Kaynak,action:'PUSU',code:'LOW_FIRST_OBSTACLE_RR',reason:`ilk engel R/R ${_v647RR.toFixed(2)} < ${R493_MIN_FIRST_OBSTACLE_RR.toFixed(2)}${_v647Kaynak?' (15m hafiza)':''}: daha iyi fiyat/reclaim bekle`};
+  if(_v647Kaynak){ try{ logAuto(`🧠 ${story?.symbol||''} V647 ilk engel 15m HAFIZADAN: target1 ${candidateMemory.target1} → R/R ${_v647RR.toFixed(2)} · ${candidateMemory.summary}`); }catch(_){} }
+  return {...base,blocked:false,action:'ALLOW',code:'PASS_BACKTEST_OBSERVABLE',
+    firstObstacleRR:Number.isFinite(_v647RR)?+_v647RR.toFixed(3):base.firstObstacleRR,firstObstacleSource:_v647Kaynak,
+    reason:`backtestte gözlenebilir ilk-engel sözleşmesi uygun${_v647Kaynak?' (ilk engel 15m hafızadan)':''}${candidateMemory?.available?` · ${candidateMemory.summary}`:''}; canlı mikro-yapı yalnız kaydedildi`};
 }
 
 function r486EntryTruthGuard(story={},opts={}){
@@ -7975,7 +7998,7 @@ function r48633StoryAuthority(story={},decision={},entryTruth={},opts={}){
   const rawFlowAgainst=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN','STALE_FLOW'].includes(rawFlow),flowAgainst=V592_POLICY_PARITY_MODE?false:rawFlowAgainst,bullVotes=V592_POLICY_PARITY_MODE?0:Number(story?.orderFlow?.bullVotes?.length||0),bearVotes=V592_POLICY_PARITY_MODE?0:Number(story?.orderFlow?.bearVotes?.length||0),mtfBear=['15m','1h','4h','1d'].filter(tf=>String(story?.tf?.[tf]?.trend||'')==='DOWN_LH_LL').length;
   const semanticDirectionConflict=R486_STORY_DIRECTION_LOCK&&side==='LONG'&&(String(story?.bias||'').toUpperCase()==='SHORT'||(mtfBear>=3&&(flowAgainst||bearVotes>bullVotes))),explicitStoryAgainst=side!=='LONG'||timing==='AVOID_LONG'||String(story?.bias||'').toUpperCase()==='SHORT',confirmationConflict=semanticDirectionConflict||(microBear&&flowAgainst&&quality<68);
   const trigger=!!(decision?.r447Signature||decision?.brainAction==='TRADE'||decision?.autoOk||decision?.r160TraderDecision||decision?.r159MomentumPass||decision?.r156FastBypass||decision?.r284WaitUpgradeOk||decision?.r289Playbook?.tradeOk||decision?.r290Smc5m?.tradeOk||decision?.r291Confluence?.tradeOk||decision?.r190Edge?.earlyContinuation||decision?.r190Edge?.squeeze||decision?.r88VurKacOk);
-  const breakoutProof=!!(micro.confirmedContinuation||story?.structuredContinuation||story?.trendBreaks?.bull||decision?.r117MssOk||decision?.r289Playbook?.tradeOk||decision?.r291Confluence?.tradeOk),retestProof=!!(micro.confirmedPullback||story?.validatedTrendRetest||decision?.r117BodyReclaimOk||decision?.r117TrapSweepTaken),proof=!!(breakoutProof||retestProof);
+  const breakoutProof=!!(micro.confirmedContinuation||story?.structuredContinuation||story?.trendBreaks?.bull||decision?.r117MssOk||decision?.r289Playbook?.tradeOk||decision?.r291Confluence?.tradeOk),retestProof=!!(micro.confirmedPullback||story?.validatedTrendRetest||decision?.r117BodyReclaimOk||decision?.r117TrapSweepTaken||(V647_BOLGE_GIRISI&&entryTruth?.r493EntrySafety?.candidateMemory?.state==='ENTRY_ZONE_RETEST'&&entryTruth?.r493EntrySafety?.candidateMemory?.reclaim===true)),proof=!!(breakoutProof||retestProof);
   const waitTiming=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP'].includes(timing),mmAwaitsRetest=/AWAITING_RETEST|RETEST_REQUIRED/i.test(String(story?.mmScenario||''))&&!retestProof,impulseNeedsProof=R486_VERTICAL_IMPULSE_PROOF_REQUIRED&&!!micro.verticalImpulse&&!proof,expansionNeedsReclaim=String(story?.tf?.['15m']?.trend||'')==='EXPANSION'&&String(story?.tf?.['5m']?.trend||'')==='DOWN_LH_LL'&&!micro.confirmedPullback&&!micro.confirmedContinuation;
   const anatomyAction=String(story?.planTruth?.action||'AUTO'),anatomyReason=String(story?.planTruth?.reason||''),rrTactical=Number.isFinite(firstRR)&&firstRR>=R486_STORY_TACTICAL_MIN_FIRST_RR;
   if(operationalHard&&!V592_EXACT_BACKTEST_AUTHORITY)return {active:true,action:'REJECT',riskScale:0,reason:'operasyonel hard safety'};
@@ -21172,7 +21195,11 @@ app.post('/api/order', async (req, res) => {
     const _lockLev = (V592_EXACT_BACKTEST_AUTHORITY && V592_LEVERAGE_LOCK > 0) ? V592_LEVERAGE_LOCK : Number(leverage);
     const levSet = await setSymbolLeverageSafe(apiKey, apiSecret, sym, _lockLev, Number(usdtAmount||0) * normalizeRequestedLeverage(_lockLev, 1));
     const safeLeverage = normalizeRequestedLeverage(levSet.leverage, 1);
-    if (V592_EXACT_BACKTEST_AUTHORITY && V592_LEVERAGE_LOCK > 0 && safeLeverage !== V592_LEVERAGE_LOCK) {
+    // ═══ V647-C ═══ aralik modunda [MIN..MAX] icindeki kaldirac kabul edilir.
+    const _v647LevOk = V647_KALDIRAC_ARALIK
+      ? (safeLeverage >= Math.max(1, Number(R486_MIN_LEVERAGE)||7) && safeLeverage <= V647_MAX_KALDIRAC)
+      : (safeLeverage === V592_LEVERAGE_LOCK);
+    if (V592_EXACT_BACKTEST_AUTHORITY && V592_LEVERAGE_LOCK > 0 && !_v647LevOk) {
       v592ParityStats.leverageLockRejects++;
       try{r501OrderLifeMark(sym,'ORDER_REJECTED',{reason:'LEVERAGE_PARITY_LOCK',requestedLeverage:V592_LEVERAGE_LOCK,appliedLeverage:safeLeverage});}catch(_){}
       throw new Error(`Kaldirac paritesi bozuk: backtest ${V592_LEVERAGE_LOCK}x ister, Binance ${safeLeverage}x uyguladi. Emir gonderilmedi.`);
@@ -30151,7 +30178,13 @@ function v592BootParityGate(){
   {
     const _v602Sert = String(process.env.V601_PARITE_SERT||'0')==='1';
     const _v602BekLev = _v602Sert ? 10 : Math.max(1, Number(R486_MIN_LEVERAGE)||7);
-    if(Number(V592_LEVERAGE_LOCK)!==_v602BekLev)
+    // ═══ V647-C ═══ aralik modunda tam esitlik yerine [MIN..MAX] kabul edilir.
+    if(V647_KALDIRAC_ARALIK && !_v602Sert){
+      const _lo=Math.max(1,Number(R486_MIN_LEVERAGE)||7), _hi=V647_MAX_KALDIRAC;
+      if(!(_lo>=3 && _hi>=_lo && _hi<=20)) hata.push(`KALDIRAC_ARALIK_GECERSIZ:${_lo}-${_hi}`);
+      if(!(Number(V592_LEVERAGE_LOCK)>=_lo && Number(V592_LEVERAGE_LOCK)<=_hi))
+        hata.push(`KALDIRAC_KILIDI_ARALIK_DISI:${V592_LEVERAGE_LOCK} ∉ [${_lo},${_hi}]`);
+    } else if(Number(V592_LEVERAGE_LOCK)!==_v602BekLev)
       hata.push(`KALDIRAC_KILIDI_UYUSMAZ:${V592_LEVERAGE_LOCK}!=${_v602BekLev}`);
     if(Number(V592_LEVERAGE_LOCK)!==7) hata.push(`CANLI_KALDIRAC_7X_DEGIL:${V592_LEVERAGE_LOCK}`);
   }
