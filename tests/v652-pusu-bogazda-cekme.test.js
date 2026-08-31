@@ -58,7 +58,15 @@ test('V652: CLO ve AUCTION matematiği — ikisi de banda düşer', () => {
 });
 
 test('V652: V649 marketAllowed kolu (B2) yerinde duruyor', () => {
-  assert.match(server, /marketAllowed=!\(storyWait\|\|planIncoherent\|\|legacyFirstObstacleHard\|\|directionAgainst\|\|\(tightStop&&retestFar\)\|\|r493EntrySafety\.blocked\|\|_v649BolgeUstu\)/);
+  // V660: listeye _v660Imkansiz eklendi. Tam string yerine TERIM TERIM kontrol —
+  // her yeni kol eklendiginde test kirilmasin, ama hicbir kol da sessizce dusmesin.
+  const i = server.indexOf('marketAllowed=!(');
+  assert.ok(i > 0, 'marketAllowed ifadesi bulunmali');
+  const m = [null, server.slice(i, i + 260)];
+  for (const kol of ['storyWait','planIncoherent','legacyFirstObstacleHard','directionAgainst',
+                     'tightStop&&retestFar','r493EntrySafety.blocked','_v649BolgeUstu','_v660Imkansiz']) {
+    assert.ok(m[1].includes(kol), `marketAllowed icinde ${kol} olmali`);
+  }
 });
 
 test('V652: sözleşme yerinde', () => {

@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_5_2_PUSU_BOGAZDA_CEKME'
+const LAZARUS_BUILD = 'V6_6_0_BACKTEST_STOP_GEOMETRISI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6620,7 +6620,17 @@ const R483_DEFER_TOP_TRAP = String(process.env.R484_DEFER_TOP_TRAP ?? process.en
 // R486.2: Grafik hikâyesi yalnız rapor değildir; giriş fiyatı/SL/ilk engel ve canlı erken-geçersizlik ile sözleşmelidir.
 const R486_ENTRY_TRUTH_ACTIVE = String(process.env.R486_ENTRY_TRUTH_ACTIVE ?? '1') !== '0';
 const R486_FIRST_OBSTACLE_MIN_RR = Math.max(0.35, Math.min(2.0, Number(process.env.R486_FIRST_OBSTACLE_MIN_RR || 0.35))); // V501: backtest contract 0.35; old 0.70 clamp made ENV=0.35 ineffective
-const R486_MIN_STOP_ATR = Math.max(0.30, Math.min(0.90, Number(process.env.R486_MIN_STOP_ATR || 0.52)));
+// ═══ V660 ═══ tavan 0.90 -> 3.00, varsayilan 0.52 -> 2.35 (backtest ortancasi).
+// 1060 sinyalde slPct/ATR: ortanca 2.35 · %10 1.20 · %90 3.85.
+const R486_MIN_STOP_ATR = Math.max(0.30, Math.min(3.00, Number(process.env.R486_MIN_STOP_ATR || 2.35)));
+// ═══ V660 ═══ likidasyon guvenlik payi: stop, likidasyon mesafesinin bu kadarini asamaz.
+const V660_LIK_PAYI = Math.max(0.5, Math.min(0.95, Number(process.env.V660_LIK_PAYI || 0.90)));
+// Gereken stop likidasyon tavanini asiyorsa islem ACILMAZ (durdurulamayan islem).
+const V660_DURDURULAMAZ_VETO = String(process.env.V660_DURDURULAMAZ_VETO ?? '1') !== '0';
+// ═══ V660 ═══ PARITE SOZLESMESI: toplam risk %. Boot kapisi bu sabite bakar.
+// Kasitsiz kaymayi yakalamaya devam eder; degeri degistirmek BILINCLI bir karardir.
+// %8 -> %23 (31.08.2026, kullanici karari): 50$ sabit marj + 2,35xATR stop icin gerekli.
+const V660_SOZLESME_RISK_PCT = Math.max(2, Math.min(30, Number(process.env.V660_SOZLESME_RISK_PCT || 23)));
 const R486_EARLY_INVALIDATION_ACTIVE = String(process.env.R486_EARLY_INVALIDATION_ACTIVE ?? '1') !== '0';
 const R486_EARLY_INVALIDATION_MIN_ROI = Math.max(-4.0, Math.min(-0.5, Number(process.env.R486_EARLY_INVALIDATION_MIN_ROI || -1.2)));
 const R486_EARLY_INVALIDATION_PRESSURE = Math.max(2.0, Math.min(5.0, Number(process.env.R486_EARLY_INVALIDATION_PRESSURE || 2.7)));
@@ -6707,7 +6717,10 @@ const R495_TACTICAL_RISK_SCALE = Math.max(.20, Math.min(.85, Number(process.env.
 const R495_MARKET_RISK_SCALE = Math.max(.50, Math.min(1.00, Number(process.env.R495_MARKET_RISK_SCALE || 1.00)));
 // ═══ V634 ═══ SOZLESME: sabit olan pozisyon sayisi DEGIL, ayni anda riskteki para.
 // Toplam %8; pozisyon sayisina bolunur. 2 poz -> %4 · 1 poz -> %8. Toplam hep ayni.
-const V634_TOPLAM_RISK_PCT = Math.max(2, Math.min(12, Number(process.env.V634_TOPLAM_RISK_PCT || 8)));
+// ═══ V660 ═══ tavan 12 -> 30. Backtest islem basina ~%20,7 riske atiyor (marj 40$ x 10x x
+// stop %5,17 / 100$ bakiye); %8 butcemiz ondan 2,5 kat muhafazakardi ve 50$ sabit marjla
+// stopu 0,4-0,5 ATR'ye sikistiriyordu. Kullanici %23 sectii: ATR %4,00'e kadar parite.
+const V634_TOPLAM_RISK_PCT = Math.max(2, Math.min(30, Number(process.env.V634_TOPLAM_RISK_PCT || 8)));
 // Risk yuzdesi ELLE girilmez; pozisyon sayisindan turetilir ki sozlesme yarim
 // uygulanip parite kapisini kilitlemesin.
 const R495_FINAL_RISK_PCT = +(V634_TOPLAM_RISK_PCT / Math.max(1, R486_MAX_POSITIONS)).toFixed(4);
@@ -7918,7 +7931,14 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
 function r486EntryTruthGuard(story={},opts={}){
   const side=String(opts.side||'LONG').toUpperCase(),entry=Number(opts.entry||0),sl=Number(opts.sl||0),tp=Number(opts.tp||0),atrPct=Math.max(.25,Number(opts.atrPct||3));
   if(!R486_ENTRY_TRUTH_ACTIVE||side!=='LONG'||!(entry>0))return {active:R486_ENTRY_TRUTH_ACTIVE,marketAllowed:true,mode:'LEGACY',plannedEntry:entry,recommendedSl:sl,recommendedTp:tp};
-  const risk=entry>sl&&sl>0?entry-sl:0,stopPct=risk>0?risk/entry*100:null,minStopPct=Math.max(.80,Math.min(4.5,atrPct*R486_MIN_STOP_ATR)),tightStop=stopPct!==null&&stopPct<minStopPct;
+  // ═══ V660 ═══ minStopPct artik sabit %4,5 tavanla degil, LIKIDASYONDAN turetilen tavanla
+  // kelepceleniyor. Backtest 2,35xATR kullaniyor; %4,5 tavani ATR>%1,9'da devreye girip
+  // stopu gurultunun icine sokuyordu.
+  const _v660Lev = Math.max(1, Number(opts.leverage || opts.lev || R486_MIN_LEVERAGE || 7));
+  const _v660LikTavan = (100 / _v660Lev) * V660_LIK_PAYI;   // 7x -> %12,86 · 10x -> %9,00
+  const _v660Gereken = atrPct * R486_MIN_STOP_ATR;           // backtest paritesi
+  const _v660Imkansiz = V660_DURDURULAMAZ_VETO && _v660Gereken > _v660LikTavan;
+  const risk=entry>sl&&sl>0?entry-sl:0,stopPct=risk>0?risk/entry*100:null,minStopPct=Math.max(.80,Math.min(_v660LikTavan,_v660Gereken)),tightStop=stopPct!==null&&stopPct<minStopPct;
   // Canlı giriş fiyatı değişebildiği için hikaye üretildiği andaki eski/ters hedefleri emir matematiğine sokma.
   const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005;
   const targetRaw=Number(story.targetLiquidity||0),targetDirectionValid=!(targetRaw>0)||targetRaw>entry*1.00005,target=targetDirectionValid?targetRaw:0;
@@ -7989,7 +8009,7 @@ function r486EntryTruthGuard(story={},opts={}){
   const _v628Kopru       = V628_ATESLEME_KOPRUSU && retestBelowStop && _v628TazeKirilim && _v628Uzamamis && _v628AtrUygun;
   const retestBelowStopEtkin = retestBelowStop && !_v628Kopru;
   const planIncoherent=retestBelowStopEtkin||!(recommendedSl>0&&recommendedSl<entry)||!(recommendedTp>entry),directionAgainst=story.bias==='SHORT'||(!V592_POLICY_PARITY_MODE&&liveFlowAgainst);
-  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical&&!R486_WAIT_STORY_MARKET_BRIDGE/* V621: kopru acikken retest kanit kapilarina devreder */,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked||_v649BolgeUstu);
+  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical&&!R486_WAIT_STORY_MARKET_BRIDGE/* V621: kopru acikken retest kanit kapilarina devreder */,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked||_v649BolgeUstu||_v660Imkansiz);
   const reasons=[];
   if(storyWait)reasons.push(`hikâye:${mode}`);
   if(_v628Kopru)reasons.push(`V628 ateşleme köprüsü: retest SL altında ama taze kırılım + ATR %${Number(atrPct).toFixed(2)} ≤ ${V628_ATR_TAVAN} — kanıt kapılarına devredildi`);
@@ -8000,12 +8020,13 @@ function r486EntryTruthGuard(story={},opts={}){
   if(legacyFirstObstacleHard)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
   if(r493EntrySafety.blocked)reasons.push(`R493 ${r493EntrySafety.code}: ${r493EntrySafety.reason}`);
   if(_v649BolgeUstu)reasons.push(`V649: fiyat 15m hafıza bölgesinin %${_v649Sapma.toFixed(2)} üstünde — market yok, bölgeye pusu kuruldu (${_v649Bolge?.low}-${_v649Bolge?.high})`);
+  if(_v660Imkansiz)reasons.push(`V660 DURDURULAMAZ: ATR %${Number(atrPct).toFixed(2)} × ${R486_MIN_STOP_ATR} = gereken stop %${_v660Gereken.toFixed(2)} > ${_v660Lev}x likidasyon tavanı %${_v660LikTavan.toFixed(2)} — bu işlem hiçbir stopla korunamaz`);
   if(directionAgainst)reasons.push(`yön/akış LONG karşıtı`);
   if(tightStop)reasons.push(`SL ${Number(stopPct||0).toFixed(2)}% < ${minStopPct.toFixed(2)}% (${R486_MIN_STOP_ATR} ATR)`);
   const liveResearchRisk=!!(story.orderFlow?.conflict||story.oi?.reliable===false);
   const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||(!V592_POLICY_PARITY_MODE&&liveResearchRisk)||firstObstacleSoft||tightStop||retestBelowStop||r493EntrySafety.blocked);
   const researchShadow={flowState:rawFlowState,flowAgainst:liveFlowAgainst,orderFlowConflict:story.orderFlow?.conflict===true,oiReliable:story.oi?.reliable??null,wouldRaiseEarlyRisk:liveResearchRisk,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false};
-  return {active:true,marketAllowed,v649BolgeUstu:_v649BolgeUstu,v649Sapma:+Number(_v649Sapma||0).toFixed(3),v649Bolge:_v649Bolge,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
+  return {active:true,marketAllowed,v660Imkansiz:_v660Imkansiz,v660Gereken:+_v660Gereken.toFixed(3),v660LikTavan:+_v660LikTavan.toFixed(3),v649BolgeUstu:_v649BolgeUstu,v649Sapma:+Number(_v649Sapma||0).toFixed(3),v649Bolge:_v649Bolge,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
 }
 
 // R493 v5.5: R482 operasyonel güvenlik ayrımı.
@@ -30336,7 +30357,8 @@ function v592BootParityGate(){
     const _v634Toplam = Number(R486_MAX_POSITIONS) * Number(R495_FINAL_RISK_PCT);
     if(Math.abs(_v634Toplam - V634_TOPLAM_RISK_PCT) > 1e-6)
       hata.push(`TOPLAM_RISK_UYUSMAZ:${_v634Toplam.toFixed(2)}!=${V634_TOPLAM_RISK_PCT}`);
-    if(!eq(V634_TOPLAM_RISK_PCT,8)) hata.push(`TOPLAM_RISK_8_DEGIL:${V634_TOPLAM_RISK_PCT}`);
+    // ═══ V660 ═══ sabit 8 yerine sozlesme sabiti. Kapi hala fail-closed: kayma yakalanir.
+    if(!eq(V634_TOPLAM_RISK_PCT,V660_SOZLESME_RISK_PCT)) hata.push(`TOPLAM_RISK_SOZLESME_DISI:${V634_TOPLAM_RISK_PCT}!=${V660_SOZLESME_RISK_PCT}`);
     if(Number(R486_MAX_POSITIONS)!==1) hata.push(`CANLI_MAX_POZ_1_DEGIL:${R486_MAX_POSITIONS}`);
   }
   // V6.3.9: arsiv.txt son kararlarini sessiz ENV sapmasina karsi acilista dogrula.
