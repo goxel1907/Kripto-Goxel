@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_6_0_BACKTEST_STOP_GEOMETRISI'
+const LAZARUS_BUILD = 'V6_6_1_BUTCE_VETO_DEGIL_LIKIDASYON'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6626,7 +6626,12 @@ const R486_MIN_STOP_ATR = Math.max(0.30, Math.min(3.00, Number(process.env.R486_
 // ═══ V660 ═══ likidasyon guvenlik payi: stop, likidasyon mesafesinin bu kadarini asamaz.
 const V660_LIK_PAYI = Math.max(0.5, Math.min(0.95, Number(process.env.V660_LIK_PAYI || 0.90)));
 // Gereken stop likidasyon tavanini asiyorsa islem ACILMAZ (durdurulamayan islem).
-const V660_DURDURULAMAZ_VETO = String(process.env.V660_DURDURULAMAZ_VETO ?? '1') !== '0';
+// ═══ V661 ═══ kullanici karari: ATR ne olursa olsun gir, stop uzasin.
+// Yuksek ATR artik islemi ENGELLEMEZ; stop likidasyon tavaninda kelepcelenir.
+const V660_DURDURULAMAZ_VETO = String(process.env.V660_DURDURULAMAZ_VETO ?? '0') !== '0';
+// ═══ V661 ═══ risk butcesi artik VETO DEGIL, RAPOR. Tek sert tavan likidasyondur.
+// '1' yapilirsa eski davranis geri gelir (butce SL'i daraltir ve adayi oldurur).
+const V661_BUTCE_VETO = String(process.env.V661_BUTCE_VETO ?? '0') !== '0';
 // ═══ V660 ═══ PARITE SOZLESMESI: toplam risk %. Boot kapisi bu sabite bakar.
 // Kasitsiz kaymayi yakalamaya devam eder; degeri degistirmek BILINCLI bir karardir.
 // %8 -> %23 (31.08.2026, kullanici karari): 50$ sabit marj + 2,35xATR stop icin gerekli.
@@ -28787,7 +28792,10 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             // Butun SL turetmeleri (R372 %5 tabani dahil) bitti; son soz burada.
             if (V624_BUTCE_UYUMLU_SL && _eq495 > 0) {
               const _marj624 = Math.min(V601_HARD_MARGIN_CAP_USDT, Math.max(V601_HARD_MARGIN_FLOOR_USDT, Number(usdtAmount)||V601_HARD_MARGIN_FLOOR_USDT));
-              const _slTavan624 = (_eq495*(R495_FINAL_RISK_PCT/100))/(_marj624*_lev495)*100*0.995;
+              // ═══ V661 ═══ butce SL'i DARALTMIYOR. Tek tavan likidasyon (fizik).
+              const _butce661 = (_eq495*(R495_FINAL_RISK_PCT/100))/(_marj624*_lev495)*100*0.995;
+              const _lik661 = (100/_lev495)*V660_LIK_PAYI;
+              const _slTavan624 = V661_BUTCE_VETO ? _butce661 : _lik661;
               const _eski624 = Number(userSLPct)||0;
               if (Number.isFinite(_slTavan624) && _slTavan624 >= V624_SL_TABAN && _eski624 > _slTavan624) {
                 userSLPct = +Math.max(V624_SL_TABAN, _slTavan624).toFixed(2);
@@ -28882,7 +28890,16 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             // V6.1.6: 30$ mutlak taban, R495'in %4 risk tavanini ezemez.
             // Taban marj + kilitli kaldirac + backtest SL birlikte butceyi asiyorsa
             // daha kucuk emir de, daha dar SL de gonderilmez; aday fail-closed atlanir.
-            const _riskFloorConflict495 = _eq495>0
+            // ═══ V661 ═══ GERCEK RISK HER ISLEMDE LOGLANIR — butce asilsa da gizlenmez.
+            try {
+              const _lik661b = (100/_lev495)*V660_LIK_PAYI;
+              logAuto(`💥 ${coin.symbol} V661 RİSK: 50$ × ${_lev495}x × SL %${_sl495.toFixed(2)}`
+                + ` = ${_initialRisk495.toFixed(2)}$ (bakiyenin %${Number(_riskPct495||0).toFixed(1)}'i)`
+                + ` · bütçe %${R495_FINAL_RISK_PCT} ${Number(_riskPct495||0) > R495_FINAL_RISK_PCT ? 'AŞILDI (veto kapalı)' : 'içinde'}`
+                + ` · likidasyon tavanı %${_lik661b.toFixed(2)}`);
+            } catch(_) {}
+            // Butce vetosu KAPALI iken aday oldurulmez; likidasyon tavani zaten SL'i kelepceler.
+            const _riskFloorConflict495 = V661_BUTCE_VETO && _eq495>0
               && Number.isFinite(_riskPct495)
               && _riskPct495 > R495_FINAL_RISK_PCT + 1e-9;
             if (_riskFloorConflict495) {
