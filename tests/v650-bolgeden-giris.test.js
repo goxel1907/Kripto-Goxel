@@ -19,9 +19,10 @@ test('V650: bayraklar tanımlı ve env ile geri alınabilir', () => {
 test('V650: giriş hafıza bölgesinin TAVANINA çekilir', () => {
   assert.match(server, /const _hf = v644CandidateMemoryContext\(story\?\.symbol, Number\(entry \|\| 0\), story\);/);
   assert.match(server, /const _z = _hf\?\.available \? _hf\.entryZone : null, _tepe = Number\(_z\?\.high \|\| 0\);/);
-  assert.match(server, /_v649Sapma = \(plannedEntry - _tepe\) \/ _tepe \* 100;/);
+  // V651: sapma artik GERCEK giristen olculuyor (plannedEntry kirilim projeksiyonu olabiliyor)
+  assert.match(server, /_v649Sapma = \(_v649Ref - _tepe\) \/ _tepe \* 100;/);
   assert.match(server, /_v649Bolge = _z; _v649BolgeUstu = true;/);
-  assert.match(server, /const _eski = plannedEntry; plannedEntry = _tepe;/);
+  assert.match(server, /plannedEntry = Math\.min\(plannedEntry, _tepe\);/);
 });
 
 test('V650: SESSIZ NO-OP DEGIL — okudugu alanlari hafiza fonksiyonu gercekten uretiyor', () => {

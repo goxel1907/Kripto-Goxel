@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_5_0_BOLGEDEN_GIRIS_PIVOT_GORUS'
+const LAZARUS_BUILD = 'V6_5_1_GERCEK_GIRIS_REFERANSI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7888,7 +7888,12 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
   // Eski sart `!_v647Known` idi: hikaye bir engel buldugunda hafiza hic sorulmuyordu.
   let _v647RR = firstRR, _v647Known = firstKnown, _v647Kaynak = firstKnown ? 'HIKAYE' : null;
   if (V647_HAFIZA_ENGEL && candidateMemory?.available) {
-    const _e = Number(entryTruth?.plannedEntry || entryTruth?.originalEntry || opts?.entry || 0);
+    // ═══ V651 ═══ plannedEntry guncel fiyatin USTUNDE olabilir (WAIT_BREAK_RETEST'te
+    // firstObstacle*1.0015). O zaman hafiza hedefi girisin ALTINDA kalir, `_t > _e`
+    // sarti false olur ve hafiza dali sessizce olur — ZORA'da tam bu oldu.
+    const _pe = Number(entryTruth?.plannedEntry || 0);
+    const _oe = Number(entryTruth?.originalEntry || opts?.entry || 0);
+    const _e = (_pe > 0 && (!(_oe > 0) || _pe <= _oe * 1.0005)) ? _pe : _oe;
     const _s = Number(entryTruth?.recommendedSl || entryTruth?.originalSl || opts?.sl || 0);
     const _t = Number(candidateMemory?.target1 || 0);
     if (_e > 0 && _s > 0 && _s < _e && _t > _e) {
@@ -7945,10 +7950,16 @@ function r486EntryTruthGuard(story={},opts={}){
       const _hf = v644CandidateMemoryContext(story?.symbol, Number(entry || 0), story);
       const _z = _hf?.available ? _hf.entryZone : null, _tepe = Number(_z?.high || 0);
       if (_tepe > 0 && plannedEntry > 0) {
-        _v649Sapma = (plannedEntry - _tepe) / _tepe * 100;
+        // ═══ V651 ═══ sapma GERCEK giristen olculur. plannedEntry, WAIT_BREAK_RETEST
+        // modunda firstObstacle*1.0015 (kirilim projeksiyonu) oluyor; onunla olculunce
+        // sapma sisiyor ve yama 'bayat' deyip atliyor. ZORA: plannedEntry ile %5,41
+        // (atlandi), gercek giris ile %1,43 (cekilmeliydi).
+        const _v649Ref = Number(entry) > 0 ? Number(entry) : plannedEntry;
+        _v649Sapma = (_v649Ref - _tepe) / _tepe * 100;
         if (_v649Sapma > V649_BOLGE_TOLERANS && _v649Sapma <= V649_BOLGE_MAX_SAPMA) {
           _v649Bolge = _z; _v649BolgeUstu = true;
-          const _eski = plannedEntry; plannedEntry = _tepe;
+          // Giris asla YUKARI itilmez; yalniz bolgeye cekilir.
+          const _eski = plannedEntry; plannedEntry = Math.min(plannedEntry, _tepe);
           try { logAuto(`🎯 ${story?.symbol||''} V649 giriş bölgeye çekildi: ${_eski} → ${_tepe} · bölge ${_z.low}-${_z.high} (${_z.type}) · sapma %${_v649Sapma.toFixed(2)}`); } catch(_) {}
         } else if (_v649Sapma > V649_BOLGE_MAX_SAPMA) {
           try { logAuto(`⚠️ ${story?.symbol||''} V649 hafıza bölgesi çok uzak (%${_v649Sapma.toFixed(2)} > %${V649_BOLGE_MAX_SAPMA}) — bayat sayıldı, dokunulmadı`); } catch(_) {}
