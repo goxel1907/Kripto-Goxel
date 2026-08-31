@@ -40,13 +40,15 @@ test('V650: bölge üstündeyken MARKET emri yok (pusuya düşer)', () => {
   assert.match(server, /marketAllowed=!\(storyWait\|\|planIncoherent\|\|legacyFirstObstacleHard\|\|directionAgainst\|\|\(tightStop&&retestFar\)\|\|r493EntrySafety\.blocked\|\|_v649BolgeUstu\)/);
 });
 
-test('V650: pusu seviyesi zinciri kopuk degil (plannedEntry -> ai.entry -> r442)', () => {
-  // r447 WAIT donusu plannedEntry'yi `entry` olarak verir
+test('V650/V652: pusu zinciri — plannedEntry TEK uretici degil (canli kanit)', () => {
+  // 31.08 11:15:28: V649 plannedEntry'yi 0.14103->0.13886 cekti ama pusu 0.14103'e kuruldu.
+  // Cunku adayi ureten R486.3.9 anatomi yolu entryTruth.plannedEntry'yi OKUMUYOR.
+  // r447'nin WAIT donusu okuyor (bu hala gecerli):
   assert.match(server, /entry:r\(entryTruth\.plannedEntry\|\|0\)/);
-  // ai.entry r442PusuKur'a gider
+  // ...ama tek uretici o degil. Bu yuzden cekme BOGAZA (r442PusuKur) tasindi:
   assert.match(server, /if \(Number\(ai\?\.entry\) > 0\) r442PusuKur\(coin\.fullSymbol, ai,/);
-  // r442PusuKur pusu seviyesini ai.entry'den alir
-  assert.match(server, /const entry = Number\(ai\?\.entry \|\| 0\);/);
+  assert.match(server, /let entry = Number\(ai\?\.entry \|\| 0\);/);
+  assert.match(server, /V652 pusu BÖLGEYE kuruldu/);
 });
 
 test('V650: gerekçe loglara ve dönüş objesine giriyor', () => {

@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_5_1_GERCEK_GIRIS_REFERANSI'
+const LAZARUS_BUILD = 'V6_5_2_PUSU_BOGAZDA_CEKME'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -10936,8 +10936,29 @@ function r442PusuKur(symbolFull, ai, kaynak) {
   try {
     if(v644PositionFocusActive())return;
     const base = String(symbolFull||'').replace('USDT','').toUpperCase();
-    const entry = Number(ai?.entry || 0);
+    let entry = Number(ai?.entry || 0);
     if (!(entry > 0) || String(ai?.side||'').toUpperCase() === 'SHORT') return;
+    // ═══ V652 ═══ PUSU SEVIYESI BOGAZDA CEKILIR.
+    // V649 entryTruth.plannedEntry'yi cekiyordu; R486.3.9 anatomi yolu onu OKUMUYOR.
+    // CLO 11:15:28: '0.14103 -> 0.13886' loglandi, pusu yine 0.14103'e kuruldu.
+    // Burasi pusu seviyesinin gectigi TEK kapi — uretici hangisi olursa olsun calisir.
+    if (V649_BOLGEDEN_GIRIS) {
+      try {
+        const _hf = v644CandidateMemoryContext(symbolFull, entry, {});
+        const _tepe = Number(_hf?.available ? _hf?.entryZone?.high : 0) || 0;
+        const _planSl = Number(ai?.sl || 0);
+        // bolge tavani plan SL'inin ustunde degilse cekme (plan bozulmasin)
+        if (_tepe > 0 && (!(_planSl > 0) || _tepe > _planSl)) {
+          const _sap = (entry - _tepe) / _tepe * 100;
+          if (_sap > V649_BOLGE_TOLERANS && _sap <= V649_BOLGE_MAX_SAPMA) {
+            logAuto(`🎯 ${base} V652 pusu BÖLGEYE kuruldu: ${entry} → ${_tepe} · bölge ${_hf.entryZone.low}-${_hf.entryZone.high} (${_hf.entryZone.type}) · sapma %${_sap.toFixed(2)}`);
+            entry = _tepe;
+          } else if (_sap > V649_BOLGE_MAX_SAPMA) {
+            logAuto(`⚠️ ${base} V652 pusu: hafıza bölgesi %${_sap.toFixed(2)} uzak (> %${V649_BOLGE_MAX_SAPMA}) — bayat, dokunulmadı`);
+          }
+        }
+      } catch(_) {}
+    }
     r442PusuPlanlar.set(base, {
       entry, sl: Number(ai?.sl||0) || null, tp: Number(ai?.tp||0) || null,
       conf: Number(ai?.confidence||0), ts: Date.now(),
