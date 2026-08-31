@@ -52,7 +52,10 @@ test('V647-C: aralik KAPALIYKEN eski tam-esitlik davranisi korunur', () => {
 });
 
 test('V647: onceki surumlerin duzeltmeleri yerinde', () => {
-  assert.match(server, /const LAZARUS_BUILD = 'V6_4_8_EN_YAKIN_ENGEL_PIVOT'/);
+  const _b = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  const _pkg = JSON.parse(require('fs').readFileSync(require('path').join(__dirname,'..','package.json'),'utf8'));
+  assert.ok(_b && _b[1].startsWith('V' + String(_pkg.version).replace(/\./g,'_') + '_'),
+    `LAZARUS_BUILD (${_b && _b[1]}) package.json (${_pkg.version}) ile uyusmuyor`);
   assert.match(server, /V646_BE_GEO/);
   assert.match(server, /V646_ZAYIF_KURULUMLAR/);
   assert.match(server, /V637_PUSU_R495E_DEVRET/);

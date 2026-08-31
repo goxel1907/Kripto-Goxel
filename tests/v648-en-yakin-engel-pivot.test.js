@@ -126,7 +126,10 @@ test('V648-E: hafiza var ama giris/stop yoksa UYARI loglanir', () => {
 // ══ sozlesme korunuyor mu ═══════════════════════════════════════════════════
 
 test('V648: surum adi ve onceki surumlerin duzeltmeleri yerinde', () => {
-  assert.match(server, /V6_4_8_EN_YAKIN_ENGEL_PIVOT/);
+  const _b = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  const _pkg = JSON.parse(require('fs').readFileSync(require('path').join(__dirname,'..','package.json'),'utf8'));
+  assert.ok(_b && _b[1].startsWith('V' + String(_pkg.version).replace(/\./g,'_') + '_'),
+    `LAZARUS_BUILD (${_b && _b[1]}) package.json (${_pkg.version}) ile uyusmuyor`);
   assert.match(server, /V634_TOPLAM_RISK_PCT/);      // 1 poz x %8
   assert.match(server, /V637_PUSU_R495E_DEVRET/);    // PUSU -> R495
   assert.match(server, /V646_ZAYIF_KURULUMLAR/);     // zayif kurulum elemesi

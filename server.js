@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_8_EN_YAKIN_ENGEL_PIVOT'
+const LAZARUS_BUILD = 'V6_4_9_CIFT_GEO_GERI_ALMA'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -22600,7 +22600,14 @@ async function managePosition(apiKey, apiSecret, pos) {
     else if (Number(cfg.slPct) > 0)  { _v646Sl = Number(cfg.slPct);    _v646Kaynak = 'cfg.slPct'; }
   }
   const _v646Geo = _v646Sl > 0 ? Math.max(1, Math.min(3, _v646Sl / 1.7)) : 1;
-  const breakEvenAt = V646_BE_GEO ? Math.max(_v646BeTaban, 0.65) * _v646Geo : _v646BeTaban;
+  // ═══ V649 ═══ V646/V648-D GERI ALINDI — CIFT GEO HATASI.
+  // Bu degisken OPERATIF esik degil, TABAN: 23002 -> r192BreakEvenAt -> 23323 r283DynamicBE,
+  // ve geo (r339GeoScale) ORADA zaten uygulaniyor. Buraya da eklendiginde geo IKI KEZ
+  // carpildi ve non-runner'da basa-bas 3 kata kadar GEC kuruldu (slPct %5,5: %2,40 -> %7,20).
+  // Operatif zincir V646 ONCESINDE ZATEN backtest paritesindeydi:
+  //   non-runner: max(.8*r390, .65) * geo             == backtest
+  //   runner    : max(.8*r390*geo, 2*geo, slPct*.75)  == backtest
+  const breakEvenAt = _v646BeTaban;
   // Sessiz no-op olmasin: geo=1 ve kaynak YOK ise yama fiilen calismiyordur, logda gorunur.
   if (V646_BE_GEO && Number(state?._v646Log || 0) !== 1) {
     try { state._v646Log = 1; logAuto(`📐 ${sym} V646 BE esigi: %${_v646BeTaban.toFixed(2)} → %${breakEvenAt.toFixed(2)} · SL %${_v646Sl.toFixed(2)} (${_v646Kaynak}) · geo ${_v646Geo.toFixed(2)}`); } catch(_) {}
@@ -22785,10 +22792,20 @@ async function managePosition(apiKey, apiSecret, pos) {
   // V601: carpan 0 => Infinity (cikis DEVRE DISI). 0 ile CARPMAK olmaz —
   //       o zaman 'openMinutes > 0' olur ve cikis her pozisyonda ANINDA tetiklenir.
   const r339MaxSureDk = V600_MAXSURE_CARPAN <= 0 ? Infinity : _v601MaxSureTaban * V600_MAXSURE_CARPAN;
-  if (openMinutes > r339MaxSureDk && realProfitPct < breakEvenAt * 0.5) {
+  // ═══ V649 ═══ backtest: `open_min > (240 runner : 150) and real < be_thr*.5`
+  // be_thr = OPERATIF esik (r283DynamicBE ile ayni formul), HAM TABAN degil.
+  // Canlida ham taban kullaniliyordu -> bu cikis backtestten cok daha erken tetikleniyordu.
+  const _v649BeThr = r282RunnerMode
+    ? Math.max(breakEvenAt * r339GeoScale, 2.0 * r339GeoScale, (r339AiManaged ? Number(state.slPct || slPct || 1.7) * 0.75 : 0))
+    : ((r282ProtectMode ? Math.max(breakEvenAt, 0.55) : Math.max(breakEvenAt, 0.65)) * r339GeoScale);
+  // Operatif esik pozisyon basina BIR KEZ loglanir — 'taban'i 'esik' sanmak bir daha mumkun olmasin.
+  if (Number(state?._v649Log || 0) !== 1) {
+    try { state._v649Log = 1; logAuto(`🎚️ ${sym} V649 BE OPERATIF esik %${_v649BeThr.toFixed(2)} · taban %${breakEvenAt.toFixed(2)} · geo ${Number(r339GeoScale).toFixed(2)} · slPct %${Number(state.slPct || slPct || 0).toFixed(2)} · ${r282RunnerMode ? 'RUNNER' : (r282ProtectMode ? 'PROTECT' : 'NORMAL')}`); } catch(_) {}
+  }
+  if (openMinutes > r339MaxSureDk && realProfitPct < _v649BeThr * 0.5) {
     action = {
       type:'MAX_SURE_KAPAT', urgency:'HIGH',
-      reason:`${r339MaxSureDk}dk+ açık, kâr yok: hareket %${realProfitPct.toFixed(2)} < BE yarısı %${(breakEvenAt*0.5).toFixed(2)}`
+      reason:`${r339MaxSureDk}dk+ açık, kâr yok: hareket %${realProfitPct.toFixed(2)} < BE yarısı %${(_v649BeThr*0.5).toFixed(2)}`
     };
   }
 

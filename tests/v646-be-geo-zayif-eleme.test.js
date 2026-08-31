@@ -10,10 +10,12 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 // Backtest (h6tf_core.py:182):  be_thr = max(.8*r390, .65) * clamp(slPct/1.7, 1, 3)
 // Canlida geo YOKTU -> BE 3 kat erken kuruluyordu (MAGMA %1,28 · ROBO +0,71$).
 
-test('V646: basa-bas esigi geo carpanini ve 0.65 tabanini icerir', () => {
-  assert.match(server, /const V646_BE_GEO = String\(process\.env\.V646_BE_GEO \?\? '1'\) !== '0';/);
-  assert.match(server, /const _v646Geo = _v646Sl > 0 \? Math\.max\(1, Math\.min\(3, _v646Sl \/ 1\.7\)\) : 1;/);
-  assert.match(server, /const breakEvenAt = V646_BE_GEO \? Math\.max\(_v646BeTaban, 0\.65\) \* _v646Geo : _v646BeTaban;/);
+test('V649: V646 geo yamasi GERI ALINDI — geo tek noktada (r283DynamicBE) uygulanir', () => {
+  // V646 geo'yu TABANA ekliyordu; 23323 bir kez daha carpiyordu -> geo^2.
+  // Dogru yer r283DynamicBE; orasi V646 oncesinde de backtest paritesindeydi.
+  assert.match(server, /const breakEvenAt = _v646BeTaban;/);
+  assert.ok(!/const breakEvenAt = V646_BE_GEO \?/.test(server), 'cift-geo satiri kalmamali');
+  assert.match(server, /Math\.max\(r192BreakEvenAt, 0\.65\)\) \* r339GeoScale/);
 });
 
 test('V646/V648: stop genisligi gercek fiyatlardan turetilir, oncelik PLAN stopu', () => {
@@ -73,7 +75,10 @@ test('V646: karli kurulumlar listede DEGIL', () => {
 
 // ── sozlesme korunuyor mu ───────────────────────────────────────────────────
 test('V646: risk sozlesmesi ve onceki surumlerin duzeltmeleri yerinde', () => {
-  assert.match(server, /const LAZARUS_BUILD = 'V6_4_8_EN_YAKIN_ENGEL_PIVOT'/);
+  const _b = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  const _pkg = JSON.parse(require('fs').readFileSync(require('path').join(__dirname,'..','package.json'),'utf8'));
+  assert.ok(_b && _b[1].startsWith('V' + String(_pkg.version).replace(/\./g,'_') + '_'),
+    `LAZARUS_BUILD (${_b && _b[1]}) package.json (${_pkg.version}) ile uyusmuyor`);
   assert.match(server, /V637_PUSU_R495E_DEVRET/);   // PUSU -> R495 devri
   assert.match(server, /V634_TOPLAM_RISK_PCT/);      // 1 poz x %8 sozlesmesi
   assert.match(server, /V628_ATESLEME_KOPRUSU/);     // retestBelowStop koprusu
