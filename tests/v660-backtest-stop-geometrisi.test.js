@@ -18,7 +18,14 @@ test('V660: üç kelepçe de açıldı', () => {
 test('V660: minStopPct likidasyondan türetilen tavanla kelepçeleniyor', () => {
   assert.match(server, /const _v660LikTavan = \(100 \/ _v660Lev\) \* V660_LIK_PAYI;/);
   assert.match(server, /const _v660Gereken = atrPct \* R486_MIN_STOP_ATR;/);
-  assert.match(server, /minStopPct=Math\.max\(\.80,Math\.min\(_v660LikTavan,_v660Gereken\)\)/);
+  // V662: listeye _v662Tavan (engele uyumlu) eklendi. Terim terim kontrol —
+  // yeni tavan eklenince test kirilmasin ama hicbir tavan sessizce dusmesin.
+  const _mi = server.indexOf('minStopPct=Math.max(.80,Math.min(');
+  assert.ok(_mi > 0, 'minStopPct ifadesi bulunmali');
+  const _ms = server.slice(_mi, _mi + 120);
+  for (const t of ['_v660LikTavan','_v660Gereken','_v662Tavan']) {
+    assert.ok(_ms.includes(t), `minStopPct icinde ${t} olmali`);
+  }
 });
 
 test('V660: durdurulamayan işlem MARKET açamaz', () => {

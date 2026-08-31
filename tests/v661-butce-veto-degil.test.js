@@ -41,7 +41,14 @@ test('V661: gerçek risk HER işlemde loglanıyor (gizlenmiyor)', () => {
 
 test('V661: likidasyon tavanı KALDIRILMADI — fizik, tercih değil', () => {
   assert.match(server, /const _v660LikTavan = \(100 \/ _v660Lev\) \* V660_LIK_PAYI;/);
-  assert.match(server, /minStopPct=Math\.max\(\.80,Math\.min\(_v660LikTavan,_v660Gereken\)\)/);
+  // V662: listeye _v662Tavan (engele uyumlu) eklendi. Terim terim kontrol —
+  // yeni tavan eklenince test kirilmasin ama hicbir tavan sessizce dusmesin.
+  const _mi = server.indexOf('minStopPct=Math.max(.80,Math.min(');
+  assert.ok(_mi > 0, 'minStopPct ifadesi bulunmali');
+  const _ms = server.slice(_mi, _mi + 120);
+  for (const t of ['_v660LikTavan','_v660Gereken','_v662Tavan']) {
+    assert.ok(_ms.includes(t), `minStopPct icinde ${t} olmali`);
+  }
 });
 
 test('V661: 100$ bakiyede risk aritmetiği (kullanıcı bunu bilerek seçti)', () => {

@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_6_1_BUTCE_VETO_DEGIL_LIKIDASYON'
+const LAZARUS_BUILD = 'V6_6_2_STOP_FIRSATA_UYUYOR'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6632,6 +6632,11 @@ const V660_DURDURULAMAZ_VETO = String(process.env.V660_DURDURULAMAZ_VETO ?? '0')
 // ═══ V661 ═══ risk butcesi artik VETO DEGIL, RAPOR. Tek sert tavan likidasyondur.
 // '1' yapilirsa eski davranis geri gelir (butce SL'i daraltir ve adayi oldurur).
 const V661_BUTCE_VETO = String(process.env.V661_BUTCE_VETO ?? '0') !== '0';
+// ═══ V662 ═══ stop artik ATR'nin degil FIRSATIN fonksiyonu: engel yakinsa stop da
+// dar kalir, boylece R/R kapisi kendi stopumuz yuzunden islemi elemez.
+const V662_ENGELE_UYUMLU_STOP = String(process.env.V662_ENGELE_UYUMLU_STOP ?? '1') !== '0';
+// Hedef R/R: R493 esigi 0.35; ustunde emniyet payi birakiyoruz.
+const V662_HEDEF_RR = Math.max(0.36, Math.min(1.5, Number(process.env.V662_HEDEF_RR || 0.42)));
 // ═══ V660 ═══ PARITE SOZLESMESI: toplam risk %. Boot kapisi bu sabite bakar.
 // Kasitsiz kaymayi yakalamaya devam eder; degeri degistirmek BILINCLI bir karardir.
 // %8 -> %23 (31.08.2026, kullanici karari): 50$ sabit marj + 2,35xATR stop icin gerekli.
@@ -7940,10 +7945,30 @@ function r486EntryTruthGuard(story={},opts={}){
   // kelepceleniyor. Backtest 2,35xATR kullaniyor; %4,5 tavani ATR>%1,9'da devreye girip
   // stopu gurultunun icine sokuyordu.
   const _v660Lev = Math.max(1, Number(opts.leverage || opts.lev || R486_MIN_LEVERAGE || 7));
+  // ═══ V662 ═══ ENGEL MESAFESI. `first` bu satirdan SONRA hesaplaniyor, o yuzden
+  // ayni kaynaklardan yerinde turetiyoruz (hepsi `story` uzerinde, `entry` opts'ta).
+  const _v662Aday = [Number(story?.firstObstacle||0),
+    Number(story?.liquidity?.['5m']?.above||0), Number(story?.liquidity?.['15m']?.above||0),
+    Number(story?.liquidity?.['1h']?.above||0), Number(story?.orderBlock?.['15m']?.supply?.low||0),
+    Number(story?.fvg?.['15m']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b);
+  const _v662Engel = _v662Aday[0] || 0;
+  const _v662D = (_v662Engel > 0 && entry > 0) ? (_v662Engel-entry)/entry*100 : 0;
+  // Stop, kendi islemini diskalifiye edecek kadar genisleyemez.
+  const _v662Tavan = (V662_ENGELE_UYUMLU_STOP && _v662D > 0) ? _v662D / V662_HEDEF_RR : Infinity;
   const _v660LikTavan = (100 / _v660Lev) * V660_LIK_PAYI;   // 7x -> %12,86 · 10x -> %9,00
   const _v660Gereken = atrPct * R486_MIN_STOP_ATR;           // backtest paritesi
   const _v660Imkansiz = V660_DURDURULAMAZ_VETO && _v660Gereken > _v660LikTavan;
-  const risk=entry>sl&&sl>0?entry-sl:0,stopPct=risk>0?risk/entry*100:null,minStopPct=Math.max(.80,Math.min(_v660LikTavan,_v660Gereken)),tightStop=stopPct!==null&&stopPct<minStopPct;
+  const risk=entry>sl&&sl>0?entry-sl:0,stopPct=risk>0?risk/entry*100:null,minStopPct=Math.max(.80,Math.min(_v660LikTavan,_v660Gereken,_v662Tavan)),tightStop=stopPct!==null&&stopPct<minStopPct;
+  // Sessiz no-op olmasin: engel bulunamadiysa tavan Infinity kalir, logda gorunur.
+  if (V662_ENGELE_UYUMLU_STOP && Number.isFinite(atrPct) && atrPct > 0) {
+    try {
+      if (_v662D > 0 && _v662Tavan < Math.min(_v660LikTavan, _v660Gereken)) {
+        logAuto(`📐 ${story?.symbol||''} V662 stop fırsata uyduruldu: ATR×${R486_MIN_STOP_ATR}=%${_v660Gereken.toFixed(2)} → %${minStopPct.toFixed(2)} · engel +%${_v662D.toFixed(2)} · hedef R/R ${V662_HEDEF_RR}`);
+      } else if (!(_v662D > 0)) {
+        logAuto(`⚠️ ${story?.symbol||''} V662: girişin üstünde engel bulunamadı — stop ATR/likidasyondan (%${minStopPct.toFixed(2)}), R/R kapısı ayrıca karar verecek`);
+      }
+    } catch(_) {}
+  }
   // Canlı giriş fiyatı değişebildiği için hikaye üretildiği andaki eski/ters hedefleri emir matematiğine sokma.
   const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005;
   const targetRaw=Number(story.targetLiquidity||0),targetDirectionValid=!(targetRaw>0)||targetRaw>entry*1.00005,target=targetDirectionValid?targetRaw:0;
