@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_4_9_CIFT_GEO_GERI_ALMA'
+const LAZARUS_BUILD = 'V6_5_0_BOLGEDEN_GIRIS_PIVOT_GORUS'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -3930,6 +3930,19 @@ const V648_EN_YAKIN_ENGEL = String(process.env.V648_EN_YAKIN_ENGEL ?? '1') !== '
 const V648_PIVOT_ENGEL = String(process.env.V648_PIVOT_ENGEL ?? '1') !== '0';
 // ═══ V648 ═══ V646 geo carpani plan stopundan (initialSL) turetilir, kayan stoptan degil
 const V648_GEO_DONDUR = String(process.env.V648_GEO_DONDUR ?? '1') !== '0';
+// ═══ V649-B ═══ giris 15m hafiza bolgesinin TAVANINA cekilir (olculdu: bolge ustu giris
+// kazanma oranini %70,1 -> %42'ye dusuruyor). Tolerans backtest kirilma noktasindan:
+// %0,50 kaymada kayip 3,5 puan, %0,84'te 19,5 puan -> esik ikisinin arasina konur.
+const V649_BOLGEDEN_GIRIS = String(process.env.V649_BOLGEDEN_GIRIS ?? '1') !== '0';
+const V649_BOLGE_TOLERANS = Math.max(0.05, Math.min(5, Number(process.env.V649_BOLGE_TOLERANS ?? 0.5)));
+// Bolge cok uzaktaysa hafiza bayattir; ne cekeriz ne bloklariz — yalniz loglariz.
+const V649_BOLGE_MAX_SAPMA = Math.max(1, Math.min(15, Number(process.env.V649_BOLGE_MAX_SAPMA ?? 4)));
+// ═══ V650-C ═══ swing pivotlar ZATEN hesaplaniyor (r484Structure.pivots) ama story'ye
+// konulmuyordu; karar veren onlari hic gormedi. C1 veriyi acar (davranis degismez).
+const V650_PIVOT_GORUS = String(process.env.V650_PIVOT_GORUS ?? '1') !== '0';
+// C2 pivotlari ilk-engel adayi yapar. KAPALI: ayni surumde V649-B aciliyor, ikisi
+// birlikte acilirsa hangisinin etki ettigi olculemez.
+const V650_PIVOT_ENGEL = String(process.env.V650_PIVOT_ENGEL ?? '0') !== '0';
 const V647_MAX_KALDIRAC = Math.max(3, Math.min(20, Math.floor(Number(process.env.R486_MAX_LEVERAGE || 10))));
 const V630_YOGUNLASMA = (String(process.env.V630_YOGUNLASMA ?? '1') !== '0')
                      && Math.max(1, Math.min(2, Math.floor(Number(process.env.R486_MAX_POSITIONS || 1)))) > 1;
@@ -7563,7 +7576,7 @@ function r483ChartStory(symbol,data={}){
     const setupKey=postImpulseReject?'POST_IMPULSE_REJECTION':confirmedPullback?'CONFIRMED_PULLBACK':intrabarMtfObvious?'INTRABAR_MTF_JOIN':microConfirmedContinuation?'CONFIRMED_CONTINUATION':earlyIgnition?'EARLY_IGNITION':ghostPulse?'PRE_BREAKOUT_GHOST':null,detection=r48635DetectionStamp(symbol,setupKey,price,planTruth.action==='TACTICAL'||planTruth.action==='AUTO'),microBreakLevel=Math.max(Number(tf['1m']?.lastHigh||0),Number(tf['3m']?.lastHigh||0),Number(tf['5m']?.lastHigh||0)),distanceFromBreakoutAtr=microBreakLevel>0&&atrAbs>0?+((price-microBreakLevel)/atrAbs).toFixed(2):null;
     const storyParts=[`15m ${t15.trend||'?'}`,`mikro 1m:${microVotes['1m'].trend}/3m:${microVotes['3m'].trend}/5m:${microVotes['5m'].trend}`,`mikroDurum ${microConsensus.status}`,`1h ${t1.trend||'?'}`,`4h ${t4.trend||'?'}`,`1d ${td.trend||'?'}`,`akış ${flow.state}`,`OI ${oi.state}`,`funding ${oi.funding===null?'?':oi.funding}`,`evre ${stage}`,`seviye ${levelTruth.firstObstacle?.role||levelTruth.trigger?.role||'TARGET'}`,`MM ${mmScenario}`,`trend ${tf['15m']?.trendline?.state||'NO_BREAK'}`];if(firstObstacle)storyParts.push(`ilkEngel ${Number(firstObstacle)}`);if(targetLiquidity)storyParts.push(`hedefLik ${Number(targetLiquidity)}`);if(['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(timing)&&retestEntry)storyParts.push(`market kovalanmaz; retest ${Number(retestEntry)}`);if(intrabarMtfObvious)storyParts.push(`15m canlı MTF ${intrabarMtfScore} · mum %${Math.round(live15Progress*100)}`);if(ghostPulse)storyParts.push(`hayaletSkor ${Number(workerPulse.score||0)}`);if(detection)storyParts.push(`ilkAlgı ${Math.round(detection.ageMs/1000)}sn önce`);
     const snapshot=r48639Snapshot(symbol,data,rows,flow,oi);
-    return {version:'R486.3.9',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,retestType:retestObj?.t||null,retestGapPct:retestGapPct===null?null:+retestGapPct.toFixed(2),retestGapAtr:retestGapAtr===null?null:+retestGapAtr.toFixed(2),targetLiquidity,targetType:targetObj?.t||null,firstObstacle,firstObstacleType:firstObstacleObj?.t||null,firstObstacleRole:firstObstacleObj?.role||null,firstObstacleStrength:firstObstacleObj?.strength||null,firstObstacleDistPct:firstObstacleDistPct===null?null:+firstObstacleDistPct.toFixed(2),invalidation,support,resistance,flowState:flow.state,orderFlow:flow,levelTruth,absorption,stage,planTruth,snapshot,mmScenario,structuralTopEvidence,trapEvidence,impulseChase,parabolicChase,staircaseImpulse,impulseConcentration:+impulseConcentration.toFixed(2),targetRejection,upperWick15:+upperWick15.toFixed(2),bodyRatio15:+bodyRatio15.toFixed(2),validatedTrendRetest,compressionConflict,nearObstacle,structuredContinuation,intrabarMtfObvious,intrabarMtfScore,live15Progress:+live15Progress.toFixed(3),microConsensus,workerPulse:workerPulseFresh?workerPulse:null,detection,distanceFromBreakoutAtr,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},sourceRsi5m:Number(data.rsi5m),sourceRsi15m:Number(data.rsi15m),sourceRsi1h:Number(data.rsi1h),sourceRsi4h:Number(data.rsi4h),source:{lane:data.sourceLane,label:data.sourceLabel},researchPassive:{schema:'LAZARUS_V592_STORY_RESEARCH_PASSIVE_V1',fib:fibResearch,rawFlowState:String(researchInput?.flowState||researchInput?.orderFlow?.state||'UNKNOWN'),rawOi:{state:researchInput?.oi?.state||null,change15m:researchInput?.oiChange15m??researchInput?.oiRaw15m??null,change1h:researchInput?.oiChange1h??researchInput?.oiDegisim?.['1h']??null,funding:researchInput?.fundingRate??null},liveCandles:researchInput?.candles?._live||researchInput?.liveCandles||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false}};
+    return {version:'R486.3.9',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,retestType:retestObj?.t||null,retestGapPct:retestGapPct===null?null:+retestGapPct.toFixed(2),retestGapAtr:retestGapAtr===null?null:+retestGapAtr.toFixed(2),targetLiquidity,targetType:targetObj?.t||null,firstObstacle,firstObstacleType:firstObstacleObj?.t||null,firstObstacleRole:firstObstacleObj?.role||null,firstObstacleStrength:firstObstacleObj?.strength||null,firstObstacleDistPct:firstObstacleDistPct===null?null:+firstObstacleDistPct.toFixed(2),invalidation,support,resistance,flowState:flow.state,orderFlow:flow,levelTruth,absorption,stage,planTruth,snapshot,mmScenario,structuralTopEvidence,trapEvidence,impulseChase,parabolicChase,staircaseImpulse,impulseConcentration:+impulseConcentration.toFixed(2),targetRejection,upperWick15:+upperWick15.toFixed(2),bodyRatio15:+bodyRatio15.toFixed(2),validatedTrendRetest,compressionConflict,nearObstacle,structuredContinuation,intrabarMtfObvious,intrabarMtfScore,live15Progress:+live15Progress.toFixed(3),microConsensus,workerPulse:workerPulseFresh?workerPulse:null,detection,distanceFromBreakoutAtr,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},sourceRsi5m:Number(data.rsi5m),sourceRsi15m:Number(data.rsi15m),sourceRsi1h:Number(data.rsi1h),sourceRsi4h:Number(data.rsi4h),source:{lane:data.sourceLane,label:data.sourceLabel},researchPassive:{schema:'LAZARUS_V592_STORY_RESEARCH_PASSIVE_V1',fib:fibResearch,pivots:V650_PIVOT_GORUS?{'5m':{high:(tf['5m']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)},'15m':{high:(tf['15m']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)},'1h':{high:(tf['1h']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)}}:null,rawFlowState:String(researchInput?.flowState||researchInput?.orderFlow?.state||'UNKNOWN'),rawOi:{state:researchInput?.oi?.state||null,change15m:researchInput?.oiChange15m??researchInput?.oiRaw15m??null,change1h:researchInput?.oiChange1h??researchInput?.oiDegisim?.['1h']??null,funding:researchInput?.fundingRate??null},liveCandles:researchInput?.candles?._live||researchInput?.liveCandles||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false}};
   }catch(e){return {version:'R486.2',bias:'MIXED',timing:'MIXED',entryMode:'NONE',quality:50,qualityAdj:0,topRisk:0,summary:`hikâye hesaplanamadı: ${String(e?.message||e).slice(0,100)}`,error:true};}
 }
 
@@ -7905,7 +7918,17 @@ function r486EntryTruthGuard(story={},opts={}){
   const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005;
   const targetRaw=Number(story.targetLiquidity||0),targetDirectionValid=!(targetRaw>0)||targetRaw>entry*1.00005,target=targetDirectionValid?targetRaw:0;
   const fallbackObstacles=R486_FIRST_OBSTACLE_RESOLVE?[Number(story?.liquidity?.['3m']?.above||0),Number(story?.liquidity?.['5m']?.above||0),Number(story?.liquidity?.['15m']?.above||0),Number(story?.liquidity?.['1h']?.above||0),Number(story?.orderBlock?.['3m']?.supply?.low||0),Number(story?.orderBlock?.['5m']?.supply?.low||0),Number(story?.orderBlock?.['15m']?.supply?.low||0),Number(story?.fvg?.['3m']?.bear?.low||0),Number(story?.fvg?.['5m']?.bear?.low||0),Number(story?.fvg?.['15m']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b):[];
-  const first=firstObstacleDirectionValid&&firstRaw>0?firstRaw:(fallbackObstacles[0]||0);
+  // ═══ V650-C2 ═══ swing-high pivotlar da ilk-engel adayi (backtest 15m'de boyle yapar).
+  // VARSAYILAN KAPALI — once V649-B'nin etkisi olculecek.
+  let _v650Pivot = [];
+  if (V650_PIVOT_ENGEL) {
+    _v650Pivot = [].concat(story?.pivots?.['5m']?.high||[], story?.pivots?.['15m']?.high||[], story?.pivots?.['1h']?.high||[])
+      .map(p => Number(p?.price)||0).filter(x => x > entry*1.00005);
+    // Sessiz no-op alarmi: bayrak acik ama veri yoksa yama fiilen calismiyordur.
+    if (!_v650Pivot.length) { try { logAuto(`⚠️ ${story?.symbol||''} V650 pivot engeli AÇIK ama pivot listesi BOŞ — story.pivots gelmiyor, yama etkisiz`); } catch(_) {} }
+  }
+  const _v650Adaylar = fallbackObstacles.concat(_v650Pivot).sort((a,b)=>a-b);
+  const first=firstObstacleDirectionValid&&firstRaw>0?firstRaw:(_v650Adaylar[0]||0);
   const firstObstacleRR=first>entry&&risk>0?(first-entry)/risk:null,retest=Number(story.retestEntry||0),retestPlan=['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(String(story.timing||'')),retestBelowStop=retestPlan&&retest>0&&sl>0&&retest<=sl*1.0005,retestFar=Number(story.retestGapAtr||0)>.35;
   let recommendedSl=sl;if(tightStop){const widened=entry*(1-minStopPct/100);recommendedSl=Math.min(sl>0?sl:widened,widened);}if(retest>0&&['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(String(story.timing))){const buffer=Math.max(entry*.0015,entry*atrPct/100*.12);recommendedSl=Math.min(recommendedSl>0?recommendedSl:retest-buffer,retest-buffer);}
   if(entry>0&&recommendedSl>0&&((entry-recommendedSl)/entry*100)>10)recommendedSl=entry*.90;
@@ -7913,6 +7936,26 @@ function r486EntryTruthGuard(story={},opts={}){
   if(mode==='WAIT_RETEST'||mode==='TRAP')plannedEntry=retest>0?retest:entry;
   else if(mode==='WAIT_BREAK_RETEST')plannedEntry=first>entry?first*1.0015:(retest>0?retest:entry);
   else if(mode==='WAIT_CONFIRM')plannedEntry=retest>0?retest:entry; // pusu kaydı yaşayabilsin; market emri değildir.
+  // ═══ V649-B ═══ GIRIS 15m HAFIZA BOLGESINE CEKILIR.
+  // Zincir: plannedEntry -> r447 WAIT donusu `entry` -> r442PusuKur -> pusu seviyesi.
+  // Yani pusu artik bolgeye kurulur; fiyat bolgeye donerse girilir, kovalanmaz.
+  let _v649Bolge = null, _v649BolgeUstu = false, _v649Sapma = 0;
+  if (V649_BOLGEDEN_GIRIS) {
+    try {
+      const _hf = v644CandidateMemoryContext(story?.symbol, Number(entry || 0), story);
+      const _z = _hf?.available ? _hf.entryZone : null, _tepe = Number(_z?.high || 0);
+      if (_tepe > 0 && plannedEntry > 0) {
+        _v649Sapma = (plannedEntry - _tepe) / _tepe * 100;
+        if (_v649Sapma > V649_BOLGE_TOLERANS && _v649Sapma <= V649_BOLGE_MAX_SAPMA) {
+          _v649Bolge = _z; _v649BolgeUstu = true;
+          const _eski = plannedEntry; plannedEntry = _tepe;
+          try { logAuto(`🎯 ${story?.symbol||''} V649 giriş bölgeye çekildi: ${_eski} → ${_tepe} · bölge ${_z.low}-${_z.high} (${_z.type}) · sapma %${_v649Sapma.toFixed(2)}`); } catch(_) {}
+        } else if (_v649Sapma > V649_BOLGE_MAX_SAPMA) {
+          try { logAuto(`⚠️ ${story?.symbol||''} V649 hafıza bölgesi çok uzak (%${_v649Sapma.toFixed(2)} > %${V649_BOLGE_MAX_SAPMA}) — bayat sayıldı, dokunulmadı`); } catch(_) {}
+        }
+      }
+    } catch(_) {}
+  }
   let recommendedTp=tp;
   if(!(recommendedTp>plannedEntry)){
     recommendedTp=target>plannedEntry?target:first>plannedEntry?first:tp;
@@ -7935,7 +7978,7 @@ function r486EntryTruthGuard(story={},opts={}){
   const _v628Kopru       = V628_ATESLEME_KOPRUSU && retestBelowStop && _v628TazeKirilim && _v628Uzamamis && _v628AtrUygun;
   const retestBelowStopEtkin = retestBelowStop && !_v628Kopru;
   const planIncoherent=retestBelowStopEtkin||!(recommendedSl>0&&recommendedSl<entry)||!(recommendedTp>entry),directionAgainst=story.bias==='SHORT'||(!V592_POLICY_PARITY_MODE&&liveFlowAgainst);
-  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical&&!R486_WAIT_STORY_MARKET_BRIDGE/* V621: kopru acikken retest kanit kapilarina devreder */,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked);
+  const anatomyTactical=String(story?.planTruth?.action||'')==='TACTICAL',storyWait=['WAIT_RETEST','WAIT_BREAK_RETEST','WAIT_CONFIRM','TRAP','AVOID_LONG'].includes(mode)&&!anatomyTactical&&!R486_WAIT_STORY_MARKET_BRIDGE/* V621: kopru acikken retest kanit kapilarina devreder */,marketAllowed=!(storyWait||planIncoherent||legacyFirstObstacleHard||directionAgainst||(tightStop&&retestFar)||r493EntrySafety.blocked||_v649BolgeUstu);
   const reasons=[];
   if(storyWait)reasons.push(`hikâye:${mode}`);
   if(_v628Kopru)reasons.push(`V628 ateşleme köprüsü: retest SL altında ama taze kırılım + ATR %${Number(atrPct).toFixed(2)} ≤ ${V628_ATR_TAVAN} — kanıt kapılarına devredildi`);
@@ -7945,12 +7988,13 @@ function r486EntryTruthGuard(story={},opts={}){
   if(firstObstacleSoft)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} ince (uyarı)`);
   if(legacyFirstObstacleHard)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
   if(r493EntrySafety.blocked)reasons.push(`R493 ${r493EntrySafety.code}: ${r493EntrySafety.reason}`);
+  if(_v649BolgeUstu)reasons.push(`V649: fiyat 15m hafıza bölgesinin %${_v649Sapma.toFixed(2)} üstünde — market yok, bölgeye pusu kuruldu (${_v649Bolge?.low}-${_v649Bolge?.high})`);
   if(directionAgainst)reasons.push(`yön/akış LONG karşıtı`);
   if(tightStop)reasons.push(`SL ${Number(stopPct||0).toFixed(2)}% < ${minStopPct.toFixed(2)}% (${R486_MIN_STOP_ATR} ATR)`);
   const liveResearchRisk=!!(story.orderFlow?.conflict||story.oi?.reliable===false);
   const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||(!V592_POLICY_PARITY_MODE&&liveResearchRisk)||firstObstacleSoft||tightStop||retestBelowStop||r493EntrySafety.blocked);
   const researchShadow={flowState:rawFlowState,flowAgainst:liveFlowAgainst,orderFlowConflict:story.orderFlow?.conflict===true,oiReliable:story.oi?.reliable??null,wouldRaiseEarlyRisk:liveResearchRisk,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false};
-  return {active:true,marketAllowed,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
+  return {active:true,marketAllowed,v649BolgeUstu:_v649BolgeUstu,v649Sapma:+Number(_v649Sapma||0).toFixed(3),v649Bolge:_v649Bolge,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
 }
 
 // R493 v5.5: R482 operasyonel güvenlik ayrımı.
