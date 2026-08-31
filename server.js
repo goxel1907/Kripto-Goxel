@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_6_2_STOP_FIRSATA_UYUYOR'
+const LAZARUS_BUILD = 'V6_6_3_ENGEL_GORUS_ALANI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7950,6 +7950,14 @@ function r486EntryTruthGuard(story={},opts={}){
   const _v662Aday = [Number(story?.firstObstacle||0),
     Number(story?.liquidity?.['5m']?.above||0), Number(story?.liquidity?.['15m']?.above||0),
     Number(story?.liquidity?.['1h']?.above||0), Number(story?.orderBlock?.['15m']?.supply?.low||0),
+    // ═══ V663 ═══ 30m/1h/4h de okunur. TWTUSDT 23:09: firstObstacleRR=null — girisin
+    // ustunde HIC engel bulunamadi, cunku cozucu 4h'a bakmiyordu. Bu seviyeler ZATEN
+    // hesaplaniyor: r483ChartStory fvg/ob/liq'i ['1m','3m','5m','15m','30m','1h','4h','1d']
+    // icin uretiyor. Uzak seviyeler; liste siralanip EN YAKIN alindigi icin yalnizca
+    // baska aday YOKKEN baglar — mevcut hicbir kararı daraltmaz.
+    Number(story?.liquidity?.['30m']?.above||0), Number(story?.liquidity?.['4h']?.above||0),
+    Number(story?.orderBlock?.['1h']?.supply?.low||0), Number(story?.orderBlock?.['4h']?.supply?.low||0),
+    Number(story?.fvg?.['1h']?.bear?.low||0), Number(story?.fvg?.['4h']?.bear?.low||0),
     Number(story?.fvg?.['15m']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b);
   const _v662Engel = _v662Aday[0] || 0;
   const _v662D = (_v662Engel > 0 && entry > 0) ? (_v662Engel-entry)/entry*100 : 0;
@@ -7972,7 +7980,7 @@ function r486EntryTruthGuard(story={},opts={}){
   // Canlı giriş fiyatı değişebildiği için hikaye üretildiği andaki eski/ters hedefleri emir matematiğine sokma.
   const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005;
   const targetRaw=Number(story.targetLiquidity||0),targetDirectionValid=!(targetRaw>0)||targetRaw>entry*1.00005,target=targetDirectionValid?targetRaw:0;
-  const fallbackObstacles=R486_FIRST_OBSTACLE_RESOLVE?[Number(story?.liquidity?.['3m']?.above||0),Number(story?.liquidity?.['5m']?.above||0),Number(story?.liquidity?.['15m']?.above||0),Number(story?.liquidity?.['1h']?.above||0),Number(story?.orderBlock?.['3m']?.supply?.low||0),Number(story?.orderBlock?.['5m']?.supply?.low||0),Number(story?.orderBlock?.['15m']?.supply?.low||0),Number(story?.fvg?.['3m']?.bear?.low||0),Number(story?.fvg?.['5m']?.bear?.low||0),Number(story?.fvg?.['15m']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b):[];
+  const fallbackObstacles=R486_FIRST_OBSTACLE_RESOLVE?[Number(story?.liquidity?.['3m']?.above||0),Number(story?.liquidity?.['5m']?.above||0),Number(story?.liquidity?.['15m']?.above||0),Number(story?.liquidity?.['1h']?.above||0),Number(story?.orderBlock?.['3m']?.supply?.low||0),Number(story?.orderBlock?.['5m']?.supply?.low||0),Number(story?.orderBlock?.['15m']?.supply?.low||0),Number(story?.fvg?.['3m']?.bear?.low||0),Number(story?.fvg?.['5m']?.bear?.low||0),Number(story?.fvg?.['15m']?.bear?.low||0),Number(story?.liquidity?.['30m']?.above||0),Number(story?.liquidity?.['4h']?.above||0),Number(story?.orderBlock?.['1h']?.supply?.low||0),Number(story?.orderBlock?.['4h']?.supply?.low||0),Number(story?.fvg?.['1h']?.bear?.low||0),Number(story?.fvg?.['4h']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b):[];
   // ═══ V650-C2 ═══ swing-high pivotlar da ilk-engel adayi (backtest 15m'de boyle yapar).
   // VARSAYILAN KAPALI — once V649-B'nin etkisi olculecek.
   let _v650Pivot = [];
