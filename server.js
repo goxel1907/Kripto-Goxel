@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_5_SABIT_KOLON_SEKLI'
+const LAZARUS_BUILD = 'V6_7_6_GERI_VERME_GOLGESI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -11508,6 +11508,11 @@ const R501_EVIDENCE_SAMPLE_MS = Math.max(500, Math.min(10000, Number(process.env
 const R501_EVIDENCE_BOOK_MS = Math.max(1000, Math.min(60000, Number(process.env.R501_EVIDENCE_BOOK_MS || 5000)));
 const R501_EVIDENCE_OI_MS = Math.max(10000, Math.min(300000, Number(process.env.R501_EVIDENCE_OI_MS || 30000)));
 const R501_EVIDENCE_MAX_TICKS = Math.max(5000, Math.min(250000, Number(process.env.R501_EVIDENCE_MAX_TICKS || 50000)));
+// ═══ V677 ═══ GOLGE geri-verme olcumu. decisionImpact:false — emir yolu ASLA okumaz.
+const V677_GERI_VERME_GOLGE = String(process.env.V677_GERI_VERME_GOLGE ?? '1') !== '0';
+const V677_MIN_ZIRVE = Math.max(0.5, Math.min(20, Number(process.env.V677_MIN_ZIRVE || 3)));
+const V677_G_LISTESI = Object.freeze(String(process.env.V677_G_LISTESI || '6,8,10,12')
+  .split(',').map(x=>Number(x.trim())).filter(x=>Number.isFinite(x)&&x>0&&x<=60));
 const R501_EVIDENCE_MAX_SAMPLES = Math.max(2000, Math.min(100000, Number(process.env.R501_EVIDENCE_MAX_SAMPLES || 20000)));
 const R501_EVIDENCE_RETENTION_DAYS = Math.max(7, Math.min(365, Number(process.env.R501_EVIDENCE_RETENTION_DAYS || 90)));
 const R501_EVIDENCE_MAX_TRADES = Math.max(30, Math.min(1000, Number(process.env.R501_EVIDENCE_MAX_TRADES || 250)));
@@ -12002,6 +12007,28 @@ function r501Sample(rec,forceBook=false){
   const book=(forceBook||now-Number(rec._lastBookAt||0)>=R501_EVIDENCE_BOOK_MS)?r501CurrentBook(rec.symbol):null;if(book)rec._lastBookAt=now;
   const price=rec.rawTicks.at(-1)?.price??tick?.currentCandle?.close??rec.trade?.entryPrice??null;
   let manager=null,liquidations=null;try{const st=trailingState.get(rec.symbol)||{};manager={currentSL:r501Num(st.currentSL??st.stopLoss,10),targetTP:r501Num(st.targetTP??st.tpPrice??st.target,10),breakEvenSet:!!st.breakEvenSet,sltpVerified:!!st.sltpVerified,peakRoi:r501Num(st.peakPnl,3),dipRoi:r501Num(st.dipPnl,3),lastManageTs:Number(st.lastManageTs||0)||null,managerAgeMs:Number(st.lastManageTs||0)?now-Number(st.lastManageTs):null,exitMode:st.exitMode||null,profitLockLevel:r501Num(st.profitLockLevel,4),r91Exit:st.r91Exit||null};}catch(_){}try{const l=liqStore.get(rec.symbol)||{};liquidations={longLiqs:(l.longLiqs||[]).slice(-100),shortLiqs:(l.shortLiqs||[]).slice(-100),lastCascade:l.lastCascade||null};}catch(_){}const sample={ts:now,elapsedMs:now-rec.openedAt,price:r501Num(price,10),cvd:{buyUSDT:r501Num(rec._buyUSDT,2),sellUSDT:r501Num(rec._sellUSDT,2),deltaUSDT:r501Num(rec._buyUSDT-rec._sellUSDT,2),stream:cvd?{buy:cvd.buy,sell:cvd.sell,delta:cvd.delta,ratio:cvd.ratio,momentum:cvd.momentum,valid:cvd.valid}:null},tick:tick?{recent30s:tick.recent30s,deltaRatio:tick.deltaRatio,deltaTrend:tick.deltaTrend,deltaFlip:tick.deltaFlip,whaleBias:tick.whaleBias,vpin:tick.vpin,microstructure:tick.microstructure}:null,flow:flow?{delta30:flow.gercekDelta30sn,delta120:flow.gercekDelta2dk,buyRatio30:flow.alisOrani30sn,direction:flow.akisYonu,acceleration:flow.ivme,tick30:flow.tick30sn,upperWall:flow.ustDuvar,lowerWall:flow.altDuvar}:null,book,liquidations,manager,freshness:r501Freshness(rec.symbol),oi:rec.oiSeries.at(-1)||null};
+  // ═══ V677 ═══ GOLGE: gercek bir takip eden geri-verme stopu ne yapardi?
+  // Hicbir emre, SL/TP'ye, yoneticiye DOKUNMAZ. Yalniz kaydeder.
+  if (V677_GERI_VERME_GOLGE) { try {
+    // ROI'yi FIYATTAN TURETME. Yoneticinin kendi sayisini kullan: r91Exit.pnlPct
+    // zaten kaldiracli ROI ve manager.peakRoi ile ayni birimde. ZORA kaydinda
+    // fiyattan turetilen %0,27 iken yonetici %2,72 diyordu — 10 kat sapma.
+    // Golge, olcumun karsilastirilacagi peakRoi/roiPct ile AYNI birimde olmali.
+    const _roi=Number(manager?.r91Exit?.pnlPct);
+    if (Number.isFinite(_roi)) {
+      if(!rec._v677) rec._v677={peak:_roi,peakAt:0,fired:{}};
+      const _st=rec._v677;
+      if(_roi>_st.peak){ _st.peak=_roi; _st.peakAt=Number(sample.elapsedMs)||0; }
+      for(const _g of V677_G_LISTESI){
+        if(_st.fired[_g]) continue;
+        if(_st.peak>=V677_MIN_ZIRVE && _roi<=_st.peak-_g){
+          _st.fired[_g]={atMs:Number(sample.elapsedMs)||0,roi:+_roi.toFixed(3),
+                         peak:+_st.peak.toFixed(3),peakAtMs:_st.peakAt};
+          try{ logAuto(`\u{1F441} ${rec.symbol} V677 GOLGE geri-verme G=${_g}: zirve %${_st.peak.toFixed(1)} \u2192 %${_roi.toFixed(1)} (${Math.round((Number(sample.elapsedMs)||0)/1000)}sn) \u2014 EMRE DOKUNULMADI`); }catch(_){}
+        }
+      }
+    }
+  } catch(_) {} }
   rec.samples.push(sample);if(rec.samples.length>R501_EVIDENCE_MAX_SAMPLES)rec.samples.splice(0,rec.samples.length-R501_EVIDENCE_MAX_SAMPLES);
   if(r501RawAppend(rec.id,'cvd_samples.jsonl',{schema:'LAZARUS_V592_CVD_SAMPLE_V1',tradeId:rec.id,symbol:rec.symbol,ts:sample.ts,elapsedMs:sample.elapsedMs,price:sample.price,cvd:sample.cvd,tick:sample.tick,flow:sample.flow,freshness:sample.freshness}))rec._rawCounts.cvdSamples=Number(rec._rawCounts.cvdSamples||0)+1;
   if(book&&r501RawAppend(rec.id,'depth_samples.jsonl',{schema:'LAZARUS_V592_DEPTH_SAMPLE_V1',tradeId:rec.id,symbol:rec.symbol,ts:sample.ts,elapsedMs:sample.elapsedMs,price:sample.price,book,freshness:sample.freshness}))rec._rawCounts.depthSamples=Number(rec._rawCounts.depthSamples||0)+1;
@@ -12383,6 +12410,21 @@ function r501DatasetRows(){
       id:rec.id,symbol:rec.symbol,side:rec.side,candidateTime:life.candidateTime??e?.timestamps?.candidateTime,decisionTime:life.decisionTime??e?.timestamps?.decisionTime,orderSendTime:life.orderSendTime??e?.timestamps?.orderSendTime,orderAckTime:life.orderAckTime??e?.timestamps?.orderAckTime,fillTime:life.fillTime??e?.timestamps?.fillTime,closedAt:rec.closedAt,
       decisionToFillMs:life?.latencyMs?.decisionToFill??(Number(life.fillTime||e?.timestamps?.fillTime)-Number(life.decisionTime||e?.timestamps?.decisionTime)),orderAckLatencyMs:life?.latencyMs?.sendToAck??(Number(life.orderAckTime||e?.timestamps?.orderAckTime)-Number(life.orderSendTime||e?.timestamps?.orderSendTime)),sendToFillMs:life?.latencyMs?.sendToFill??null,fillToProtectionMs:life?.latencyMs?.fillToProtection??null,slippageBps:life?.slippageBps??null,attemptId:life?.attemptId??null,entryPrice:rec.trade?.entryPrice,closePrice:rec.close?.closePrice,pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct,peakRoi:rec.close?.peakRoi,dipRoi:rec.close?.dipRoi,exitReason:rec.close?.exitReason,
       score:e.score,tier:e.tier,entryReason:e.entryReason,r495Action:ds?.liveDecision?.action??e?.decision?.kind,r497Rank:ds?.source?.rank??e?.decision?.gainerRank,firstObstacleRR:ds?.liveDecision?.firstObstacleRR??ds?.consensus?.firstObstacleRR,
+      // ══ V677: GOLGE geri-verme stopu — KOSAN zirveyle, canli olcum ══════════
+      ...(function(){
+        try{
+          const _f=rec._v677?.fired||{}; const _o={};
+          for(const _g of [6,8,10,12]){
+            const _h=_f[_g]||null;
+            _o['gb'+_g+'AtMs']=_h?_h.atMs:null;
+            _o['gb'+_g+'Roi']=_h?_h.roi:null;
+            _o['gb'+_g+'Peak']=_h?_h.peak:null;
+            _o['gb'+_g+'PeakAtMs']=_h?_h.peakAtMs:null;
+          }
+          _o.gbLivePeak=Number.isFinite(Number(rec._v677?.peak))?+Number(rec._v677.peak).toFixed(3):null;
+          return _o;
+        }catch(_){ return {}; }
+      })(),
       // ══ V675: ISLEM ICI CVD YORUNGESI + KAR GERI VERME (mevcut samples'tan) ══
       // samples zaten her islemde 1 Hz kayitli (PROM 2957 ornek / 2953 sn). Ama
       // 2,6 MB'lik kaydin icinde; disari cikmadan olculemiyordu. Bu kolonlar onu
