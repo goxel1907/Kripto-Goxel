@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_3_FIBONACCI_OLCULEBILIR'
+const LAZARUS_BUILD = 'V6_7_4_ISLEM_ICI_YORUNGE'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -12383,6 +12383,43 @@ function r501DatasetRows(){
       id:rec.id,symbol:rec.symbol,side:rec.side,candidateTime:life.candidateTime??e?.timestamps?.candidateTime,decisionTime:life.decisionTime??e?.timestamps?.decisionTime,orderSendTime:life.orderSendTime??e?.timestamps?.orderSendTime,orderAckTime:life.orderAckTime??e?.timestamps?.orderAckTime,fillTime:life.fillTime??e?.timestamps?.fillTime,closedAt:rec.closedAt,
       decisionToFillMs:life?.latencyMs?.decisionToFill??(Number(life.fillTime||e?.timestamps?.fillTime)-Number(life.decisionTime||e?.timestamps?.decisionTime)),orderAckLatencyMs:life?.latencyMs?.sendToAck??(Number(life.orderAckTime||e?.timestamps?.orderAckTime)-Number(life.orderSendTime||e?.timestamps?.orderSendTime)),sendToFillMs:life?.latencyMs?.sendToFill??null,fillToProtectionMs:life?.latencyMs?.fillToProtection??null,slippageBps:life?.slippageBps??null,attemptId:life?.attemptId??null,entryPrice:rec.trade?.entryPrice,closePrice:rec.close?.closePrice,pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct,peakRoi:rec.close?.peakRoi,dipRoi:rec.close?.dipRoi,exitReason:rec.close?.exitReason,
       score:e.score,tier:e.tier,entryReason:e.entryReason,r495Action:ds?.liveDecision?.action??e?.decision?.kind,r497Rank:ds?.source?.rank??e?.decision?.gainerRank,firstObstacleRR:ds?.liveDecision?.firstObstacleRR??ds?.consensus?.firstObstacleRR,
+      // ══ V675: ISLEM ICI CVD YORUNGESI + KAR GERI VERME (mevcut samples'tan) ══
+      // samples zaten her islemde 1 Hz kayitli (PROM 2957 ornek / 2953 sn). Ama
+      // 2,6 MB'lik kaydin icinde; disari cikmadan olculemiyordu. Bu kolonlar onu
+      // dataset.csv'ye tasir — GERIYE DONUK, 87 kapali islem icin de dolu gelir.
+      ...(function(){
+        try{
+          const S=Array.isArray(rec.samples)?rec.samples:[];
+          if(S.length<3) return {sampleCountUsed:S.length,sampleSpanMs:0};
+          const num=v=>{const x=Number(v);return Number.isFinite(x)?x:null;};
+          const oran=s=>num(s?.cvd?.stream?.ratio);
+          const span=num(S.at(-1)?.elapsedMs)-num(S[0]?.elapsedMs);
+          // sabit dakikalarda CVD orani: o ana en yakin ornek (ileri sapma yok)
+          // ONEMLI: islem o dakikaya ULASMADIYSA null doner. Yoksa 61 saniyelik
+          // islemde 'cvdRatio5m' son degeri dondurur ve olcum sessizce bozulur.
+          const at=ms=>{if(!(span>=ms))return null;let best=null;for(const s of S){const e=num(s?.elapsedMs);if(e===null||e>ms)break;best=s;}return best?oran(best):null;};
+          const o0=oran(S[0]), o1=at(60000), o5=at(300000), o15=at(900000);
+          const oranlar=S.map(oran).filter(x=>x!==null);
+          const dip=oranlar.length?Math.min(...oranlar):null, tepe=oranlar.length?Math.max(...oranlar):null;
+          let dipMs=null; if(dip!==null) for(const s of S){ if(oran(s)===dip){dipMs=num(s?.elapsedMs);break;} }
+          // kar tepesi: manager.peakRoi monoton artar; ilk kez tepeye ulastigi an
+          let tepeRoi=null,tepeRoiMs=null,dipRoi=null;
+          for(const s of S){ const p=num(s?.manager?.peakRoi), d=num(s?.manager?.dipRoi);
+            if(p!==null&&(tepeRoi===null||p>tepeRoi)){tepeRoi=p;tepeRoiMs=num(s?.elapsedMs);}
+            if(d!==null&&(dipRoi===null||d<dipRoi))dipRoi=d; }
+          const son=num(rec.close?.roiPct);
+          const r2=v=>v===null||v===undefined?null:+Number(v).toFixed(2);
+          return {
+            sampleCountUsed:S.length, sampleSpanMs:span,
+            cvdRatio0:r2(o0), cvdRatio1m:r2(o1), cvdRatio5m:r2(o5), cvdRatio15m:r2(o15),
+            cvdRatioMin:r2(dip), cvdRatioMax:r2(tepe), cvdRatioMinAtMs:dipMs,
+            cvdDrop1m:(o0!==null&&o1!==null)?r2(o1-o0):null,
+            cvdDrop5m:(o0!==null&&o5!==null)?r2(o5-o0):null,
+            peakRoiSeen:r2(tepeRoi), peakRoiAtMs:tepeRoiMs, dipRoiSeen:r2(dipRoi),
+            givebackPct:(tepeRoi!==null&&son!==null)?r2(tepeRoi-son):null
+          };
+        }catch(_){ return {}; }
+      })(),
       // ══ V674: FIBONACCI OLCUM KOLONLARI (pasif arastirma serididen) ══════
       ...(function(){
         try{
