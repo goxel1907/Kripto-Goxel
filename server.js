@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_1_KALITE_BANDI_KARAR'
+const LAZARUS_BUILD = 'V6_7_2_EN_YAKIN_ENGEL_1M'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6635,6 +6635,9 @@ const V661_BUTCE_VETO = String(process.env.V661_BUTCE_VETO ?? '0') !== '0';
 // ═══ V662 ═══ stop artik ATR'nin degil FIRSATIN fonksiyonu: engel yakinsa stop da
 // dar kalir, boylece R/R kapisi kendi stopumuz yuzunden islemi elemez.
 const V662_ENGELE_UYUMLU_STOP = String(process.env.V662_ENGELE_UYUMLU_STOP ?? '1') !== '0';
+// ═══ V673 ═══ ZORA denetimi: cozucu 1m'i hic okumuyordu ve ilk engeli kendi hedefinin
+// OTESINE koyabiliyordu. Ikisi de olcusuz mantik hatasi, ikisi de ayni islemde oldu.
+const V673_ENGEL_HEDEF_TUTARLILIK = String(process.env.V673_ENGEL_HEDEF_TUTARLILIK ?? '1') !== '0';
 // Hedef R/R: R493 esigi 0.35; ustunde emniyet payi birakiyoruz.
 const V662_HEDEF_RR = Math.max(0.36, Math.min(1.5, Number(process.env.V662_HEDEF_RR || 0.42)));
 // ═══ V660 ═══ PARITE SOZLESMESI: toplam risk %. Boot kapisi bu sabite bakar.
@@ -7984,7 +7987,7 @@ function r486EntryTruthGuard(story={},opts={}){
   // Canlı giriş fiyatı değişebildiği için hikaye üretildiği andaki eski/ters hedefleri emir matematiğine sokma.
   const firstRaw=Number(story.firstObstacle||0),firstObstacleDirectionValid=!(firstRaw>0)||firstRaw>entry*1.00005;
   const targetRaw=Number(story.targetLiquidity||0),targetDirectionValid=!(targetRaw>0)||targetRaw>entry*1.00005,target=targetDirectionValid?targetRaw:0;
-  const fallbackObstacles=R486_FIRST_OBSTACLE_RESOLVE?[Number(story?.liquidity?.['3m']?.above||0),Number(story?.liquidity?.['5m']?.above||0),Number(story?.liquidity?.['15m']?.above||0),Number(story?.liquidity?.['1h']?.above||0),Number(story?.orderBlock?.['3m']?.supply?.low||0),Number(story?.orderBlock?.['5m']?.supply?.low||0),Number(story?.orderBlock?.['15m']?.supply?.low||0),Number(story?.fvg?.['3m']?.bear?.low||0),Number(story?.fvg?.['5m']?.bear?.low||0),Number(story?.fvg?.['15m']?.bear?.low||0),Number(story?.liquidity?.['30m']?.above||0),Number(story?.liquidity?.['4h']?.above||0),Number(story?.orderBlock?.['1h']?.supply?.low||0),Number(story?.orderBlock?.['4h']?.supply?.low||0),Number(story?.fvg?.['1h']?.bear?.low||0),Number(story?.fvg?.['4h']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b):[];
+  const fallbackObstacles=R486_FIRST_OBSTACLE_RESOLVE?[Number(story?.liquidity?.['1m']?.above||0),Number(story?.orderBlock?.['1m']?.supply?.low||0),Number(story?.fvg?.['1m']?.bear?.low||0),Number(story?.liquidity?.['3m']?.above||0),Number(story?.liquidity?.['5m']?.above||0),Number(story?.liquidity?.['15m']?.above||0),Number(story?.liquidity?.['1h']?.above||0),Number(story?.orderBlock?.['3m']?.supply?.low||0),Number(story?.orderBlock?.['5m']?.supply?.low||0),Number(story?.orderBlock?.['15m']?.supply?.low||0),Number(story?.fvg?.['3m']?.bear?.low||0),Number(story?.fvg?.['5m']?.bear?.low||0),Number(story?.fvg?.['15m']?.bear?.low||0),Number(story?.liquidity?.['30m']?.above||0),Number(story?.liquidity?.['4h']?.above||0),Number(story?.orderBlock?.['1h']?.supply?.low||0),Number(story?.orderBlock?.['4h']?.supply?.low||0),Number(story?.fvg?.['1h']?.bear?.low||0),Number(story?.fvg?.['4h']?.bear?.low||0)].filter(x=>x>entry*1.00005).sort((a,b)=>a-b):[];
   // ═══ V650-C2 ═══ swing-high pivotlar da ilk-engel adayi (backtest 15m'de boyle yapar).
   // VARSAYILAN KAPALI — once V649-B'nin etkisi olculecek.
   let _v650Pivot = [];
@@ -8032,6 +8035,11 @@ function r486EntryTruthGuard(story={},opts={}){
   let recommendedTp=tp;
   if(!(recommendedTp>plannedEntry)){
     recommendedTp=target>plannedEntry?target:first>plannedEntry?first:tp;
+  }
+  // ═══ V673-B ═══ ilk engel hedefin OTESINDE olamaz — olduysa cozucu yanlis seviyeyi secmistir.
+  if (V673_ENGEL_HEDEF_TUTARLILIK && first > 0 && target > 0 && first > target && target > entry) {
+    try { logAuto(`🔧 ${story?.symbol||''} V673 TUTARSIZ ENGEL: ilk engel ${first} > hedef ${target} — hedef ilk engel sayildi`); } catch(_) {}
+    first = target;
   }
   const fullRisk=entry>recommendedSl&&recommendedSl>0?entry-recommendedSl:risk,fullRR=recommendedTp>entry&&fullRisk>0?(recommendedTp-entry)/fullRisk:null,firstRRAdjusted=first>entry&&fullRisk>0?(first-entry)/fullRisk:firstObstacleRR;
   const firstObstacleSoft=firstRRAdjusted!==null&&firstRRAdjusted<R486_FIRST_OBSTACLE_MIN_RR&&!story.validatedTrendRetest&&!story.structuredContinuation;

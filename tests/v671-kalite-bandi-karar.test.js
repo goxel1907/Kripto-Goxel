@@ -63,7 +63,11 @@ test('V672: hiçbir VARSAYILAN değişmedi — bugünkü davranış birebir ayn�
   assert.ok(server.includes('process.env.R486_MAX_POSITIONS || 1'));
 });
 
-test('V671: build ve versiyon', () => {
-  assert.match(server, /const LAZARUS_BUILD = 'V6_7_1_KALITE_BANDI_KARAR'/);
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8')).version, '6.7.1');
+test('V671: build etiketi package.json surumuyle uyusuyor', () => {
+  // Sabit build stringi her surumde bu testi kirdi (v670'te de oldu). Surumden turetiliyor.
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8'));
+  const onek = 'V' + pkg.version.split('.').join('_');
+  const build = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  assert.ok(build, 'LAZARUS_BUILD tanimli olmali');
+  assert.ok(build[1].startsWith(onek), `${build[1]} != ${onek}*`);
 });
