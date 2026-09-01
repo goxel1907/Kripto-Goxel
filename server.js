@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_4_ISLEM_ICI_YORUNGE'
+const LAZARUS_BUILD = 'V6_7_5_SABIT_KOLON_SEKLI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -12390,7 +12390,11 @@ function r501DatasetRows(){
       ...(function(){
         try{
           const S=Array.isArray(rec.samples)?rec.samples:[];
-          if(S.length<3) return {sampleCountUsed:S.length,sampleSpanMs:0};
+          // Sekil SABIT olmali: eksik veride null doner, anahtar kumesi degismez.
+          const BOS={sampleCountUsed:S.length,sampleSpanMs:0,cvdRatio0:null,cvdRatio1m:null,
+            cvdRatio5m:null,cvdRatio15m:null,cvdRatioMin:null,cvdRatioMax:null,cvdRatioMinAtMs:null,
+            cvdDrop1m:null,cvdDrop5m:null,peakRoiSeen:null,peakRoiAtMs:null,dipRoiSeen:null,givebackPct:null};
+          if(S.length<3) return BOS;
           const num=v=>{const x=Number(v);return Number.isFinite(x)?x:null;};
           const oran=s=>num(s?.cvd?.stream?.ratio);
           const span=num(S.at(-1)?.elapsedMs)-num(S[0]?.elapsedMs);
@@ -12764,7 +12768,7 @@ function r501PassiveHeader(){
 }
 app.get('/api/evidence/passive.csv',(_req,res)=>{
   const rows=r501PassiveRows();
-  const cols=rows.length?Object.keys(rows[0]):r501PassiveHeader();
+  const cols=rows.length?[...rows.reduce((st,r)=>{for(const k of Object.keys(r))st.add(k);return st;},new Set())]:r501PassiveHeader();
   const csv=[cols.join(','),...rows.map(r=>cols.map(c=>r501CsvCell(r[c])).join(','))].join('\n');
   res.set('Cache-Control','no-store');
   res.set('Content-Type','text/csv; charset=utf-8');
@@ -12778,7 +12782,7 @@ app.get('/api/evidence/passive.json',(_req,res)=>{
     count:rows.length,kar:rows.filter(r=>r.sonuc==='KAR').length,
     zarar:rows.filter(r=>r.sonuc==='ZARAR').length,rows});
 });
-app.get('/api/evidence/dataset.csv',(_req,res)=>{const rows=r501DatasetRows(),cols=rows.length?Object.keys(rows[0]):['id','symbol','side','decisionTime','fillTime','pnlUSDT','roiPct','completeness'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>r501CsvCell(r[c])).join(','))].join('\n');res.set('Cache-Control','no-store');res.set('Content-Type','text/csv; charset=utf-8');res.set('Content-Disposition','attachment; filename="lazarus_v592_testnet_research_dataset_v3.csv"');res.send('\ufeff'+csv);});
+app.get('/api/evidence/dataset.csv',(_req,res)=>{const rows=r501DatasetRows(),cols=rows.length?[...rows.reduce((s,r)=>{for(const k of Object.keys(r))s.add(k);return s;},new Set())]:['id','symbol','side','decisionTime','fillTime','pnlUSDT','roiPct','completeness'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>r501CsvCell(r[c])).join(','))].join('\n');res.set('Cache-Control','no-store');res.set('Content-Type','text/csv; charset=utf-8');res.set('Content-Disposition','attachment; filename="lazarus_v592_testnet_research_dataset_v3.csv"');res.send('\ufeff'+csv);});
 // V6.1.9 gercek durum ucu. Asagidaki uzun legacy route kanit semasi icin
 // dosyada tutulur; Express ilk eslesen bu route ile dogru aktif politikayi doner.
 app.get('/api/backtest-parity/status',(_req,res)=>{
