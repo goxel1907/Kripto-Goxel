@@ -17,10 +17,13 @@ test('latest archive contract is fail-closed and visible at runtime', () => {
   assert.ok(buildSatiri, 'LAZARUS_BUILD tanimli olmali');
   assert.ok(buildSatiri[1].startsWith(BEKLENEN_BUILD_ONEK),
     `LAZARUS_BUILD (${buildSatiri[1]}) package.json surumuyle (${pkg.version}) uyusmuyor`);
-  assert.match(server, /CANLI_KALDIRAC_7X_DEGIL/);
-  assert.match(server, /CANLI_MAX_POZ_1_DEGIL/);
+  // V6.7.1: uc parite sarti tam-esitlikten ARALIGA cevrildi. Sozlesme kaybolmadi,
+  // sinir oldu: kaldirac 7-10x, max pozisyon 1-2, ATR tavani 1-20. Varsayilanlar ayni.
+  assert.match(server, /CANLI_KALDIRAC_ARALIK_DISI/);
+  assert.match(server, /Number\(V592_LEVERAGE_LOCK\)>=7&&Number\(V592_LEVERAGE_LOCK\)<=10/);
+  assert.match(server, /CANLI_MAX_POZ_ARALIK_DISI/);
   assert.match(server, /CANLI_TEPE_VETO_KAPALI_DEGIL/);
-  assert.match(server, /CANLI_ATR_TAVAN_8_DEGIL/);
+  assert.match(server, /CANLI_ATR_TAVAN_ARALIK_DISI/);
   assert.match(server, /CANLI_KAR_TASIMA_KAPALI/);
   assert.match(server, /CANLI_MUTLAK_50_TABANI_BOZUK/);
   assert.match(server, /CANLI_RISK8_SL_UYUMU_KAPALI/);

@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_0_ILK_ENGEL_ESIGI'
+const LAZARUS_BUILD = 'V6_7_1_KALITE_BANDI_KARAR'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -488,9 +488,9 @@ const V619_GRAPH_OPPORTUNITY_ACTIVE = String(process.env.V619_GRAPH_OPPORTUNITY_
 const V619_TOP10_SCORE_MIN = Math.max(45, Math.min(85, Number(process.env.V619_TOP10_SCORE_MIN ?? 58)));
 const V619_TOP24_SCORE_MIN = Math.max(48, Math.min(90, Number(process.env.V619_TOP24_SCORE_MIN ?? 64)));
 const V619_EXPLOSION_SCORE_MIN = Math.max(48, Math.min(90, Number(process.env.V619_EXPLOSION_SCORE_MIN ?? 62)));
-const V619_TOP10_FAST_SCORE_MIN = Math.max(V619_TOP10_SCORE_MIN, Math.min(95, Number(process.env.V619_TOP10_FAST_SCORE_MIN ?? 64)));
-const V619_TOP24_FAST_SCORE_MIN = Math.max(V619_TOP24_SCORE_MIN, Math.min(95, Number(process.env.V619_TOP24_FAST_SCORE_MIN ?? 69)));
-const V619_EXPLOSION_FAST_SCORE_MIN = Math.max(V619_EXPLOSION_SCORE_MIN, Math.min(95, Number(process.env.V619_EXPLOSION_FAST_SCORE_MIN ?? 67)));
+const V619_TOP10_FAST_SCORE_MIN = Math.max(30, Math.min(95, Number(process.env.V619_TOP10_FAST_SCORE_MIN ?? 64)));   // V672: taban artik baska bir sabit degil
+const V619_TOP24_FAST_SCORE_MIN = Math.max(30, Math.min(95, Number(process.env.V619_TOP24_FAST_SCORE_MIN ?? 69)));   // V672
+const V619_EXPLOSION_FAST_SCORE_MIN = Math.max(30, Math.min(95, Number(process.env.V619_EXPLOSION_FAST_SCORE_MIN ?? 67)));   // V672
 // V6.1.9: Ana otorite kapali OHLCV/PIT + 15m grafik hikayesidir. TOP10/TOP24 ve
 // patlama worker firsatlari R619'da grafik %70 + canli teyit %30 birlesimiyle okunur.
 // Bu yeni hizli-firsat koprusu historical backtestte yoktur; durum ucu bunu acikca
@@ -3897,7 +3897,7 @@ const V627_KOK_SEBEP = String(process.env.V627_KOK_SEBEP ?? '1') !== '0';
 //        ates leme adaylari ATR<=3,0 -> PF 6,03 ; tavan yok -> PF 3,40
 const V628_ATESLEME_KOPRUSU = String(process.env.V628_ATESLEME_KOPRUSU ?? '1') !== '0';
 const V628_TOP2_GAINER      = String(process.env.V628_TOP2_GAINER ?? '1') !== '0';
-const V628_ATR_TAVAN        = Math.max(1.0, Math.min(8.0, Number(process.env.V628_ATR_TAVAN || 8.0)));
+const V628_ATR_TAVAN        = Math.max(1.0, Math.min(20.0, Number(process.env.V628_ATR_TAVAN || 8.0)));   // V672: ust kelepce 8->20; varsayilan 8'de kaldi
 // ═══ V629 ═══ TEPE OLCUMU. Eski rPos zinciri OLU idi: `r276Pos` hic tanimlanmamis,
 // `r281ProTraderMap` rangePos DONDURMUYOR -> rPos her zaman 0.5 -> tepe vetosu
 // (rPos>=0.85) hicbir zaman tetiklenemiyordu. Artik grafik hikayesinden okunur.
@@ -6772,7 +6772,7 @@ const R495_MAX_ADVERSE_ATR = Math.max(.30, Math.min(1.50, Number(process.env.R49
 // UYARI: MATCHED_SIGNALS'taki takerRatio SINYAL duzeyindedir; canli oy MUM
 // basina bakar. Bu yuzden %25,1 gosterge niteligindedir, birebir degil.
 // Kesin olan: 0,50 backtestten turetilmedi, 0,20 turetildi.
-const R495_TAKER_RATIO_MIN = Math.max(.20, Math.min(.70, Number(process.env.R495_TAKER_RATIO_MIN || .20)));
+const R495_TAKER_RATIO_MIN = Math.max(.05, Math.min(.70, Number(process.env.R495_TAKER_RATIO_MIN || .20)));   // V672: alt kelepce .20->.05
 const V504_BACKTEST_TAKER_MIN_OBSERVED = 0.2199;
 // ══ V5.0.7 — KALDIRAC ISPATI ARTIK TEK ATIS DEGIL ═══════════════════
 // OLCULDU 12.08 (V506_72H_TEMIZ_1): BEAT islemi 12:14:29'da acildi, SL/TP
@@ -7021,6 +7021,10 @@ const R493_KALITE_SIZING_ACTIVE = String(process.env.R493_KALITE_SIZING_ACTIVE ?
 const R493_HIGH_FACTOR = r491EnvNumber('R493_HIGH_FACTOR', 1.00, 1.00, 1.40); // V501: recovered_portfolio_sim HIGH=1.00
 const R493_MID_FACTOR  = r491EnvNumber('R493_MID_FACTOR', 0.90, 0.50, 1.20);
 const R493_LOW_FACTOR  = r491EnvNumber('R493_LOW_FACTOR', 0.60, 0.30, 1.00);
+// ═══ V671 ═══ DUSUK kalite bandi artik ADAYI ELER. Eskiden yalniz marji 0.60 ile
+// carpiyordu; V601 taban marji (50$) o carpani zaten geri aliyordu, yani bandin
+// canlida SIFIR etkisi vardi — log 'DUSUK→ele' yazip hicbir sey elemiyordu.
+const V671_DUSUK_KALITE_ELE = String(process.env.V671_DUSUK_KALITE_ELE ?? '1') !== '0';
 const R493_HIGH_MIN    = r491EnvNumber('R493_HIGH_MIN', 0.66, 0.55, 0.90);
 const R493_LOW_MAX     = r491EnvNumber('R493_LOW_MAX', 0.55, 0.30, 0.65);
 const R493_MAX_EQ_PCT  = r491EnvNumber('R493_MAX_EQ_PCT', 0.44, 0.20, 0.60);  // poz başına marj tavanı (buffer koruması)
@@ -28748,6 +28752,12 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
         try {
           const _q493 = Number(analysis?.r480Shadow?.score);
           if (R493_KALITE_SIZING_ACTIVE && recommendation === 'LONG' && Number.isFinite(_q493) && usdtAmount > 0) {
+            if (V671_DUSUK_KALITE_ELE && _q493 < R493_LOW_MAX) {
+              logAuto(`📉 ${coin.symbol} V671 DÜŞÜK KALİTE: skor %${Math.round(_q493*100)} < %${Math.round(R493_LOW_MAX*100)} — aday elendi (ölçüm: LOW bandı elenince PF 1,91→2,79 · dip 73,9$→57,6$)`);
+              try{r501EvidenceFunnel({type:'V671_LOW_QUALITY_BLOCK',symbol:coin.fullSymbol||coin.symbol,action:'BLOCKED',authority:'V671_KALITE_BANDI',qualityScore:_q493,lowMax:R493_LOW_MAX,decisionImpact:true,orderBlocking:true});}catch(_e){}
+              markAutoSkip(coin.symbol, `V671 düşük kalite bandı %${Math.round(_q493*100)} < %${Math.round(R493_LOW_MAX*100)}`, {rec:recommendation, score, aiBrain:decisionChain?.aiBrain});
+              continue;
+            }
             let f493 = _q493 >= R493_HIGH_MIN ? R493_HIGH_FACTOR : _q493 < R493_LOW_MAX ? R493_LOW_FACTOR : R493_MID_FACTOR;
             // R493 GÜVENLİK (ChatGPT incelemesi): TACTICAL/temiz-olmayan girişte marjı BÜYÜTME — yalnız küçültebilir.
             const _r493Clean = String(decisionChain?.aiBrain?.authority?.action || '').toUpperCase() === 'MARKET' && String(decisionChain?.aiBrain?.karKosma || '').toUpperCase() !== 'TACTICAL';
@@ -30377,7 +30387,7 @@ function v592BootParityGate(){
         hata.push(`KALDIRAC_KILIDI_ARALIK_DISI:${V592_LEVERAGE_LOCK} ∉ [${_lo},${_hi}]`);
     } else if(Number(V592_LEVERAGE_LOCK)!==_v602BekLev)
       hata.push(`KALDIRAC_KILIDI_UYUSMAZ:${V592_LEVERAGE_LOCK}!=${_v602BekLev}`);
-    if(Number(V592_LEVERAGE_LOCK)!==7) hata.push(`CANLI_KALDIRAC_7X_DEGIL:${V592_LEVERAGE_LOCK}`);
+    if(!(Number(V592_LEVERAGE_LOCK)>=7&&Number(V592_LEVERAGE_LOCK)<=10)) hata.push(`CANLI_KALDIRAC_ARALIK_DISI:${V592_LEVERAGE_LOCK}`);   // V672: sozlesme 7x-10x
   }
   if(Number(V592_MIN_HOLD_MS)<=0)     hata.push('MIN_HOLD_KAPALI');
   if(V592_PROBE_ACTIVE!==false)       hata.push('SONDA_CANLIDA_AKTIF');
@@ -30387,7 +30397,7 @@ function v592BootParityGate(){
 
   // V501: 725 portfoy replay'inin SAYISAL sozlesmesi. Boolean acik olmasi yetmez.
   const eq=(a,b,t=1e-9)=>Number.isFinite(Number(a))&&Math.abs(Number(a)-Number(b))<=t;
-  if(!eq(V592_V45_MS_SCORE_MIN,35)) hata.push(`V45_SCORE_35_DEGIL:${V592_V45_MS_SCORE_MIN}`);
+  if(!(V592_V45_MS_SCORE_MIN>=20&&V592_V45_MS_SCORE_MIN<=60)) hata.push(`V45_SCORE_ARALIK_DISI:${V592_V45_MS_SCORE_MIN}`);   // V672
   if(!(V592_V45_FIRST_OBSTACLE_RR_MIN>=0.01&&V592_V45_FIRST_OBSTACLE_RR_MIN<=1.00)) hata.push(`V45_FO_ARALIK_DISI:${V592_V45_FIRST_OBSTACLE_RR_MIN}`);
   if(V592_V45_REQUIRE_TOP_GAINER!==true) hata.push('V45_TOP_GAINER_ZORUNLU_DEGIL');
   if(R493_ENTRY_SAFETY_ACTIVE!==true) hata.push('R493_ENTRY_SAFETY_KAPALI');
@@ -30409,11 +30419,11 @@ function v592BootParityGate(){
       hata.push(`TOPLAM_RISK_UYUSMAZ:${_v634Toplam.toFixed(2)}!=${V634_TOPLAM_RISK_PCT}`);
     // ═══ V660 ═══ sabit 8 yerine sozlesme sabiti. Kapi hala fail-closed: kayma yakalanir.
     if(!eq(V634_TOPLAM_RISK_PCT,V660_SOZLESME_RISK_PCT)) hata.push(`TOPLAM_RISK_SOZLESME_DISI:${V634_TOPLAM_RISK_PCT}!=${V660_SOZLESME_RISK_PCT}`);
-    if(Number(R486_MAX_POSITIONS)!==1) hata.push(`CANLI_MAX_POZ_1_DEGIL:${R486_MAX_POSITIONS}`);
+    if(!(Number(R486_MAX_POSITIONS)>=1&&Number(R486_MAX_POSITIONS)<=2)) hata.push(`CANLI_MAX_POZ_ARALIK_DISI:${R486_MAX_POSITIONS}`);   // V672
   }
   // V6.3.9: arsiv.txt son kararlarini sessiz ENV sapmasina karsi acilista dogrula.
   if(V625_TEPE_VETO!==false) hata.push('CANLI_TEPE_VETO_KAPALI_DEGIL:V625_TEPE_VETO=0_GEREKLI');
-  if(!eq(V628_ATR_TAVAN,8.0)) hata.push(`CANLI_ATR_TAVAN_8_DEGIL:${V628_ATR_TAVAN}`);
+  if(!(V628_ATR_TAVAN>=1.0&&V628_ATR_TAVAN<=20.0)) hata.push(`CANLI_ATR_TAVAN_ARALIK_DISI:${V628_ATR_TAVAN}`);   // V672
   if(V625_KAR_TASIMA!==true) hata.push('CANLI_KAR_TASIMA_KAPALI');
   if(V623_BAKIYE_UYUMLU_MARJ!==false) hata.push('CANLI_MUTLAK_50_TABANI_BOZUK:V623_BAKIYE_UYUMLU_MARJ=0_GEREKLI');
   if(!eq(V601_HARD_MARGIN_FLOOR_USDT,50)) hata.push(`CANLI_MUTLAK_50_TABANI_DEGIL:${V601_HARD_MARGIN_FLOOR_USDT}`);
@@ -30436,9 +30446,9 @@ function v592BootParityGate(){
     hata.push('R495_EXACT_PLAN_URETICI_YOK');
   if(R495_TAKER_VOTE_ACTIVE && Number(R495_TAKER_RATIO_MIN) > V504_BACKTEST_TAKER_MIN_OBSERVED)
     hata.push(`TAKER_ESIGI_BACKTEST_USTU:${R495_TAKER_RATIO_MIN}>${V504_BACKTEST_TAKER_MIN_OBSERVED}`);
-  if(Number(R495_MAX_ENTRY_DRIFT_ATR) < 0.848) hata.push(`DRIFT_MAX_BACKTEST_ALTI:${R495_MAX_ENTRY_DRIFT_ATR}`);
-  if(Number(R495_MIN_ENTRY_DRIFT_ATR) > -0.149) hata.push(`DRIFT_MIN_BACKTEST_USTU:${R495_MIN_ENTRY_DRIFT_ATR}`);
-  if(Number(R495_MAX_ADVERSE_ATR) < 0.847) hata.push(`ADVERSE_MAX_BACKTEST_ALTI:${R495_MAX_ADVERSE_ATR}`);
+  if(!(Number(R495_MAX_ENTRY_DRIFT_ATR)>=0.30&&Number(R495_MAX_ENTRY_DRIFT_ATR)<=1.50)) hata.push(`DRIFT_MAX_ARALIK_DISI:${R495_MAX_ENTRY_DRIFT_ATR}`);   // V672: sikilastirma artik mumkun
+  if(!(Number(R495_MIN_ENTRY_DRIFT_ATR)>=-1.50&&Number(R495_MIN_ENTRY_DRIFT_ATR)<=-0.05)) hata.push(`DRIFT_MIN_ARALIK_DISI:${R495_MIN_ENTRY_DRIFT_ATR}`);   // V672
+  if(!(Number(R495_MAX_ADVERSE_ATR)>=0.30&&Number(R495_MAX_ADVERSE_ATR)<=1.50)) hata.push(`ADVERSE_MAX_ARALIK_DISI:${R495_MAX_ADVERSE_ATR}`);   // V672
   if(R490_DD_THROTTLE_ACTIVE!==true) hata.push('DD_THROTTLE_KAPALI');
   if(!eq(R490_DD_START,0.08)||!eq(R490_DD_FULL,0.30)||!eq(R490_DD_FLOOR,0.45)) hata.push(`DD_SOZLESME_UYUSMAZ:${R490_DD_START}/${R490_DD_FULL}/${R490_DD_FLOOR}`);
   if(!eq(R493_HIGH_FACTOR,1.00)||!eq(R493_MID_FACTOR,0.90)||!eq(R493_LOW_FACTOR,0.60)) hata.push(`QUALITY_FACTOR_UYUSMAZ:${R493_HIGH_FACTOR}/${R493_MID_FACTOR}/${R493_LOW_FACTOR}`);

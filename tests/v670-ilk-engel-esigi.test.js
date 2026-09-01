@@ -59,8 +59,11 @@ test('V670: kapıyı okuyan iki karar noktası da aynı sabiti kullanıyor', () 
   assert.match(server, /if\(!\(Number\.isFinite\(firstRR\)&&firstRR>=R493_MIN_FIRST_OBSTACLE_RR\)\)hardReasons\.push\('FIRST_OBSTACLE_RR'\)/);
 });
 
-test('V670: build ve versiyon', () => {
-  assert.match(server, /const LAZARUS_BUILD = 'V6_7_0_ILK_ENGEL_ESIGI'/);
+test('V670: build etiketi package.json surumuyle uyusuyor', () => {
+  // Build stringini sabitlemek her surumde bu testi kirdi. Artik surumden turetiliyor.
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkg.version, '6.7.0');
+  const onek = 'V' + pkg.version.split('.').join('_');
+  const build = server.match(/const LAZARUS_BUILD = '([^']+)'/);
+  assert.ok(build, 'LAZARUS_BUILD tanimli olmali');
+  assert.ok(build[1].startsWith(onek), `${build[1]} != ${onek}*`);
 });
