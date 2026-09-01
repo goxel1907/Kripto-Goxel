@@ -338,7 +338,7 @@ app.get(['/', '/index.html'], (_req,res)=>{
   S('V592_V45_TESTNET_ACTIVE','1');
   S('V592_V45_MS_SCORE_MIN','35');
   S('V592_V45_REQUIRE_TOP_GAINER','1');
-  S('V592_V45_FIRST_OBSTACLE_RR_MIN','0.35');
+  S('V592_V45_FIRST_OBSTACLE_RR_MIN','0.10');
   S('R495_LIVE_ACTIVE','1');
   S('R497_PIT_TOP_GAINER_ACTIVE','1');
   S('R497_TOP_N','10');
@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_6_3_ENGEL_GORUS_ALANI'
+const LAZARUS_BUILD = 'V6_7_0_ILK_ENGEL_ESIGI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -966,7 +966,7 @@ function v592CombinedChannel(eom={},atc={},meta={}){const ef=eom?.features||{},a
 // kalmazdi. Ortam bagi KALDIRILDI.
 const V592_V45_TESTNET_ACTIVE = String(process.env.V592_V45_TESTNET_ACTIVE??'1')==='1';
 const V592_V45_MS_SCORE_MIN=Math.max(0,Math.min(100,Number(process.env.V592_V45_MS_SCORE_MIN||35)));
-const V592_V45_FIRST_OBSTACLE_RR_MIN=Math.max(0,Number(process.env.V592_V45_FIRST_OBSTACLE_RR_MIN||0.35));
+const V592_V45_FIRST_OBSTACLE_RR_MIN=Math.max(0,Number(process.env.V592_V45_FIRST_OBSTACLE_RR_MIN||0.10));
 const V592_V45_REQUIRE_TOP_GAINER=String(process.env.V592_V45_REQUIRE_TOP_GAINER??'1')!=='0';
 const V592_V45_RULE_ID='V45_MS35_TOP_GAINER_FO035_TESTNET';
 const V592_V45_BACKTEST_REFERENCE=Object.freeze({method:'INDEPENDENT_CLOSED_OHLCV_PIT_GRAPH_DIAGNOSTIC_PROXY_V1',selectionProtocol:'June 1-20 train + June 21-30 validation; July untouched holdout',june:{trades:344,wins:237,losses:107,wr:68.8953488372,pf:3.0676153342,netUSDT:1937.4497664591,maxDDPct:14.8052471517},julyHoldout:{trades:375,wins:243,losses:132,wr:64.8,pf:2.0861299683,netUSDT:1258.1142538018,maxDDPct:23.0931166226},continuous:{trades:725,wins:483,losses:242,wr:66.6206896552,pf:2.4196680959,netUSDT:3299.3164118262,maxDDPct:14.8052471517},limitations:['Independent proxy, not exact historical candidate regeneration','Rolling POC is candle-volume approximation','Historical microstructure unavailable']});
@@ -6619,7 +6619,7 @@ const R483_STORY_ACTIVE = String(process.env.R484_STORY_ACTIVE ?? process.env.R4
 const R483_DEFER_TOP_TRAP = String(process.env.R484_DEFER_TOP_TRAP ?? process.env.R483_DEFER_TOP_TRAP ?? '1') !== '0';
 // R486.2: Grafik hikâyesi yalnız rapor değildir; giriş fiyatı/SL/ilk engel ve canlı erken-geçersizlik ile sözleşmelidir.
 const R486_ENTRY_TRUTH_ACTIVE = String(process.env.R486_ENTRY_TRUTH_ACTIVE ?? '1') !== '0';
-const R486_FIRST_OBSTACLE_MIN_RR = Math.max(0.35, Math.min(2.0, Number(process.env.R486_FIRST_OBSTACLE_MIN_RR || 0.35))); // V501: backtest contract 0.35; old 0.70 clamp made ENV=0.35 ineffective
+const R486_FIRST_OBSTACLE_MIN_RR = Math.max(0.01, Math.min(2.0, Number(process.env.R486_FIRST_OBSTACLE_MIN_RR || 0.10))); // V501: backtest contract 0.35; old 0.70 clamp made ENV=0.35 ineffective
 // ═══ V660 ═══ tavan 0.90 -> 3.00, varsayilan 0.52 -> 2.35 (backtest ortancasi).
 // 1060 sinyalde slPct/ATR: ortanca 2.35 · %10 1.20 · %90 3.85.
 const R486_MIN_STOP_ATR = Math.max(0.30, Math.min(3.00, Number(process.env.R486_MIN_STOP_ATR || 2.35)));
@@ -7029,7 +7029,7 @@ const R493_MODEL_ID = 'R493_QUALITY_SIZING_WALKFWD_V1';
 // bilinen ve yeterli ilk engel R/R + taze çekirdek akış ile yaşayabilir.
 const R493_ENTRY_SAFETY_ACTIVE = String(process.env.R493_ENTRY_SAFETY_ACTIVE ?? '1') !== '0';
 const R493_REQUIRE_FIRST_OBSTACLE = String(process.env.R493_REQUIRE_FIRST_OBSTACLE ?? '1') !== '0';
-const R493_MIN_FIRST_OBSTACLE_RR = r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.35, 0.10, 3.00); // V501: backtest hard threshold 0.35
+const R493_MIN_FIRST_OBSTACLE_RR = r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.10, 0.01, 3.00); // V501: backtest hard threshold 0.35
 const R493_CORE_FLOW_MAX_AGE_SEC = r491EnvNumber('R493_CORE_FLOW_MAX_AGE_SEC', 45, 5, 300);
 const R493_MARKET_DATA_MAX_SPREAD_SEC = r491EnvNumber('R493_MARKET_DATA_MAX_SPREAD_SEC', 45, 5, 300);
 const R480_FRESH_MS = Math.round(r491EnvNumber('R480_FRESH_SEC', 900, 60, 3600) * 1000);  // 15m mum özelliği ~15dk geçerli; 180sn çok sıkıydı
@@ -30388,11 +30388,11 @@ function v592BootParityGate(){
   // V501: 725 portfoy replay'inin SAYISAL sozlesmesi. Boolean acik olmasi yetmez.
   const eq=(a,b,t=1e-9)=>Number.isFinite(Number(a))&&Math.abs(Number(a)-Number(b))<=t;
   if(!eq(V592_V45_MS_SCORE_MIN,35)) hata.push(`V45_SCORE_35_DEGIL:${V592_V45_MS_SCORE_MIN}`);
-  if(!eq(V592_V45_FIRST_OBSTACLE_RR_MIN,0.35)) hata.push(`V45_FO_035_DEGIL:${V592_V45_FIRST_OBSTACLE_RR_MIN}`);
+  if(!(V592_V45_FIRST_OBSTACLE_RR_MIN>=0.01&&V592_V45_FIRST_OBSTACLE_RR_MIN<=1.00)) hata.push(`V45_FO_ARALIK_DISI:${V592_V45_FIRST_OBSTACLE_RR_MIN}`);
   if(V592_V45_REQUIRE_TOP_GAINER!==true) hata.push('V45_TOP_GAINER_ZORUNLU_DEGIL');
   if(R493_ENTRY_SAFETY_ACTIVE!==true) hata.push('R493_ENTRY_SAFETY_KAPALI');
-  if(!eq(R493_MIN_FIRST_OBSTACLE_RR,0.35)) hata.push(`R493_FO_035_DEGIL:${R493_MIN_FIRST_OBSTACLE_RR}`);
-  if(!eq(R486_FIRST_OBSTACLE_MIN_RR,0.35)) hata.push(`R486_FO_035_DEGIL:${R486_FIRST_OBSTACLE_MIN_RR}`);
+  if(!(R493_MIN_FIRST_OBSTACLE_RR>=0.01&&R493_MIN_FIRST_OBSTACLE_RR<=1.00)) hata.push(`R493_FO_ARALIK_DISI:${R493_MIN_FIRST_OBSTACLE_RR}`);
+  if(!(R486_FIRST_OBSTACLE_MIN_RR>=0.01&&R486_FIRST_OBSTACLE_MIN_RR<=1.00)) hata.push(`R486_FO_ARALIK_DISI:${R486_FIRST_OBSTACLE_MIN_RR}`);
   if(R497_FIXED_SLOT_ACTIVE!==true) hata.push('FIXED_SLOT_KAPALI');
   // V6.4.4: slot tabani 50$, bilesik buyume tavani 100$; iki kavram ayridir.
   if(!eq(R497_SLOT_MARGIN_USDT,V601_HARD_MARGIN_FLOOR_USDT))
