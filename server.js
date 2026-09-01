@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_2_EN_YAKIN_ENGEL_1M'
+const LAZARUS_BUILD = 'V6_7_3_FIBONACCI_OLCULEBILIR'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -12383,6 +12383,25 @@ function r501DatasetRows(){
       id:rec.id,symbol:rec.symbol,side:rec.side,candidateTime:life.candidateTime??e?.timestamps?.candidateTime,decisionTime:life.decisionTime??e?.timestamps?.decisionTime,orderSendTime:life.orderSendTime??e?.timestamps?.orderSendTime,orderAckTime:life.orderAckTime??e?.timestamps?.orderAckTime,fillTime:life.fillTime??e?.timestamps?.fillTime,closedAt:rec.closedAt,
       decisionToFillMs:life?.latencyMs?.decisionToFill??(Number(life.fillTime||e?.timestamps?.fillTime)-Number(life.decisionTime||e?.timestamps?.decisionTime)),orderAckLatencyMs:life?.latencyMs?.sendToAck??(Number(life.orderAckTime||e?.timestamps?.orderAckTime)-Number(life.orderSendTime||e?.timestamps?.orderSendTime)),sendToFillMs:life?.latencyMs?.sendToFill??null,fillToProtectionMs:life?.latencyMs?.fillToProtection??null,slippageBps:life?.slippageBps??null,attemptId:life?.attemptId??null,entryPrice:rec.trade?.entryPrice,closePrice:rec.close?.closePrice,pnlUSDT:rec.close?.pnlUSDT,roiPct:rec.close?.roiPct,peakRoi:rec.close?.peakRoi,dipRoi:rec.close?.dipRoi,exitReason:rec.close?.exitReason,
       score:e.score,tier:e.tier,entryReason:e.entryReason,r495Action:ds?.liveDecision?.action??e?.decision?.kind,r497Rank:ds?.source?.rank??e?.decision?.gainerRank,firstObstacleRR:ds?.liveDecision?.firstObstacleRR??ds?.consensus?.firstObstacleRR,
+      // ══ V674: FIBONACCI OLCUM KOLONLARI (pasif arastirma serididen) ══════
+      ...(function(){
+        try{
+          const _rf=(e?.decision?.chartStory||ds?.r483Story||{})?.researchPassive?.fib||{};
+          const _o={};
+          for(const _tf of ['1m','5m','15m','1h']){
+            const _f=_rf[_tf]||{};
+            const _ok=_f?.ok===true;
+            _o['fib'+_tf+'Ok']=_ok?1:0;
+            _o['fib'+_tf+'Side']=_ok?(_f.side??null):null;
+            _o['fib'+_tf+'InZone']=_ok?(_f.inZone===true?1:0):null;
+            _o['fib'+_tf+'Depth']=_ok&&Number.isFinite(Number(_f.depth))?+Number(_f.depth).toFixed(4):null;
+            _o['fib'+_tf+'Score']=_ok&&Number.isFinite(Number(_f.score))?Number(_f.score):null;
+            _o['fib'+_tf+'Eff']=_ok&&Number.isFinite(Number(_f.efficiency))?Number(_f.efficiency):null;
+            _o['fib'+_tf+'Bos']=_ok?(_f.bos===true?1:0):null;
+          }
+          return _o;
+        }catch(_){ return {}; }
+      })(),
       // ══ V4.7.4.14-S2: CIKIS ANI PASIF PARAMETRELERI ══════════════════════
       holdMs:r501Delta(rec.closedAt,life.fillTime??e?.timestamps?.fillTime,0),
       // V4.7.4.16-W3: mum paritesi kaniti
