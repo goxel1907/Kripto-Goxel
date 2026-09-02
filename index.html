@@ -3690,6 +3690,8 @@ async function v679Yenile(){
           ATR ${k.atrPct==null?'—':'%'+k.atrPct} ·
           yapı ${v679Esc(k.trend||'—')} ·
           zamanlama ${v679Esc(k.timing||'—')}${k.ilkEngelRR!=null?' · ilk engel R/R '+k.ilkEngelRR:''}
+          ${k.ret6!=null?`· <span style="color:${k.ret6>=10?'#f85149':k.ret6>=6?'#d29922':'#8b949e'}">son 90dk %${k.ret6}</span>`:''}
+          ${k.parabolikCeza>0?`· <span style="color:#f85149;font-weight:600">parabolik ceza −${k.parabolikCeza}</span>`:''}
         </div>
         <ul style="margin:0;padding-left:16px;color:#c9d1d9">${satirlar||'<li style="color:#7f8ba3">okuma yok</li>'}</ul>
       </div>`;

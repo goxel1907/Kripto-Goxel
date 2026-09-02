@@ -1,94 +1,113 @@
-# V6.7.9 — CANLI ÇÖKME DÜZELTİLDİ + BEYİN GERÇEKTEN DOLUYOR + PANEL TEMİZLİĞİ
+# V6.8.0 — "TEPEDE OLMAK" ARTIK KOŞULLU
 
-## 1. Kritik: bot her tutarsız engelde ÇÖKÜYORDU (benim V6.7.2 hatam)
+## Soru
 
-Panel logu, 02.09.2026 17:11:17:
+Kullanıcı sordu: *botun beyni coinde neler olduğunun farkında mı?*
 
-    SKYAI AI beyin bağlama hatası: Assignment to constant variable.
+Canlı örnek — AKEUSDT, 02.09.2026 17:14. Beyin kartı şunu yazdı:
 
-V6.7.2'de eklediğim V673-B tutarlılık yaması `first` değişkenini yeniden atıyor:
+    AKE 53.8/100 geçti · sıra 3
+    aralıkPoz %96 · ATR %3.81 · yapı COMPRESSION · zamanlama JOIN · ilk engel R/R 0.16
+    • 15m yapı sıkışan (oynaklık daralıyor)
+    • fiyat son 48 mumun aralığında %96 seviyesinde
+    • altta ilk likidite 0.0087 (SWING_LOW) — %20.97 aşağıda
 
-    if (V673_ENGEL_HEDEF_TUTARLILIK && first > 0 && ... ) { first = target; }
+O anda fiyat 0,0110'du ve son 90 dakikada +%28 DİKEY çıkmıştı.
+15 dakika sonra 0,0087'ye düştü — **-%21**.
 
-Ama `first` **const** ile tanımlıydı. Koşul her tuttuğunda `r486EntryTruthGuard`
-TypeError fırlatıyor, o aday için TÜM giriş-gerçeği hesabı (recommendedSl /
-firstObstacleRR / marketAllowed) yok oluyor, istisna emir döngüsündeki geniş
-try/catch'e düşüyor ve aday sessizce eleniyordu.
+## Cevap: hayır, farkında değildi. Sayılarla:
 
-Yani "önemsiz bir kural yüzünden kaçırılan fırsat" değil — doğrudan çökme.
-Ve tam da tutarsızlığı düzeltmek için yazdığım kod, düzeltmeye çalıştığı adayı
-öldürüyordu.
+Skorun ayrıştırması (V678 formülü, elle doğrulandı, 53,8 birebir çıkıyor):
 
-Düzeltme: `const first` → `let first`.
+    taban                                    50,0
+    + (aralıkPoz 0,96 − 0,5) × 40           +18,4   <-- EN BÜYÜK ARTI
+    + clamp((2,0 − ATR 3,81) × 8, −20, 15)  −14,5
+    = 53,9  ->  geçti (eşik 40)
 
-Kaynağın tamamı acorn ile kapsam-duyarlı taranarak doğrulandı:
-**dosyada başka const-yeniden-atama yok (0 adet).**
+Yani grafiğin en tehlikeli özelliği — *dikey bir hamlenin tam tepesinde,
+altında 21% boşlukla* — skorun **en büyük artı terimi** olarak sayılıyordu.
 
-## 2. Beyin tamponu neden boştu
+Bot ham gerçekleri doğru görüyor (aralıkPoz %96 doğru, ATR %3,81 doğru,
+destek %21 aşağıda doğru, ilk engel R/R 0,16 doğru). Göremediği şey bunların
+**birlikte ne anlama geldiği**. Üstelik `ret6` (son 6 mumun getirisi) zaten
+`r484Structure` içinde hesaplanıp story'ye konuyordu — skor fonksiyonu onu
+hiç okumuyordu.
 
-Aynı turda panel: Taranan 16 / Açılan 0 / Atlanan 16 — ama beyin "0 kayıt".
+Bir de yapı etiketi yanıltıyordu: "COMPRESSION" diyor çünkü pivotlar iki
+yandan onay ister; dikey hamlenin tepesi henüz onaylı pivot değil. Yani
+etiket 40 dakika öncesini anlatıyor, `rangePos` ise şu anı. Beyin bu
+çelişkiyi fark etmiyordu.
 
-V679 kaydı emir döngüsünün EN SONUNDAYDI; önünde ~15 ayrı `continue` kapısı var
-(R493 final kilidi, R308I, R325, mekanik BEKLE…). Adayların hepsi çok daha önce
-eleniyordu, kayıt satırına hiç ulaşılmıyordu.
+## Ölçüm
 
-- **V680-C**: kayıt artık karar kapılarından ÖNCE açılıyor.
-- **V680-B**: `v679SonKarar()` aynı turdaki kaydın sonucunu yazıyor (3 dk pencere).
-- **V680-D**: `markAutoSkip` her atlama sebebini beyne geçiriyor — tek kancayla
-  tüm atlama yolları kapsanıyor.
-- **V680-F**: açılan emir de yazılıyor; kart artık "gördü → ne yaptı" zincirini
-  tamamlıyor.
-- **V680-E**: V678 bloğundaki artık çift olan kayıt kaldırıldı.
+879 gerçek 15m grafik / 36.918 ilk-dokunuş noktası / ileri 24 mum /
+üç geometri (SL-TP: %3-9, %2-5, %4-12). Beklenti R-katsayısı cinsinden.
 
-Uç özeti genişledi: `emir`, `atlandi`, `beklemede` ve `enCokSebep` (en sık 6
-atlama sebebi, adetli). Kart bunları en üstte gösteriyor.
+Son 6 mum (90 dk) getirisi tek başına — temiz ve monoton:
 
-Hiçbiri karara dokunmuyor: `v679SonKarar` içinde markAutoSkip / return false /
-blocked yok, testle sabitlendi.
+    <%0      n=16.752   +0,086
+    %0–3     n=15.633   +0,216
+    %3–6     n= 2.773   +0,181
+    %6–10    n= 1.074   +0,086
+    %10–15   n=   406   −0,020
+    %15–25   n=   193   −0,073
+    >%25     n=    87   −0,174
 
-## 3. index.html — bilgi kirliliği temizliği
+Ve asıl bulgu — aralığın tepesiyle KESİŞİMİ:
 
-Her biri kaynaktan kanıtlandı, tahminle silinen hiçbir şey yok.
+    aralıkPoz>=%85 & son 90dk <%3     n=3.584   +0,314
+    aralıkPoz>=%85 & son 90dk %3–8    n=1.618   +0,177
+    aralıkPoz>=%85 & son 90dk %8–15   n=  365   −0,084
+    aralıkPoz>=%85 & son 90dk >=%15   n=  191   −0,250
 
-**Kaldırıldı (ölü olduğu kanıtlanmış):**
+"Tepede olmak" oraya YAVAŞ gelindiyse ölçülen en iyi kurulum; DİKEY
+gelindiyse ölçülen en kötüsü. V678 ikisini aynı sayıyordu.
 
-- *Kaldıracı otomatik ayarla* + *Legacy ön-kaldıraç tavanı (125)* — `V592_LEVERAGE_LOCK=7`
-  aktifken kaldıraç kilitli ve farklı kaldıraçla gelen emir `LEVERAGE_PARITY_LOCK`
-  ile Binance'e gitmeden reddediliyor (server.js:21576). Sunucuya giden varsayılan
-  değerler değişmedi.
+AKE'nin tam profili (aralıkPoz>=%90 & ATR>=3 & son 90dk>=%15):
+n=107, beklenti **−0,165** — ve V678 bunların **%96'sını geçiriyordu**.
 
-**Doğrusuyla değiştirildi:**
+## Sağlamlık
 
-- *USDT/işlem* alanı panelde **30** gösteriyordu; sözleşme 50$ taban / 100$ tavan.
-  `R497_SLOT_MARGIN_USDT = V601_HARD_MARGIN_FLOOR_USDT = 50` sabit ve bileşik marj
-  50–100$ arasına kelepçeli (server.js:7149) — panel değeri zaten geçmiyordu.
-  Alan artık salt-okunur sözleşme metni; gönderilen gövde de 50.
-- *SL % / TP % / Min R/R* → "yalnız ön-hesap" etiketi + açıklama kutusu: borsaya
-  giden gerçek stop/hedef R495 planından türetiliyor
-  (`ai.entry/sl/tp = plan.*`, server.js:28378).
-- R486 banner'ındaki "fırsata göre Binance izinli maksimum kaldıraç" ifadesi
-  gerçekle değiştirildi: 7x kilitli, max 1 pozisyon, marj 50$, kâr hasadı SHADOW.
+Kural: `aralıkPoz>=%85 & son 90dk>=%10`
 
-**Gösterge listesi ikiye ayrıldı** — en büyük yanıltma buradaydı. Panel 14 göstergeyi
-"Aktif" diye sıralıyordu; oysa `V592_POLICY_PARITY_MODE = true` (server.js:472)
-karar anında şunları sıfırlıyor (`r592NeutralizeDecisionData`):
+    geometri 3/9   parabolik −0,134   diğerleri +0,137
+    geometri 2/5   parabolik −0,234   diğerleri +0,238
+    geometri 4/12  parabolik −0,144   diğerleri +0,073
+    1. yarı        parabolik −0,211   diğerleri +0,148
+    2. yarı        parabolik −0,133   diğerleri +0,150
 
-    cvdDelta:0 · aggBuy/aggSell:0 · takerRatio:1 · orderBookImbalance:0
-    fundingRate:0 · oiDegisim:0 · iceberg/liquidations nötr
-    fib[8 zaman dilimi] = {ok:false, policyNeutral:true}
-    live15 = null  (kapanmamış 15m mum)
+Eşik taraması monoton: >=%6 −0,063 · >=%8 −0,141 · >=%10 −0,171 ·
+>=%12 −0,220 · >=%15 −0,250 · >=%20 −0,274.
 
-Yani CVD, order book, funding, OI, iceberg, likidasyon, Smart Money L/S ve
-**Fibonacci/OTE** karara girmiyor — toplanıyor ama nötrleniyor. Liste artık
-"Karara Giren" (mum tabanlı: yapı, SMC/ICT, FVG, order block, likidite seviyeleri,
-trend çizgisi, formasyon, ATR, RSI/MACD, R39 S/R) ve "Toplanıyor ama KARARA
-GİRMİYOR" diye ikiye ayrıldı.
+## Değişiklik
+
+`v678GrafikKalitesi` artık `story.tf['15m'].ret6` okuyor:
+
+    aralıkPoz>=0,70 -> ceza = clamp((ret6 − 4) × 1,6, 0, 28)
+    aralıkPoz>=0,85 ve ret6>=10 -> ceza en az 25
+
+Sonuç (eşik 40, tüm veri):
+
+    geçen n=28.736 beklenti 0,1923  ->  n=28.211 beklenti 0,1985  (Δ +0,0062)
+    1. yarı  Δ +0,0067 · 2. yarı Δ +0,0057
+    3/9 Δ +0,0056 · 2/5 Δ +0,0094 · 4/12 Δ +0,0035
+    elenen 525 aday (geçenlerin %1,83'ü) — beklentileri −0,141
+
+Yani kaybedilen aday çok az ve elenen tam olarak zarar edenler.
+
+**AKE anı: 53,8 -> 25,8 — ELENİR.**
+
+ENV: `V680_PARABOLIK_CEZA=1`, `V680_RET6_TABAN=4`, `V680_CEZA_TAVAN=28`,
+`V680_CEP_RET6=10`, `V680_CEP_CEZA=25`. Hepsi varsayılan; ENV'e yazmak şart
+değil. `V680_PARABOLIK_CEZA=0` kuralı tümüyle kapatır.
+
+Beyin kartı artık "son 90dk %X" ve "parabolik ceza −N" gösteriyor, ve
+hikâyede yapı etiketinin geriden geldiğini açıkça söylüyor.
 
 ## Testler
 
-180/180 geçiyor. Yeni: `tests/v680-cokme-ve-beyin.test.js` (8 test) —
-`let first` pini, V673-B'nin yerinde durması, kaydın kapılardan önce olması,
-çift kaydın olmaması, markAutoSkip/markAutoOpened kancaları, v679SonKarar'ın
-karara dokunmaması, özetin karar dağılımı vermesi.
-
-`const first` metnine bakan 3 eski test (v650/v662/v663) yeni hâle güncellendi.
+188/188. Yeni `tests/v680-parabolik-ceza.test.js` (8 test) skor fonksiyonunu
+kaynaktan çıkarıp GERÇEKTEN ÇALIŞTIRIYOR — AKE profilinin elendiğini,
+yavaş gelinen tepenin cezalanmadığını, cezanın monoton ve tavanlı olduğunu,
+aralık ortasında devreye girmediğini ve ret6 yokken fail-open kaldığını
+sayıyla doğruluyor.

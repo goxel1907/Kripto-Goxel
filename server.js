@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_9_COKME_DUZELDI'
+const LAZARUS_BUILD = 'V6_8_0_PARABOLIK_GORUS'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7960,8 +7960,16 @@ function v678GrafikKalitesi(story={}, atrPct=null){
     else if(tl.breakUp){ s+=8; kanit.push('trend cizgisi kirilimi'); }
     if(story?.orderBlock?.['15m']?.supply?.inZone){ s+=6; kanit.push('arz OB icinde'); }
     if(tl.falseBreakUp){ s-=8; kanit.push('YANLIS kirilim'); }
+    // ═══ V680 ═══ "Tepede" olmak, oraya DIKEY gelindiyse arti degil eksi.
+    const r6=Number(t.ret6); let ceza680=0;
+    if(V680_PARABOLIK_CEZA && Number.isFinite(r6)){
+      if(rp>=0.70) ceza680 = Math.max(0, Math.min(V680_CEZA_TAVAN, (r6-V680_RET6_TABAN)*1.6));
+      if(rp>=0.85 && r6>=V680_CEP_RET6) ceza680 = Math.max(ceza680, V680_CEP_CEZA);
+      if(ceza680>0){ s-=ceza680; kanit.push(`son 90dk %${r6.toFixed(1)} dikey uzama (-${ceza680.toFixed(0)})`); }
+    }
     return {ok:true, skor:+Math.max(0,Math.min(100,s)).toFixed(1), kanit,
-            rangePos:+rp.toFixed(3), atrPct:Number.isFinite(a)?+a.toFixed(2):null, trend:t.trend||null};
+            rangePos:+rp.toFixed(3), atrPct:Number.isFinite(a)?+a.toFixed(2):null, trend:t.trend||null,
+            ret6:Number.isFinite(r6)?+r6.toFixed(2):null, parabolikCeza:+ceza680.toFixed(1)};
   }catch(e){ return {ok:false,skor:null,sebep:String(e&&e.message||e).slice(0,60)}; }
 }
 function r486EntryTruthGuard(story={},opts={}){
@@ -11580,6 +11588,16 @@ function v679Hikaye(story={}, k678=null){
     const sw=(story?.liquidity?.['15m']?.events)||[];
     if(sw.some(e=>e.type==='SSL_SWEEP_RECLAIM')) c.push('asagi likidite supuruldu ve geri alindi (stop avi izi)');
     if(sw.some(e=>e.type==='BSL_SWEEP_RECLAIM')) c.push('yukari likidite supuruldu ve reddedildi (satici avi izi)');
+    // V680: dikey uzama insan cumlesiyle. Sayilar 36.918 noktadan.
+    const _r6=Number(t.ret6);
+    if(Number.isFinite(_r6)&&_r6>=6){
+      c.push(`son 90 dakikada %${_r6.toFixed(1)} DIKEY uzama \u2014 olcum: aralikin tepesinde + dikey gelis beklentiyi +0,314'ten -0,250'ye ceviriyor`);
+      if(Number.isFinite(Number(t.rangePos))&&Number(t.rangePos)>=0.85)
+        c.push('tepede alim: burasi olculen en kotu yer, cunku altta yakalayacak yapi yok');
+      if(['COMPRESSION','RANGE_MIXED'].includes(String(t.trend||'')))
+        c.push(`DIKKAT: yapi etiketi "${t.trend}" ama fiyat dikey \u2014 pivotlar iki yandan onay ister, etiket hamleyi HENUZ GORMEDI (gecmisi anlatiyor)`);
+    }
+    if(k678&&k678.parabolikCeza>0) c.push(`parabolik ceza -${k678.parabolikCeza} puan uygulandi`);
     if(k678&&k678.ok) c.push(`grafik kalite skoru ${k678.skor}/100 \u2014 ${k678.skor<40?'OLCULEN TEK NEGATIF BANT (beklenti -0,071)':k678.skor>=70?'en iyi bant (beklenti +0,815)':'orta bant'}`);
   }catch(_){}
   return c;
@@ -11587,6 +11605,17 @@ function v679Hikaye(story={}, k678=null){
 // ═══ V678 ═══ Grafik kalite kapisi. Veto YALNIZ olculen negatif banta (<40).
 const V678_GRAFIK_KALITE = String(process.env.V678_GRAFIK_KALITE ?? '1') !== '0';
 const V678_MIN_SKOR = Math.max(0, Math.min(100, Number(process.env.V678_MIN_SKOR || 40)));
+// ═══ V680 ═══ PARABOLIK UZAMA CEZASI. 36.918 nokta / 879 gercek 15m grafik.
+// V678'in EN BUYUK ARTI terimi "fiyat araligin tepesinde" (+18,4 puana kadar).
+// Olcum: bu terim, oraya YAVAS gelindiyse dogru; DIKEY gelindiyse tam ters.
+//   rangePos>=%85 & son 6 mum (90dk) getirisi <%3  -> beklenti +0,314 (n=3.584)
+//   rangePos>=%85 & son 6 mum getirisi >=%15       -> beklenti -0,250 (n=191)
+// Uc geometride de (3/9, 2/5, 4/12) ve iki yarida da ayni yon.
+const V680_PARABOLIK_CEZA = String(process.env.V680_PARABOLIK_CEZA ?? '1') !== '0';
+const V680_RET6_TABAN = Math.max(0, Math.min(20, Number(process.env.V680_RET6_TABAN || 4)));
+const V680_CEZA_TAVAN = Math.max(0, Math.min(60, Number(process.env.V680_CEZA_TAVAN || 28)));
+const V680_CEP_RET6   = Math.max(3, Math.min(50, Number(process.env.V680_CEP_RET6 || 10)));
+const V680_CEP_CEZA   = Math.max(0, Math.min(60, Number(process.env.V680_CEP_CEZA || 25)));
 const V677_GERI_VERME_GOLGE = String(process.env.V677_GERI_VERME_GOLGE ?? '1') !== '0';
 const V677_MIN_ZIRVE = Math.max(0.5, Math.min(20, Number(process.env.V677_MIN_ZIRVE || 3)));
 const V677_G_LISTESI = Object.freeze(String(process.env.V677_G_LISTESI || '6,8,10,12')
@@ -28813,6 +28842,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             v679Kaydet({symbol:coin.symbol, skor:_k680?.skor??null,
               gecti:!(_k680&&_k680.ok&&_k680.skor<V678_MIN_SKOR), esik:V678_MIN_SKOR,
               rangePos:_k680?.rangePos??null, atrPct:_k680?.atrPct??null, trend:_k680?.trend??null,
+              ret6:_k680?.ret6??null, parabolikCeza:_k680?.parabolikCeza??0,
               kanit:_k680?.kanit||[], hikaye:v679Hikaye(_s680||{}, _k680),
               yon:String(recommendation||''), timing:_s680?.timing||null,
               ilkEngel:_s680?.firstObstacle??null,
