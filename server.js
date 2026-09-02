@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_6_GERI_VERME_GOLGESI'
+const LAZARUS_BUILD = 'V6_7_7_GRAFIK_KALITE_SKORU'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7945,6 +7945,25 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
     reason:`backtestte gözlenebilir ilk-engel sözleşmesi uygun${_v647Kaynak==='15M_HAFIZA_TARGET1'?' (ilk engel 15m hafızadan)':''}${candidateMemory?.available?` · ${candidateMemory.summary}`:''}; canlı mikro-yapı yalnız kaydedildi`};
 }
 
+// ═══ V678 ═══ Grafik kalite skoru. Kaynak: yalniz botun KENDI dedektorleri.
+// Katsayilar 36.918 noktalik ilk-dokunus olcumunden geldi; uydurma degil.
+function v678GrafikKalitesi(story={}, atrPct=null){
+  try{
+    const t=story?.tf?.['15m']||{}, tl=t.trendline||{};
+    const rp=Number(t.rangePos), a=Number(atrPct);
+    if(!Number.isFinite(rp)) return {ok:false,skor:null,sebep:'RANGEPOS_YOK'};
+    let s=50, kanit=[];
+    s += (rp-0.5)*40;                        kanit.push(`aralikPoz ${(rp*100).toFixed(0)}%`);
+    if(Number.isFinite(a)){ s += Math.max(-20, Math.min(15, (2.0-a)*8)); kanit.push(`ATR %${a.toFixed(2)}`); }
+    if(String(t.trend||'')==='DOWN_LH_LL'){ s-=10; kanit.push('dusus yapisi'); }
+    if(tl.retestUp){ s+=12; kanit.push('kirilim+retest'); }
+    else if(tl.breakUp){ s+=8; kanit.push('trend cizgisi kirilimi'); }
+    if(story?.orderBlock?.['15m']?.supply?.inZone){ s+=6; kanit.push('arz OB icinde'); }
+    if(tl.falseBreakUp){ s-=8; kanit.push('YANLIS kirilim'); }
+    return {ok:true, skor:+Math.max(0,Math.min(100,s)).toFixed(1), kanit,
+            rangePos:+rp.toFixed(3), atrPct:Number.isFinite(a)?+a.toFixed(2):null, trend:t.trend||null};
+  }catch(e){ return {ok:false,skor:null,sebep:String(e&&e.message||e).slice(0,60)}; }
+}
 function r486EntryTruthGuard(story={},opts={}){
   const side=String(opts.side||'LONG').toUpperCase(),entry=Number(opts.entry||0),sl=Number(opts.sl||0),tp=Number(opts.tp||0),atrPct=Math.max(.25,Number(opts.atrPct||3));
   if(!R486_ENTRY_TRUTH_ACTIVE||side!=='LONG'||!(entry>0))return {active:R486_ENTRY_TRUTH_ACTIVE,marketAllowed:true,mode:'LEGACY',plannedEntry:entry,recommendedSl:sl,recommendedTp:tp};
@@ -11509,6 +11528,9 @@ const R501_EVIDENCE_BOOK_MS = Math.max(1000, Math.min(60000, Number(process.env.
 const R501_EVIDENCE_OI_MS = Math.max(10000, Math.min(300000, Number(process.env.R501_EVIDENCE_OI_MS || 30000)));
 const R501_EVIDENCE_MAX_TICKS = Math.max(5000, Math.min(250000, Number(process.env.R501_EVIDENCE_MAX_TICKS || 50000)));
 // ═══ V677 ═══ GOLGE geri-verme olcumu. decisionImpact:false — emir yolu ASLA okumaz.
+// ═══ V678 ═══ Grafik kalite kapisi. Veto YALNIZ olculen negatif banta (<40).
+const V678_GRAFIK_KALITE = String(process.env.V678_GRAFIK_KALITE ?? '1') !== '0';
+const V678_MIN_SKOR = Math.max(0, Math.min(100, Number(process.env.V678_MIN_SKOR || 40)));
 const V677_GERI_VERME_GOLGE = String(process.env.V677_GERI_VERME_GOLGE ?? '1') !== '0';
 const V677_MIN_ZIRVE = Math.max(0.5, Math.min(20, Number(process.env.V677_MIN_ZIRVE || 3)));
 const V677_G_LISTESI = Object.freeze(String(process.env.V677_G_LISTESI || '6,8,10,12')
@@ -28857,6 +28879,23 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             continue;
           }
         }
+
+        // ═══ V678 ═══ GRAFIK KALITE KAPISI — 879 grafik / 36.918 nokta olcumu
+        try {
+          if (V678_GRAFIK_KALITE && recommendation === 'LONG') {
+            const _s678 = decisionChain?.aiBrain?.story || decisionChain?.r483Story || null;
+            const _a678 = Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct);
+            const _k678 = _s678 ? v678GrafikKalitesi(_s678, Number.isFinite(_a678)?_a678:null) : null;
+            if (_k678) decisionChain.v678 = _k678;
+            if (_k678 && _k678.ok && _k678.skor < V678_MIN_SKOR) {
+              logAuto(`\u{1F4C9} ${coin.symbol} V678 GRAFIK KALITESI ${_k678.skor}/100 < ${V678_MIN_SKOR} \u2014 aday elendi [${_k678.kanit.join(' \u00b7 ')}] (olcum: bu bant n=8.155, WR %24,1, beklenti -0,071 \u2014 36.918 noktanin TEK negatif bandi)`);
+              try{r501EvidenceFunnel({type:'V678_LOW_CHART_QUALITY',symbol:coin.fullSymbol||coin.symbol,action:'BLOCKED',authority:'V678_GRAFIK_KALITE',skor:_k678.skor,minSkor:V678_MIN_SKOR,rangePos:_k678.rangePos,atrPct:_k678.atrPct,trend:_k678.trend,decisionImpact:true,orderBlocking:true});}catch(_e){}
+              markAutoSkip(coin.symbol, `V678 grafik kalitesi ${_k678.skor}/100 < ${V678_MIN_SKOR}`, {rec:recommendation, score, aiBrain:decisionChain?.aiBrain});
+              continue;
+            }
+            if (_k678 && _k678.ok) logAuto(`\u{1F4C8} ${coin.symbol} V678 grafik kalitesi ${_k678.skor}/100 [${_k678.kanit.join(' \u00b7 ')}]`);
+          }
+        } catch(_e678) { logAuto(`\u26a0\ufe0f ${coin.symbol} V678 skor hatasi: ${String(_e678?.message||_e678).slice(0,60)} \u2014 aday KORUNDU`); }
 
         // ═══ R493 KALİTE-SIZING — R480 skoruna göre marj tilt (kaldıraç DEĞİL; min 10x korunur) ═══
         try {
