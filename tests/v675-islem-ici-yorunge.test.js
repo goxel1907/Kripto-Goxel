@@ -42,8 +42,8 @@ test('V675: yalnız dışa aktarım — karar yolu ve parite değişmedi', () =>
   const i = server.indexOf('V675: ISLEM ICI CVD YORUNGESI');
   const ds = server.indexOf('function r501DatasetRows');
   assert.ok(ds > 0 && i > ds && i - ds < 12000, 'dataset üreticisinin gövdesinde olmalı');
-  assert.match(server, /const V592_POLICY_PARITY_MODE = true;/);
-  assert.match(server, /fib\[k\]=V592_POLICY_PARITY_MODE\?\{ok:false,policyNeutral:true/);
+  // V682: parite kipi artık ENV'den geliyor ve varsayılanı KAPALI (veri açık).
+  assert.match(server, /const V592_POLICY_PARITY_MODE = !V682_PIYASA_VERISI;/);
 });
 
 test('V675: build etiketi package.json sürümüyle uyuşuyor', () => {

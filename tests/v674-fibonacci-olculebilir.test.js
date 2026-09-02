@@ -32,10 +32,14 @@ test('V674: r501DatasetRows içinde, karar yolunda değil', () => {
   assert.ok(v674 - ds < 12000, 'aynı fonksiyonun gövdesinde olmalı');
 });
 
-test('V674: karar şeridindeki fib kilidine DOKUNULMADI', () => {
-  // Bu sürüm ölçümü açar, pariteyi kırmaz. Karar hâlâ boş fib alıyor.
-  assert.match(server, /fib\[k\]=V592_POLICY_PARITY_MODE\?\{ok:false,policyNeutral:true/);
-  assert.match(server, /const V592_POLICY_PARITY_MODE = true;/);
+test('V682: fib kilidi KALDIRILDI — karar artık gerçek Fibonacci görüyor', () => {
+  // V674'te bu test "kilide dokunulmadı" diyordu. V682 kullanıcı kararıyla kilidi
+  // açtı: backtest paritesi artık hedef değil, piyasa verisi karara giriyor.
+  assert.match(server, /fib\[k\]=V592_POLICY_PARITY_MODE\?\{ok:false,policyNeutral:true/,
+    'kod yolu duruyor — ama bayrak artık kapalı');
+  assert.match(server, /const V592_POLICY_PARITY_MODE = !V682_PIYASA_VERISI;/);
+  assert.match(server, /const V682_PIYASA_VERISI = String\(process\.env\.V682_PIYASA_VERISI \?\? '1'\) !== '0';/,
+    'varsayılan AÇIK olmalı');
 });
 
 test('V674: build etiketi package.json sürümüyle uyuşuyor', () => {

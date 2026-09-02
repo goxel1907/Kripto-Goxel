@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_1_PIYASA_GOLGESI'
+const LAZARUS_BUILD = 'V6_8_2_PIYASA_ACIK'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -469,8 +469,13 @@ const LAZARUS_BUILD = 'V6_8_1_PIYASA_GOLGESI'
 // OHLCV/chart layer. V6.1.9 additionally consumes a separate, rate-limited live
 // confirmation snapshot: it contributes only 30% of opportunity score, never opens
 // or vetoes alone and never changes size/exit. Execution safety is independent.
-const V592_POLICY_PARITY_MODE = true;
-const V592_RESEARCH_PASSIVE_ONLY = true;
+// ═══ V682 ═══ PIYASA VERISI ACIK. Eskiden bu iki sabit `true` idi ve CVD,
+// emir defteri, OI, funding, likidasyon, iceberg ve 8 zaman diliminde Fibonacci
+// karar aninda SIFIRLANIYORDU (backtest paritesi icin). Kullanici karari: parite
+// hedef degil. Artik veri karara giriyor. Kapatmak icin V682_PIYASA_VERISI=0.
+const V682_PIYASA_VERISI = String(process.env.V682_PIYASA_VERISI ?? '1') !== '0';
+const V592_POLICY_PARITY_MODE = !V682_PIYASA_VERISI;
+const V592_RESEARCH_PASSIVE_ONLY = !V682_PIYASA_VERISI;
 // Canli mikro veri eski bloklayan analiz hot-path'ine geri acilmaz. TOP24 icin arka
 // planda ayri butceli yardimci katman kullanilir. V6.1.9'da bu katman grafik-firsat
 // puaninin %30'luk teyididir; tek basina emir acmaz/veto etmez, marj/SL/TP/cikisi
@@ -11609,7 +11614,7 @@ function v679Hikaye(story={}, k678=null){
       if(lL>0||lS>0) olcu.push(`5dk likidasyon long ${lL.toFixed(0)}$ / short ${lS.toFixed(0)}$${P.likDominance?' ('+P.likDominance+')':''}`);
       if(P.likCascade) olcu.push(`LIKIDASYON KASKADI: ${P.likCascade}`);
       if(Number.isFinite(P.yavasSapma)) olcu.push(`yavas trend (50 saatlik ort.) ${P.yavasSapma>0?'ustunde':'altinda'} %${Math.abs(P.yavasSapma).toFixed(2)}`);
-      if(olcu.length) c.push(`[GOLGE - karara girmiyor, olculuyor] ${olcu.join(' \u00b7 ')}`);
+      if(olcu.length) c.push(`[PIYASA VERISI - karara giriyor] ${olcu.join(' \u00b7 ')}`);
     }
     if(k678&&k678.parabolikCeza>0) c.push(`parabolik ceza -${k678.parabolikCeza} puan uygulandi`);
     if(k678&&k678.ok) c.push(`grafik kalite skoru ${k678.skor}/100 \u2014 ${k678.skor<40?'OLCULEN TEK NEGATIF BANT (beklenti -0,071)':k678.skor>=70?'en iyi bant (beklenti +0,815)':'orta bant'}`);

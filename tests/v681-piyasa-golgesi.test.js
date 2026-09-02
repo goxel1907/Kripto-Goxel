@@ -46,18 +46,16 @@ test('V681: yavas trend (50 saatlik ortalama) golgede olculuyor', () => {
   assert.ok(blok.includes('yavasSapma') && blok.includes('yavasUstunde'));
 });
 
-test('V681: karara ETKI ETMIYOR — yalniz researchPassive icinde', () => {
-  const i = server.indexOf('v681Piyasa:(function(){');
-  // researchPassive blogunun icinde mi?
-  const rp = server.lastIndexOf('researchPassive:{schema:', i);
-  assert.ok(rp > 0 && rp < i, 'researchPassive blogunun icinde olmali');
-  const blok = server.slice(rp, i + 2000);
-  assert.ok(blok.includes('decisionImpact:false'), 'decisionImpact:false tasimali');
-  // emir yolunda v681Piyasa okuyan HICBIR kapi olmamali
-  const okumalar = (server.match(/v681Piyasa/g) || []).length;
-  assert.ok(okumalar <= 4, `v681Piyasa yalniz kayit icin okunmali (bulunan ${okumalar})`);
-  for (const yasak of ['markAutoSkip', 'continue;', 'blocked'])
-    assert.ok(!server.slice(i, i + 1800).includes(yasak), `${yasak} olmamali`);
+test('V682: piyasa verisi karara giriyor, kayit da tutuluyor', () => {
+  // V682: veri artik notrlenmiyor, karar yoluna DOGRUDAN giriyor.
+  // v681Piyasa blogu ise kayit/panel icin ayni degerlerin anlik goruntusu.
+  assert.match(server, /const V682_PIYASA_VERISI = String\(process\.env\.V682_PIYASA_VERISI \?\? '1'\) !== '0';/);
+  assert.match(server, /const V592_POLICY_PARITY_MODE = !V682_PIYASA_VERISI;/);
+  assert.match(server, /const V592_RESEARCH_PASSIVE_ONLY = !V682_PIYASA_VERISI;/);
+  // notrleyici hala kodda ama artik bayrakla kapali — geri alinabilir olmali
+  const n = server.indexOf('function r592NeutralizeDecisionData');
+  assert.ok(server.slice(n, n + 200).includes('if(!V592_POLICY_PARITY_MODE)return data;'),
+    'bayrak kapaliyken ham veri gecmeli');
 });
 
 test('V681: kapanmis islem CSV kolonlari eklendi', () => {
@@ -69,10 +67,10 @@ test('V681: kapanmis islem CSV kolonlari eklendi', () => {
   assert.ok(blok.includes('rp?.v681Piyasa'), 'researchPassive uzerinden okunmali');
 });
 
-test('V681: beyin karti ham veriyi GOLGE etiketiyle gosteriyor', () => {
+test('V682: beyin karti piyasa verisini KARARA GIRIYOR etiketiyle gosteriyor', () => {
   const i = server.indexOf('function v679Hikaye');
   const govde = server.slice(i, server.indexOf('// ═══ V678 ═══ Grafik kalite kapisi', i));
-  assert.ok(govde.includes('GOLGE - karara girmiyor'), 'golge etiketi acikca yazmali');
+  assert.ok(govde.includes('PIYASA VERISI - karara giriyor'), 'karara girdigi acikca yazmali');
   assert.ok(govde.includes('likidasyon'), 'likidasyon gosterilmeli');
   const k = server.indexOf('v679Kaydet({symbol:coin.symbol');
   assert.ok(server.slice(k, k + 1100).includes('piyasa:_s680?.researchPassive?.v681Piyasa'),
