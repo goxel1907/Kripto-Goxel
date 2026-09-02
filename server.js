@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_3_BILESIK_SERBEST'
+const LAZARUS_BUILD = 'V6_8_4_LIKIDASYON_BAGLI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6599,6 +6599,14 @@ function r481MekanikVeri(coin, analysis, dc={}) {
     cvd:analysis?.cvd || null,
     tickData:analysis?.tickData || null,
     iceberg:analysis?.iceberg || null,
+    // ═══ V684 ═══ LIKIDASYONLAR. Bot tum Binance futures likidasyonlarina bagli
+    // (!forceOrder@arr) ama bu alan grafik/karar veri paketine HIC eklenmemisti;
+    // V592 kapatilinca bile bos geliyordu cunku hic gelmiyordu. Artik geliyor.
+    liquidations:analysis?.liquidations || null,
+    oiChange15m:Number(analysis?.oiChange15m ?? analysis?.oiRaw15m ?? NaN),
+    oiChange4h:Number(analysis?.oiChange4h ?? NaN),
+    fundingSlope:Number(analysis?.fundingSlope ?? NaN),
+    icebergSignal:String(analysis?.icebergSignal || analysis?.iceberg?.signal || ''),
     r125OrderFlow:analysis?.r125OrderFlow || null,
     aggTrades:analysis?.tickData?.recentTrades || analysis?.tickData?.trades || null,
     ictDashboard:String(dc?.ictDashboard || ''),
