@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_7_GRAFIK_KALITE_SKORU'
+const LAZARUS_BUILD = 'V6_7_8_BOTUN_BEYNI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -11528,6 +11528,41 @@ const R501_EVIDENCE_BOOK_MS = Math.max(1000, Math.min(60000, Number(process.env.
 const R501_EVIDENCE_OI_MS = Math.max(10000, Math.min(300000, Number(process.env.R501_EVIDENCE_OI_MS || 30000)));
 const R501_EVIDENCE_MAX_TICKS = Math.max(5000, Math.min(250000, Number(process.env.R501_EVIDENCE_MAX_TICKS || 50000)));
 // ═══ V677 ═══ GOLGE geri-verme olcumu. decisionImpact:false — emir yolu ASLA okumaz.
+// ═══ V679 ═══ BOTUN BEYNI: her aday degerlendirmesinin okunabilir kaydi.
+// Halka tampon; en yeni V679_BEYIN_KAPASITE kayit tutulur. Karara etkisi YOK.
+const V679_BEYIN_KAPASITE = Math.max(20, Math.min(400, Number(process.env.V679_BEYIN_KAPASITE || 200)));
+const v679Beyin = [];
+function v679Kaydet(kayit){
+  try{ v679Beyin.push({at:Date.now(),...kayit});
+       if(v679Beyin.length>V679_BEYIN_KAPASITE) v679Beyin.splice(0, v679Beyin.length-V679_BEYIN_KAPASITE);
+  }catch(_){}
+}
+// Grafigin hikayesini INSAN CUMLESINE cevirir. Yalniz mevcut dedektor ciktilari.
+function v679Hikaye(story={}, k678=null){
+  const c=[];
+  try{
+    const t=story?.tf?.['15m']||{}, tl=t.trendline||{}, liq=story?.liquidity?.['15m']||{};
+    const ob=story?.orderBlock?.['15m']||{}, m1=story?.tf?.['1m']||{}, m5=story?.tf?.['5m']||{};
+    const TR={UP_HH_HL:'yukselen (tepe/dip yukseliyor)',DOWN_LH_LL:'dusen (tepe/dip aliciliyor)',
+              EXPANSION:'genisleyen (oynaklik artiyor)',COMPRESSION:'sikisan (oynaklik daraliyor)',
+              RANGE_MIXED:'yatay/karisik'};
+    if(t.trend) c.push(`15m yapi ${TR[t.trend]||t.trend}`);
+    if(Number.isFinite(Number(t.rangePos))) c.push(`fiyat son 48 mumun aralig\u0131nda %${Math.round(Number(t.rangePos)*100)} seviyesinde`);
+    if(m1.trend&&m5.trend) c.push(`mikro 1m ${TR[m1.trend]||m1.trend} / 5m ${TR[m5.trend]||m5.trend}`);
+    if(tl.retestUp) c.push('dusen trend cizgisi kirildi ve RETEST tuttu \u2014 olculen en iyi tekil sinyal (beklenti +0,630 / taban +0,408)');
+    else if(tl.breakUp) c.push('dusen trend cizgisi yukari kirildi, retest henuz yok');
+    if(tl.falseBreakUp) c.push('YANLIS kirilim: kirdi ama uzerinde tutunamadi \u2014 olcumde taban alti');
+    if(liq.above) c.push(`ustte ilk likidite ${liq.above} (${liq.aboveType||'?'}) \u2014 %${Number(liq.aboveDist||0).toFixed(2)} otede`);
+    if(liq.below) c.push(`altta ilk likidite ${liq.below} (${liq.belowType||'?'}) \u2014 %${Number(liq.belowDist||0).toFixed(2)} asagida`);
+    if(ob.supply?.inZone) c.push('fiyat 15m ARZ order-block icinde \u2014 olcumde bu iyi (+0,588), cunku kirilim esiginin altinda sikisma demek');
+    if(ob.demand?.inZone) c.push('fiyat 15m TALEP order-block icinde (olcumde zayif: +0,235)');
+    const sw=(story?.liquidity?.['15m']?.events)||[];
+    if(sw.some(e=>e.type==='SSL_SWEEP_RECLAIM')) c.push('asagi likidite supuruldu ve geri alindi (stop avi izi)');
+    if(sw.some(e=>e.type==='BSL_SWEEP_RECLAIM')) c.push('yukari likidite supuruldu ve reddedildi (satici avi izi)');
+    if(k678&&k678.ok) c.push(`grafik kalite skoru ${k678.skor}/100 \u2014 ${k678.skor<40?'OLCULEN TEK NEGATIF BANT (beklenti -0,071)':k678.skor>=70?'en iyi bant (beklenti +0,815)':'orta bant'}`);
+  }catch(_){}
+  return c;
+}
 // ═══ V678 ═══ Grafik kalite kapisi. Veto YALNIZ olculen negatif banta (<40).
 const V678_GRAFIK_KALITE = String(process.env.V678_GRAFIK_KALITE ?? '1') !== '0';
 const V678_MIN_SKOR = Math.max(0, Math.min(100, Number(process.env.V678_MIN_SKOR || 40)));
@@ -12939,6 +12974,20 @@ function r501DiskGuard(){
 }
 setInterval(r501DiskGuard,300000).unref?.();
 setTimeout(r501DiskGuard,20000).unref?.();
+app.get('/api/v679/beyin/:nonce',(req,res)=>{
+  res.set('Cache-Control','no-store, no-cache, must-revalidate');
+  res.set('Pragma','no-cache');
+  const lim=Math.max(1,Math.min(V679_BEYIN_KAPASITE,Number(req.query.limit)||60));
+  const sym=String(req.query.symbol||'').toUpperCase().trim();
+  let rows=v679Beyin.slice(-lim*3);
+  if(sym) rows=rows.filter(x=>String(x.symbol||'').toUpperCase().includes(sym));
+  rows=rows.slice(-lim).reverse();
+  const gecen=rows.filter(x=>x.gecti).length;
+  res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),
+    kapasite:V679_BEYIN_KAPASITE,toplam:v679Beyin.length,dondurulen:rows.length,
+    ozet:{gecen,elenen:rows.length-gecen,esik:V678_MIN_SKOR,kapiAcik:V678_GRAFIK_KALITE},
+    kayitlar:rows});
+});
 app.get('/api/evidence/disk',(_req,res)=>{res.set('Cache-Control','no-store');
   const mb=r501DirBytes(R501_EVIDENCE_DIR)/1048576;
   res.json({ok:true,usedMB:+mb.toFixed(1),limitMB:R501_DISK_LIMIT_MB,warnMB:R501_DISK_WARN_MB,
@@ -28887,6 +28936,15 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             const _a678 = Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct);
             const _k678 = _s678 ? v678GrafikKalitesi(_s678, Number.isFinite(_a678)?_a678:null) : null;
             if (_k678) decisionChain.v678 = _k678;
+            try{ v679Kaydet({symbol:coin.symbol, skor:_k678?.skor??null,
+              gecti:!(_k678&&_k678.ok&&_k678.skor<V678_MIN_SKOR), esik:V678_MIN_SKOR,
+              rangePos:_k678?.rangePos??null, atrPct:_k678?.atrPct??null, trend:_k678?.trend??null,
+              kanit:_k678?.kanit||[], hikaye:v679Hikaye(_s678||{}, _k678),
+              timing:_s678?.timing||null, ilkEngel:_s678?.firstObstacle??null,
+              ilkEngelRR:_s678?.entryTruth?.firstObstacleRR??null,
+              hedefLik:_s678?.targetLiquidity??null, kalite:_s678?.quality??null,
+              fiyat:Number(coin?.price||coin?.lastPrice||0)||null, rank:Number(coin?.r497Rank||coin?.gainerRank||0)||null});
+            }catch(_e679){}
             if (_k678 && _k678.ok && _k678.skor < V678_MIN_SKOR) {
               logAuto(`\u{1F4C9} ${coin.symbol} V678 GRAFIK KALITESI ${_k678.skor}/100 < ${V678_MIN_SKOR} \u2014 aday elendi [${_k678.kanit.join(' \u00b7 ')}] (olcum: bu bant n=8.155, WR %24,1, beklenti -0,071 \u2014 36.918 noktanin TEK negatif bandi)`);
               try{r501EvidenceFunnel({type:'V678_LOW_CHART_QUALITY',symbol:coin.fullSymbol||coin.symbol,action:'BLOCKED',authority:'V678_GRAFIK_KALITE',skor:_k678.skor,minSkor:V678_MIN_SKOR,rangePos:_k678.rangePos,atrPct:_k678.atrPct,trend:_k678.trend,decisionImpact:true,orderBlocking:true});}catch(_e){}

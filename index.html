@@ -3624,5 +3624,70 @@ async function diskYukle(){
   }catch(e){ el.innerHTML='<span style="color:#f85149">hata: '+String((e&&e.message)||e).slice(0,140)+'</span>'; }
 }
 </script>
+
+<!-- ═══ V679 BOTUN BEYNİ ═══ botun her aday için ne gördüğü, ne anladığı, ne yaptığı -->
+<button id="v679Btn" onclick="v679Ac()" title="Botun beyni"
+  style="position:fixed;right:14px;bottom:14px;z-index:9998;background:#161b22;color:#e6edf3;
+  border:1px solid #30363d;border-radius:10px;padding:9px 13px;font:600 12px/1 system-ui,sans-serif;
+  cursor:pointer;box-shadow:0 4px 16px #0008">🧠 Botun Beyni</button>
+
+<div id="v679Panel" style="display:none;position:fixed;inset:auto 12px 12px auto;width:min(560px,calc(100vw - 24px));
+  max-height:min(78vh,760px);overflow:auto;z-index:9999;background:#0d1117;color:#e6edf3;
+  border:1px solid #30363d;border-radius:12px;box-shadow:0 10px 40px #000c;font:12px/1.5 system-ui,sans-serif">
+  <div style="position:sticky;top:0;background:#161b22;border-bottom:1px solid #30363d;padding:10px 12px;
+    display:flex;align-items:center;gap:8px">
+    <b style="font-size:13px">🧠 Botun Beyni</b>
+    <span id="v679Ozet" style="font-size:10px;color:#7f8ba3"></span>
+    <span style="flex:1"></span>
+    <button onclick="v679Yenile()" style="background:#21262d;color:#e6edf3;border:1px solid #30363d;
+      border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer">Yenile</button>
+    <button onclick="document.getElementById('v679Panel').style.display='none'"
+      style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;
+      padding:4px 9px;font-size:11px;cursor:pointer">Kapat</button>
+  </div>
+  <div id="v679Icerik" style="padding:10px 12px">yükleniyor…</div>
+</div>
+
+<script>
+function v679Ac(){
+  const p=document.getElementById('v679Panel');
+  p.style.display = p.style.display==='none' ? 'block' : 'none';
+  if(p.style.display==='block') v679Yenile();
+}
+function v679Esc(t){return String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+async function v679Yenile(){
+  const el=document.getElementById('v679Icerik'), oz=document.getElementById('v679Ozet');
+  el.textContent='yükleniyor…';
+  try{
+    // nonce ZORUNLU: aradaki HTTP önbelleği her yolu ilk çekilişinde donduruyor.
+    const j=await railGet('/api/v679/beyin/'+Date.now()+'?limit=40');
+    if(!j||!j.ok){ el.innerHTML='<span style="color:#f85149">veri yok</span>'; return; }
+    const o=j.ozet||{};
+    oz.textContent=`${j.build} · ${o.gecen||0} geçti / ${o.elenen||0} elendi · eşik ${o.esik} · kapı ${o.kapiAcik?'açık':'KAPALI'}`;
+    if(!j.kayitlar||!j.kayitlar.length){ el.innerHTML='<div style="color:#7f8ba3">Henüz kayıt yok — bot bir tarama turu tamamlayınca dolar.</div>'; return; }
+    el.innerHTML=j.kayitlar.map(k=>{
+      const renk=k.gecti?'#3fb950':'#f85149';
+      const skor=k.skor==null?'—':k.skor;
+      const dk=Math.round((j.serverTime-k.at)/60000);
+      const satirlar=(k.hikaye||[]).map(c=>'<li style="margin:2px 0">'+v679Esc(c)+'</li>').join('');
+      return `<div style="border-left:3px solid ${renk};background:#161b22;border-radius:8px;
+        padding:9px 11px;margin-bottom:9px">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:5px">
+          <b style="font-size:13px">${v679Esc(k.symbol)}</b>
+          <span style="color:${renk};font-weight:600">${skor}/100</span>
+          <span style="font-size:10px;color:#7f8ba3">${k.gecti?'geçti':'ELENDİ'} · ${dk}dk önce${k.rank?' · sıra '+k.rank:''}</span>
+        </div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:5px">
+          aralıkPoz ${k.rangePos==null?'—':(k.rangePos*100).toFixed(0)+'%'} ·
+          ATR ${k.atrPct==null?'—':'%'+k.atrPct} ·
+          yapı ${v679Esc(k.trend||'—')} ·
+          zamanlama ${v679Esc(k.timing||'—')}${k.ilkEngelRR!=null?' · ilk engel R/R '+k.ilkEngelRR:''}
+        </div>
+        <ul style="margin:0;padding-left:16px;color:#c9d1d9">${satirlar||'<li style="color:#7f8ba3">okuma yok</li>'}</ul>
+      </div>`;
+    }).join('');
+  }catch(e){ el.innerHTML='<span style="color:#f85149">hata: '+v679Esc(String((e&&e.message)||e)).slice(0,160)+'</span>'; }
+}
+</script>
 </body>
 </html>
