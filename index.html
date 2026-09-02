@@ -2871,8 +2871,10 @@ function buildAutoBody(enabled){
     allowShort:   false, // R486 LONG-only: UI/localStorage SHORT açamaz
     sweepOnly:    !!document.getElementById('auto-sweeponly')?.checked,
     vurKacEnabled: !!document.getElementById('auto-vurkac')?.checked,
-    vurKacAutoLev: !!document.getElementById('auto-vurkac-autolev')?.checked,
-    vurKacMaxLev:  Math.max(10, readInt('auto-vurkac-maxlev',125)),
+    // kaldıraç sunucuda 7x kilitli (V592) — bu iki alan panelden kaldırıldı,
+    // sunucunun zaten yok saydığı sözleşme değerleri gönderiliyor
+    vurKacAutoLev: false,
+    vurKacMaxLev:  125,
     scanMode:     'TOP24', // canlı sözleşme: TOP10 çekirdek + 11-24 + worker
     trailingPct:  readNum('auto-trail',2),
     trailStep:    readNum('auto-trailstep',0.5),
@@ -3026,8 +3028,6 @@ function loadAutoSettings() {
     { const sh=document.getElementById('auto-short'); if(sh){ sh.checked=false; sh.disabled=true; } }
     set('auto-sweeponly', s.sweepOnly);
     set('auto-vurkac', s.vurKacEnabled!==undefined?s.vurKacEnabled:true);
-    set('auto-vurkac-autolev', s.vurKacAutoLev);
-    set('auto-vurkac-maxlev', Math.max(10, Number(s.vurKacMaxLev||125)));
     set('auto-scanmode',  'TOP24');
     set('auto-trail',     s.trailingPct);
     set('auto-trailstep', s.trailStep);
