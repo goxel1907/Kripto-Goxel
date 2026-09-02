@@ -68,7 +68,9 @@ test('V662: kullanıcı sözleşmesi aynen duruyor', () => {
   const _pkg = JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8'));
   assert.ok(_b && _b[1].startsWith('V' + String(_pkg.version).replace(/\./g,'_') + '_'));
   assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);        // 50$ min
-  assert.match(server, /const V601_HARD_MARGIN_CAP_USDT = 100;/);
+  // V683: tavan kaldirildi (0=sinirsiz) — bilesik buyume durmasin diye. Taban 50$ duruyor.
+  assert.match(server, /const V683_MARJ_TAVAN_RAW = Number\(process\.env\.V601_MARJ_TAVAN \?\? 0\);/);
+  assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);
   assert.match(server, /const _v660LikTavan = \(100 \/ _v660Lev\) \* V660_LIK_PAYI;/);  // likidasyon
   assert.match(server, /V649_BOLGEDEN_GIRIS/);                            // bölgeden giriş
 });

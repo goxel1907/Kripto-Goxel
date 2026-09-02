@@ -17,7 +17,9 @@ test('V6.4.5 locks live sizing to one position with a 50 USDT floor and 100 USDT
   assert.ok(_build[1].startsWith('V' + String(pkg.version).replace(/\./g, '_') + '_'),
     `LAZARUS_BUILD (${_build[1]}) package.json surumuyle (${pkg.version}) uyusmuyor`);
   assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);
-  assert.match(server, /const V601_HARD_MARGIN_CAP_USDT = 100;/);
+  // V683: tavan kaldirildi (0=sinirsiz) — bilesik buyume durmasin diye. Taban 50$ duruyor.
+  assert.match(server, /const V683_MARJ_TAVAN_RAW = Number\(process\.env\.V601_MARJ_TAVAN \?\? 0\);/);
+  assert.match(server, /const V601_HARD_MARGIN_FLOOR_USDT = 50;/);
   assert.match(env, /^R486_MAX_POSITIONS="1"$/m);
   assert.match(env, /^V601_MARJ_TABAN="50"$/m);
   assert.match(env, /^V601_MARJ_TAVAN="100"$/m);

@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_2_PIYASA_ACIK'
+const LAZARUS_BUILD = 'V6_8_3_BILESIK_SERBEST'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6881,7 +6881,12 @@ function v623EtkinMarjTabani(equityUsd, levX, slPct){
   const guvenli = Math.floor(tasinabilir * 0.995 * 100) / 100;
   return Math.max(R495_MIN_SAFE_MARGIN_USDT, guvenli);
 }
-const V601_HARD_MARGIN_CAP_USDT = 100;
+// ═══ V683 ═══ MARJ TAVANI KALDIRILDI. 0 = sinirsiz -> bilesik buyume durmaz.
+// Eskiden 100$ sabitti; equity ~333$'i gecince buyume duruyordu. Taban 50$ duruyor,
+// tek pozisyon duruyor, tampon 20$ duruyor. Tavan istersen V601_MARJ_TAVAN ile koy.
+const V683_MARJ_TAVAN_RAW = Number(process.env.V601_MARJ_TAVAN ?? 0);
+const V601_HARD_MARGIN_CAP_USDT = (Number.isFinite(V683_MARJ_TAVAN_RAW) && V683_MARJ_TAVAN_RAW > 0)
+  ? Math.max(V601_HARD_MARGIN_FLOOR_USDT, V683_MARJ_TAVAN_RAW) : Number.MAX_SAFE_INTEGER;
 const R497_FIXED_SLOT_ACTIVE = String(process.env.R497_FIXED_SLOT_ACTIVE ?? '1') !== '0';
 const R497_SLOT_MARGIN_USDT = V601_HARD_MARGIN_FLOOR_USDT;
 const R497_MIN_BUFFER_USDT = Math.max(0, Math.min(5000, Number(process.env.R497_MIN_BUFFER_USDT || 20)));
@@ -30730,7 +30735,8 @@ function v592BootParityGate(){
   // V6.4.4: slot tabani 50$, bilesik buyume tavani 100$; iki kavram ayridir.
   if(!eq(R497_SLOT_MARGIN_USDT,V601_HARD_MARGIN_FLOOR_USDT))
     hata.push(`SLOT_MARJ_TABANI_UYUSMAZ:${R497_SLOT_MARGIN_USDT}!=${V601_HARD_MARGIN_FLOOR_USDT}`);
-  if(!eq(V601_HARD_MARGIN_CAP_USDT,100)) hata.push(`MARJ_TAVANI_100_DEGIL:${V601_HARD_MARGIN_CAP_USDT}`);
+  // V683: tavan artik sozlesme degil (0=sinirsiz, bilesik buyume icin). Taban hala 50$.
+  if(!(V601_HARD_MARGIN_CAP_USDT >= V601_HARD_MARGIN_FLOOR_USDT)) hata.push(`MARJ_TAVANI_TABANIN_ALTINDA:${V601_HARD_MARGIN_CAP_USDT}`);
   if(!eq(R497_MIN_BUFFER_USDT,20)) hata.push(`BUFFER_20_DEGIL:${R497_MIN_BUFFER_USDT}`);
   if(String(R497_ABOVE_CAP_MODE)!=='PCT_COMPOUND') hata.push(`ABOVE_CAP_PCT_COMPOUND_DEGIL:${R497_ABOVE_CAP_MODE}`);
   // ═══ V634 ═══ Kilit artik "2 poz ve %4" degil, DEGISMEZ olan toplam risk.
