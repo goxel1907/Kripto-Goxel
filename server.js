@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_7_8_BOTUN_BEYNI'
+const LAZARUS_BUILD = 'V6_7_9_COKME_DUZELDI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -8017,7 +8017,8 @@ function r486EntryTruthGuard(story={},opts={}){
     if (!_v650Pivot.length) { try { logAuto(`⚠️ ${story?.symbol||''} V650 pivot engeli AÇIK ama pivot listesi BOŞ — story.pivots gelmiyor, yama etkisiz`); } catch(_) {} }
   }
   const _v650Adaylar = fallbackObstacles.concat(_v650Pivot).sort((a,b)=>a-b);
-  const first=firstObstacleDirectionValid&&firstRaw>0?firstRaw:(_v650Adaylar[0]||0);
+  // V680-A: V673-B bu degiskeni yeniden atiyor; const kalirsa TypeError firlar ve TUM entry-truth iptal olur.
+  let first=firstObstacleDirectionValid&&firstRaw>0?firstRaw:(_v650Adaylar[0]||0);
   const firstObstacleRR=first>entry&&risk>0?(first-entry)/risk:null,retest=Number(story.retestEntry||0),retestPlan=['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(String(story.timing||'')),retestBelowStop=retestPlan&&retest>0&&sl>0&&retest<=sl*1.0005,retestFar=Number(story.retestGapAtr||0)>.35;
   let recommendedSl=sl;if(tightStop){const widened=entry*(1-minStopPct/100);recommendedSl=Math.min(sl>0?sl:widened,widened);}if(retest>0&&['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(String(story.timing))){const buffer=Math.max(entry*.0015,entry*atrPct/100*.12);recommendedSl=Math.min(recommendedSl>0?recommendedSl:retest-buffer,retest-buffer);}
   if(entry>0&&recommendedSl>0&&((entry-recommendedSl)/entry*100)>10)recommendedSl=entry*.90;
@@ -11531,10 +11532,30 @@ const R501_EVIDENCE_MAX_TICKS = Math.max(5000, Math.min(250000, Number(process.e
 // ═══ V679 ═══ BOTUN BEYNI: her aday degerlendirmesinin okunabilir kaydi.
 // Halka tampon; en yeni V679_BEYIN_KAPASITE kayit tutulur. Karara etkisi YOK.
 const V679_BEYIN_KAPASITE = Math.max(20, Math.min(400, Number(process.env.V679_BEYIN_KAPASITE || 200)));
+const V679_SONUC_PENCERE_MS = Math.max(30000, Math.min(600000, Number(process.env.V679_SONUC_PENCERE_MS || 180000)));
 const v679Beyin = [];
 function v679Kaydet(kayit){
-  try{ v679Beyin.push({at:Date.now(),...kayit});
+  try{ const r={at:Date.now(),karar:'DEGERLENDIRILDI',sebep:null,...kayit};
+       v679Beyin.push(r);
        if(v679Beyin.length>V679_BEYIN_KAPASITE) v679Beyin.splice(0, v679Beyin.length-V679_BEYIN_KAPASITE);
+       return r;
+  }catch(_){ return null; }
+}
+// V680-B: ayni turdaki kaydin SONUCUNU yazar. Kayit yoksa ince kayit acar; hicbir aday
+// beyinde gorunmez kalmaz. Karara etkisi YOK - yalniz okunur kayit.
+function v679SonKarar(symbol, karar, sebep){
+  try{
+    const sym=String(symbol||'').replace(/USDT$/,''); if(!sym) return;
+    const simdi=Date.now();
+    for(let i=v679Beyin.length-1;i>=0;i--){
+      const r=v679Beyin[i];
+      if(String(r.symbol||'').replace(/USDT$/,'')!==sym) continue;
+      if(simdi-Number(r.at||0)>V679_SONUC_PENCERE_MS) break;
+      if(r.karar==='DEGERLENDIRILDI'){ r.karar=karar; r.sebep=String(sebep||'').slice(0,220); }
+      return;
+    }
+    v679Kaydet({symbol:sym, skor:null, gecti:null, esik:V678_MIN_SKOR, kanit:[], hikaye:[],
+                karar:karar, sebep:String(sebep||'').slice(0,220)});
   }catch(_){}
 }
 // Grafigin hikayesini INSAN CUMLESINE cevirir. Yalniz mevcut dedektor ciktilari.
@@ -12983,9 +13004,19 @@ app.get('/api/v679/beyin/:nonce',(req,res)=>{
   if(sym) rows=rows.filter(x=>String(x.symbol||'').toUpperCase().includes(sym));
   rows=rows.slice(-lim).reverse();
   const gecen=rows.filter(x=>x.gecti).length;
+  // V680: karar dagilimi - kac aday emre gitti, kac tanesi hangi sebeple atlandi.
+  const sayac={EMIR:0,ATLANDI:0,DEGERLENDIRILDI:0};
+  const sebepler={};
+  for(const r of rows){
+    const k=String(r.karar||'DEGERLENDIRILDI');
+    sayac[k]=(sayac[k]||0)+1;
+    if(k==='ATLANDI'&&r.sebep){ const kk=String(r.sebep).slice(0,70); sebepler[kk]=(sebepler[kk]||0)+1; }
+  }
+  const enCokSebep=Object.entries(sebepler).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([sebep,adet])=>({sebep,adet}));
   res.json({ok:true,build:LAZARUS_BUILD,serverTime:Date.now(),
     kapasite:V679_BEYIN_KAPASITE,toplam:v679Beyin.length,dondurulen:rows.length,
-    ozet:{gecen,elenen:rows.length-gecen,esik:V678_MIN_SKOR,kapiAcik:V678_GRAFIK_KALITE},
+    ozet:{gecen,elenen:rows.length-gecen,esik:V678_MIN_SKOR,kapiAcik:V678_GRAFIK_KALITE,
+          emir:sayac.EMIR,atlandi:sayac.ATLANDI,beklemede:sayac.DEGERLENDIRILDI,enCokSebep},
     kayitlar:rows});
 });
 app.get('/api/evidence/disk',(_req,res)=>{res.set('Cache-Control','no-store');
@@ -24711,6 +24742,8 @@ function markAutoOpened(symbol, side) {
   autoScanState.lastOpenedAt = autoPersistentStats.lastOpenedAt;
   autoScanState.lastOpenedSymbol = autoPersistentStats.lastOpenedSymbol;
   autoScanState.lastOpenedSide = autoPersistentStats.lastOpenedSide;
+  // V680-F: acilan emir de beyne yazilir; boylece kart "gordu -> ne yapti" zincirini tamamlar.
+  try { v679SonKarar(symbol, 'EMIR', `${String(side||'').toUpperCase()} emri acildi`); } catch(_v680e) {}
 }
 
 // R119: Auto panel tanı taşıyıcıları. R118 karar zinciri çalışsa bile markAutoSkip
@@ -24862,6 +24895,8 @@ function markAutoSkip(symbol, reason, row={}) {
   autoScanState.skipReasons[key] = (autoScanState.skipReasons[key]||0) + 1;
   if (symbol) pushAutoCandidate({symbol, reason:key, action:'Atlandı', ...row});
   try { r501EvidenceFunnel({type:'SKIP',symbol:normalizeSymbol(symbol||''),action:'SKIP',authority:row?.authority||row?.gate||'AUTO_PIPELINE',reason:key,reasonFull:_fullReason.slice(0,600),waitSource:row?.waitSource||null,score:row?.score??null,tier:row?.tier??null,rec:row?.rec??null,decisionImpact:false}); } catch(_r501e) {}
+  // V680-D: her atlama sebebi beyne de yazilir. decisionImpact YOK.
+  try { v679SonKarar(symbol, 'ATLANDI', _fullReason); } catch(_v680e) {}
 }
 
 // R308B: AI B-modu için analiz sırasında dolan zengin context havuzu.
@@ -28764,6 +28799,30 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
           }
         }
 
+        // ═══ V680-C ═══ BOTUN GORDUKLERI — karar kapilarindan ONCE kaydedilir.
+        // V679 kaydi eskiden dongunun EN SONUNDAydi; adaylarin tamami daha once
+        // `continue` ile eleniyordu ve beyin tamponu hep BOS kaliyordu (canli kanit:
+        // 16 aday tarandi / 16 atlandi / beyin 0 kayit). Kayit artik burada aciliyor,
+        // sonucu v679SonKarar dolduruyor. Karara etkisi YOK - yalniz okunur.
+        try {
+          if (V678_GRAFIK_KALITE) {
+            const _s680 = decisionChain?.r483Story || decisionChain?.aiBrain?.story || analysis?.story || null;
+            const _a680 = Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct);
+            const _k680 = _s680 ? v678GrafikKalitesi(_s680, Number.isFinite(_a680)?_a680:null) : null;
+            if (_k680) decisionChain.v678 = _k680;
+            v679Kaydet({symbol:coin.symbol, skor:_k680?.skor??null,
+              gecti:!(_k680&&_k680.ok&&_k680.skor<V678_MIN_SKOR), esik:V678_MIN_SKOR,
+              rangePos:_k680?.rangePos??null, atrPct:_k680?.atrPct??null, trend:_k680?.trend??null,
+              kanit:_k680?.kanit||[], hikaye:v679Hikaye(_s680||{}, _k680),
+              yon:String(recommendation||''), timing:_s680?.timing||null,
+              ilkEngel:_s680?.firstObstacle??null,
+              ilkEngelRR:_s680?.entryTruth?.firstObstacleRR??null,
+              hedefLik:_s680?.targetLiquidity??null, kalite:_s680?.quality??null,
+              fiyat:Number(coin?.price||coin?.lastPrice||0)||null,
+              rank:Number(coin?.r497Rank||coin?.gainerRank||0)||null});
+          }
+        } catch(_e680) {}
+
         // ═══ R308I TEK KAPI SIZDIRMAZLIK (R308K: AI bağımsız yön) ═══
         // R300 yumuşak red verdi ve AI bunu AÇIK onaya (LONG/SHORT) çevirmediyse → AÇMA.
         // AI artık kendi yönünü seçiyor; recommendation yukarıda AI'nın yönüne güncellendi.
@@ -28936,15 +28995,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             const _a678 = Number(analysis?.leverage?.atrPct ?? analysis?.atrPct ?? decisionChain?.atrPct);
             const _k678 = _s678 ? v678GrafikKalitesi(_s678, Number.isFinite(_a678)?_a678:null) : null;
             if (_k678) decisionChain.v678 = _k678;
-            try{ v679Kaydet({symbol:coin.symbol, skor:_k678?.skor??null,
-              gecti:!(_k678&&_k678.ok&&_k678.skor<V678_MIN_SKOR), esik:V678_MIN_SKOR,
-              rangePos:_k678?.rangePos??null, atrPct:_k678?.atrPct??null, trend:_k678?.trend??null,
-              kanit:_k678?.kanit||[], hikaye:v679Hikaye(_s678||{}, _k678),
-              timing:_s678?.timing||null, ilkEngel:_s678?.firstObstacle??null,
-              ilkEngelRR:_s678?.entryTruth?.firstObstacleRR??null,
-              hedefLik:_s678?.targetLiquidity??null, kalite:_s678?.quality??null,
-              fiyat:Number(coin?.price||coin?.lastPrice||0)||null, rank:Number(coin?.r497Rank||coin?.gainerRank||0)||null});
-            }catch(_e679){}
+            // V680-E: kayit artik V680-C'de aciliyor (kapilardan once). Burada CIFT yazilmaz.
             if (_k678 && _k678.ok && _k678.skor < V678_MIN_SKOR) {
               logAuto(`\u{1F4C9} ${coin.symbol} V678 GRAFIK KALITESI ${_k678.skor}/100 < ${V678_MIN_SKOR} \u2014 aday elendi [${_k678.kanit.join(' \u00b7 ')}] (olcum: bu bant n=8.155, WR %24,1, beklenti -0,071 \u2014 36.918 noktanin TEK negatif bandi)`);
               try{r501EvidenceFunnel({type:'V678_LOW_CHART_QUALITY',symbol:coin.fullSymbol||coin.symbol,action:'BLOCKED',authority:'V678_GRAFIK_KALITE',skor:_k678.skor,minSkor:V678_MIN_SKOR,rangePos:_k678.rangePos,atrPct:_k678.atrPct,trend:_k678.trend,decisionImpact:true,orderBlocking:true});}catch(_e){}

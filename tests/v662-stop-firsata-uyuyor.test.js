@@ -26,7 +26,7 @@ test('V662: stop tavanı engel mesafesinden türetiliyor', () => {
 
 test('V662: engel HESAPLANABILIR — `first` sonra geldiği için yerinde türetiliyor', () => {
   const tavanIdx = server.indexOf('const _v662Tavan =');
-  const firstIdx = server.indexOf('const first=firstObstacleDirectionValid');
+  const firstIdx = server.indexOf('let first=firstObstacleDirectionValid');
   const minIdx   = server.indexOf('minStopPct=Math.max(.80,Math.min(_v660LikTavan');
   assert.ok(tavanIdx > 0 && minIdx > tavanIdx, 'tavan, minStopPct hesabından önce olmalı');
   assert.ok(firstIdx > minIdx, '`first` sonra geliyor — bu yüzden yerinde türetim şart');

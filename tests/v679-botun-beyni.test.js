@@ -19,10 +19,10 @@ test('V679: halka tampon karara etki etmiyor', () => {
   assert.match(server, /const V679_BEYIN_KAPASITE = Math\.max\(20, Math\.min\(400, Number\(process\.env\.V679_BEYIN_KAPASITE \|\| 200\)\)\);/);
   const i = server.indexOf('function v679Kaydet(');
   assert.ok(i > 0);
-  const fn = server.slice(i, i + 420);
+  const fn = server.slice(i, i + 520);
   assert.ok(fn.includes('v679Beyin.push'), 'kayıt eklemeli');
   assert.ok(fn.includes('splice(0, v679Beyin.length-V679_BEYIN_KAPASITE)'), 'kapasiteyi aşmamalı');
-  assert.ok(fn.includes('catch(_){}'), 'fail-open olmalı');
+  assert.ok(/catch\(_\)\{/.test(fn), 'fail-open olmalı');
   for (const yasak of ['markAutoSkip','continue;','closePosition','sendOrder'])
     assert.ok(!fn.includes(yasak), `kaydedici ${yasak} içermemeli`);
 });
@@ -30,7 +30,7 @@ test('V679: halka tampon karara etki etmiyor', () => {
 test('V679: uç DEĞİŞKEN segment alıyor (önbelleği devre dışı bırakır)', () => {
   assert.match(server, /app\.get\('\/api\/v679\/beyin\/:nonce'/);
   const i = server.indexOf("app.get('/api/v679/beyin/:nonce'");
-  const blok = server.slice(i, i + 1100);
+  const blok = server.slice(i, i + 2600);
   assert.ok(blok.includes("no-store"), 'no-store başlığı olmalı');
   assert.ok(blok.includes('ozet:{gecen'), 'özet dönmeli');
   assert.ok(blok.includes('kayitlar:rows'), 'kayıtları dönmeli');
@@ -53,10 +53,12 @@ test('V679: hem geçen hem ELENEN aday kaydediliyor', () => {
   const i = server.indexOf('v679Kaydet({symbol:coin.symbol');
   assert.ok(i > 0, 'kayıt çağrısı bulunmalı');
   const blok = server.slice(i, i + 900);
-  assert.ok(blok.includes('gecti:!(_k678&&_k678.ok&&_k678.skor<V678_MIN_SKOR)'), 'geçti/elendi ayrımı');
-  // cagri, veto if'inden ONCE olmali; yoksa elenenler hic kaydedilmez
-  assert.ok(i < server.indexOf('if (_k678 && _k678.ok && _k678.skor < V678_MIN_SKOR) {'),
-    'kayıt, veto dalından önce olmalı');
+  assert.ok(blok.includes('gecti:!(_k680&&_k680.ok&&_k680.skor<V678_MIN_SKOR)'), 'geçti/elendi ayrımı');
+  // V680-C: kayit artik TUM karar kapilarindan ONCE aciliyor.
+  // Canli kanit 02.09.2026 17:11: 16 aday tarandi / 16 atlandi / beyin 0 kayit —
+  // cunku kayit dongunun EN SONUNDAYDI ve hicbir aday oraya ulasamiyordu.
+  assert.ok(i < server.indexOf('R308I TEK KAPI SIZDIRMAZLIK'),
+    'kayıt, karar kapılarından önce olmalı');
 });
 
 test('V679: panel kartı nonce kullanıyor ve XSS kaçışı yapıyor', () => {

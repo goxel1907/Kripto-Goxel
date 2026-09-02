@@ -127,7 +127,7 @@ test('V650-C: SESSIZ NO-OP DEGIL — pivot zinciri uctan uca mevcut', () => {
 test('V650-C2: pivot engeli VARSAYILAN KAPALI ve no-op alarmı var', () => {
   assert.match(server, /const V650_PIVOT_ENGEL = String\(process\.env\.V650_PIVOT_ENGEL \?\? '0'\) !== '0';/);
   assert.match(server, /const _v650Adaylar = fallbackObstacles\.concat\(_v650Pivot\)\.sort\(\(a,b\)=>a-b\);/);
-  assert.match(server, /const first=firstObstacleDirectionValid&&firstRaw>0\?firstRaw:\(_v650Adaylar\[0\]\|\|0\);/);
+  assert.match(server, /let first=firstObstacleDirectionValid&&firstRaw>0\?firstRaw:\(_v650Adaylar\[0\]\|\|0\);/);
   assert.match(server, /V650 pivot engeli AÇIK ama pivot listesi BOŞ/);
 });
 

@@ -1514,9 +1514,7 @@ function apiPage(){
     </select>
   </div>`:''}
   <div style="background:rgba(0,208,132,.05);border:1px solid rgba(0,208,132,.15);border-radius:10px;padding:11px;margin-bottom:8px">
-    <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:5px">📊 Aktif Göstergeler</div>
-    <div style="color:#666;font-size:9px;line-height:1.8">• <b style="color:#00bcd4">CVD</b> — Cumulative Volume Delta (taker alım/satım)<br>• <b style="color:#9b59b6">Smart Money</b> — Balina vs perakende L/S ayrışması<br>• <b style="color:#f39c12">Funding Rate</b> — 8s funding, yıllık oran, trend<br>• <b style="color:#00d084">OI Divergence</b> — Fiyat+OI uyumu/ayrışması<br>• <b style="color:#e94560">Order Book</b> — Likidite duvarları, iceberg tespiti<br>• <b style="color:#fff">SMC / ICT</b> — BOS, ChoCH, MSS, likidite süpürme ve reclaim<br>• <b style="color:#7ba7ff">FVG / IFVG / Imbalance</b> — boşluk, tepki, dolum ve tersine dönüş<br>• <b style="color:#c084fc">Order Block / Mitigation</b> — OB dönüşü, yorulma ve yapı teyidi<br>• <b style="color:#f1c40f">Fibonacci / OTE</b> — geri çekilme, premium-discount ve uzatma hedefleri<br>• <b style="color:#fff">Price Action / Formasyon</b> — engulfing, hammer, tweezer, iç bar, çift dip, retest, sıkışma<br>• <b style="color:#fff">Wyckoff / VPVR / VWAP</b> — faz, hacim profili ve kurumsal bölge<br>• <b style="color:#fff">MACD+StochRSI</b> — 4h/1h/15m/5m çapraz analiz<br>• <b style="color:#fff">Pivotlar</b> — Destek/direnç seviyeleri<br>• <b style="color:#00ffcc">R39 5m S/R</b> — 5m OB + PDH/PDL + günlük PP/R1/S1</div>
-  </div>
+    <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:5px">📊 Karara Giren Göstergeler</div><div style="color:#666;font-size:9px;line-height:1.8">• <b style="color:#fff">Yapı / Trend</b> — 1m·3m·5m·15m·30m·1h·4h·1d kapanmış mumlarda HH/HL–LH/LL, sıkışma, genişleme<br>• <b style="color:#fff">SMC / ICT</b> — BOS, ChoCH, MSS, likidite süpürme ve reclaim<br>• <b style="color:#7ba7ff">FVG / IFVG / Imbalance</b> — boşluk, tepki, dolum ve tersine dönüş<br>• <b style="color:#c084fc">Order Block / Mitigation</b> — OB dönüşü, yorulma ve yapı teyidi<br>• <b style="color:#00ffcc">Likidite seviyeleri</b> — swing high/low, eşit tepe/dip, ilk engel ve hedef<br>• <b style="color:#fff">Trend çizgisi</b> — kırılım, retest, yanlış kırılım<br>• <b style="color:#fff">Price Action / Formasyon</b> — engulfing, hammer, tweezer, iç bar, çift dip, retest, sıkışma<br>• <b style="color:#fff">ATR / mum gövdesi</b> — oynaklık ve stop genişliği<br>• <b style="color:#fff">RSI · MACD · StochRSI</b> — 4h/1h/15m/5m çapraz analiz<br>• <b style="color:#00ffcc">R39 5m S/R</b> — 5m OB + PDH/PDL + günlük PP/R1/S1</div><div style="color:#8a6d3b;font-weight:700;font-size:10.5px;margin:10px 0 4px 0">🔇 Toplanıyor ama KARARA GİRMİYOR</div><div style="color:#6b6b6b;font-size:8.5px;line-height:1.7">Sunucuda <b>backtest-parite kipi</b> açık: bu veriler her turda kaydediliyor, ama karar anında <b>nötrlenip sıfırlanıyor</b> — yani bot bunlara göre alım yapmıyor. Panelde "aktif" göstermek yanıltıcı olduğu için ayrıldılar.<br>• CVD / taker akışı &nbsp;• Order book &amp; iceberg &nbsp;• Funding &nbsp;• Open Interest &nbsp;• Likidasyonlar &nbsp;• Smart Money L/S &nbsp;• <b>Fibonacci / OTE</b> (8 zaman diliminde de nötr)&nbsp;• Wyckoff / VPVR / VWAP &nbsp;• canlı (kapanmamış) 15m mum</div></div>
   <div id="fg-panel" style="background:#0d0d1a;border:1px solid #1e1e3f;border-radius:10px;padding:10px;margin-bottom:10px">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <div style="font-size:10px;color:#888">😨 Fear & Greed</div>
@@ -1536,7 +1534,7 @@ function apiPage(){
     <div id="auto-status-txt" style="font-size:9px;color:#666;margin-bottom:10px">${autoOn?'Aktif — Her 30sn tarama yapıyor':'Kapalı'}</div>
     <div id="r486-runtime-banner" style="background:rgba(122,162,255,.07);border:1px solid rgba(122,162,255,.22);border-radius:8px;padding:8px;margin-bottom:10px;font-size:8.5px;color:#b9cbff;line-height:1.55">
       🏦 <b>R486 çalışma durumu:</b> Railway bilgisi yükleniyor…<br>
-      <span style="color:#888">LONG-only • sunucu minimumu 7x • fırsata göre Binance izinli maksimum kaldıraç • otonom kâr hasadı ENV ile ACTIVE/SHADOW</span>
+      <span style="color:#888">LONG-only • kaldıraç 7x kilitli • max 1 pozisyon • marj 50$ • kâr hasadı SHADOW (yalnız telemetri)</span>
     </div>
     <div class="lz-toggle ${lastAutoStatus?.saverMode?'on':''}" id="saver-toggle" onclick="toggleSaverMode()" style="margin-bottom:10px">
       <span class="dot"></span>
@@ -1552,8 +1550,8 @@ function apiPage(){
         <select id="auto-scanmode" disabled style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:6px 7px;font-size:11px">
           <option value="TOP24" selected>TOP10 çekirdek + 11–24 + full-market patlama workerları</option>
         </select><div style="font-size:7.5px;color:#667;margin-top:4px;line-height:1.4">Canlı sözleşmede sabittir: ilk TOP10 her tur korunur; 11–24 ve R370/R385/R328/R366 worker adayları ayrıca değerlendirilir.</div></div>
-      <div><div style="font-size:8px;color:#888;margin-bottom:2px">USDT/işlem</div>
-        <input id="auto-amount" type="number" value="50" min="50" max="100" style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
+      <div><div style="font-size:8px;color:#888;margin-bottom:2px">Marj / işlem</div>
+        <input type="text" value="50$ taban · 100$ tavan" disabled style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"><div style="font-size:7px;color:#667;margin-top:3px">Sunucu sabiti: slot marjı 50$, bileşik büyüme tavanı 100$. Panelden girilen değer geçmez.</div></div>
       <div><div style="font-size:8px;color:#888;margin-bottom:2px">Kaldıraç</div>
         <input id="auto-leverage" type="number" value="7" min="7" max="7" disabled style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"><div style="font-size:7px;color:#667;margin-top:3px">Canlı sözleşmede kaldıraç 7x sabittir; panel ve eski tarayıcı kaydı bunu değiştiremez.</div></div>
       <div><div style="font-size:8px;color:#888;margin-bottom:2px">Trailing SL % (kaldıraçsız)</div>
@@ -1562,13 +1560,13 @@ function apiPage(){
         <input id="auto-trailstep" type="number" value="0.5" min="0.1" max="3" step="0.1" style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
       <div><div style="font-size:8px;color:#888;margin-bottom:2px">Break-even % (kaldıraçsız)</div>
         <input id="auto-breakeven" type="number" value="0.5" min="0.1" max="5" step="0.5" style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
-      <div><div style="font-size:8px;color:#888;margin-bottom:2px">SL % (coin hareketi)</div>
+      <div><div style="font-size:8px;color:#888;margin-bottom:2px">SL % <span style="color:#8a6d3b">(yalnız ön-hesap)</span></div>
         <input id="auto-sl" type="number" value="2" min="0.5" max="20" step="0.5" style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
-      <div><div style="font-size:8px;color:#888;margin-bottom:2px">Min R/R</div>
+      <div><div style="font-size:8px;color:#888;margin-bottom:2px">Min R/R <span style="color:#8a6d3b">(yalnız ön-hesap)</span></div>
         <input id="auto-minrr" type="number" value="1.0" min="0.5" max="5" step="0.1" style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
-      <div><div style="font-size:8px;color:#888;margin-bottom:2px">TP % (coin hareketi)</div>
+      <div><div style="font-size:8px;color:#888;margin-bottom:2px">TP % <span style="color:#8a6d3b">(yalnız ön-hesap)</span></div>
         <input id="auto-tp" type="number" value="10" min="1" max="50" step="1" style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
-      <div style="grid-column:1/-1;background:#0a0a18;border:1px solid #2a2a4a;border-radius:6px;padding:8px;margin-top:2px">
+      <div style="grid-column:1/-1;font-size:7.5px;color:#8a6d3b;line-height:1.5;background:rgba(138,109,59,.07);border:1px solid rgba(138,109,59,.25);border-radius:6px;padding:6px">⚠️ Emrin <b>gerçek</b> giriş/stop/hedefi sunucuda R495 planından türetilir: stop = min(son 7 mumun dibi, kapanış − 1,45×ATR), %1,2–8,0 arası kelepçeli; hedef = min(giriş + 2,4×risk, giriş × 1,12). Yukarıdaki SL/TP/R-R alanları yalnız ön-eleme hesabında kullanılır, borsaya giden emri belirlemez.</div><div style="grid-column:1/-1;background:#0a0a18;border:1px solid #2a2a4a;border-radius:6px;padding:8px;margin-top:2px">
         <div style="font-size:8px;color:#3861fb;font-weight:700;margin-bottom:5px">📈 Kâr Taşıma Adımları (kaldıraçsız %)</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
           <div><div style="font-size:7px;color:#888;margin-bottom:2px">1.Adım tetik %</div>
@@ -1590,9 +1588,7 @@ function apiPage(){
       <div style="font-size:9px;color:#00d084;font-weight:800;margin-bottom:6px">🧠 Karar Zinciri (R486): Server5 workerları → 15m merkez grafik hikâyesi → 1m/5m zamanlama + 1h/4h/1d bağlam → R300 güvenlik → LONG emir → 10sn otonom kâr hasadı</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;align-items:end">
         <label style="display:flex;align-items:center;gap:5px;font-size:9px;color:#ddd;cursor:pointer"><input type="checkbox" id="auto-vurkac" checked><span>Vur-kaç açık</span></label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:9px;color:#ddd;cursor:pointer"><input type="checkbox" id="auto-vurkac-autolev"><span>Kaldıracı otomatik ayarla</span></label>
-        <div><div style="font-size:8px;color:#888;margin-bottom:2px">Legacy ön-kaldıraç tavanı</div>
-          <input id="auto-vurkac-maxlev" type="number" value="125" min="10" max="125" style="width:100%;background:#111;border:1px solid #245b46;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"></div>
+        <div style="grid-column:2/-1;font-size:8px;color:#667;line-height:1.5">Kaldıraç sunucuda <b style="color:#8fd9bd">7x kilitli</b> (V592). Farklı kaldıraçla gelen emir Binance'e gitmeden reddedilir — bu yüzden "otomatik kaldıraç" ve "legacy 125x tavanı" alanları kaldırıldı.</div>
       </div>
       <div style="font-size:7.5px;color:#8fd9bd;line-height:1.45;margin-top:6px">R486 gerçeği: Bu alan yalnız istek değeridir; nihai kaldıraç fırsat puanı, risk ve Binance leverageBracket sınırıyla sunucuda belirlenir. Pozisyon açıldıktan sonra manager; order-flow, order-book, OI, funding, momentum, hacim, likidite, FVG/imbalance, order block ve Fibonacci hedeflerini birlikte okuyarak kâr tabanı veya otonom çıkış üretir.</div>
     </div>
@@ -2866,7 +2862,7 @@ function buildAutoBody(enabled){
   return {
     enabled,
     apiKey: '', apiSecret: '', // LIVE ENV-only: tarayıcı anahtarı gönderilmez
-    usdtAmount:   readNum('auto-amount',50),
+    usdtAmount:   50, // canlı sözleşme: slot marjı sunucuda 50$ sabit (V601 tabanı)
     leverage:     7,
     marginType:   'ISOLATED',
     maxPositions: 1,
@@ -3021,7 +3017,7 @@ function loadAutoSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(lsKey('autoSettings'))||'{}');
     const set = (id, val) => { const el=document.getElementById(id); if(el&&val!==undefined){ if(el.type==='checkbox') el.checked=val; else el.value=val; }};
-    set('auto-amount',    s.usdtAmount);
+    // marj alanı artık salt-okunur sözleşme metni; eski localStorage değeri yazılmaz
     set('auto-leverage',  7);
     set('auto-maxpos',    1);
     set('auto-minscore',  s.minScore);
@@ -3663,10 +3659,20 @@ async function v679Yenile(){
     const j=await railGet('/api/v679/beyin/'+Date.now()+'?limit=40');
     if(!j||!j.ok){ el.innerHTML='<span style="color:#f85149">veri yok</span>'; return; }
     const o=j.ozet||{};
-    oz.textContent=`${j.build} · ${o.gecen||0} geçti / ${o.elenen||0} elendi · eşik ${o.esik} · kapı ${o.kapiAcik?'açık':'KAPALI'}`;
+    oz.textContent=`${j.build} · ${o.emir||0} emir / ${o.atlandi||0} atlandı · kalite ${o.gecen||0} geçti / ${o.elenen||0} elendi · eşik ${o.esik}`;
     if(!j.kayitlar||!j.kayitlar.length){ el.innerHTML='<div style="color:#7f8ba3">Henüz kayıt yok — bot bir tarama turu tamamlayınca dolar.</div>'; return; }
-    el.innerHTML=j.kayitlar.map(k=>{
-      const renk=k.gecti?'#3fb950':'#f85149';
+    // en cok hangi sebeple atliyor: tek bakista gorunur olsun
+    let ustBilgi='';
+    if(o.enCokSebep&&o.enCokSebep.length){
+      ustBilgi='<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-bottom:10px">'
+        +'<div style="font-size:10px;color:#7f8ba3;margin-bottom:4px">Bu turda en çok hangi sebeple atladı</div>'
+        +o.enCokSebep.map(x=>'<div style="font-size:11px;color:#c9d1d9;margin:2px 0"><b style="color:#d29922">'+x.adet+'×</b> '+v679Esc(x.sebep)+'</div>').join('')
+        +'</div>';
+    }
+    el.innerHTML=ustBilgi+j.kayitlar.map(k=>{
+      const K=String(k.karar||'DEGERLENDIRILDI');
+      const renk = K==='EMIR' ? '#3fb950' : (k.gecti===false ? '#f85149' : '#d29922');
+      const kararEtiket = K==='EMIR' ? 'EMİR AÇILDI' : K==='ATLANDI' ? 'atlandı' : 'değerlendiriliyor';
       const skor=k.skor==null?'—':k.skor;
       const dk=Math.round((j.serverTime-k.at)/60000);
       const satirlar=(k.hikaye||[]).map(c=>'<li style="margin:2px 0">'+v679Esc(c)+'</li>').join('');
@@ -3675,8 +3681,10 @@ async function v679Yenile(){
         <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:5px">
           <b style="font-size:13px">${v679Esc(k.symbol)}</b>
           <span style="color:${renk};font-weight:600">${skor}/100</span>
-          <span style="font-size:10px;color:#7f8ba3">${k.gecti?'geçti':'ELENDİ'} · ${dk}dk önce${k.rank?' · sıra '+k.rank:''}</span>
+          <span style="font-size:10px;color:${renk};font-weight:600">${kararEtiket}</span>
+          <span style="font-size:10px;color:#7f8ba3">${k.gecti===false?'kalite elendi':'kalite geçti'} · ${dk}dk önce${k.rank?' · sıra '+k.rank:''}</span>
         </div>
+        ${k.sebep?`<div style="font-size:10.5px;color:#d29922;background:rgba(210,153,34,.08);border-radius:6px;padding:5px 7px;margin-bottom:5px">neden almadı: ${v679Esc(k.sebep)}</div>`:''}
         <div style="font-size:10px;color:#8b949e;margin-bottom:5px">
           aralıkPoz ${k.rangePos==null?'—':(k.rangePos*100).toFixed(0)+'%'} ·
           ATR ${k.atrPct==null?'—':'%'+k.atrPct} ·

@@ -46,7 +46,7 @@ test('V663: eklenen seviyeler HİÇBİR kararı daraltamaz', () => {
   // Liste siralanip [0] aliniyor: uzak seviye ancak daha yakini YOKKEN secilir.
   assert.match(server, /\.filter\(x=>x>entry\*1\.00005\)\.sort\(\(a,b\)=>a-b\)/);
   assert.match(server, /const _v662Engel = _v662Aday\[0\] \|\| 0;/);
-  assert.match(server, /const first=firstObstacleDirectionValid&&firstRaw>0\?firstRaw:\(_v650Adaylar\[0\]\|\|0\);/);
+  assert.match(server, /let first=firstObstacleDirectionValid&&firstRaw>0\?firstRaw:\(_v650Adaylar\[0\]\|\|0\);/);
 });
 
 test('V663: TWT senaryosu — 4h engeli görülseydi ne olurdu', () => {
