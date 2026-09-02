@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_0_PARABOLIK_GORUS'
+const LAZARUS_BUILD = 'V6_8_1_PIYASA_GOLGESI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -7606,7 +7606,7 @@ function r483ChartStory(symbol,data={}){
     const setupKey=postImpulseReject?'POST_IMPULSE_REJECTION':confirmedPullback?'CONFIRMED_PULLBACK':intrabarMtfObvious?'INTRABAR_MTF_JOIN':microConfirmedContinuation?'CONFIRMED_CONTINUATION':earlyIgnition?'EARLY_IGNITION':ghostPulse?'PRE_BREAKOUT_GHOST':null,detection=r48635DetectionStamp(symbol,setupKey,price,planTruth.action==='TACTICAL'||planTruth.action==='AUTO'),microBreakLevel=Math.max(Number(tf['1m']?.lastHigh||0),Number(tf['3m']?.lastHigh||0),Number(tf['5m']?.lastHigh||0)),distanceFromBreakoutAtr=microBreakLevel>0&&atrAbs>0?+((price-microBreakLevel)/atrAbs).toFixed(2):null;
     const storyParts=[`15m ${t15.trend||'?'}`,`mikro 1m:${microVotes['1m'].trend}/3m:${microVotes['3m'].trend}/5m:${microVotes['5m'].trend}`,`mikroDurum ${microConsensus.status}`,`1h ${t1.trend||'?'}`,`4h ${t4.trend||'?'}`,`1d ${td.trend||'?'}`,`akış ${flow.state}`,`OI ${oi.state}`,`funding ${oi.funding===null?'?':oi.funding}`,`evre ${stage}`,`seviye ${levelTruth.firstObstacle?.role||levelTruth.trigger?.role||'TARGET'}`,`MM ${mmScenario}`,`trend ${tf['15m']?.trendline?.state||'NO_BREAK'}`];if(firstObstacle)storyParts.push(`ilkEngel ${Number(firstObstacle)}`);if(targetLiquidity)storyParts.push(`hedefLik ${Number(targetLiquidity)}`);if(['WAIT_RETEST','WAIT_BREAK_RETEST','TRAP'].includes(timing)&&retestEntry)storyParts.push(`market kovalanmaz; retest ${Number(retestEntry)}`);if(intrabarMtfObvious)storyParts.push(`15m canlı MTF ${intrabarMtfScore} · mum %${Math.round(live15Progress*100)}`);if(ghostPulse)storyParts.push(`hayaletSkor ${Number(workerPulse.score||0)}`);if(detection)storyParts.push(`ilkAlgı ${Math.round(detection.ageMs/1000)}sn önce`);
     const snapshot=r48639Snapshot(symbol,data,rows,flow,oi);
-    return {version:'R486.3.9',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,retestType:retestObj?.t||null,retestGapPct:retestGapPct===null?null:+retestGapPct.toFixed(2),retestGapAtr:retestGapAtr===null?null:+retestGapAtr.toFixed(2),targetLiquidity,targetType:targetObj?.t||null,firstObstacle,firstObstacleType:firstObstacleObj?.t||null,firstObstacleRole:firstObstacleObj?.role||null,firstObstacleStrength:firstObstacleObj?.strength||null,firstObstacleDistPct:firstObstacleDistPct===null?null:+firstObstacleDistPct.toFixed(2),invalidation,support,resistance,flowState:flow.state,orderFlow:flow,levelTruth,absorption,stage,planTruth,snapshot,mmScenario,structuralTopEvidence,trapEvidence,impulseChase,parabolicChase,staircaseImpulse,impulseConcentration:+impulseConcentration.toFixed(2),targetRejection,upperWick15:+upperWick15.toFixed(2),bodyRatio15:+bodyRatio15.toFixed(2),validatedTrendRetest,compressionConflict,nearObstacle,structuredContinuation,intrabarMtfObvious,intrabarMtfScore,live15Progress:+live15Progress.toFixed(3),microConsensus,workerPulse:workerPulseFresh?workerPulse:null,detection,distanceFromBreakoutAtr,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},sourceRsi5m:Number(data.rsi5m),sourceRsi15m:Number(data.rsi15m),sourceRsi1h:Number(data.rsi1h),sourceRsi4h:Number(data.rsi4h),source:{lane:data.sourceLane,label:data.sourceLabel},researchPassive:{schema:'LAZARUS_V592_STORY_RESEARCH_PASSIVE_V1',fib:fibResearch,pivots:V650_PIVOT_GORUS?{'5m':{high:(tf['5m']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)},'15m':{high:(tf['15m']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)},'1h':{high:(tf['1h']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)}}:null,rawFlowState:String(researchInput?.flowState||researchInput?.orderFlow?.state||'UNKNOWN'),rawOi:{state:researchInput?.oi?.state||null,change15m:researchInput?.oiChange15m??researchInput?.oiRaw15m??null,change1h:researchInput?.oiChange1h??researchInput?.oiDegisim?.['1h']??null,funding:researchInput?.fundingRate??null},liveCandles:researchInput?.candles?._live||researchInput?.liveCandles||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false}};
+    return {version:'R486.3.9',symbol,bias,timing,entryMode,quality,qualityAdj,topRisk:+topRisk.toFixed(1),retestEntry,retestType:retestObj?.t||null,retestGapPct:retestGapPct===null?null:+retestGapPct.toFixed(2),retestGapAtr:retestGapAtr===null?null:+retestGapAtr.toFixed(2),targetLiquidity,targetType:targetObj?.t||null,firstObstacle,firstObstacleType:firstObstacleObj?.t||null,firstObstacleRole:firstObstacleObj?.role||null,firstObstacleStrength:firstObstacleObj?.strength||null,firstObstacleDistPct:firstObstacleDistPct===null?null:+firstObstacleDistPct.toFixed(2),invalidation,support,resistance,flowState:flow.state,orderFlow:flow,levelTruth,absorption,stage,planTruth,snapshot,mmScenario,structuralTopEvidence,trapEvidence,impulseChase,parabolicChase,staircaseImpulse,impulseConcentration:+impulseConcentration.toFixed(2),targetRejection,upperWick15:+upperWick15.toFixed(2),bodyRatio15:+bodyRatio15.toFixed(2),validatedTrendRetest,compressionConflict,nearObstacle,structuredContinuation,intrabarMtfObvious,intrabarMtfScore,live15Progress:+live15Progress.toFixed(3),microConsensus,workerPulse:workerPulseFresh?workerPulse:null,detection,distanceFromBreakoutAtr,summary:storyParts.join(' · '),bull:bull.slice(0,14),bear:bear.slice(0,14),risks:risks.slice(0,12),evidence:evidence.sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,30),oi,tf,fvg,orderBlock:ob,fib,liquidity:liq,alignment30m:rows['30m'].length?rows['30m'].every(x=>x.aligned!==false):false,trendBreaks:{bull:trendBreakBull,bear:trendBreakBear,tf15:tf['15m']?.trendline||null,tf5:tf['5m']?.trendline||null,tf1h:tf['1h']?.trendline||null},sourceRsi5m:Number(data.rsi5m),sourceRsi15m:Number(data.rsi15m),sourceRsi1h:Number(data.rsi1h),sourceRsi4h:Number(data.rsi4h),source:{lane:data.sourceLane,label:data.sourceLabel},researchPassive:{schema:'LAZARUS_V592_STORY_RESEARCH_PASSIVE_V1',fib:fibResearch,pivots:V650_PIVOT_GORUS?{'5m':{high:(tf['5m']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)},'15m':{high:(tf['15m']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)},'1h':{high:(tf['1h']?.pivots?.H||[]).slice(-8).map(p=>({price:Number(p?.price)||0,ts:Number(p?.ts)||0,strength:Number(p?.strength)||0})).filter(p=>p.price>0)}}:null,v681Piyasa:(function(){try{var R=researchInput||{},L=R.liquidations||{},H=(rows&&rows['1h'])||[],sma=null,sap=null;if(H.length>=50){var c=H.slice(-50).map(function(x){return Number(x.c)||0;}),t=0;for(var q=0;q<c.length;q++)t+=c[q];var m=t/c.length;if(m>0){sma=m;sap=+((price/m-1)*100).toFixed(3);}}var N=function(v){var n=Number(v);return Number.isFinite(n)?n:null;};return {cvdRatio:N(R.cvd&&R.cvd.ratio),cvdDelta:N(R.cvdDelta),cvdValid:!!R.cvdValid,tickTrend:String((R.tickData&&R.tickData.deltaTrend)||''),takerRatio:N(R.takerRatio),aggBuy:N(R.aggBuy),aggSell:N(R.aggSell),bookImb:N(R.orderBookImbalance),oi15m:N(R.oiChange15m),oi1h:N(R.oiChange1h),oi4h:N(R.oiChange4h),oiState:String((R.oi&&R.oi.state)||''),funding:N(R.fundingRate),fundingSlope:N(R.fundingSlope),icebergSignal:String(R.icebergSignal||''),likLong5m:N(L.longLiq5m),likShort5m:N(L.shortLiq5m),likLong1m:N(L.longLiq1m),likShort1m:N(L.shortLiq1m),likDominance:String(L.dominance||''),likCascade:L.cascade?String(L.cascade.direction||'VAR'):null,yavasSapma:sap,yavasUstunde:(sap==null?null:sap>0),sma50h:sma};}catch(_){return null;}})(),rawFlowState:String(researchInput?.flowState||researchInput?.orderFlow?.state||'UNKNOWN'),rawOi:{state:researchInput?.oi?.state||null,change15m:researchInput?.oiChange15m??researchInput?.oiRaw15m??null,change1h:researchInput?.oiChange1h??researchInput?.oiDegisim?.['1h']??null,funding:researchInput?.fundingRate??null},liveCandles:researchInput?.candles?._live||researchInput?.liveCandles||null,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false}};
   }catch(e){return {version:'R486.2',bias:'MIXED',timing:'MIXED',entryMode:'NONE',quality:50,qualityAdj:0,topRisk:0,summary:`hikâye hesaplanamadı: ${String(e?.message||e).slice(0,100)}`,error:true};}
 }
 
@@ -11597,6 +11597,20 @@ function v679Hikaye(story={}, k678=null){
       if(['COMPRESSION','RANGE_MIXED'].includes(String(t.trend||'')))
         c.push(`DIKKAT: yapi etiketi "${t.trend}" ama fiyat dikey \u2014 pivotlar iki yandan onay ister, etiket hamleyi HENUZ GORMEDI (gecmisi anlatiyor)`);
     }
+    // ═══ V681 ═══ Piyasa verisi GOLGEDE: yazilir, olculur, KARARA GIRMEZ.
+    const P=story?.researchPassive?.v681Piyasa;
+    if(P){
+      const olcu=[];
+      if(Number.isFinite(P.cvdRatio)) olcu.push(`CVD %${P.cvdRatio.toFixed(0)} alici`);
+      if(Number.isFinite(P.bookImb)) olcu.push(`emir defteri ${P.bookImb>0?'+':''}${P.bookImb.toFixed(2)}`);
+      if(Number.isFinite(P.oi1h)) olcu.push(`OI 1s ${P.oi1h>0?'+':''}${P.oi1h.toFixed(2)}%`);
+      if(Number.isFinite(P.funding)) olcu.push(`funding ${(P.funding*100).toFixed(4)}%`);
+      const lL=Number(P.likLong5m)||0, lS=Number(P.likShort5m)||0;
+      if(lL>0||lS>0) olcu.push(`5dk likidasyon long ${lL.toFixed(0)}$ / short ${lS.toFixed(0)}$${P.likDominance?' ('+P.likDominance+')':''}`);
+      if(P.likCascade) olcu.push(`LIKIDASYON KASKADI: ${P.likCascade}`);
+      if(Number.isFinite(P.yavasSapma)) olcu.push(`yavas trend (50 saatlik ort.) ${P.yavasSapma>0?'ustunde':'altinda'} %${Math.abs(P.yavasSapma).toFixed(2)}`);
+      if(olcu.length) c.push(`[GOLGE - karara girmiyor, olculuyor] ${olcu.join(' \u00b7 ')}`);
+    }
     if(k678&&k678.parabolikCeza>0) c.push(`parabolik ceza -${k678.parabolikCeza} puan uygulandi`);
     if(k678&&k678.ok) c.push(`grafik kalite skoru ${k678.skor}/100 \u2014 ${k678.skor<40?'OLCULEN TEK NEGATIF BANT (beklenti -0,071)':k678.skor>=70?'en iyi bant (beklenti +0,815)':'orta bant'}`);
   }catch(_){}
@@ -12572,6 +12586,21 @@ function r501DatasetRows(){
             givebackPct:(tepeRoi!==null&&son!==null)?r2(tepeRoi-son):null
           };
         }catch(_){ return {}; }
+      })(),
+      // ══ V681: KARAR ANINDAKI HAM PIYASA VERISI (V592 bunlari karara sokmuyor) ══
+      // Amac: canlida olcmek — bu degerler kazanan/kaybeden islemi GERCEKTEN ayiriyor mu?
+      // Karara etkisi YOK; yalnizca kapanmis islem CSV'sine yazilir.
+      ...(function(){ const P=rp?.v681Piyasa||{}; return {
+        v681_cvdRatio:P.cvdRatio??null, v681_cvdDelta:P.cvdDelta??null, v681_cvdValid:P.cvdValid??null,
+        v681_tickTrend:P.tickTrend??null, v681_takerRatio:P.takerRatio??null,
+        v681_aggBuy:P.aggBuy??null, v681_aggSell:P.aggSell??null, v681_bookImb:P.bookImb??null,
+        v681_oi15m:P.oi15m??null, v681_oi1h:P.oi1h??null, v681_oi4h:P.oi4h??null, v681_oiState:P.oiState??null,
+        v681_funding:P.funding??null, v681_fundingSlope:P.fundingSlope??null,
+        v681_iceberg:P.icebergSignal??null,
+        v681_likLong5m:P.likLong5m??null, v681_likShort5m:P.likShort5m??null,
+        v681_likLong1m:P.likLong1m??null, v681_likShort1m:P.likShort1m??null,
+        v681_likDominance:P.likDominance??null, v681_likCascade:P.likCascade??null,
+        v681_yavasSapma:P.yavasSapma??null, v681_yavasUstunde:P.yavasUstunde??null };
       })(),
       // ══ V674: FIBONACCI OLCUM KOLONLARI (pasif arastirma serididen) ══════
       ...(function(){
@@ -28843,6 +28872,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               gecti:!(_k680&&_k680.ok&&_k680.skor<V678_MIN_SKOR), esik:V678_MIN_SKOR,
               rangePos:_k680?.rangePos??null, atrPct:_k680?.atrPct??null, trend:_k680?.trend??null,
               ret6:_k680?.ret6??null, parabolikCeza:_k680?.parabolikCeza??0,
+              piyasa:_s680?.researchPassive?.v681Piyasa||null,
               kanit:_k680?.kanit||[], hikaye:v679Hikaye(_s680||{}, _k680),
               yon:String(recommendation||''), timing:_s680?.timing||null,
               ilkEngel:_s680?.firstObstacle??null,
