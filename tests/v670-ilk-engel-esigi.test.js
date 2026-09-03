@@ -40,12 +40,24 @@ test('V670: V4.5 seçicisinin KENDİ foRR eşiği de indi (R495 ÖNCESİ çalı�
   assert.match(server, /S\('V592_V45_FIRST_OBSTACLE_RR_MIN','0\.10'\);/);
 });
 
-test('V670: R486 yumuşak bayrağın 0,35 TABANI kaldırıldı', () => {
-  // Aynı hata sınıfı bir kat aşağıda duruyordu: Math.max(0.35, ...) env<0.35'i etkisiz kılıyordu.
-  assert.match(server,
-    /const R486_FIRST_OBSTACLE_MIN_RR = Math\.max\(0\.01, Math\.min\(2\.0, Number\(process\.env\.R486_FIRST_OBSTACLE_MIN_RR \|\| 0\.10\)\)\);/);
-  assert.ok(!/R486_FIRST_OBSTACLE_MIN_RR = Math\.max\(0\.35/.test(server),
-    '0.35 tabanı kalmamalı');
+test('V692: R486 yumuşak bayrağı da AYNI aileden — o da kapandı', () => {
+  // V670'te tabanı indirmiştim (0,35 -> 0,01) ama bayrak hâlâ earlyRisk besliyordu
+  // ve adayı PUSU'ya düşürüyordu. Aileyi yarım kapatmak kapatmamaktır.
+  assert.match(server, /const R486_FIRST_OBSTACLE_MIN_RR = V692_ILK_ENGEL_KAPISI_KALKTI \? 0\.01/);
+  assert.ok(server.includes('Number(process.env.R486_FIRST_OBSTACLE_MIN_RR || 0.10)'),
+    'eski yol ENV ile geri alinabilir kalmali');
+});
+
+test('V692: yok sayılan ENV satırları açılışta İLAN EDİLİYOR (sessiz no-op yasak)', () => {
+  // Kullanicinin Railway'inde R493_MIN_FIRST_OBSTACLE_RR=0.10 yaziyor ama kod 0.01
+  // kullaniyor. Bu fark ilan edilmezse panelde bir sey, gercekte baska sey olur.
+  const i = server.indexOf('V692 ═══ SESSIZ NO-OP YASAK');
+  assert.ok(i > 0, 'gerekce blogu olmali');
+  const blok = server.slice(i, i + 1400);
+  for (const k of ['R493_MIN_FIRST_OBSTACLE_RR','V592_V45_FIRST_OBSTACLE_RR_MIN','R486_FIRST_OBSTACLE_MIN_RR'])
+    assert.ok(blok.includes(k), k + ' ilan listesinde olmali');
+  assert.ok(blok.includes('YOK SAYILIYOR'), 'net dille yazilmali');
+  assert.ok(blok.includes('V692_ILK_ENGEL_KAPISI_KALKTI=0'), 'geri alma yolu ayni satirda olmali');
 });
 
 test('V670: BOOT PARITY GATE üç eşiği de aralık olarak kontrol ediyor (fail-closed değil)', () => {

@@ -6640,7 +6640,10 @@ const R483_STORY_ACTIVE = String(process.env.R484_STORY_ACTIVE ?? process.env.R4
 const R483_DEFER_TOP_TRAP = String(process.env.R484_DEFER_TOP_TRAP ?? process.env.R483_DEFER_TOP_TRAP ?? '1') !== '0';
 // R486.2: Grafik hikâyesi yalnız rapor değildir; giriş fiyatı/SL/ilk engel ve canlı erken-geçersizlik ile sözleşmelidir.
 const R486_ENTRY_TRUTH_ACTIVE = String(process.env.R486_ENTRY_TRUTH_ACTIVE ?? '1') !== '0';
-const R486_FIRST_OBSTACLE_MIN_RR = Math.max(0.01, Math.min(2.0, Number(process.env.R486_FIRST_OBSTACLE_MIN_RR || 0.10))); // V501: backtest contract 0.35; old 0.70 clamp made ENV=0.35 ineffective
+// ═══ V692 ═══ Ailenin DORDUNCU ucu: bu esik sert blok degil ama earlyRisk'i besliyor
+// ve adayi PUSU'ya dusuruyor. Aileyi yarim kapatmak, kapatmamaktir.
+const R486_FIRST_OBSTACLE_MIN_RR = V692_ILK_ENGEL_KAPISI_KALKTI ? 0.01
+  : Math.max(0.01, Math.min(2.0, Number(process.env.R486_FIRST_OBSTACLE_MIN_RR || 0.10)));
 // ═══ V660 ═══ tavan 0.90 -> 3.00, varsayilan 0.52 -> 2.35 (backtest ortancasi).
 // 1060 sinyalde slPct/ATR: ortanca 2.35 · %10 1.20 · %90 3.85.
 const R486_MIN_STOP_ATR = Math.max(0.30, Math.min(3.00, Number(process.env.R486_MIN_STOP_ATR || 2.35)));
@@ -6795,6 +6798,23 @@ console.log(`[V634] RISK SOZLESMESI: ${R486_MAX_POSITIONS} pozisyon x islem basi
   const _mo = 0.50;                                   // 50$ marj / 100$ ozsermaye
   const _odenebilir = V634_TOPLAM_RISK_PCT / Math.max(0.01, _mo * R486_MIN_LEVERAGE);
   const _maxAtr = _odenebilir / Math.max(0.01, R486_MIN_STOP_ATR);
+  // ═══ V692 ═══ SESSIZ NO-OP YASAK: kapi kalkinca kullanicinin Railway'deki
+  // satirlari YOK SAYILIYOR. Hangileri oldugunu acilista tek satirda soyle,
+  // yoksa panelde '0,10' yazarken kod 0,01 kullanir ve kimse fark etmez.
+  if (V692_ILK_ENGEL_KAPISI_KALKTI) {
+    const _yoksayilan = [
+      ['R493_MIN_FIRST_OBSTACLE_RR', process.env.R493_MIN_FIRST_OBSTACLE_RR, '0.01'],
+      ['V592_V45_FIRST_OBSTACLE_RR_MIN', process.env.V592_V45_FIRST_OBSTACLE_RR_MIN, '0'],
+      ['R486_FIRST_OBSTACLE_MIN_RR', process.env.R486_FIRST_OBSTACLE_MIN_RR, '0.01'],
+    ].filter(x => x[1] !== undefined && x[1] !== null && String(x[1]).trim() !== '');
+    if (_yoksayilan.length) {
+      console.log(`[V692] ILK-ENGEL AILESI KAPALI -> ENV'deki su satirlar YOK SAYILIYOR: `
+        + _yoksayilan.map(x => `${x[0]}=${x[1]} -> ${x[2]}`).join(' · ')
+        + ` · geri acmak: V692_ILK_ENGEL_KAPISI_KALKTI=0`);
+    } else {
+      console.log(`[V692] ILK-ENGEL AILESI KAPALI (ENV'de ilgili satir yok)`);
+    }
+  }
   console.log(`[V691] STOP TABANI: ATR x ${R486_MIN_STOP_ATR} · %${V634_TOPLAM_RISK_PCT} risk`
     + ` · 50$/100$ marj · ${R486_MIN_LEVERAGE}x -> odenebilir stop %${_odenebilir.toFixed(2)}`
     + ` -> STOPLA KORUNARAK ALINABILIR MAKSIMUM ATR(1s) = %${_maxAtr.toFixed(2)}`
