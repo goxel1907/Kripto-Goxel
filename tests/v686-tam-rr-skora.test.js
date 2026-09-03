@@ -29,7 +29,8 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 function skorFn() {
   const isim = ['V680_PARABOLIK_CEZA','V680_RET6_TABAN','V680_CEZA_TAVAN','V680_CEP_RET6','V680_CEP_CEZA',
                 'V686_TAM_RR_SKORA','V686_RR_ESIK','V686_RR_CEZA_TAVAN',
-                'V688_ARALIK_DUZELT','V688_DESTEK_OKUMA','V688_EQL_PUAN','V688_DESTEKSIZ_CEZA'];
+                'V688_ARALIK_DUZELT','V688_DESTEK_OKUMA','V688_EQL_PUAN','V688_DESTEKSIZ_CEZA',
+                'V689_FITILSIZ_DIP','V689_FITIL_ESIK','V689_MAX_ATR','V689_PUAN'];
   const satir = isim.map(n => {
     const m = server.match(new RegExp('^const\\s+' + n + '\\s*=.*$', 'm'));
     assert.ok(m, n + ' sabiti olmali');

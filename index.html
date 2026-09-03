@@ -3695,6 +3695,7 @@ async function v679Yenile(){
           ${k.ret6!=null?`· <span style="color:${k.ret6>=10?'#f85149':k.ret6>=6?'#d29922':'#8b949e'}">son 90dk %${k.ret6}</span>`:''}
           ${k.parabolikCeza>0?`· <span style="color:#f85149;font-weight:600">parabolik ceza −${k.parabolikCeza}</span>`:''}
           ${k.aralikPuani!=null?`· aralık puanı ${k.aralikPuani>=0?'+':''}${k.aralikPuani}`:''}
+          ${k.fitilsizDip?`· <span style="color:#3fb950;font-weight:600">altta FİTİLSİZ dip ${k.fitilsizDip.uzaklikAtr}xATR +${k.fitilsizDip.puan}</span>`:''}
           ${k.destek?`· <span style="color:${k.destek.tip==='EQL'?'#3fb950':k.destek.tip?'#8b949e':'#f85149'};font-weight:600">altında ${k.destek.tip==='EQL'?'TEST EDİLMİŞ destek':k.destek.tip==='SWING_LOW'?'tek dokunuşlu dip':'DESTEK YOK'}${k.destek.uzaklikPct!=null?' (%'+k.destek.uzaklikPct+' aşağıda)':''} ${k.destek.puan>=0?'+':''}${k.destek.puan}</span>`:''}
         </div>
         <ul style="margin:0;padding-left:16px;color:#c9d1d9">${satirlar||'<li style="color:#7f8ba3">okuma yok</li>'}</ul>

@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_8_DESTEK_OKUMASI'
+const LAZARUS_BUILD = 'V6_8_9_FITILSIZ_DIP'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6932,6 +6932,19 @@ const V688_ARALIK_DUZELT = String(process.env.V688_ARALIK_DUZELT ?? '1') !== '0'
 const V688_DESTEK_OKUMA  = String(process.env.V688_DESTEK_OKUMA ?? '1') !== '0';
 const V688_EQL_PUAN      = Math.max(0, Math.min(40, Number(process.env.V688_EQL_PUAN || 14)));
 const V688_DESTEKSIZ_CEZA= Math.max(0, Math.min(40, Number(process.env.V688_DESTEKSIZ_CEZA || 8)));
+// ═══ V689 ═══ FITILSIZ DIP (Trader Dale: "Unfinished Business / Failed Auction").
+// Kitap diyor ki: altinda bitmemis is varken LONG acma, fiyat miknatis gibi oraya cekilir.
+// 879 grafik / 36.918 nokta uzerinde OLCTUK ve iddia TERSINE cikti. Ayni mesafede
+// (dikey uzama ret6<3 kontrollu) en yakin alt dip FITILSIZ ise sonuc her mesafe
+// bandinda DAHA IYI:  0-1 ATR +4 · 1-2 +9 · 2-3 +4 · 3-5 +7 puan.
+// Toplam: fitilsiz n=1.395 beklenti 1,071 | normal n=30.026 beklenti 0,943 -> +5,1 puan.
+// Yarilarda kararli (+5,1 / +4,8), uctelerde hep pozitif (+9,5 / +4,7 / +1,2) - hic ters donmuyor.
+// Yorum: 15dk kriptoda fitilsiz dip 'bitmemis muzayede' degil, SERT SAVUNULMUS seviye.
+const V689_FITILSIZ_DIP = String(process.env.V689_FITILSIZ_DIP ?? '1') !== '0';
+const V689_FITIL_ESIK   = Math.max(0, Math.min(1, Number(process.env.V689_FITIL_ESIK || 0.10)));
+const V689_MAX_ATR      = Math.max(0.5, Math.min(20, Number(process.env.V689_MAX_ATR || 5)));
+const V689_PUAN         = Math.max(0, Math.min(30, Number(process.env.V689_PUAN || 5)));
+
 // ═══ V686 ═══ TAM R/R skora giriyor. 88 canli islem: tam R/R <-> ROI r=+0,343
 // (en guclu tekil isaret). Botun kapi koydugu ILK ENGEL R/R'sinin ROI ile
 // iliskisi r=-0,016, yani SIFIR. Skorun tam R/R ile iliskisi r=+0,146: skor bu
@@ -7448,7 +7461,14 @@ function r484Structure(rs=[],tf='15m'){
   if(tl.falseBreakUp)events.push({type:'DESCENDING_TREND_FALSE_BREAK',side:'SHORT',level:tl.resistance?.linePrice,strong:false});
   if(tl.falseBreakDown)events.push({type:'ASCENDING_TREND_FALSE_BREAK',side:'LONG',level:tl.support?.linePrice,strong:false});
   const win=rs.slice(-Math.min(48,rs.length)),hi=Math.max(...win.map(x=>x.h)),lo=Math.min(...win.map(x=>x.l)),old=rs[Math.max(0,rs.length-7)];
-  return {tf,ok:true,trend,hh,hl,lh,ll,breakUp,breakDown,chochUp:events.some(x=>x.type==='CHOCH_UP'),chochDown:events.some(x=>x.type==='CHOCH_DOWN'),mssUp:events.some(x=>x.type==='MSS_UP'),mssDown:events.some(x=>x.type==='MSS_DOWN'),rangePos:hi>lo?+(last.c-lo)/(hi-lo):.5,ret1:prev.c>0?+(last.c/prev.c-1)*100:0,ret6:old.c>0?+(last.c/old.c-1)*100:0,rvol:+rv.toFixed(2),lastHigh:h1?.price||null,lastLow:l1?.price||null,events,trendline:tl,pivots:p};
+  // ═══ V689 ═══ en yakin ALTTAKI pivot dibin alt-fitil orani. Yeni veri yok;
+  // pivotlar ve mumlar zaten burada. Skor bunu okuyacak.
+  let _v689=null;
+  try{ for(const q of (p.L||[])){ const b=rs[q.i]; if(!b||!(b.l<last.c)) continue;
+    const _rg=Math.max(1e-12,b.h-b.l), _d=(last.c-b.l)/Math.max(1e-12,atr);
+    if(!_v689||_d<_v689.uzaklikAtr) _v689={uzaklikAtr:+_d.toFixed(2),
+      fitilOrani:+((Math.min(b.o,b.c)-b.l)/_rg).toFixed(3), fiyat:b.l}; } }catch(_e){}
+  return {tf,ok:true,trend,hh,hl,lh,ll,breakUp,breakDown,chochUp:events.some(x=>x.type==='CHOCH_UP'),chochDown:events.some(x=>x.type==='CHOCH_DOWN'),mssUp:events.some(x=>x.type==='MSS_UP'),mssDown:events.some(x=>x.type==='MSS_DOWN'),rangePos:hi>lo?+(last.c-lo)/(hi-lo):.5,ret1:prev.c>0?+(last.c/prev.c-1)*100:0,ret6:old.c>0?+(last.c/old.c-1)*100:0,rvol:+rv.toFixed(2),lastHigh:h1?.price||null,lastLow:l1?.price||null,altDip:_v689,events,trendline:tl,pivots:p};
 }
 function r483TfState(rs=[],tf='15m'){return r484Structure(rs,tf);}
 function r484ZoneDistance(z,price){return z&&price>0?Math.min(Math.abs(z.low-price),Math.abs(z.high-price))/price*100:99;}
@@ -8072,12 +8092,19 @@ function v678GrafikKalitesi(story={}, atrPct=null){
     // ═══ V688 ═══ ALTIMDA NE VAR? Test edilmis yatay destek ve ona uzaklik.
     let d688=null;
     if(V688_DESTEK_OKUMA){ d688=v688DestekOkumasi(story,a); if(d688){ s+=d688.puan; if(d688.kanit) kanit.push(d688.kanit); } }
+    // ═══ V689 ═══ Fitilsiz (bitmemis) dip: kitap 'kacin' diyor, olcum 'iyi' diyor.
+    let d689=null;
+    if(V689_FITILSIZ_DIP){ const _x=story?.tf?.['15m']?.altDip;
+      if(_x && Number.isFinite(Number(_x.fitilOrani)) && Number.isFinite(Number(_x.uzaklikAtr))
+          && Number(_x.uzaklikAtr) < V689_MAX_ATR && Number(_x.fitilOrani) <= V689_FITIL_ESIK){
+        s += V689_PUAN; d689={uzaklikAtr:Number(_x.uzaklikAtr), fitilOrani:Number(_x.fitilOrani), puan:V689_PUAN};
+        kanit.push(`altta FITILSIZ dip ${Number(_x.uzaklikAtr).toFixed(1)}xATR (+${V689_PUAN})`); } }
     return {ok:true, skor:+Math.max(0,Math.min(100,s)).toFixed(1), kanit,
             rangePos:+rp.toFixed(3), atrPct:Number.isFinite(a)?+a.toFixed(2):null, trend:t.trend||null,
             ret6:Number.isFinite(r6)?+r6.toFixed(2):null, parabolikCeza:+ceza680.toFixed(1),
             tamRR:Number.isFinite(_rr686)?+_rr686.toFixed(2):null, rrCezasi:+ceza686.toFixed(1),
             destek:d688?{tip:d688.tip,seviye:d688.seviye,uzaklikAtr:d688.uzaklikAtr,uzaklikPct:d688.uzaklikPct,sweep:d688.sweep,puan:+d688.puan.toFixed(1)}:null,
-            aralikPuani:+_rp688.toFixed(1)};
+            aralikPuani:+_rp688.toFixed(1), fitilsizDip:d689};
   }catch(e){ return {ok:false,skor:null,sebep:String(e&&e.message||e).slice(0,60)}; }
 }
 function r486EntryTruthGuard(story={},opts={}){
@@ -29008,6 +29035,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               ret6:_k680?.ret6??null, parabolikCeza:_k680?.parabolikCeza??0,
               tamRR:_k680?.tamRR??null, rrCezasi:_k680?.rrCezasi??0,
               destek:_k680?.destek??null, aralikPuani:_k680?.aralikPuani??null,
+              fitilsizDip:_k680?.fitilsizDip??null,
               piyasa:_s680?.researchPassive?.v681Piyasa||null,
               kanit:_k680?.kanit||[], hikaye:v679Hikaye(_s680||{}, _k680),
               yon:String(recommendation||''), timing:_s680?.timing||null,
