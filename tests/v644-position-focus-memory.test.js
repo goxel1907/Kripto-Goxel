@@ -53,6 +53,8 @@ test('15m journey memory uses only earlier snapshots and produces entry/stop/tar
   const context = {
     V644_15M_MEMORY_ACTIVE:true,
     V644_15M_MEMORY_HOURS:12,
+    V692_ILK_ENGEL_KAPISI_KALKTI:true,   // V697: fonksiyon artik bu iki modul sabitini okuyor
+    V697_GEC_KOVALAMA_ATR:0,
     r49356Snapshots:new Map(),
     r49356Sym:v=>String(v).toUpperCase().endsWith('USDT')?String(v).toUpperCase():`${String(v).toUpperCase()}USDT`,
     r49356Round:(v,d=6)=>Number.isFinite(Number(v))?+Number(v).toFixed(d):null,
@@ -82,4 +84,64 @@ test('15m memory can block only a broken prior stop or a consumed-target chase',
   assert.match(server, /candidateMemory\?\.state==='WAIT_RECLAIM'/);
   assert.match(server, /candidateMemory\?\.state==='NO_CHASE_AFTER_PRIOR_TARGET'/);
   assert.match(server, /contract:'CLOSED_15M_NO_LOOKAHEAD'/);
+});
+
+// ═══ V697 ═══ ailenin 6. basi: hafiza "onceki hedef"i ILK ENGELDEN ithal ediyordu.
+// Canli durum: ilk engel girise yapisik (110.2), gercek onceki hedef uzakta (125).
+// Kapi kalkikken 110.5 fiyati "hedefe ulasildi" SAYILMAMALI.
+test('V697: 15m hafiza kapi kalkikken ilk engeli onceki hedef diye ithal etmez', () => {
+  const start = server.indexOf('function v644CandidateMemoryContext(');
+  const end = server.indexOf('function v644CandidateMemoryRecent(', start);
+  const mk = (kapiKalkti) => {
+    const ctx = {
+      V644_15M_MEMORY_ACTIVE:true, V644_15M_MEMORY_HOURS:12,
+      V692_ILK_ENGEL_KAPISI_KALKTI:kapiKalkti, V697_GEC_KOVALAMA_ATR:0,
+      r49356Snapshots:new Map(),
+      r49356Sym:v=>String(v).toUpperCase().endsWith('USDT')?String(v).toUpperCase():`${String(v).toUpperCase()}USDT`,
+      r49356Round:(v,d=6)=>Number.isFinite(Number(v))?+Number(v).toFixed(d):null, Date,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(`${server.slice(start,end)}\nthis.memory=v644CandidateMemoryContext;`, ctx);
+    ctx.r49356Snapshots.set('A', {
+      symbol:'TESTUSDT', candidateProduced:true, decisionTimeMs:Date.now()-60_000,
+      liveDecision:{action:'PUSU',entry:100,stop:95,target:125},
+      timeframes:{'15m':{valid:true,orderBlocks:{demand:{low:98,high:100}},inefficiencies:{fvg:{}},fib:{},
+        liquidity:{below:95,above:125}, obstacle:{firstObstacle:{price:110.2}}}},
+    });
+    return ctx.memory('TESTUSDT',110.5,{symbol:'TESTUSDT',parabolicChase:true});
+  };
+  const kapali = mk(false);   // eski davranis: ilk engel = hedef
+  assert.equal(kapali.target1, 110.2, 'kapi kapaliyken eski davranis korunmali');
+  assert.equal(kapali.state, 'NO_CHASE_AFTER_PRIOR_TARGET');
+  const acik = mk(true);      // V697: ilk engel ithal edilmez
+  assert.equal(acik.target1, 125, 'kapi kalkikken hedef gercek onceki hedeften okunmali');
+  assert.notEqual(acik.state, 'NO_CHASE_AFTER_PRIOR_TARGET', '110.5 fiyati 125 hedefine ulasmis SAYILMAMALI');
+});
+
+// V697: gec-kovalama esigi varsayilan kapali oldugu icin, TEK basina uzaklik PUSU uretmez.
+test('V697: distanceFromBreakoutAtr tek basina NO_CHASE uretmez (olcum ters cikti)', () => {
+  const start = server.indexOf('function v644CandidateMemoryContext(');
+  const end = server.indexOf('function v644CandidateMemoryRecent(', start);
+  const ctx = {
+    V644_15M_MEMORY_ACTIVE:true, V644_15M_MEMORY_HOURS:12,
+    V692_ILK_ENGEL_KAPISI_KALKTI:false, V697_GEC_KOVALAMA_ATR:0,
+    r49356Snapshots:new Map(),
+    r49356Sym:v=>String(v).toUpperCase().endsWith('USDT')?String(v).toUpperCase():`${String(v).toUpperCase()}USDT`,
+    r49356Round:(v,d=6)=>Number.isFinite(Number(v))?+Number(v).toFixed(d):null, Date,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(`${server.slice(start,end)}\nthis.memory=v644CandidateMemoryContext;`, ctx);
+  ctx.r49356Snapshots.set('A', {
+    symbol:'TESTUSDT', candidateProduced:true, decisionTimeMs:Date.now()-60_000,
+    liveDecision:{action:'PUSU',entry:100,stop:95,target:110},
+    timeframes:{'15m':{valid:true,orderBlocks:{demand:{low:98,high:100}},inefficiencies:{fvg:{}},fib:{},
+      liquidity:{below:95,above:110}, obstacle:{firstObstacle:{price:110}}}},
+  });
+  // hedef asildi + SADECE uzaklik kaniti (2.0 ATR) -> eskiden PUSU, artik degil
+  const r = ctx.memory('TESTUSDT',111,{symbol:'TESTUSDT',distanceFromBreakoutAtr:2.0});
+  assert.notEqual(r.state,'NO_CHASE_AFTER_PRIOR_TARGET',
+    '0,35 ATR esigi olcumde TERS cikti (t=3,66); tek basina giris vetosu olmamali');
+  // yapisal kanit (parabolicChase) hala calisir
+  const r2 = ctx.memory('TESTUSDT',111,{symbol:'TESTUSDT',parabolicChase:true});
+  assert.equal(r2.state,'NO_CHASE_AFTER_PRIOR_TARGET','yapisal kanit korunmali');
 });

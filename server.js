@@ -472,7 +472,7 @@ function cachedMeta(key){
 // tanimi EN BASTA olmak zorunda. Ilk yazimda 7182'ye koymustum -> bot acilista
 // ReferenceError ile coker, `node -c` bunu YAKALAMAZ (sozdizimi degil, calisma zamani).
 const V692_ILK_ENGEL_KAPISI_KALKTI = String(process.env.V692_ILK_ENGEL_KAPISI_KALKTI ?? '1') !== '0';
-const LAZARUS_BUILD = 'V6_9_6_DEV_COIN_HARIC'
+const LAZARUS_BUILD = 'V6_9_7_FANTOM_KALDIRAC_VE_6NCI_BAS'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1071,6 +1071,14 @@ const R4863_STABLE_OR_INDEX_BASES = new Set('USDC,USDE,FDUSD,TUSD,USDP,DAI,BUSD,
 // volatil'); BTC/ETH o populasyona ait degil ve skor modeli onlarla kalibre edilmedi.
 // Bu YENI bir politika degil - kodun KENDI beyan ettigi niyeti isler hale getiriyor.
 const V696_DEV_COIN_HARIC = String(process.env.V696_DEV_COIN_HARIC ?? '1') !== '0';
+// V697: V644 hafizasindaki "gec kovalama" terimi OLCULDU ve ISARETI TERS cikti.
+// 879 grafik kumesi, 18.123 kirilim-ustu nokta, ileri ufuk 24 mum, kume-saglam t-testi:
+//   kirilimin >0,35 ATR ustundeki noktalar ort MFE %7,90 · <=0,35 ATR olanlardan +0,475 puan DAHA IYI (t=3,66)
+//   kesim 0,60 t=4,76 · 1,00 t=5,13 · 1,60 t=5,46 · 2,20 t=4,40 — HICBIR kesimde 'gec olan kotu' cikmadi.
+// Kesif esigi (secim-sonrasi, M=20 korelasyonlu) z=2,28; sonuc esigi ASIYOR ama TERS yonde.
+// MAE %4,08 -> %5,20 yukseliyor: uzama STOP GENISLIGI meselesidir, GIRIS VETOSU degil (bkz. V691).
+// Bu yuzden esik 0 = KAPALI. Geri acmak icin V697_GEC_KOVALAMA_ATR=0.35 yaz.
+const V697_GEC_KOVALAMA_ATR = Math.max(0, Math.min(9, Number(process.env.V697_GEC_KOVALAMA_ATR ?? 0)));
 const V696_DEV_COIN_BASES = new Set(String(process.env.V696_DEV_COIN_LISTE
   || 'BTC,ETH,BNB,XRP,SOL,ADA,DOGE,DOT,MATIC,LTC,TRX,AVAX,LINK,UNI,WBTC,SHIB')
   .split(',').map(s=>s.trim().toUpperCase()).filter(Boolean));
@@ -6851,12 +6859,14 @@ console.log(`[V634] RISK SOZLESMESI: ${R486_MAX_POSITIONS} pozisyon x islem basi
     } else {
       console.log(`[V692] ILK-ENGEL AILESI KAPALI (ENV'de ilgili satir yok)`);
     }
+    console.log(`[V697] V644 HAFIZASI: 'onceki hedef' artik ilk engelden OKUNMUYOR `
+      + `(6. bas kapandi) · gec-kovalama esigi ${V697_GEC_KOVALAMA_ATR>0?('%'+V697_GEC_KOVALAMA_ATR+' ATR'):'KAPALI (olcum ters cikti, t=3,66)'}`);
+    console.log(`[V697] KALDIRAC KAYDI: R431/R461 haritasi kilit aciksa UYGULANMAZ -> `
+      + `borsaya giden = V592_LEVERAGE_LOCK=${V592_LEVERAGE_LOCK}x (panelde artik fantom 12x/25x yazmaz)`);
     // ═══ V695 ═══ SABIT KODLANMIS esik: ENV'de gorunmez ama davranisi belirliyordu.
     // Ilan edilmezse kimse 0,45'in orada oldugunu bilmez (ben de V692'de kacirdim).
     console.log(`[V695] legacyFirstObstacleHard esigi 0.45 -> 0 · ASIL BEKCI buydu;`
       + ` CAKE ornegi: ilk engel R/R 0,04 · rol HARD_OBSTACLE -> MARKET engelleniyordu`);
-    if (false) {
-    }
   }
   // ═══ V693 ═══ Emir kaldiraci ile hesap kaldiraci AYNI olmali.
   if (V592_EXACT_BACKTEST_AUTHORITY && V592_LEVERAGE_LOCK > 0 && V592_LEVERAGE_LOCK !== R486_MIN_LEVERAGE) {
@@ -7937,11 +7947,15 @@ function v644CandidateMemoryContext(symbol,currentPrice=0,currentStory={}){
     zones.sort((a,b)=>Math.abs((a.high||0)-priorEntry)-Math.abs((b.high||0)-priorEntry));
     const zone=zones.find(z=>!priorEntry||z.low<=priorEntry*1.01)||zones[0]||(priorEntry>0?{low:priorEntry*.998,high:priorEntry*1.002,type:'PRIOR_DECISION_ENTRY'}:null);
     const stop=Number(prior.liveDecision?.stop||zone?.low||tf15.liquidity?.below||0)||null;
-    const target=Number(tf15.obstacle?.firstObstacle?.price||prior.liveDecision?.target||tf15.liquidity?.above||0)||null;
+    // V697 ailenin 6. basi: 'hedefe ulasildi' aslinda ILK ENGELDEN okunuyordu.
+    // V692 ilk-engel kapilarini kaldirdi ama bu hafiza dali ayni fiyati 'onceki hedef' diye
+    // yeniden ithal ediyordu; ilk engel girise yapisik oldugu icin targetReached bedavaya doluyordu.
+    // Kapi kalkikken hedef YALNIZ gercek bir onceki hedeften veya ustteki likiditeden okunur.
+    const target=Number((V692_ILK_ENGEL_KAPISI_KALKTI?0:Number(tf15.obstacle?.firstObstacle?.price||0))||prior.liveDecision?.target||tf15.liquidity?.above||0)||null;
     const price=Number(currentPrice||currentStory?.levelTruth?.price||0),reclaim=!!(currentStory?.validatedTrendRetest||currentStory?.microConsensus?.confirmedPullback||currentStory?.liquidity?.['15m']?.sweepBull||currentStory?.trendBreaks?.bull);
     const stopBroken=!!(price>0&&stop>0&&price<=stop*.999),targetReached=!!(price>0&&target>0&&price>=target*.999);
     const inEntryZone=!!(price>0&&zone&&price>=zone.low*.998&&price<=zone.high*1.002);
-    const lateEvidence=!!(currentStory?.parabolicChase||currentStory?.impulseChase||currentStory?.targetRejection||Number(currentStory?.distanceFromBreakoutAtr||0)>.35||String(currentStory?.timing||'')==='TRAP');
+    const lateEvidence=!!(currentStory?.parabolicChase||currentStory?.impulseChase||currentStory?.targetRejection||(V697_GEC_KOVALAMA_ATR>0&&Number(currentStory?.distanceFromBreakoutAtr||0)>V697_GEC_KOVALAMA_ATR)||String(currentStory?.timing||'')==='TRAP');
     const state=stopBroken&&!reclaim?'WAIT_RECLAIM':targetReached&&lateEvidence?'NO_CHASE_AFTER_PRIOR_TARGET':inEntryZone?'ENTRY_ZONE_RETEST':'TRACK_PRIOR_15M_PLAN';
     return {active:true,available:true,symbol:S,noLookahead:true,backtestObservable:true,horizonHours:V644_15M_MEMORY_HOURS,observations:history.length,
       firstSeenAt:Number(history.at(-1)?.decisionTimeMs||0),lastSeenAt:Number(prior.decisionTimeMs||0),previousAction:prior.liveDecision?.action||null,
@@ -27827,8 +27841,21 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
             if (_brMax) _hedefLev = Math.min(_hedefLev, _brMax);
           } catch(_e) {}
           executeLeverage = Math.max(R486_MIN_LEVERAGE,_hedefLev);
+          // V697 FANTOM KALDIRAC. R431 haritasi 12x-25x yaziyordu, panelde de oyle gorunuyordu;
+          // ama zincirin sonundaki V501 EXACT ve /api/order icindeki _lockLev borsaya
+          // V592_LEVERAGE_LOCK gonderiyor. Kullanici 12x okuyor, borsa 5x aliyordu.
+          // Para yolu zaten guvenliydi (qty safeLeverage'dan turuyor) — bozuk olan KAYITTI.
+          // Ayrica tuzak kapisi: V592_EXACT_BACKTEST_AUTHORITY=0 yapilirsa 50$ marj sessizce 25x'e cikardi.
+          const _v697Kilit = V592_EXACT_BACKTEST_AUTHORITY && Number(V592_LEVERAGE_LOCK) > 0;
+          if (_v697Kilit && executeLeverage !== Number(V592_LEVERAGE_LOCK)) {
+            const _v697Harita = executeLeverage;
+            executeLeverage = Number(V592_LEVERAGE_LOCK);
+            leverageNote += ` · R431 haritasi ${_v697Harita}x istedi, V592 kilidi ${executeLeverage}x uyguladi`;
+            logAuto(`⚙️ ${coin.symbol} R431 harita ${_v697Harita}x — ama KALDIRAÇ ${executeLeverage}x (V592 kilidi; borsaya giden gerçek değer budur)`);
+          } else {
           leverageNote += ` · R431 fırsat-kaldıraç ${_oldLevFloor}x→${executeLeverage}x (güven:${_g} ATR:${_atr.toFixed(1)} gainer:${_gr})`;
-          logAuto(`⚙️ ${coin.symbol} R431 kaldıraç: ${_oldLevFloor}x→${executeLeverage}x (güven ${_g}, ATR %${_atr.toFixed(1)}, gainer ${_gr} — band 10x-BinanceMax, SL×lev≤%40, likidasyon≥ATR×2.2)`);
+          logAuto(`⚙️ ${coin.symbol} R431 kaldıraç: ${_oldLevFloor}x→${executeLeverage}x (güven ${_g}, ATR %${_atr.toFixed(1)}, gainer ${_gr} — taban R486_MIN_LEVERAGE=${R486_MIN_LEVERAGE}x, SL×lev≤%40, likidasyon≥ATR×2.2)`);
+          }
         }
 
         // R372 (A SEÇENEĞİ): SL TABAN GENİŞLİĞİ — AI dar SL koyarsa min %5'e genişlet (MM avı koruması).
@@ -29127,6 +29154,8 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
                         } catch(_e) {}
                         const r310Ceil = (r310BinanceMax && r310BinanceMax >= 1) ? Math.min(25, r310BinanceMax) : 25; // R325D: 25x mutlak tavan
                         aiTargetLev = Math.max(R486_MIN_LEVERAGE, Math.min(aiTargetLev, r310Ceil)); // R461: R431 haritası serbest, tavan Binance izni (max 25x)
+                        // V697: R461 de ayni fantomu uretiyordu — kilit aciksa haritayi uygulama.
+                        if (V592_EXACT_BACKTEST_AUTHORITY && Number(V592_LEVERAGE_LOCK) > 0) aiTargetLev = Number(V592_LEVERAGE_LOCK);
                         if (aiTargetLev >= 1 && aiTargetLev !== executeLeverage) {
                           const oldAiLev = executeLeverage;
                           executeLeverage = aiTargetLev;
