@@ -78,9 +78,11 @@ test('V688: DIPTE test edilmis destek artik ELENMIYOR — kullanicinin cizdigi k
   // EGLD 26 Agu: 4,7966 destegi 3 kez test edildi, oradan %12,68 hareket.
   const dipte = f(hik(0.12, { liq: { below: 4.7966, belowType: 'EQL', belowDist: 0.9 } }), 2.0);
   const eskiTerim = (0.12 - 0.5) * 40;          // -15,2
-  assert.ok(dipte.skor >= 55, `destek uzeri skor ${dipte.skor} — esigin cok ustunde olmali`);
+  // V690: agirlik kume-saglam tahmine cekildi (14 -> 6). Kanit yetmedi (t=1,06),
+  // ama isaret her kesitte pozitif oldugu icin sifirlanmadi.
+  assert.ok(dipte.skor >= 50, `destek uzeri skor ${dipte.skor} — esigin (40) ustunde olmali`);
   assert.strictEqual(dipte.destek.tip, 'EQL');
-  assert.strictEqual(dipte.destek.puan, 14);
+  assert.strictEqual(dipte.destek.puan, 6);
   assert.ok(dipte.aralikPuani > eskiTerim, 'eski terim bu adayi cezalandiriyordu');
 });
 
@@ -88,9 +90,15 @@ test('V688: TEPEDE, altinda destek olmayan aday geriliyor (botun EGLD girisi)', 
   const { f } = yukle();
   const tepede = f(hik(0.90, { ret6: 6, liq: { below: null, belowType: null, belowDist: null } }), 2.0);
   const dipte  = f(hik(0.12, { liq: { below: 4.7966, belowType: 'EQL', belowDist: 0.9 } }), 2.0);
-  assert.ok(dipte.skor > tepede.skor + 20,
-    `dip ${dipte.skor} tepeden ${tepede.skor} en az 20 puan yukarida olmali`);
-  assert.strictEqual(tepede.destek.puan, -8, 'altta destek yoksa -8');
+  // V690: desteksiz cezasi KAPATILDI (isaret kume-saglam testte ters dondu),
+  // EQL odulu 14 -> 6'ya cekildi. Iddia artik "buyuk fark" degil, DOGRU SIRALAMA:
+  //   ESKI terimle (rp-0,5)*40 -> dip -15,2 / tepe +16,0 = tepe 31 puan ONDEYDI.
+  //   YENI terimle dip ONDE. Buyukluk kanitin tasidigi kadar, yonu dogru.
+  assert.ok(dipte.skor > tepede.skor,
+    `dip ${dipte.skor} tepeden ${tepede.skor} YUKARIDA olmali (eskiden tersiydi)`);
+  const eskiDip = (0.12 - 0.5) * 40, eskiTepe = (0.90 - 0.5) * 40;
+  assert.ok(eskiTepe > eskiDip, 'eski terim gercekten ters siralama uretiyordu');
+  assert.strictEqual(tepede.destek.puan, 0, 'V690: desteksiz cezasi 0');
 });
 
 test('V688: BAKMADIYSAK cezalandirmiyoruz (liquidity dugumu yok)', () => {

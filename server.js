@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_9_FITILSIZ_DIP'
+const LAZARUS_BUILD = 'V6_9_0_KANIT_SEVIYESI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6930,8 +6930,33 @@ const V687_MUAF_RR = Math.max(1, Math.min(10, Number(process.env.V687_MUAF_RR ||
 //    sifirlaniyor - ikisi de dikey uzamanin kilik degistirmis hali. Skora KONMADI.
 const V688_ARALIK_DUZELT = String(process.env.V688_ARALIK_DUZELT ?? '1') !== '0';
 const V688_DESTEK_OKUMA  = String(process.env.V688_DESTEK_OKUMA ?? '1') !== '0';
-const V688_EQL_PUAN      = Math.max(0, Math.min(40, Number(process.env.V688_EQL_PUAN || 14)));
-const V688_DESTEKSIZ_CEZA= Math.max(0, Math.min(40, Number(process.env.V688_DESTEKSIZ_CEZA || 8)));
+const V688_EQL_PUAN      = Math.max(0, Math.min(40, Number(process.env.V688_EQL_PUAN || 6)));   // V690: 14 -> 6
+const V688_DESTEKSIZ_CEZA= Math.max(0, Math.min(40, Number(process.env.V688_DESTEKSIZ_CEZA || 0)));  // V690: 8 -> 0 (isaret kararsiz)
+// ═══ V690 ═══ KANIT SEVIYESINE CEKILME. Kaynak: Viaggi, "A Standardized R-Multiple
+// Framework for the Statistical Validation of Trading Edge" (SSRN 6653758).
+//
+// HATAM: "36.918 nokta" diye rapor ettigim orneklem SISMISTI. Pencereler 4 mum
+// adimla ilerliyordu ama ileri ufuk 24 mumdu -> her sonuc 6 kez sayildi; ustelik
+// ayni sembolun noktalari birbirinden bagimsiz degil. Gercek bagimsiz birim GRAFIK.
+//
+// DUZELTME: ortusmeyen ornek (24 mum adim) = 6.153 nokta / 879 grafik kumesi.
+// Etki her grafik ICINDE hesaplanip grafikler ARASI t-testi yapildi (kume-saglam).
+// Ustelik ~20 hipotez denedigim icin esik tek-test 1,645 degil, secim-sonrasi 2,28
+// (ayni makale, Tablo A.16, korelasyonlu varyantlar).
+//
+//   terim                          kume n   ort fark   t       karar
+//   V680 dikey uzama cezasi          50     -1,330    -9,25   GECTI  -> dokunulmadi
+//   V688 altta destek YOK (-8)      120     +0,222    +1,96   GECMEDI + ISARET TERS -> 0
+//   V688 EQL destek (+14)            43     +0,167    +1,06   GECMEDI -> +6'ya cekildi
+//   V689 fitilsiz dip (+5)          205     +0,041    +0,49   GECMEDI -> 0
+//   V688 aralikPoz bandi             30     -0,000    -0,00   sifir -> zaten kucuk, kaldi
+//
+// EQL tamamen kaldirilmadi: isareti HER kesitte pozitif (havuz 1,413 vs 0,976;
+// aralikPoz eslesmis her uc bantta da yuksek). Kume-saglam nokta tahmini +6,7 ->
+// ihtiyatla +6. Kanit yeterli DEGIL, ama yon tutarli; buyuk agirlik hak etmiyor.
+// Destekseiz cezasi ve fitilsiz dip: isaret kararsiz / etki sifir -> KAPATILDI.
+// Env ile geri acilabilir; varsayilan artik kanitin tasidigi kadar.
+
 // ═══ V689 ═══ FITILSIZ DIP (Trader Dale: "Unfinished Business / Failed Auction").
 // Kitap diyor ki: altinda bitmemis is varken LONG acma, fiyat miknatis gibi oraya cekilir.
 // 879 grafik / 36.918 nokta uzerinde OLCTUK ve iddia TERSINE cikti. Ayni mesafede
@@ -6943,7 +6968,7 @@ const V688_DESTEKSIZ_CEZA= Math.max(0, Math.min(40, Number(process.env.V688_DEST
 const V689_FITILSIZ_DIP = String(process.env.V689_FITILSIZ_DIP ?? '1') !== '0';
 const V689_FITIL_ESIK   = Math.max(0, Math.min(1, Number(process.env.V689_FITIL_ESIK || 0.10)));
 const V689_MAX_ATR      = Math.max(0.5, Math.min(20, Number(process.env.V689_MAX_ATR || 5)));
-const V689_PUAN         = Math.max(0, Math.min(30, Number(process.env.V689_PUAN || 5)));
+const V689_PUAN         = Math.max(0, Math.min(30, Number(process.env.V689_PUAN || 0)));    // V690: 5 -> 0 (t=0,49)
 
 // ═══ V686 ═══ TAM R/R skora giriyor. 88 canli islem: tam R/R <-> ROI r=+0,343
 // (en guclu tekil isaret). Botun kapi koydugu ILK ENGEL R/R'sinin ROI ile
