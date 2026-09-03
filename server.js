@@ -472,7 +472,7 @@ function cachedMeta(key){
 // tanimi EN BASTA olmak zorunda. Ilk yazimda 7182'ye koymustum -> bot acilista
 // ReferenceError ile coker, `node -c` bunu YAKALAMAZ (sozdizimi degil, calisma zamani).
 const V692_ILK_ENGEL_KAPISI_KALKTI = String(process.env.V692_ILK_ENGEL_KAPISI_KALKTI ?? '1') !== '0';
-const LAZARUS_BUILD = 'V6_9_5_ILK_ENGEL_5NCI_BAS'
+const LAZARUS_BUILD = 'V6_9_6_DEV_COIN_HARIC'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -1061,6 +1061,19 @@ const R486_HARVEST_MATURE_ROI = Math.max(7, Math.min(32, Number(process.env.R486
 // Binance hisse/emtia/endeks perp'leri kripto stratejisiyle alakasız seans+defter dinamiğinde. Env ile genişletilebilir.
 const R427_NONKRIPTO = new Set(('ASML,AMD,NVDA,META,QQQ,SPY,SOXS,SOXL,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,INTC,MU,SAMSUNG,DRAM,CL,BZ,NG,NATGAS,GC,SI,O,MRVL,EWY,SKHYNIX,SKHY,XAU,XAG,PAXG,XAUT,BTCDOM,USDC,USDE,FDUSD,TUSD,USDP,DAI,EUR,GBP,JPY,TRY,' + (process.env.NONKRIPTO_EK||'')).split(',').map(s=>s.trim().toUpperCase()).filter(Boolean));
 const R4863_STABLE_OR_INDEX_BASES = new Set('USDC,USDE,FDUSD,TUSD,USDP,DAI,BUSD,EUR,GBP,JPY,TRY,BTCDOM,DEFI,ALT,BLUEBIRD'.split(','));
+// ═══ V696 ═══ DEV COINLER WORKER EVRENINDEN CIKIYOR.
+// Kod bu listeyi ZATEN tanimliyordu (satir ~26556 `excludedCore`) ama YALNIZ
+// fallback yolunda kullaniyordu. Worker evreni (R328/R370/R385/R366) hicbir
+// yerde uygulamiyordu, o yuzden BTC/ETH 'oncelikli hikaye'ye enjekte oluyordu:
+//   "PATLAMA 5M TEYIT: BTC · skor 28 ... oncelikli grafik hikayesine gonderildi"
+// Skor 28 — cok dusuk — ve yine de oncelikli sirayaen giriyordu.
+// Botun tum tasarimi gainer/volatil-alt avi (TOP24 gainer, 'gainer sirasi 1 = en
+// volatil'); BTC/ETH o populasyona ait degil ve skor modeli onlarla kalibre edilmedi.
+// Bu YENI bir politika degil - kodun KENDI beyan ettigi niyeti isler hale getiriyor.
+const V696_DEV_COIN_HARIC = String(process.env.V696_DEV_COIN_HARIC ?? '1') !== '0';
+const V696_DEV_COIN_BASES = new Set(String(process.env.V696_DEV_COIN_LISTE
+  || 'BTC,ETH,BNB,XRP,SOL,ADA,DOGE,DOT,MATIC,LTC,TRX,AVAX,LINK,UNI,WBTC,SHIB')
+  .split(',').map(s=>s.trim().toUpperCase()).filter(Boolean));
 const R4863_TRADFI_BASES = new Set('ASML,AMD,NVDA,META,QQQ,SPY,SOXS,SOXL,COIN,HOOD,CRCL,MSTR,TSLA,AAPL,GOOGL,AMZN,NFLX,PLTR,INTC,MU,SAMSUNG,DRAM,MRVL,EWY,SKHYNIX,SKHY,CL,BZ,NG,NATGAS,GC,SI,O,XAU,XAG,PAXG,XAUT'.split(','));
 function r427Base(sym){ return String(sym||'').toUpperCase().replace(/USDT$/,'').trim(); }
 function r427KriptoMu(sym, meta={}){
@@ -24675,6 +24688,10 @@ async function r4863GetWorkerUniverse(){
   const excluded=[];
   const rows=usdtRows
     .filter(t=>{const ok=r427KriptoMu(t.symbol,metaMap.get(String(t.symbol||'').toUpperCase())||{});if(!ok&&excluded.length<30)excluded.push(r427Base(t.symbol));return ok;})
+    // ═══ V696 ═══ dev coinler burada eleniyor (worker enjeksiyonunun tek gecidi).
+    .filter(t=>{ if(!V696_DEV_COIN_HARIC) return true;
+      const b=r427Base(t.symbol); const dev=V696_DEV_COIN_BASES.has(String(b||'').toUpperCase());
+      if(dev&&excluded.length<30) excluded.push(b+'(dev)'); return !dev; })
     .filter(t=>Number(t.lastPrice)>0&&Number(t.quoteVolume||0)>=R4863_WORKER_MIN_QUOTE)
     .filter(t=>{const ch=Number(t.priceChangePercent||0);return ch>=-4&&ch<=80;})
     .map(t=>({...t,r4863Score:r4863PotentialScore(t),r48637GhostScore:r48637GhostTickerScore(t)}))
