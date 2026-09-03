@@ -323,8 +323,15 @@ app.get(['/', '/index.html'], (_req,res)=>{
   S('R495_MIN_SAFE_MARGIN_USDT','6');
 
   // ── KALDIRAC 7x-10x ────────────────────────────────────────────────
-  S('R486_MIN_LEVERAGE','7');
-  S('V592_LEVERAGE_LOCK','7');
+  // ═══ V693 ═══ 7 -> 5. GERCEK varsayilan BURASI; asagidaki `|| 5` fallback'i hic
+  // calismiyordu cunku S() process.env'i onceden dolduruyor. (Bunu once kacirdim:
+  // sabitin varsayilanini degistirdim, acilis logu hala 7x yazdi.)
+  S('R486_MIN_LEVERAGE','5');
+  // ═══ V693 ═══ 7 -> 5. BU SATIR BORSAYA GIDEN GERCEK KALDIRACTIR.
+  // r48633 emir yolunda: _lockLev = V592_LEVERAGE_LOCK (R486_MIN_LEVERAGE DEGIL).
+  // Ikisi ayrisirsa acilis logu 5x der, Binance'e 7x gider ve V691'in ATR tavani
+  // yanlis kaldiractan hesaplanir. Asagida acilista tutarlilik kontrolu var.
+  S('V592_LEVERAGE_LOCK','5');
 
   // ── CIKIS (olculdu: ikisi de zarar ettiriyordu) ────────────────────
   S('V600_MAXSURE_CARPAN','0');     // MAX_SURE_KAPAT devre disi
@@ -1027,7 +1034,24 @@ function v592ClassifyExchangeRejection(err){
 // sembol 10x izin vermiyorsa işlem açılmaz. Geniş SL'de leverage düşürmek yerine marjin
 // risk-normalize edilir. Kâr-hasat motoru varsayılan SHADOW'dur; R486_HARVEST_ACTIVE=1
 // verilmedikçe market kapatma yapmaz, yalnız karar/SL önerisini telemetriye yazar.
-const R486_MIN_LEVERAGE = Math.max(3, Math.min(20, Number(process.env.R486_MIN_LEVERAGE || 7)));
+// ═══ V693 ═══ VARSAYILAN KALDIRAC 7x -> 5x. Sebep: stop mesafesi.
+// risk$ = marj x kaldirac x stop%.  Marj (50$) ve risk (%23) sabitken kaldirac,
+// stopun ne kadar GENIS olabilecegini belirleyen tek serbest degisken:
+//     odenebilir stop = risk% / ((marj/ozsermaye) x kaldirac)
+//     7x -> %6,57 stop -> ATR x2,35 karsilanabilen max ATR(1s) = %2,80
+//     5x -> %9,20 stop ->                                        %3,91
+//     3x -> %15,3 stop ->                                        %6,52
+//
+// NEDEN BU YON: EGLD (ATR %5,30) sinirin cok disindaydi, stop 0,58 x ATR'ye
+// sikisti ve gurultuye yenildi (-%26). Olcum (879 grafik, ortusmeyen 6.153 nokta):
+//     stop 0,5xATR -> stop yeme %83,1 · 1x -> %67,9 · 2x -> %42,5 · 4x -> %14,6
+// Kaldirac dusurmek RISKI ARTIRMAZ - risk$ ayni kalir, sadece stopa nefes alani acar.
+// Alternatifleri elemek: riski %30'a cikarmak zarari buyutur; marj tabanini 30$'a
+// indirmek bilesik buyumeyi yavaslatir. Kaldirac tek bedelsiz koldur.
+//
+// BEDELI: ayni marjda nominal %29 kucuk (350$ -> 250$). Kazanan islemde ROI daha
+// dusuk gorunur; R katsayisi degismez cunku hedef de risk ile birlikte olceklenir.
+const R486_MIN_LEVERAGE = Math.max(3, Math.min(20, Number(process.env.R486_MIN_LEVERAGE || 5)));
 const R486_HARVEST_ACTIVE = !V592_POLICY_PARITY_MODE && String(process.env.R486_HARVEST_ACTIVE || '0') === '1';
 const R486_HARVEST_SHADOW = !R486_HARVEST_ACTIVE;
 const R486_RISK_BUDGET_PCT = Math.max(4, Math.min(25, Number(process.env.R486_RISK_BUDGET_PCT || 12)));
@@ -6814,6 +6838,12 @@ console.log(`[V634] RISK SOZLESMESI: ${R486_MAX_POSITIONS} pozisyon x islem basi
     } else {
       console.log(`[V692] ILK-ENGEL AILESI KAPALI (ENV'de ilgili satir yok)`);
     }
+  }
+  // ═══ V693 ═══ Emir kaldiraci ile hesap kaldiraci AYNI olmali.
+  if (V592_EXACT_BACKTEST_AUTHORITY && V592_LEVERAGE_LOCK > 0 && V592_LEVERAGE_LOCK !== R486_MIN_LEVERAGE) {
+    console.log(`[V693 UYARI] KALDIRAC AYRISMASI: borsaya giden V592_LEVERAGE_LOCK=${V592_LEVERAGE_LOCK}x`
+      + ` ama hesaplar R486_MIN_LEVERAGE=${R486_MIN_LEVERAGE}x kullaniyor.`
+      + ` V691 ATR tavani YANLIS kaldiractan hesaplanir. Ikisini esitle.`);
   }
   console.log(`[V691] STOP TABANI: ATR x ${R486_MIN_STOP_ATR} · %${V634_TOPLAM_RISK_PCT} risk`
     + ` · 50$/100$ marj · ${R486_MIN_LEVERAGE}x -> odenebilir stop %${_odenebilir.toFixed(2)}`
