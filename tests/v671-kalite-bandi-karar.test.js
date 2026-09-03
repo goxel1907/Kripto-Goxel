@@ -39,7 +39,8 @@ test('V672: kelepçeler env değerini artık sessizce yutmuyor', () => {
 
 test('V672: parite kapısı tam-eşitlik yerine ARALIK istiyor', () => {
   for (const [ad, re] of [
-    ['kaldıraç',  /if\(!\(Number\(V592_LEVERAGE_LOCK\)>=7&&Number\(V592_LEVERAGE_LOCK\)<=10\)\)/],
+    // V694: alt sinir 7 -> 3 (V693 kaldiraci 5x yapti). Ust sinir 10 korunuyor.
+    ['kaldıraç',  /if\(!\(Number\(V592_LEVERAGE_LOCK\)>=3&&Number\(V592_LEVERAGE_LOCK\)<=10\)\)/],
     ['V45 skor',  /if\(!\(V592_V45_MS_SCORE_MIN>=20&&V592_V45_MS_SCORE_MIN<=60\)\)/],
     ['max poz',   /if\(!\(Number\(R486_MAX_POSITIONS\)>=1&&Number\(R486_MAX_POSITIONS\)<=2\)\)/],
     ['ATR tavan', /if\(!\(V628_ATR_TAVAN>=1\.0&&V628_ATR_TAVAN<=20\.0\)\)/],

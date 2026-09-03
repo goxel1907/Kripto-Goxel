@@ -63,7 +63,9 @@ test('V692: yok sayılan ENV satırları açılışta İLAN EDİLİYOR (sessiz n
 test('V670: BOOT PARITY GATE üç eşiği de aralık olarak kontrol ediyor (fail-closed değil)', () => {
   // Bu üç satır "eq(...,0.35)" kalsaydı yeni değerle bot EMİR AÇMAZDI.
   for (const [ad, re] of [
-    ['V45',  /if\(!\(V592_V45_FIRST_OBSTACLE_RR_MIN>=0\.01&&V592_V45_FIRST_OBSTACLE_RR_MIN<=1\.00\)\) hata\.push\(`V45_FO_ARALIK_DISI/],
+    // V694: alt sinir 0,01 -> 0. V692 bu esigi TAMAMEN kaldirdi (deger 0) ve kapi
+    // fail-closed calisti. 0 artik gecerli: "esik yok" demek.
+    ['V45',  /if\(!\(V592_V45_FIRST_OBSTACLE_RR_MIN>=0&&V592_V45_FIRST_OBSTACLE_RR_MIN<=1\.00\)\) hata\.push\(`V45_FO_ARALIK_DISI/],
     ['R493', /if\(!\(R493_MIN_FIRST_OBSTACLE_RR>=0\.01&&R493_MIN_FIRST_OBSTACLE_RR<=1\.00\)\) hata\.push\(`R493_FO_ARALIK_DISI/],
     ['R486', /if\(!\(R486_FIRST_OBSTACLE_MIN_RR>=0\.01&&R486_FIRST_OBSTACLE_MIN_RR<=1\.00\)\) hata\.push\(`R486_FO_ARALIK_DISI/],
   ]) assert.match(server, re, `${ad} boot kontrolü aralık olmalı`);

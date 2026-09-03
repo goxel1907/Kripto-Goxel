@@ -31032,7 +31032,11 @@ function v592BootParityGate(){
         hata.push(`KALDIRAC_KILIDI_ARALIK_DISI:${V592_LEVERAGE_LOCK} ∉ [${_lo},${_hi}]`);
     } else if(Number(V592_LEVERAGE_LOCK)!==_v602BekLev)
       hata.push(`KALDIRAC_KILIDI_UYUSMAZ:${V592_LEVERAGE_LOCK}!=${_v602BekLev}`);
-    if(!(Number(V592_LEVERAGE_LOCK)>=7&&Number(V592_LEVERAGE_LOCK)<=10)) hata.push(`CANLI_KALDIRAC_ARALIK_DISI:${V592_LEVERAGE_LOCK}`);   // V672: sozlesme 7x-10x
+    // ═══ V694 ═══ Aralik 7-10 -> 3-10. V693 kaldiraci 5x'e indirdi ve BU KAPI
+    // fail-closed olarak emirleri kesti (dogru davranis - beni yakaladi).
+    // Alt sinir 3, R486_MIN_LEVERAGE'in kendi kelepcesiyle ayni: Math.max(3, ...).
+    // Ust sinir 10'da KALIYOR: yukari dogru kayma hala sozlesme ihlalidir.
+    if(!(Number(V592_LEVERAGE_LOCK)>=3&&Number(V592_LEVERAGE_LOCK)<=10)) hata.push(`CANLI_KALDIRAC_ARALIK_DISI:${V592_LEVERAGE_LOCK}`);   // V694: sozlesme 3x-10x
   }
   if(Number(V592_MIN_HOLD_MS)<=0)     hata.push('MIN_HOLD_KAPALI');
   if(V592_PROBE_ACTIVE!==false)       hata.push('SONDA_CANLIDA_AKTIF');
@@ -31043,7 +31047,9 @@ function v592BootParityGate(){
   // V501: 725 portfoy replay'inin SAYISAL sozlesmesi. Boolean acik olmasi yetmez.
   const eq=(a,b,t=1e-9)=>Number.isFinite(Number(a))&&Math.abs(Number(a)-Number(b))<=t;
   if(!(V592_V45_MS_SCORE_MIN>=20&&V592_V45_MS_SCORE_MIN<=60)) hata.push(`V45_SCORE_ARALIK_DISI:${V592_V45_MS_SCORE_MIN}`);   // V672
-  if(!(V592_V45_FIRST_OBSTACLE_RR_MIN>=0.01&&V592_V45_FIRST_OBSTACLE_RR_MIN<=1.00)) hata.push(`V45_FO_ARALIK_DISI:${V592_V45_FIRST_OBSTACLE_RR_MIN}`);
+  // ═══ V694 ═══ Alt sinir 0,01 -> 0. V692 bu esigi TAMAMEN kaldirdi (0) ve kapi
+  // fail-closed calisti. 0 artik gecerli bir deger: 'esik yok' demek.
+  if(!(V592_V45_FIRST_OBSTACLE_RR_MIN>=0&&V592_V45_FIRST_OBSTACLE_RR_MIN<=1.00)) hata.push(`V45_FO_ARALIK_DISI:${V592_V45_FIRST_OBSTACLE_RR_MIN}`);
   if(V592_V45_REQUIRE_TOP_GAINER!==true) hata.push('V45_TOP_GAINER_ZORUNLU_DEGIL');
   if(R493_ENTRY_SAFETY_ACTIVE!==true) hata.push('R493_ENTRY_SAFETY_KAPALI');
   if(!(R493_MIN_FIRST_OBSTACLE_RR>=0.01&&R493_MIN_FIRST_OBSTACLE_RR<=1.00)) hata.push(`R493_FO_ARALIK_DISI:${R493_MIN_FIRST_OBSTACLE_RR}`);
