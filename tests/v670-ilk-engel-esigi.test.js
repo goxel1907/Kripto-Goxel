@@ -18,9 +18,14 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 // 0,35 kapısı 437 işlemi (net +896,52$, WR %66,1) eliyordu.
 
 test('V670: R493 sert kapısı 0,10 varsayılan ve 0,01 tabanına kadar inebiliyor', () => {
+  // V692: bu kapi TAMAMEN kalkti. Uretim hunisi 13.711 kayitta TARGET_TOO_NEAR'i
+  // 1.161 blokla en buyuk adlandirilmis sebep gosterdi; olcum ise ilk engel R/R'nin
+  // ROI ile iliskisini SIFIR (r=-0,016) buldu. Eski ifade env yolunda korunuyor.
   assert.match(server,
-    /const R493_MIN_FIRST_OBSTACLE_RR = r491EnvNumber\('R493_MIN_FIRST_OBSTACLE_RR', 0\.10, 0\.01, 3\.00\);/,
-    'R493 varsayılan 0.10, taban 0.01 olmalı');
+    /const R493_MIN_FIRST_OBSTACLE_RR = V692_ILK_ENGEL_KAPISI_KALKTI \? 0\.01/,
+    'V692 acikken esik 0.01 (fiilen kapali) olmali');
+  assert.ok(server.includes("r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.10, 0.01, 3.00)"),
+    'eski yol ENV ile geri alinabilir kalmali');
   // Eski taban 0.10 idi: env 0.05 yazılsa sessizce 0.10'a yükseltilirdi.
   assert.ok(!server.includes("r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.35, 0.10, 3.00)"),
     'eski 0.35/0.10 imzası kalmamalı');
@@ -28,8 +33,10 @@ test('V670: R493 sert kapısı 0,10 varsayılan ve 0,01 tabanına kadar inebiliy
 
 test('V670: V4.5 seçicisinin KENDİ foRR eşiği de indi (R495 ÖNCESİ çalışır)', () => {
   // Bu eşik R493 kapısından ÖNCE aday eler. Yalnız R493 indirilseydi hiçbir şey değişmezdi.
-  assert.match(server,
-    /const V592_V45_FIRST_OBSTACLE_RR_MIN=Math\.max\(0,Number\(process\.env\.V592_V45_FIRST_OBSTACLE_RR_MIN\|\|0\.10\)\);/);
+  // V692: bu da kalkti (huni: V45_SELECTOR 2.258 blok — R493'ten ONCE eliyordu).
+  assert.match(server, /const V592_V45_FIRST_OBSTACLE_RR_MIN=V692_ILK_ENGEL_KAPISI_KALKTI \? 0/);
+  assert.ok(server.includes("Number(process.env.V592_V45_FIRST_OBSTACLE_RR_MIN||0.10)"),
+    'eski yol ENV ile geri alinabilir kalmali');
   assert.match(server, /S\('V592_V45_FIRST_OBSTACLE_RR_MIN','0\.10'\);/);
 });
 

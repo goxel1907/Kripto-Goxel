@@ -461,7 +461,11 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_9_1_ATR_TABANI_GERI'
+// ═══ V692 ═══ TDZ: bu bayrak line ~974'te (V45 secici) de kullaniliyor, o yuzden
+// tanimi EN BASTA olmak zorunda. Ilk yazimda 7182'ye koymustum -> bot acilista
+// ReferenceError ile coker, `node -c` bunu YAKALAMAZ (sozdizimi degil, calisma zamani).
+const V692_ILK_ENGEL_KAPISI_KALKTI = String(process.env.V692_ILK_ENGEL_KAPISI_KALKTI ?? '1') !== '0';
+const LAZARUS_BUILD = 'V6_9_2_ILK_ENGEL_KAPISI_KALKTI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -971,7 +975,11 @@ function v592CombinedChannel(eom={},atc={},meta={}){const ef=eom?.features||{},a
 // kalmazdi. Ortam bagi KALDIRILDI.
 const V592_V45_TESTNET_ACTIVE = String(process.env.V592_V45_TESTNET_ACTIVE??'1')==='1';
 const V592_V45_MS_SCORE_MIN=Math.max(0,Math.min(100,Number(process.env.V592_V45_MS_SCORE_MIN||35)));
-const V592_V45_FIRST_OBSTACLE_RR_MIN=Math.max(0,Number(process.env.V592_V45_FIRST_OBSTACLE_RR_MIN||0.10));
+// ═══ V692 ═══ AYNI AILENIN UCUNCU KAPISI. Huni: V45_SELECTOR otoritesi 2.258 blok.
+// Bu esik R493'ten ONCE aday eliyor; yalniz R493 indirilseydi hicbir sey degismezdi.
+// (V670 testinin kendi yorumu da bunu soyluyordu — kapiyi acarken okumasaydim kacirirdim.)
+const V592_V45_FIRST_OBSTACLE_RR_MIN=V692_ILK_ENGEL_KAPISI_KALKTI ? 0
+  : Math.max(0,Number(process.env.V592_V45_FIRST_OBSTACLE_RR_MIN||0.10));
 const V592_V45_REQUIRE_TOP_GAINER=String(process.env.V592_V45_REQUIRE_TOP_GAINER??'1')!=='0';
 const V592_V45_RULE_ID='V45_MS35_TOP_GAINER_FO035_TESTNET';
 const V592_V45_BACKTEST_REFERENCE=Object.freeze({method:'INDEPENDENT_CLOSED_OHLCV_PIT_GRAPH_DIAGNOSTIC_PROXY_V1',selectionProtocol:'June 1-20 train + June 21-30 validation; July untouched holdout',june:{trades:344,wins:237,losses:107,wr:68.8953488372,pf:3.0676153342,netUSDT:1937.4497664591,maxDDPct:14.8052471517},julyHoldout:{trades:375,wins:243,losses:132,wr:64.8,pf:2.0861299683,netUSDT:1258.1142538018,maxDDPct:23.0931166226},continuous:{trades:725,wins:483,losses:242,wr:66.6206896552,pf:2.4196680959,netUSDT:3299.3164118262,maxDDPct:14.8052471517},limitations:['Independent proxy, not exact historical candidate regeneration','Rolling POC is candle-volume approximation','Historical microstructure unavailable']});
@@ -7179,7 +7187,25 @@ const R493_MODEL_ID = 'R493_QUALITY_SIZING_WALKFWD_V1';
 // bilinen ve yeterli ilk engel R/R + taze çekirdek akış ile yaşayabilir.
 const R493_ENTRY_SAFETY_ACTIVE = String(process.env.R493_ENTRY_SAFETY_ACTIVE ?? '1') !== '0';
 const R493_REQUIRE_FIRST_OBSTACLE = String(process.env.R493_REQUIRE_FIRST_OBSTACLE ?? '1') !== '0';
-const R493_MIN_FIRST_OBSTACLE_RR = r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.10, 0.01, 3.00); // V501: backtest hard threshold 0.35
+// ═══ V692 ═══ ILK ENGEL / HEDEF-YAKIN AILESI KALKTI.
+// URETIM HUNISI (13.711 kayit, CANLI_100USDT_1 oturumu) kim ne kadar kesiyor:
+//   TARGET_TOO_NEAR ................ 1.161 blok  <- tek basina en buyuk adlandirilmis sebep
+//   R493 [LOW_FIRST_OBSTACLE_RR] ...   ~400 blok  (0,01 / 0,02 / 0,03 < 0,10)
+//   R493_ENTRY_SAFETY otoritesi .... 2.631 blok
+//   ...buna karsilik MARKET aksiyonu yalnizca 21 kez ureildi (PUSU 5.445).
+//
+// OLCUM (88 canli islem, entryReason'dan ayristirildi):
+//   ilk engel R/R <-> ROI   r = -0,016   yani SIFIR
+//   tam R/R      <-> ROI   r = +0,343   (gercek isaret bu, V686'da skora girdi)
+//   Dort kutu:  R/R>=4 & ilkEngel<0,65 -> WR %62 net +48,5$  (EN IYI kutu)
+//               R/R>=4 & ilkEngel>=0,65 -> WR %36 net -15,7$
+//   Yani bot kapiyi TERS tarafa koymustu: dusuk ilk-engel R/R IYI kutunun isareti.
+//
+// NEDEN SIMDI GUVENLI: bu aileyi acmanin tek gercek tehlikesi, yakin engelin
+// V662 uzerinden ATR stop tabanini cokertmesiydi (EGLD -%26). O kategori hatasi
+// V691'de duzeltildi; taban artik ezilemiyor. Sebep ortadan kalkti, kapi kalkiyor.
+const R493_MIN_FIRST_OBSTACLE_RR = V692_ILK_ENGEL_KAPISI_KALKTI ? 0.01
+  : r491EnvNumber('R493_MIN_FIRST_OBSTACLE_RR', 0.10, 0.01, 3.00);
 const R493_CORE_FLOW_MAX_AGE_SEC = r491EnvNumber('R493_CORE_FLOW_MAX_AGE_SEC', 45, 5, 300);
 const R493_MARKET_DATA_MAX_SPREAD_SEC = r491EnvNumber('R493_MARKET_DATA_MAX_SPREAD_SEC', 45, 5, 300);
 const R480_FRESH_MS = Math.round(r491EnvNumber('R480_FRESH_SEC', 900, 60, 3600) * 1000);  // 15m mum özelliği ~15dk geçerli; 180sn çok sıkıydı
@@ -8330,26 +8356,35 @@ function r493R482OperationalSafety(decision={}){
   const spreadHard=decision?.r190bSpreadKill===true || decision?.r190Edge?.spreadBlock===true || spreadPct>0.18;
   const slippageHard=decision?.liquiditySlippageRisk===true && spreadPct>0.10;
   const liquidityHard=!!(decision?.poorLiquidityHard===true || spreadHard || slippageHard);
-  const targetNear=decision?.r39TargetNearBlock===true;
+  // ═══ V692 ═══ 'hedef cok yakin' FIZIKSEL bir risk degil, CAZIBE gorusudur.
+  // Yanlis kovaya konmustu: spread/kayma ile ayni sert-blok grubundaydi ve
+  // uretimde 1.161 adayi tek basina oldurdu. Olcum ise ilk-engel R/R'nin ROI ile
+  // iliskisini SIFIR (r=-0,016) gosteriyor. Artik yalniz RAPORLANIYOR.
+  const targetNearRaw=decision?.r39TargetNearBlock===true;
+  const targetNear=V692_ILK_ENGEL_KAPISI_KALKTI ? false : targetNearRaw;
   const atrExtreme=decision?.atrExtremeBlock===true;
   const fallingKnife=decision?.r41FallingKnifeBlock===true;
   const risingKnife=decision?.r41RisingKnifeBlock===true;
   const critical=decision?.r68CriticalHardBlock===true;
   // Eski r68CriticalHardBlock POOR etiketini de içeriyordu. Bu yüzden onu tek başına kullanma;
   // fiziksel alt nedenleri ayrı değerlendir. Bilinmeyen legacy critical ancak poorLiquidity=false ise korunur.
-  const unknownLegacyCritical=critical && decision?.poorLiquidity!==true && !targetNear && !atrExtreme && !fallingKnife && !risingKnife;
+  // V692: burada targetNearRaw kullanilmali. targetNear artik hep false oldugu icin
+  // ham hali yazilmazsa, eskiden 'hedef yakin' diye aciklanan legacy critical bloklari
+  // ARKA KAPIDAN 'bilinmeyen kritik' olarak geri doner ve kapi kalkmamis olur.
+  const unknownLegacyCritical=critical && decision?.poorLiquidity!==true && !targetNearRaw && !atrExtreme && !fallingKnife && !risingKnife;
   const nonLiquidityHard=!!(targetNear || atrExtreme || fallingKnife || risingKnife || unknownLegacyCritical);
   const blocked=!!(liquidityHard || nonLiquidityHard);
   let code='PASS';
   if(spreadHard) code='SPREAD_HARD';
   else if(slippageHard) code='SLIPPAGE_HARD';
   else if(targetNear) code='TARGET_TOO_NEAR';
+  else if(targetNearRaw) code='TARGET_NEAR_NOT_BLOCKING';   // V692: gorunur ama kesmez
   else if(atrExtreme) code='ATR_EXTREME';
   else if(fallingKnife) code='FALLING_KNIFE';
   else if(risingKnife) code='RISING_KNIFE';
   else if(unknownLegacyCritical) code='LEGACY_CRITICAL';
   else if(decision?.poorLiquidity===true) code='SOFT_POOR_LIQUIDITY';
-  return {blocked,code,spreadPct,liquidityHard,nonLiquidityHard,softPoor:decision?.poorLiquidity===true&&!liquidityHard};
+  return {blocked,code,spreadPct,liquidityHard,nonLiquidityHard,targetNearRaw,softPoor:decision?.poorLiquidity===true&&!liquidityHard};
 }
 
 // V6.4.5: exact-backtest otoritesi normal fırsatlarda korunur. Yalnız birbirini
