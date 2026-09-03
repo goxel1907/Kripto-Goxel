@@ -37,7 +37,11 @@ test('V678: ölçülen katsayılar birebir kodda', () => {
   const i = server.indexOf('function v678GrafikKalitesi(');
   const fn = server.slice(i, server.indexOf('function r486EntryTruthGuard(', i));
   assert.ok(fn.includes('let s=50'), 'taban 50');
-  assert.ok(fn.includes('s += (rp-0.5)*40'), 'aralık pozisyonu katsayısı 40');
+  // V688: bu terim OLCUMLE kaldirildi. Dikey uzama kontrol edilince aralik pozisyonu
+  // neredeyse olu cikti (ret6<3, n=32.385: bantlar 0,814-1,099, alt-ort 0,943);
+  // eski terim ise 40 puanlik ve TERS yondeydi. Yerine olculen bant tablosu kondu.
+  assert.ok(!fn.includes('s += (rp-0.5)*40'), 'ters 40 puanlik terim kalkmis olmali');
+  assert.ok(fn.includes('v688AralikPuani(rp)'), 'olculen bant tablosu kullanilmali');
   assert.ok(fn.includes('Math.max(-20, Math.min(15, (2.0-a)*8))'), 'ATR katsayısı 8, kelepçe -20..+15');
   assert.ok(fn.includes('s-=10'), 'düşüş yapısı -10');
   assert.ok(fn.includes('s+=12'), 'kırılım+retest +12');

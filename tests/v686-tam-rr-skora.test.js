@@ -28,14 +28,15 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 
 function skorFn() {
   const isim = ['V680_PARABOLIK_CEZA','V680_RET6_TABAN','V680_CEZA_TAVAN','V680_CEP_RET6','V680_CEP_CEZA',
-                'V686_TAM_RR_SKORA','V686_RR_ESIK','V686_RR_CEZA_TAVAN'];
+                'V686_TAM_RR_SKORA','V686_RR_ESIK','V686_RR_CEZA_TAVAN',
+                'V688_ARALIK_DUZELT','V688_DESTEK_OKUMA','V688_EQL_PUAN','V688_DESTEKSIZ_CEZA'];
   const satir = isim.map(n => {
     const m = server.match(new RegExp('^const\\s+' + n + '\\s*=.*$', 'm'));
     assert.ok(m, n + ' sabiti olmali');
     return m[0];
   });
-  const i = server.indexOf('function v678GrafikKalitesi');
-  const son = server.indexOf('\nfunction ', i + 10);
+  const i = server.indexOf('function v688AralikPuani');   // V688 yardimcilari da gerekli
+  const son = server.indexOf('\nfunction r486EntryTruthGuard', i + 10);
   const ctx = { process: { env: {} }, Math, Number, String, Object };
   vm.createContext(ctx);
   vm.runInContext(satir.join('\n') + '\n' + server.slice(i, son) + '\nglobalThis.f = v678GrafikKalitesi;', ctx);

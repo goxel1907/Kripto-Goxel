@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_7_TERS_KAPI_KALKTI'
+const LAZARUS_BUILD = 'V6_8_8_DESTEK_OKUMASI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6906,6 +6906,32 @@ function v623EtkinMarjTabani(equityUsd, levX, slPct){
 // o kutu botun en iyi kutusu. Tam R/R saglikliyken bu veto artik bloklamaz.
 const V687_TAM_RR_MUAFIYET = String(process.env.V687_TAM_RR_MUAFIYET ?? '1') !== '0';
 const V687_MUAF_RR = Math.max(1, Math.min(10, Number(process.env.V687_MUAF_RR || 4)));
+// ═══ V688 ═══ GRAFIK OKUMA: ALTIMDA NE VAR?
+// Kullanici: "bot boyle firsatlari grafikte okuyamiyor" - haklidir, olcum onu dogruluyor.
+// 36.918 nokta / 879 grafik (15m), 24 mum ileri, ilk-dokunus, geometri %3 SL / %9 TP.
+//
+// 1) ARALIK POZISYONU eski terim `(rangePos-0,5)*40` idi: tepeye +20, dibe -20.
+//    Dikey uzama (ret6) KONTROL EDILDIGINDE aralik pozisyonu neredeyse OLU:
+//      ret6<3 alt-ortalama 0,943 -> <15%:0,814 15-30:0,977 30-45:1,023 45-60:0,982
+//                                   60-75:0,936 75-85:0,904 85-95:0,912 95+:1,099
+//    Yani "tepede olmak" tek basina kotu DEGIL; kotu olan oraya DIKEY gelmek -
+//    onu zaten V680 olcuyor. Skorun en buyuk terimi (40 puanlik) gurultuydu.
+//    Yeni terim ayni tablodan: (bant - 0,943) * 40, yani -5 ... +6.
+//
+// 2) TEST EDILMIS YATAY DESTEK. Alttaki en yakin seviye cok-dokunuslu yatay bir
+//    seviye (EQL) ise, ret6 kontrollu bile olsa fark BUYUK ve kaliyor:
+//      EQL n=270 beklenti 1,481 (kaz %85,9) | tek dokunuslu dip 0,945 | altta hic yok 0,654
+//    Ham puan +22 olurdu; n=270 kucuk oldugu icin ihtiyatla +14 kondu.
+//    Bu 270 kurulumun 49'u ESKI skorla 40 esiginin ALTINDA kaliyordu - yani
+//    kullanicinin cizdigi tipteki firsat cope atiliyordu.
+//
+// 3) OLCULUP ELENENLER (durust olmak icin yazildi): destege UZAKLIK ve dip
+//    supurme (sweepBull) ham veride guclu gorunuyor ama ret6 kontrol edilince
+//    sifirlaniyor - ikisi de dikey uzamanin kilik degistirmis hali. Skora KONMADI.
+const V688_ARALIK_DUZELT = String(process.env.V688_ARALIK_DUZELT ?? '1') !== '0';
+const V688_DESTEK_OKUMA  = String(process.env.V688_DESTEK_OKUMA ?? '1') !== '0';
+const V688_EQL_PUAN      = Math.max(0, Math.min(40, Number(process.env.V688_EQL_PUAN || 14)));
+const V688_DESTEKSIZ_CEZA= Math.max(0, Math.min(40, Number(process.env.V688_DESTEKSIZ_CEZA || 8)));
 // ═══ V686 ═══ TAM R/R skora giriyor. 88 canli islem: tam R/R <-> ROI r=+0,343
 // (en guclu tekil isaret). Botun kapi koydugu ILK ENGEL R/R'sinin ROI ile
 // iliskisi r=-0,016, yani SIFIR. Skorun tam R/R ile iliskisi r=+0,146: skor bu
@@ -7989,13 +8015,41 @@ function r493EntrySafetyGate(story={},entryTruth={},opts={}){
 
 // ═══ V678 ═══ Grafik kalite skoru. Kaynak: yalniz botun KENDI dedektorleri.
 // Katsayilar 36.918 noktalik ilk-dokunus olcumunden geldi; uydurma degil.
+// ═══ V688 ═══ Aralik pozisyonu puani = (bant beklentisi - 0,943) * 40,
+// dikey uzama kontrollu 32.385 noktadan. Eski (rp-0,5)*40 terimi TERSTI ve buyuktu.
+function v688AralikPuani(rp){
+  const v=Number(rp); if(!Number.isFinite(v)) return 0;
+  return v<0.15?-5 : v<0.30?1 : v<0.45?3 : v<0.60?2 : v<0.75?0 : v<0.85?-2 : v<0.95?-1 : 6;
+}
+// ═══ V688 ═══ ALTIMDA NE VAR? Alanlarin hepsi story.liquidity'de ZATEN vardi
+// (r483Liquidity -> below/belowType/belowDist); skor bunlari hic okumuyordu.
+// Yeni veri yok, yeni istek yok, yeni gecikme yok - sadece okuma.
+function v688DestekOkumasi(story={}, atrPct=null){
+  try{
+    const liq=story?.liquidity;
+    // BAKMADIYSAK cezalandirmayiz: liquidity dugumu yoksa terim devre disi.
+    if(!liq || typeof liq!=='object' || !('belowType' in liq || 'below' in liq)) return null;
+    const tip=String(liq.belowType||'')||null;
+    const dPct=Number(liq.belowDist), a=Number(atrPct);
+    const dATR=(Number.isFinite(dPct)&&Number.isFinite(a)&&a>0)?dPct/a:null;
+    let puan=0, kanit='';
+    if(tip==='EQL'){ puan=V688_EQL_PUAN; kanit=`altta TEST EDILMIS yatay destek ${Number.isFinite(dPct)?'%'+dPct.toFixed(2)+' asagida ':''}(+${V688_EQL_PUAN})`; }
+    else if(tip){ puan=0; kanit=''; }
+    else { puan=-V688_DESTEKSIZ_CEZA; kanit=`altta hicbir destek YOK (-${V688_DESTEKSIZ_CEZA})`; }
+    return {puan, tip, uzaklikAtr:dATR===null?null:+dATR.toFixed(2),
+            uzaklikPct:Number.isFinite(dPct)?+dPct.toFixed(2):null,
+            seviye:Number(liq.below)||null, sweep:!!liq.sweepBull, kanit};
+  }catch(_e){ return null; }
+}
 function v678GrafikKalitesi(story={}, atrPct=null){
   try{
     const t=story?.tf?.['15m']||{}, tl=t.trendline||{};
     const rp=Number(t.rangePos), a=Number(atrPct);
     if(!Number.isFinite(rp)) return {ok:false,skor:null,sebep:'RANGEPOS_YOK'};
     let s=50, kanit=[];
-    s += (rp-0.5)*40;                        kanit.push(`aralikPoz ${(rp*100).toFixed(0)}%`);
+    // ═══ V688 ═══ eski terim TERSTI: (rp-0,5)*40 tepeye +20 veriyordu.
+    const _rp688 = V688_ARALIK_DUZELT ? v688AralikPuani(rp) : (rp-0.5)*40;
+    s += _rp688; kanit.push(`aralikPoz ${(rp*100).toFixed(0)}% (${_rp688>=0?'+':''}${_rp688.toFixed(0)})`);
     if(Number.isFinite(a)){ s += Math.max(-20, Math.min(15, (2.0-a)*8)); kanit.push(`ATR %${a.toFixed(2)}`); }
     if(String(t.trend||'')==='DOWN_LH_LL'){ s-=10; kanit.push('dusus yapisi'); }
     if(tl.retestUp){ s+=12; kanit.push('kirilim+retest'); }
@@ -8015,10 +8069,15 @@ function v678GrafikKalitesi(story={}, atrPct=null){
       if(rp>=0.85 && r6>=V680_CEP_RET6) ceza680 = Math.max(ceza680, V680_CEP_CEZA);
       if(ceza680>0){ s-=ceza680; kanit.push(`son 90dk %${r6.toFixed(1)} dikey uzama (-${ceza680.toFixed(0)})`); }
     }
+    // ═══ V688 ═══ ALTIMDA NE VAR? Test edilmis yatay destek ve ona uzaklik.
+    let d688=null;
+    if(V688_DESTEK_OKUMA){ d688=v688DestekOkumasi(story,a); if(d688){ s+=d688.puan; if(d688.kanit) kanit.push(d688.kanit); } }
     return {ok:true, skor:+Math.max(0,Math.min(100,s)).toFixed(1), kanit,
             rangePos:+rp.toFixed(3), atrPct:Number.isFinite(a)?+a.toFixed(2):null, trend:t.trend||null,
             ret6:Number.isFinite(r6)?+r6.toFixed(2):null, parabolikCeza:+ceza680.toFixed(1),
-            tamRR:Number.isFinite(_rr686)?+_rr686.toFixed(2):null, rrCezasi:+ceza686.toFixed(1)};
+            tamRR:Number.isFinite(_rr686)?+_rr686.toFixed(2):null, rrCezasi:+ceza686.toFixed(1),
+            destek:d688?{tip:d688.tip,seviye:d688.seviye,uzaklikAtr:d688.uzaklikAtr,uzaklikPct:d688.uzaklikPct,sweep:d688.sweep,puan:+d688.puan.toFixed(1)}:null,
+            aralikPuani:+_rp688.toFixed(1)};
   }catch(e){ return {ok:false,skor:null,sebep:String(e&&e.message||e).slice(0,60)}; }
 }
 function r486EntryTruthGuard(story={},opts={}){
@@ -28948,6 +29007,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               rangePos:_k680?.rangePos??null, atrPct:_k680?.atrPct??null, trend:_k680?.trend??null,
               ret6:_k680?.ret6??null, parabolikCeza:_k680?.parabolikCeza??0,
               tamRR:_k680?.tamRR??null, rrCezasi:_k680?.rrCezasi??0,
+              destek:_k680?.destek??null, aralikPuani:_k680?.aralikPuani??null,
               piyasa:_s680?.researchPassive?.v681Piyasa||null,
               kanit:_k680?.kanit||[], hikaye:v679Hikaye(_s680||{}, _k680),
               yon:String(recommendation||''), timing:_s680?.timing||null,

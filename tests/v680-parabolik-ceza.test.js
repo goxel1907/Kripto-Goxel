@@ -24,16 +24,17 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 function yukle() {
   // V686 fonksiyona tam R/R terimini ekledi; sabitleri de yuklenmeli
   const isim = ['V680_PARABOLIK_CEZA','V680_RET6_TABAN','V680_CEZA_TAVAN','V680_CEP_RET6','V680_CEP_CEZA',
-                'V686_TAM_RR_SKORA','V686_RR_ESIK','V686_RR_CEZA_TAVAN'];
+                'V686_TAM_RR_SKORA','V686_RR_ESIK','V686_RR_CEZA_TAVAN',
+                'V688_ARALIK_DUZELT','V688_DESTEK_OKUMA','V688_EQL_PUAN','V688_DESTEKSIZ_CEZA'];
   const satir = isim.map(n => {
     const re = new RegExp('^const\\s+' + n + '\\s*=.*$', 'm');
     const m = server.match(re);
     assert.ok(m, n + ' sabiti bulunmali');
     return m[0];
   });
-  const i = server.indexOf('function v678GrafikKalitesi');
+  const i = server.indexOf('function v688AralikPuani');   // V688 yardimcilari da gerekli
   assert.ok(i > 0);
-  const son = server.indexOf('\nfunction ', i + 10);
+  const son = server.indexOf('\nfunction r486EntryTruthGuard', i + 10);
   const ctx = { process: { env: {} }, Math, Number, String, Object };
   vm.createContext(ctx);
   vm.runInContext(satir.join('\n') + '\n' + server.slice(i, son) +
@@ -63,7 +64,9 @@ test('V680: YAVAS gelinen tepe cezalandirilmiyor (olcum: +0,314)', () => {
   const f = yukle();
   const k = f(hikaye(0.957, 1.5), 2.0);
   assert.strictEqual(k.parabolikCeza, 0, 'ret6 dusukken ceza YOK');
-  assert.ok(k.skor >= 60, `yavas tepe skoru ${k.skor} — yuksek kalmali`);
+  // V688: eski (rp-0,5)*40 terimi bu adaya +18,3 veriyordu; olcum ise ret6<3 kontrolunde
+  // 95+ bandini 1,099 (alt-ort 0,943) gosteriyor -> +6. Skor 56: esigin (40) rahat ustunde.
+  assert.ok(k.skor >= 50, `yavas tepe skoru ${k.skor} — esigin ustunde kalmali`);
 });
 
 test('V680: ceza ret6 ile birlikte artiyor ve tavanla sinirli', () => {
