@@ -432,11 +432,11 @@ body:has(#mega-run-banner) .header{margin-top:64px}
     <div style="margin:8px 0 3px;font-weight:800;color:#00d084">Güvenlik kapıları (LIVE emir yolunda aktif)</div>
     <div>🛡️ <b>24h tepe kapısı</b> (k24≥85 → giriş yok) — <span style="color:#00d084">DÜZELTİLDİ (makroKonum bağlandı, eskiden ölüydü)</span></div>
     <div>🛡️ <b>R473 tepe-tuzak</b> (yüksek RSI + satıcı defter → giriş yok) — <span style="color:#00d084">DÜZELTİLDİ (defter bağlandı)</span> · <b>volatilite freni</b> gerçek ATR ile aktif</div>
-    <div>🛡️ <b>R467</b> 1h RSI≥90 → yok · max 2 pozisyon · SL×kaldıraç güvenlik bandı</div>
+    <div>🛡️ <b>R467</b> 1h RSI≥90 → yok · max 1 pozisyon · SL×kaldıraç güvenlik bandı</div>
     <div style="margin:8px 0 3px;font-weight:800;color:#00d084">Algı katmanı (grafiği görüyor mu?)</div>
     <div>👁️ <b>Kör-testte 8/8 formasyon %100 tanındı</b> (fitil reddi · engulf · spike · boşalt-doldur · ikili fitil). AI'ya besleniyor (AI kapalıyken uykuda; kararı r447 verir).</div>
     <div style="margin:8px 0 3px;font-weight:800;color:#f1c40f">Env bayrakları (Railway)</div>
-    <div>⚙️ <code>BINANCE_EXECUTION_ENV=LIVE</code> · <code>BINANCE_LIVE_API_KEY/SECRET</code> · <code>R497_SLOT_MARGIN_USDT=30</code> · <code>V601_MARJ_TABAN=30</code> · <code>R486_MIN_LEVERAGE=7</code></div>
+    <div>⚙️ <code>BINANCE_EXECUTION_ENV=LIVE</code> · <code>BINANCE_LIVE_API_KEY/SECRET</code> · <code>R497_SLOT_MARGIN_USDT=50</code> · <code>V601_MARJ_TABAN=50</code> · <code>V601_MARJ_TAVAN=0</code> (sınırsız) · <code>R486_MIN_LEVERAGE=7</code></div>
     <div style="margin:8px 0 3px;font-weight:800;color:#888">Backtest — dürüst okuma</div>
     <div>📊 Geçmiş policy-parity sonuçları yalnız araştırma referansıdır. LIVE bakiyeyi, marjı veya beklenen getiriyi belirlemez; geçmiş sonuç kâr garantisi değildir.</div>
     <div style="margin-top:8px;color:#666">Detaylı rehber: <b>LAZARUS-BOT-DURUM.md</b> (workspace klasöründe)</div>
@@ -1551,7 +1551,7 @@ function apiPage(){
           <option value="TOP24" selected>TOP10 çekirdek + 11–24 + full-market patlama workerları</option>
         </select><div style="font-size:7.5px;color:#667;margin-top:4px;line-height:1.4">Canlı sözleşmede sabittir: ilk TOP10 her tur korunur; 11–24 ve R370/R385/R328/R366 worker adayları ayrıca değerlendirilir.</div></div>
       <div><div style="font-size:8px;color:#888;margin-bottom:2px">Marj / işlem</div>
-        <input type="text" value="50$ taban · 100$ tavan" disabled style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"><div style="font-size:7px;color:#667;margin-top:3px">Sunucu sabiti: slot marjı 50$, bileşik büyüme tavanı 100$. Panelden girilen değer geçmez.</div></div>
+        <input type="text" value="50$ taban · 100$ tavan" disabled style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"><div style="font-size:7px;color:#667;margin-top:3px">Sunucu sabiti: slot marjı 50$, bileşik büyüme tavanı yok. Panelden girilen değer geçmez.</div></div>
       <div><div style="font-size:8px;color:#888;margin-bottom:2px">Kaldıraç</div>
         <input id="auto-leverage" type="number" value="7" min="7" max="7" disabled style="width:100%;background:#111;border:1px solid #2a2a4a;border-radius:6px;color:#fff;padding:5px 7px;font-size:11px"><div style="font-size:7px;color:#667;margin-top:3px">Canlı sözleşmede kaldıraç 7x sabittir; panel ve eski tarayıcı kaydı bunu değiştiremez.</div></div>
       <div><div style="font-size:8px;color:#888;margin-bottom:2px">Trailing SL % (kaldıraçsız)</div>
@@ -1603,7 +1603,7 @@ function apiPage(){
   </div>
   <div id="r49356-shadow-panel" style="background:linear-gradient(135deg,rgba(56,97,251,.07),rgba(155,89,182,.06));border:1px solid rgba(122,162,255,.28);border-radius:12px;padding:12px;margin-bottom:12px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px">
-      <div><div style="font-size:12px;font-weight:800;color:#ff9baa">🔴 LIVE KARAR + EMİR · 15M ADAY HAFIZASI · TEK POZİSYON ODAĞI</div><div style="font-size:8px;color:#aaa">Canlı Binance piyasa verisi + gerçek emir · mutlak marj tabanı 50$ · bileşik büyüme tavanı 100$ · tampon 20$ · max 1 pozisyon · poz açıkken yalnız pozisyon yönetimi</div></div>
+      <div><div style="font-size:12px;font-weight:800;color:#ff9baa">🔴 LIVE KARAR + EMİR · 15M ADAY HAFIZASI · TEK POZİSYON ODAĞI</div><div style="font-size:8px;color:#aaa">Canlı Binance piyasa verisi + gerçek emir · mutlak marj tabanı 50$ · bileşik büyüme tavanı yok · tampon 20$ · max 1 pozisyon · poz açıkken yalnız pozisyon yönetimi</div></div>
       <button onclick="loadR49356Shadow(true)" style="background:#17233b;border:1px solid #2c4a76;color:#9fc2ff;border-radius:7px;padding:5px 8px;font-size:9px;cursor:pointer">Yenile</button>
     </div>
     <div id="r500-execution-status" style="font-size:9px;color:#ffd166;background:#171104;border:1px solid #6d5218;border-radius:8px;padding:8px;margin-bottom:7px">LIVE çalışma durumu yükleniyor…</div>
@@ -2914,7 +2914,7 @@ function applyAutoUi(enabled, status=null){
     rb.style.borderColor=active?'rgba(0,208,132,.25)':'rgba(243,156,18,.25)';
     rb.style.color=active?'#9ee6c9':'#ffd28a';
     const sz=r486.sizing||{}, szLast=sz.last||{}, rx=r486.reaction||{};
-    rb.innerHTML=`🏦 <b>R486 kâr hasadı: ${known?(active?'AKTİF — LIVE pozisyonda SL/market çıkışı uygulayabilir':'SHADOW — yalnız telemetri, market çıkışı yok'):'Railway bilgisi bekleniyor'}</b><br><span style="color:#999">LONG-only • minimum ${esc(r486.minLeverage??7)}x • final SL×kaldıraç tavanı ROI %${esc(sz.finalSlLevRiskRoi??'—')} • mutlak marj tabanı ${esc(sz.fixedSlotUSDT??50)} USDT • max ${esc(sz.maxPositions??1)} poz • minimum tampon ${esc(sz.minBufferUSDT??20)} USDT • bileşik tavan 100 USDT</span><br><span style="color:#8fe9f2">15m kapanış kapısı: ${rx.closeGate===false?'KAPALI':'—'} • anlık MTF: ${rx.intrabarMtf?'AÇIK':'KAPALI'} • adaptif full-scan: ${esc(rx.adaptiveScanSec??'—')}sn • REST yük: ${rx.restLoad==null?'—':esc(Math.round(Number(rx.restLoad)*100))+'%'} • hedefli wake: ${rx.fastWake?'AÇIK':'KAPALI'} (${esc(rx.fastWakeGlobalSec??'—')}sn global / ${esc(rx.fastWakeSymbolSec??'—')}sn sembol)</span>${szLast.equity?`<br><span style="color:#70e0ad">Son wallet ${esc(Number(szLast.equity).toFixed(2))}$ → hedef marj ${esc(szLast.margin)}$ / poz</span>`:''}${szLast.ddMode?`<br><span style="color:#f6c86b">R490 DD: ${esc(szLast.ddMode)} • peak ${esc(szLast.peakEquity??'—')}$ • DD %${esc(szLast.ddPct??'—')} • marj çarpanı ×${esc(szLast.ddThrottle??'—')} • kalıcılık ${szLast.ddDurable?'✅':'⚠️'}${szLast.ddStateSource?' ('+esc(szLast.ddStateSource)+')':''}${szLast.ddStateError?' • hata: '+esc(szLast.ddStateError):''}</span>`:''}${(()=>{const pr=status?.safety?.positionRisk||{};const age=pr.successAgeMs==null?'—':Math.round(Number(pr.successAgeMs)/1000)+'sn';const ok=pr.successAgeMs!=null&&Number(pr.successAgeMs)<30000&&!pr.inflight&&Number(pr.consecutiveFailures||0)===0;return `<br><span style="color:${ok?'#70e0ad':'#f6c86b'}">V7 positionRisk: ${ok?'SAĞLIKLI':'İZLE'} • son başarılı ${esc(age)} • gecikme ${esc(pr.lastLatencyMs??'—')}ms • hata serisi ${esc(pr.consecutiveFailures??0)} • cooldown ${esc(Math.ceil(Number(pr.cooldownMs||0)/1000))}sn${pr.lastErrorType?' • '+esc(pr.lastErrorType):''}</span>`;})()}`;
+    rb.innerHTML=`🏦 <b>R486 kâr hasadı: ${known?(active?'AKTİF — LIVE pozisyonda SL/market çıkışı uygulayabilir':'SHADOW — yalnız telemetri, market çıkışı yok'):'Railway bilgisi bekleniyor'}</b><br><span style="color:#999">LONG-only • minimum ${esc(r486.minLeverage??7)}x • final SL×kaldıraç tavanı ROI %${esc(sz.finalSlLevRiskRoi??'—')} • mutlak marj tabanı ${esc(sz.fixedSlotUSDT??50)} USDT • max ${esc(sz.maxPositions??1)} poz • minimum tampon ${esc(sz.minBufferUSDT??20)} USDT • bileşik tavan YOK (sınırsız)</span><br><span style="color:#8fe9f2">15m kapanış kapısı: ${rx.closeGate===false?'KAPALI':'—'} • anlık MTF: ${rx.intrabarMtf?'AÇIK':'KAPALI'} • adaptif full-scan: ${esc(rx.adaptiveScanSec??'—')}sn • REST yük: ${rx.restLoad==null?'—':esc(Math.round(Number(rx.restLoad)*100))+'%'} • hedefli wake: ${rx.fastWake?'AÇIK':'KAPALI'} (${esc(rx.fastWakeGlobalSec??'—')}sn global / ${esc(rx.fastWakeSymbolSec??'—')}sn sembol)</span>${szLast.equity?`<br><span style="color:#70e0ad">Son wallet ${esc(Number(szLast.equity).toFixed(2))}$ → hedef marj ${esc(szLast.margin)}$ / poz</span>`:''}${szLast.ddMode?`<br><span style="color:#f6c86b">R490 DD: ${esc(szLast.ddMode)} • peak ${esc(szLast.peakEquity??'—')}$ • DD %${esc(szLast.ddPct??'—')} • marj çarpanı ×${esc(szLast.ddThrottle??'—')} • kalıcılık ${szLast.ddDurable?'✅':'⚠️'}${szLast.ddStateSource?' ('+esc(szLast.ddStateSource)+')':''}${szLast.ddStateError?' • hata: '+esc(szLast.ddStateError):''}</span>`:''}${(()=>{const pr=status?.safety?.positionRisk||{};const age=pr.successAgeMs==null?'—':Math.round(Number(pr.successAgeMs)/1000)+'sn';const ok=pr.successAgeMs!=null&&Number(pr.successAgeMs)<30000&&!pr.inflight&&Number(pr.consecutiveFailures||0)===0;return `<br><span style="color:${ok?'#70e0ad':'#f6c86b'}">V7 positionRisk: ${ok?'SAĞLIKLI':'İZLE'} • son başarılı ${esc(age)} • gecikme ${esc(pr.lastLatencyMs??'—')}ms • hata serisi ${esc(pr.consecutiveFailures??0)} • cooldown ${esc(Math.ceil(Number(pr.cooldownMs||0)/1000))}sn${pr.lastErrorType?' • '+esc(pr.lastErrorType):''}</span>`;})()}`;
   }
   { const sh=document.getElementById('auto-short'); if(sh){ sh.checked=false; sh.disabled=true; } }
   if(log) log.style.display = autoEnabled ? 'block' : 'none';
@@ -3659,7 +3659,9 @@ async function v679Yenile(){
     const j=await railGet('/api/v679/beyin/'+Date.now()+'?limit=40');
     if(!j||!j.ok){ el.innerHTML='<span style="color:#f85149">veri yok</span>'; return; }
     const o=j.ozet||{};
-    oz.textContent=`${j.build} · ${o.emir||0} emir / ${o.atlandi||0} atlandı · kalite ${o.gecen||0} geçti / ${o.elenen||0} elendi · eşik ${o.esik}`;
+    const _ok=(j.kayitlar||[]).filter(x=>x.skor!=null);
+    const _gec=_ok.filter(x=>x.gecti!==false).length;
+    oz.textContent=`${j.build} · ${o.emir||0} emir / ${o.atlandi||0} atlandı · okuma ${_ok.length}/${(j.kayitlar||[]).length} · kalite ${_gec} geçti / ${_ok.length-_gec} elendi · eşik ${o.esik}`;
     if(!j.kayitlar||!j.kayitlar.length){ el.innerHTML='<div style="color:#7f8ba3">Henüz kayıt yok — bot bir tarama turu tamamlayınca dolar.</div>'; return; }
     // en cok hangi sebeple atliyor: tek bakista gorunur olsun
     let ustBilgi='';
@@ -3682,7 +3684,7 @@ async function v679Yenile(){
           <b style="font-size:13px">${v679Esc(k.symbol)}</b>
           <span style="color:${renk};font-weight:600">${skor}/100</span>
           <span style="font-size:10px;color:${renk};font-weight:600">${kararEtiket}</span>
-          <span style="font-size:10px;color:#7f8ba3">${k.gecti===false?'kalite elendi':'kalite geçti'} · ${dk}dk önce${k.rank?' · sıra '+k.rank:''}</span>
+          <span style="font-size:10px;color:#7f8ba3">${k.skor==null?'okuma yok (kapıdan önce elendi)':(k.gecti===false?'kalite elendi':'kalite geçti')} · ${dk}dk önce${k.rank?' · sıra '+k.rank:''}</span>
         </div>
         ${k.sebep?`<div style="font-size:10.5px;color:#d29922;background:rgba(210,153,34,.08);border-radius:6px;padding:5px 7px;margin-bottom:5px">neden almadı: ${v679Esc(k.sebep)}</div>`:''}
         <div style="font-size:10px;color:#8b949e;margin-bottom:5px">

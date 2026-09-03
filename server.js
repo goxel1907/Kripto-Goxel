@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_6_DOGRU_RR'
+const LAZARUS_BUILD = 'V6_8_7_TERS_KAPI_KALKTI'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6893,6 +6893,19 @@ function v623EtkinMarjTabani(equityUsd, levX, slPct){
 // Eskiden 100$ sabitti; equity ~333$'i gecince buyume duruyordu. Taban 50$ duruyor,
 // tek pozisyon duruyor, tampon 20$ duruyor. Tavan istersen V601_MARJ_TAVAN ile koy.
 // ═══ V685 ═══ Hedef marji KULLANILABILIR bakiyeyle kelepcele (-2019 panzehiri).
+// ═══ V687 ═══ TAM R/R saglikliyken ILK ENGEL vetosu bloklamaz.
+// 88 canli islem, dort kutu (tam R/R x ilk engel R/R):
+//   tam R/R>=4 & ilk engel <0,65 : n=29 WR %62 net +48,5$   <- EN IYI KUTU
+//   tam R/R>=4 & ilk engel >=0,65: n=25 WR %36 net -15,7$
+//   tam R/R<4  & ilk engel <0,65 : n=18 WR %33 net -120,3$
+//   tam R/R<4  & ilk engel >=0,65: n=16 WR %38 net -43,7$
+// tam R/R>=4 icinde ilk engel DUSTUKCE sonuc IYILESIYOR:
+//   0-0,45 WR %83 +28,3$ · 0,45-0,65 WR %57 +20,2$ · 0,65-1,0 WR %44 +11,7$ · 1,0+ WR %14 -27,3$
+// Yani kapi yalniz ise yaramaz degil, TERS. Canli ornek 03.09 10:28 BR:
+// tam R/R 4,99 · ilk engel 0,42 -> "fiziksel olarak yetersiz" diye reddedildi;
+// o kutu botun en iyi kutusu. Tam R/R saglikliyken bu veto artik bloklamaz.
+const V687_TAM_RR_MUAFIYET = String(process.env.V687_TAM_RR_MUAFIYET ?? '1') !== '0';
+const V687_MUAF_RR = Math.max(1, Math.min(10, Number(process.env.V687_MUAF_RR || 4)));
 // ═══ V686 ═══ TAM R/R skora giriyor. 88 canli islem: tam R/R <-> ROI r=+0,343
 // (en guclu tekil isaret). Botun kapi koydugu ILK ENGEL R/R'sinin ROI ile
 // iliskisi r=-0,016, yani SIFIR. Skorun tam R/R ile iliskisi r=+0,146: skor bu
@@ -8111,7 +8124,9 @@ function r486EntryTruthGuard(story={},opts={}){
   // ═══ V648 ═══ V647-A OLU KODDU: gate'e recommendedSl/sl HIC gecilmiyordu, bu yuzden
   // hafiza dalinin `_s > 0` sarti her zaman false kaldi ve dal bir kez bile calismadi.
   const r493EntrySafety=r493EntrySafetyGate(story,{firstObstacleRR:firstRRAdjusted,firstObstacleRole:story.firstObstacleRole,plannedEntry,recommendedSl,originalSl:sl,originalEntry:entry},{side,entry:plannedEntry||entry,sl:recommendedSl});
-  const firstObstacleHard=legacyFirstObstacleHard||['FIRST_OBSTACLE_RR_UNKNOWN','LOW_FIRST_OBSTACLE_RR'].includes(String(r493EntrySafety?.code||''));
+  // ═══ V687 ═══ tam R/R saglikliysa ilk-engel vetosu SERT olmaz (olculdu, yukarida).
+  const _v687Muaf = V687_TAM_RR_MUAFIYET && fullRR!==null && Number(fullRR) >= V687_MUAF_RR;
+  const firstObstacleHard=_v687Muaf ? false : (legacyFirstObstacleHard||['FIRST_OBSTACLE_RR_UNKNOWN','LOW_FIRST_OBSTACLE_RR'].includes(String(r493EntrySafety?.code||'')));
   const rawFlowState=String(story.flowState||story?.orderFlow?.state||'UNKNOWN').toUpperCase(),liveFlowAgainst=['SELLERS_CONTROL','BUY_ABSORPTION_BEAR','FLOW_DIVERGENCE_SELL_LEAN'].includes(rawFlowState);
   // ═══ V628 ═══ ATESLEME KOPRUSU: taze kirilim + henuz uzamamis + dusuk ATR ise
   // `retestBelowStop` tek basina REJECT etmez; karar asagidaki kanit kapilarina kalir.
@@ -8131,16 +8146,17 @@ function r486EntryTruthGuard(story={},opts={}){
   if(firstRaw>0&&!firstObstacleDirectionValid)reasons.push(`ilk engel LONG yönünde değil (${firstRaw}); ${first>entry?'en yakın gerçek üst engel '+first+' ile çözüldü':'geçerli üst engel bulunamadı'}`);
   if(targetRaw>0&&!targetDirectionValid)reasons.push(`hedef likidite LONG yönünde değil; karar hesabından çıkarıldı (${targetRaw})`);
   if(firstObstacleSoft)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} ince (uyarı)`);
-  if(legacyFirstObstacleHard)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
+  if(legacyFirstObstacleHard&&!_v687Muaf)reasons.push(`ilk engel R/R ${Number(firstRRAdjusted).toFixed(2)} fiziksel olarak yetersiz`);
+  if(_v687Muaf&&(legacyFirstObstacleHard||firstObstacleSoft))reasons.push(`V687: tam R/R ${Number(fullRR).toFixed(2)} saglikli — ilk engel ${Number(firstRRAdjusted).toFixed(2)} vetosu kaldirildi (olcum: bu kutu n=29 WR %62 net +48,5$)`);
   if(r493EntrySafety.blocked)reasons.push(`R493 ${r493EntrySafety.code}: ${r493EntrySafety.reason}`);
   if(_v649BolgeUstu)reasons.push(`V649: fiyat 15m hafıza bölgesinin %${_v649Sapma.toFixed(2)} üstünde — market yok, bölgeye pusu kuruldu (${_v649Bolge?.low}-${_v649Bolge?.high})`);
   if(_v660Imkansiz)reasons.push(`V660 DURDURULAMAZ: ATR %${Number(atrPct).toFixed(2)} × ${R486_MIN_STOP_ATR} = gereken stop %${_v660Gereken.toFixed(2)} > ${_v660Lev}x likidasyon tavanı %${_v660LikTavan.toFixed(2)} — bu işlem hiçbir stopla korunamaz`);
   if(directionAgainst)reasons.push(`yön/akış LONG karşıtı`);
   if(tightStop)reasons.push(`SL ${Number(stopPct||0).toFixed(2)}% < ${minStopPct.toFixed(2)}% (${R486_MIN_STOP_ATR} ATR)`);
   const liveResearchRisk=!!(story.orderFlow?.conflict||story.oi?.reliable===false);
-  const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||(!V592_POLICY_PARITY_MODE&&liveResearchRisk)||firstObstacleSoft||tightStop||retestBelowStop||r493EntrySafety.blocked);
+  const earlyRisk=!!(Number(story.topRisk||0)>=4||story.parabolicChase||story.targetRejection||(!V592_POLICY_PARITY_MODE&&liveResearchRisk)||(firstObstacleSoft&&!_v687Muaf)||tightStop||retestBelowStop||r493EntrySafety.blocked);
   const researchShadow={flowState:rawFlowState,flowAgainst:liveFlowAgainst,orderFlowConflict:story.orderFlow?.conflict===true,oiReliable:story.oi?.reliable??null,wouldRaiseEarlyRisk:liveResearchRisk,decisionImpact:false,orderBlocking:false,sizingImpact:false,exitImpact:false};
-  return {active:true,marketAllowed,v660Imkansiz:_v660Imkansiz,v660Gereken:+_v660Gereken.toFixed(3),v660LikTavan:+_v660LikTavan.toFixed(3),v649BolgeUstu:_v649BolgeUstu,v649Sapma:+Number(_v649Sapma||0).toFixed(3),v649Bolge:_v649Bolge,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,earlyRisk,r493EntrySafety,researchShadow,reasons};
+  return {active:true,marketAllowed,v660Imkansiz:_v660Imkansiz,v660Gereken:+_v660Gereken.toFixed(3),v660LikTavan:+_v660LikTavan.toFixed(3),v649BolgeUstu:_v649BolgeUstu,v649Sapma:+Number(_v649Sapma||0).toFixed(3),v649Bolge:_v649Bolge,mode:marketAllowed?'MARKET_OK':(r493EntrySafety.blocked?`R493_${r493EntrySafety.action}`:(mode==='JOIN'?'WAIT_PLAN_TRUTH':mode)),plannedEntry,originalEntry:entry,originalSl:sl,originalTp:tp,recommendedSl,recommendedTp,stopPct:stopPct===null?null:+stopPct.toFixed(2),minStopPct:+minStopPct.toFixed(2),tightStop,retestBelowStop:retestBelowStopEtkin,retestBelowStopHam:retestBelowStop,v628Kopru:_v628Kopru,firstObstacle:first||null,firstObstacleRaw:firstRaw||null,firstObstacleDirectionValid,targetLiquidity:target||null,targetLiquidityRaw:targetRaw||null,targetDirectionValid,firstObstacleType:story.firstObstacleType||null,firstObstacleRole:story.firstObstacleRole||null,firstObstacleStrength:story.firstObstacleStrength||null,firstObstacleRR:firstRRAdjusted===null?null:+firstRRAdjusted.toFixed(2),fullRR:fullRR===null?null:+fullRR.toFixed(2),firstObstacleSoft,firstObstacleHard,v687Muaf:_v687Muaf,earlyRisk,r493EntrySafety,researchShadow,reasons};
 }
 
 // R493 v5.5: R482 operasyonel güvenlik ayrımı.
@@ -11640,7 +11656,7 @@ function v679Hikaye(story={}, k678=null){
       if(Number.isFinite(P.cvdRatio)) olcu.push(`CVD %${P.cvdRatio.toFixed(0)} alici`);
       if(Number.isFinite(P.bookImb)) olcu.push(`emir defteri ${P.bookImb>0?'+':''}${P.bookImb.toFixed(2)}`);
       if(Number.isFinite(P.oi1h)) olcu.push(`OI 1s ${P.oi1h>0?'+':''}${P.oi1h.toFixed(2)}%`);
-      if(Number.isFinite(P.funding)) olcu.push(`funding ${(P.funding*100).toFixed(4)}%`);
+      if(Number.isFinite(P.funding)) olcu.push(`funding ${P.funding.toFixed(4)}%`);
       const lL=Number(P.likLong5m)||0, lS=Number(P.likShort5m)||0;
       if(lL>0||lS>0) olcu.push(`5dk likidasyon long ${lL.toFixed(0)}$ / short ${lS.toFixed(0)}$${P.likDominance?' ('+P.likDominance+')':''}`);
       if(P.likCascade) olcu.push(`LIKIDASYON KASKADI: ${P.likCascade}`);
