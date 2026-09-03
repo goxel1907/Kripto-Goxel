@@ -41,14 +41,15 @@ test('V661: gerçek risk HER işlemde loglanıyor (gizlenmiyor)', () => {
 
 test('V661: likidasyon tavanı KALDIRILMADI — fizik, tercih değil', () => {
   assert.match(server, /const _v660LikTavan = \(100 \/ _v660Lev\) \* V660_LIK_PAYI;/);
-  // V662: listeye _v662Tavan (engele uyumlu) eklendi. Terim terim kontrol —
-  // yeni tavan eklenince test kirilmasin ama hicbir tavan sessizce dusmesin.
-  const _mi = server.indexOf('minStopPct=Math.max(.80,Math.min(');
-  assert.ok(_mi > 0, 'minStopPct ifadesi bulunmali');
+  // V691: _v662Tavan bu listeden CIKARILDI. EGLD kaybi gosterdi ki engel tavani
+  // ATR tabanini eziyordu (12,46 -> 0,80). Taban artik yalniz likidasyon ve ATR'den.
+  const _mi = server.indexOf('const _v691Taban = Math.max(.80, Math.min(');
+  assert.ok(_mi > 0, 'V691 taban ifadesi bulunmali');
   const _ms = server.slice(_mi, _mi + 120);
-  for (const t of ['_v660LikTavan','_v660Gereken','_v662Tavan']) {
-    assert.ok(_ms.includes(t), `minStopPct icinde ${t} olmali`);
+  for (const t of ['_v660LikTavan','_v660Gereken']) {
+    assert.ok(_ms.includes(t), `taban icinde ${t} olmali`);
   }
+  assert.ok(!_ms.includes('_v662Tavan'), 'engel tavani TABANA girmemeli (V691)');
 });
 
 test('V661: 100$ bakiyede risk aritmetiği (kullanıcı bunu bilerek seçti)', () => {

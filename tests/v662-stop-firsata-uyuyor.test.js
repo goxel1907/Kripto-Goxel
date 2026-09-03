@@ -21,13 +21,18 @@ test('V662: stop tavanı engel mesafesinden türetiliyor', () => {
   assert.match(server, /const _v662Engel = _v662Aday\[0\] \|\| 0;/);
   assert.match(server, /const _v662D = \(_v662Engel > 0 && entry > 0\) \? \(_v662Engel-entry\)\/entry\*100 : 0;/);
   assert.match(server, /const _v662Tavan = \(V662_ENGELE_UYUMLU_STOP && _v662D > 0\) \? _v662D \/ V662_HEDEF_RR : Infinity;/);
-  assert.match(server, /minStopPct=Math\.max\(\.80,Math\.min\(_v660LikTavan,_v660Gereken,_v662Tavan\)\)/);
+  // V691: _v662Tavan artik TABANI belirlemiyor. Hesaplanmaya devam ediyor ve
+  // ATR tabanindan daha darsa bunu ISARET olarak veriyor (_v691EngelDar):
+  // "ilk engel ATR gurultusunden yakin" = bu bir MARKET islemi degil.
+  assert.ok(!/minStopPct=Math\.max\(\.80,Math\.min\(_v660LikTavan,_v660Gereken,_v662Tavan\)\)/.test(server),
+    'engel tavani artik tabani ezmemeli (EGLD kaybi)');
+  assert.match(server, /const _v691EngelDar = V662_ENGELE_UYUMLU_STOP && _v662D>0 && _v662Tavan < _v691Taban;/);
 });
 
 test('V662: engel HESAPLANABILIR — `first` sonra geldiği için yerinde türetiliyor', () => {
   const tavanIdx = server.indexOf('const _v662Tavan =');
   const firstIdx = server.indexOf('let first=firstObstacleDirectionValid');
-  const minIdx   = server.indexOf('minStopPct=Math.max(.80,Math.min(_v660LikTavan');
+  const minIdx   = server.indexOf('const _v691Taban = Math.max(.80, Math.min(_v660LikTavan');
   assert.ok(tavanIdx > 0 && minIdx > tavanIdx, 'tavan, minStopPct hesabından önce olmalı');
   assert.ok(firstIdx > minIdx, '`first` sonra geliyor — bu yüzden yerinde türetim şart');
   // kaynaklar story uzerinde ve entry opts'ta — ikisi de o noktada mevcut
