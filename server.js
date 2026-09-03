@@ -472,7 +472,7 @@ function cachedMeta(key){
 // tanimi EN BASTA olmak zorunda. Ilk yazimda 7182'ye koymustum -> bot acilista
 // ReferenceError ile coker, `node -c` bunu YAKALAMAZ (sozdizimi degil, calisma zamani).
 const V692_ILK_ENGEL_KAPISI_KALKTI = String(process.env.V692_ILK_ENGEL_KAPISI_KALKTI ?? '1') !== '0';
-const LAZARUS_BUILD = 'V6_9_2_ILK_ENGEL_KAPISI_KALKTI'
+const LAZARUS_BUILD = 'V6_9_5_ILK_ENGEL_5NCI_BAS'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6838,6 +6838,12 @@ console.log(`[V634] RISK SOZLESMESI: ${R486_MAX_POSITIONS} pozisyon x islem basi
     } else {
       console.log(`[V692] ILK-ENGEL AILESI KAPALI (ENV'de ilgili satir yok)`);
     }
+    // ═══ V695 ═══ SABIT KODLANMIS esik: ENV'de gorunmez ama davranisi belirliyordu.
+    // Ilan edilmezse kimse 0,45'in orada oldugunu bilmez (ben de V692'de kacirdim).
+    console.log(`[V695] legacyFirstObstacleHard esigi 0.45 -> 0 · ASIL BEKCI buydu;`
+      + ` CAKE ornegi: ilk engel R/R 0,04 · rol HARD_OBSTACLE -> MARKET engelleniyordu`);
+    if (false) {
+    }
   }
   // ═══ V693 ═══ Emir kaldiraci ile hesap kaldiraci AYNI olmali.
   if (V592_EXACT_BACKTEST_AUTHORITY && V592_LEVERAGE_LOCK > 0 && V592_LEVERAGE_LOCK !== R486_MIN_LEVERAGE) {
@@ -8358,7 +8364,14 @@ function r486EntryTruthGuard(story={},opts={}){
   }
   const fullRisk=entry>recommendedSl&&recommendedSl>0?entry-recommendedSl:risk,fullRR=recommendedTp>entry&&fullRisk>0?(recommendedTp-entry)/fullRisk:null,firstRRAdjusted=first>entry&&fullRisk>0?(first-entry)/fullRisk:firstObstacleRR;
   const firstObstacleSoft=firstRRAdjusted!==null&&firstRRAdjusted<R486_FIRST_OBSTACLE_MIN_RR&&!story.validatedTrendRetest&&!story.structuredContinuation;
-  const legacyFirstObstacleHard=firstRRAdjusted!==null&&firstRRAdjusted<0.45&&String(story.firstObstacleRole||'')==='HARD_OBSTACLE'&&!story.validatedTrendRetest&&!story.structuredContinuation;
+  // ═══ V695 ═══ AILENIN 5. BASI — ve SABIT KODLANMISTI (0.45), hicbir ENV ulasamiyordu.
+  // CANLI KANIT (CAKE, 03.09.2026 15:36): ilk engel R/R 0,04 · rol HARD_OBSTACLE
+  //   -> 0,04 < 0,45 -> legacyFirstObstacleHard = true -> MARKET engellendi.
+  // V692'de UC kapiyi actim (R493 0,10->0,01 · V45 0,10->0 · R486 0,10->0,01) ama
+  // ASIL BEKCI buydu: panelde hala '0 acildi / 16 atlandi' yaziyordu.
+  // V687 muafiyeti de kurtaramiyor cunku CAKE'in tam R/R'si 2,78 (< 4).
+  const _v695FoEsik = V692_ILK_ENGEL_KAPISI_KALKTI ? 0 : 0.45;
+  const legacyFirstObstacleHard=firstRRAdjusted!==null&&firstRRAdjusted<_v695FoEsik&&String(story.firstObstacleRole||'')==='HARD_OBSTACLE'&&!story.validatedTrendRetest&&!story.structuredContinuation;
   // ═══ V648 ═══ V647-A OLU KODDU: gate'e recommendedSl/sl HIC gecilmiyordu, bu yuzden
   // hafiza dalinin `_s > 0` sarti her zaman false kaldi ve dal bir kez bile calismadi.
   const r493EntrySafety=r493EntrySafetyGate(story,{firstObstacleRR:firstRRAdjusted,firstObstacleRole:story.firstObstacleRole,plannedEntry,recommendedSl,originalSl:sl,originalEntry:entry},{side,entry:plannedEntry||entry,sl:recommendedSl});
