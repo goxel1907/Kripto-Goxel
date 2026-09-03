@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_4_LIKIDASYON_BAGLI'
+const LAZARUS_BUILD = 'V6_8_5_EMIR_GECIYOR'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6892,6 +6892,8 @@ function v623EtkinMarjTabani(equityUsd, levX, slPct){
 // ═══ V683 ═══ MARJ TAVANI KALDIRILDI. 0 = sinirsiz -> bilesik buyume durmaz.
 // Eskiden 100$ sabitti; equity ~333$'i gecince buyume duruyordu. Taban 50$ duruyor,
 // tek pozisyon duruyor, tampon 20$ duruyor. Tavan istersen V601_MARJ_TAVAN ile koy.
+// ═══ V685 ═══ Hedef marji KULLANILABILIR bakiyeyle kelepcele (-2019 panzehiri).
+const V685_KULLANILABILIR_KELEPCE = String(process.env.V685_KULLANILABILIR_KELEPCE ?? '1') !== '0';
 const V683_MARJ_TAVAN_RAW = Number(process.env.V601_MARJ_TAVAN ?? 0);
 const V601_HARD_MARGIN_CAP_USDT = (Number.isFinite(V683_MARJ_TAVAN_RAW) && V683_MARJ_TAVAN_RAW > 0)
   ? Math.max(V601_HARD_MARGIN_FLOOR_USDT, V683_MARJ_TAVAN_RAW) : Number.MAX_SAFE_INTEGER;
@@ -22111,7 +22113,7 @@ const cooldownMap = new Map(); // symbol (FULLSYM) → expiry timestamp
 // Sabit marjin yerine güncel bakiyeye göre pozisyon: bakiye büyürse marjin büyür, küçülürse küçülür.
 // GÜVENLİK: bakiyenin %40'ı × 2 poz = %80 kullanım, %20 TAMPON (iki poz aynı anda SL yerse hesap sağ kalır).
 // Bakiye 50$ → marjin 20$ (poz başına). Kâr olur 54$ → marjin 21.6$. Otomatik bileşik büyüme.
-let r372BakiyeCache = { value: 0, ts: 0 };
+let r372BakiyeCache = { value: 0, ts: 0, avail: 0 };
 let r372BilesikMeta = {ok:false,equity:0,margin:0,maxPositions:R486_MAX_POSITIONS,perPositionPct:40,totalUsePct:80,bufferPct:20,source:'INIT'};
 // ══ V4.7.4.43-BH3: HAYALET SATIRLAR SANAL EQUITY'YI SIFIRLADI ═════════
 // 11.08 zincirinin GORUNMEYEN sonucu:
@@ -22155,13 +22157,35 @@ async function r372GetBilesikMarjin(apiKey, apiSecret, fallbackMargin) {
       const snap=await getSignedAccountSnapshot(apiKey,apiSecret,{forceFresh:false,allowStale:true,purpose:'COMPOUND_MARGIN'});
       const acc=snap.account||{},assets=Array.isArray(acc.assets)?acc.assets:[],usdtRow=assets.find(x=>String(x.asset||'').toUpperCase()==='USDT')||{};
       const wallet=Number(acc.totalWalletBalance??usdtRow.walletBalance??usdtRow.balance??0);
-      if(Number.isFinite(wallet)&&wallet>0)r372BakiyeCache={value:wallet,ts:now};
+      const avail=Number(acc.availableBalance??usdtRow.availableBalance??usdtRow.maxWithdrawAmount??0);
+      if(Number.isFinite(wallet)&&wallet>0)r372BakiyeCache={value:wallet,ts:now,avail:(Number.isFinite(avail)&&avail>=0)?avail:0};
     }
     const bakiye = r372BakiyeCache.value;
     if (!(bakiye > 0)) return Number(fallbackMargin||0);
     const contract = r48636CompoundMarginFromEquity(bakiye, R486_MAX_POSITIONS);
-    r372BilesikMeta = {...contract,source:'USDT_WALLET_BALANCE'};
-    return contract.ok ? contract.margin : Number(fallbackMargin||0);
+    // ═══ V685 ═══ CANLI KANIT: 38 emir denemesinin 30'u borsaya ulasmadi;
+    // Binance'in kendi mesaji "/fapi/v1/order: Margin is insufficient. (-2019)".
+    // Sebep: boyut WALLET bakiyesinden hesaplaniyor (bilesik buyume kapanmis kari
+    // tasisin diye) ama Binance KULLANILABILIR bakiyeden kesiyor. Acik pozisyon,
+    // komisyon veya yetim emir ikisini ayirinca emir oluyor. Artik hedef marj
+    // kullanilabilir bakiyenin tasiyabilecegiyle kelepcelenir. Bilesik buyume
+    // bozulmaz: kullanilabilir bakiye buyudukce kelepce kendiliginden acilir.
+    let _v685Marj = contract.ok ? contract.margin : Number(fallbackMargin||0);
+    let _v685Not = null;
+    const _v685Av = Number(r372BakiyeCache.avail||0);
+    if (V685_KULLANILABILIR_KELEPCE && Number.isFinite(_v685Av) && _v685Av > 0) {
+      // %2 kayma payi + taker komisyonu (notional x %0,05)
+      const _tasinabilir = _v685Av / (1.02 + 0.0005*Math.max(1,R486_MIN_LEVERAGE));
+      if (_tasinabilir < _v685Marj) {
+        const _eski = _v685Marj;
+        _v685Marj = Math.max(0, Math.floor(_tasinabilir*100)/100);
+        _v685Not = `kullanilabilir ${_v685Av.toFixed(2)}$ -> marj ${_eski.toFixed(2)}$ yerine ${_v685Marj.toFixed(2)}$`;
+        try{ logAuto(`\u{1F4B3} V685 marj kelepcesi: ${_v685Not} (wallet ${bakiye.toFixed(2)}$)`); }catch(_){}
+      }
+    }
+    r372BilesikMeta = {...contract,source:'USDT_WALLET_BALANCE',margin:_v685Marj,
+      v685Avail:_v685Av,v685Kelepce:_v685Not,v685Walletmarj:contract.margin};
+    return _v685Marj;
   } catch(e) {
     const err=String(e?.message||e).slice(0,100);
     // R490 v3 fail-safe: geçici Binance bakiye hatasında throttle'ı unutup panel marjına sıçrama.
