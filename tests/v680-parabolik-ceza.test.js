@@ -22,7 +22,9 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 // 0,0110'dan 0,0087'ye dustu (-%21). Yeni skor 25,8 -> ELENIR.
 
 function yukle() {
-  const isim = ['V680_PARABOLIK_CEZA','V680_RET6_TABAN','V680_CEZA_TAVAN','V680_CEP_RET6','V680_CEP_CEZA'];
+  // V686 fonksiyona tam R/R terimini ekledi; sabitleri de yuklenmeli
+  const isim = ['V680_PARABOLIK_CEZA','V680_RET6_TABAN','V680_CEZA_TAVAN','V680_CEP_RET6','V680_CEP_CEZA',
+                'V686_TAM_RR_SKORA','V686_RR_ESIK','V686_RR_CEZA_TAVAN'];
   const satir = isim.map(n => {
     const re = new RegExp('^const\\s+' + n + '\\s*=.*$', 'm');
     const m = server.match(re);

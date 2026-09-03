@@ -461,7 +461,7 @@ function cachedMeta(key){
 }
 
 // ── R30 SAFE-MM PATCH — canlı risk ve karar güvenlik versiyonu ────────────────
-const LAZARUS_BUILD = 'V6_8_5_EMIR_GECIYOR'
+const LAZARUS_BUILD = 'V6_8_6_DOGRU_RR'
 
 // ═══ V592 BACKTEST-POLICY PARITY CONTRACT — CANLI EMIR GUVENLIGIYLE ═══
 // Historical June replay did not contain raw aggTrade/CVD, full OI, order-book,
@@ -6893,6 +6893,15 @@ function v623EtkinMarjTabani(equityUsd, levX, slPct){
 // Eskiden 100$ sabitti; equity ~333$'i gecince buyume duruyordu. Taban 50$ duruyor,
 // tek pozisyon duruyor, tampon 20$ duruyor. Tavan istersen V601_MARJ_TAVAN ile koy.
 // ═══ V685 ═══ Hedef marji KULLANILABILIR bakiyeyle kelepcele (-2019 panzehiri).
+// ═══ V686 ═══ TAM R/R skora giriyor. 88 canli islem: tam R/R <-> ROI r=+0,343
+// (en guclu tekil isaret). Botun kapi koydugu ILK ENGEL R/R'sinin ROI ile
+// iliskisi r=-0,016, yani SIFIR. Skorun tam R/R ile iliskisi r=+0,146: skor bu
+// sayiyi neredeyse hic duymuyordu. Zararin tamami R/R<4'te: net -164,1$ (n=34)
+// karsisinda R/R>=4 net +32,8$ (n=54). UYARI: iliski ilk yaride TERSINE donuyor,
+// bu yuzden sert kapi degil KADEMELI ceza; esik ve agirlik ENV'den ayarlanir.
+const V686_TAM_RR_SKORA = String(process.env.V686_TAM_RR_SKORA ?? '1') !== '0';
+const V686_RR_ESIK = Math.max(1, Math.min(10, Number(process.env.V686_RR_ESIK || 4)));
+const V686_RR_CEZA_TAVAN = Math.max(0, Math.min(40, Number(process.env.V686_RR_CEZA_TAVAN || 18)));
 const V685_KULLANILABILIR_KELEPCE = String(process.env.V685_KULLANILABILIR_KELEPCE ?? '1') !== '0';
 const V683_MARJ_TAVAN_RAW = Number(process.env.V601_MARJ_TAVAN ?? 0);
 const V601_HARD_MARGIN_CAP_USDT = (Number.isFinite(V683_MARJ_TAVAN_RAW) && V683_MARJ_TAVAN_RAW > 0)
@@ -7980,6 +7989,12 @@ function v678GrafikKalitesi(story={}, atrPct=null){
     else if(tl.breakUp){ s+=8; kanit.push('trend cizgisi kirilimi'); }
     if(story?.orderBlock?.['15m']?.supply?.inZone){ s+=6; kanit.push('arz OB icinde'); }
     if(tl.falseBreakUp){ s-=8; kanit.push('YANLIS kirilim'); }
+    // ═══ V686 ═══ TAM R/R: hikaye bunu zaten hesapliyordu, skor okumuyordu.
+    const _rr686=Number(story?.entryTruth?.fullRR); let ceza686=0;
+    if(V686_TAM_RR_SKORA && Number.isFinite(_rr686) && _rr686>0 && _rr686<V686_RR_ESIK){
+      ceza686 = Math.min(V686_RR_CEZA_TAVAN, (V686_RR_ESIK-_rr686)/V686_RR_ESIK*V686_RR_CEZA_TAVAN);
+      s -= ceza686; kanit.push(`tam R/R ${_rr686.toFixed(2)} < ${V686_RR_ESIK} (-${ceza686.toFixed(0)})`);
+    }
     // ═══ V680 ═══ "Tepede" olmak, oraya DIKEY gelindiyse arti degil eksi.
     const r6=Number(t.ret6); let ceza680=0;
     if(V680_PARABOLIK_CEZA && Number.isFinite(r6)){
@@ -7989,7 +8004,8 @@ function v678GrafikKalitesi(story={}, atrPct=null){
     }
     return {ok:true, skor:+Math.max(0,Math.min(100,s)).toFixed(1), kanit,
             rangePos:+rp.toFixed(3), atrPct:Number.isFinite(a)?+a.toFixed(2):null, trend:t.trend||null,
-            ret6:Number.isFinite(r6)?+r6.toFixed(2):null, parabolikCeza:+ceza680.toFixed(1)};
+            ret6:Number.isFinite(r6)?+r6.toFixed(2):null, parabolikCeza:+ceza680.toFixed(1),
+            tamRR:Number.isFinite(_rr686)?+_rr686.toFixed(2):null, rrCezasi:+ceza686.toFixed(1)};
   }catch(e){ return {ok:false,skor:null,sebep:String(e&&e.message||e).slice(0,60)}; }
 }
 function r486EntryTruthGuard(story={},opts={}){
@@ -11631,6 +11647,7 @@ function v679Hikaye(story={}, k678=null){
       if(Number.isFinite(P.yavasSapma)) olcu.push(`yavas trend (50 saatlik ort.) ${P.yavasSapma>0?'ustunde':'altinda'} %${Math.abs(P.yavasSapma).toFixed(2)}`);
       if(olcu.length) c.push(`[PIYASA VERISI - karara giriyor] ${olcu.join(' \u00b7 ')}`);
     }
+    if(k678&&Number.isFinite(k678.tamRR)) c.push(`tam R/R ${k678.tamRR}${k678.rrCezasi>0?` \u2014 olcum: R/R<4 bandinda 34 islemin neti -164$ (ceza -${k678.rrCezasi})`:' \u2014 saglikli band'}`);
     if(k678&&k678.parabolikCeza>0) c.push(`parabolik ceza -${k678.parabolikCeza} puan uygulandi`);
     if(k678&&k678.ok) c.push(`grafik kalite skoru ${k678.skor}/100 \u2014 ${k678.skor<40?'OLCULEN TEK NEGATIF BANT (beklenti -0,071)':k678.skor>=70?'en iyi bant (beklenti +0,815)':'orta bant'}`);
   }catch(_){}
@@ -28914,6 +28931,7 @@ async function runAutoScan(prioritySymbol=null, priorityOnly=false) {
               gecti:!(_k680&&_k680.ok&&_k680.skor<V678_MIN_SKOR), esik:V678_MIN_SKOR,
               rangePos:_k680?.rangePos??null, atrPct:_k680?.atrPct??null, trend:_k680?.trend??null,
               ret6:_k680?.ret6??null, parabolikCeza:_k680?.parabolikCeza??0,
+              tamRR:_k680?.tamRR??null, rrCezasi:_k680?.rrCezasi??0,
               piyasa:_s680?.researchPassive?.v681Piyasa||null,
               kanit:_k680?.kanit||[], hikaye:v679Hikaye(_s680||{}, _k680),
               yon:String(recommendation||''), timing:_s680?.timing||null,
